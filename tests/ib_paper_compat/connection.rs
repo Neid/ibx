@@ -33,13 +33,24 @@ pub(super) fn phase_ccp_auth(gw: &Gateway, has_hmds: bool, connect_time: Duratio
     println!("  PASS ({:.3}s)\n", connect_time.as_secs_f64());
 }
 
-pub(super) fn phase_extra_farms(gw: &Gateway, config: &GatewayConfig) {
+/// Phase: connect the optional extra farms.
+///
+/// Takes `ccp` only to keep it alive: each attempt blocks until the farm answers
+/// or the connect timeout expires (~5s for an unreachable farm), and the auth
+/// connection's heartbeat interval is 10s. Two slow attempts in a row are enough
+/// for the server to close a session that no hot loop is pumping yet — this phase
+/// runs before `Conns` is built. The session then dies here and the first
+/// CCP-dependent phase fails far away with a misleading error.
+pub(super) fn phase_extra_farms(gw: &Gateway, config: &GatewayConfig, ccp: &mut Connection) {
     println!("--- Phase 18: Additional Farm Connections ---");
 
     let farms = ["cashhmds", "secdefil", "fundfarm", "usopt", "cashfarm", "usfuture", "eufarm", "jfarm"];
     let mut connected = 0;
 
     for farm in &farms {
+        // Pump before each attempt as well as after: the heartbeat has to land
+        // inside the window, and the attempt itself is what blocks.
+        ccp_keepalive(ccp);
         let start = Instant::now();
         let slot: u32 = if *farm == "ushmds" { 17 } else { 18 };
         match ibx::gateway::connect_farm(
@@ -56,6 +67,7 @@ pub(super) fn phase_extra_farms(gw: &Gateway, config: &GatewayConfig) {
                 println!("  {}: FAILED (non-fatal): {} ({:.3}s)", farm, e, start.elapsed().as_secs_f64());
             }
         }
+        ccp_keepalive(ccp);
     }
 
     println!("  {}/{} extra farms connected", connected, farms.len());
@@ -371,6 +383,7 @@ pub(super) fn phase_update_param(conns: Conns) -> Conns {
 
     let conns = shutdown_and_reclaim(&control_tx, join, account_id);
 
+    if skip_unacked_if_closed(order_acked) { return conns; }
     assert!(order_acked, "Order should be acknowledged after UpdateParam");
     assert!(terminal, "Order should reach terminal state");
     println!("  UpdateParam processed, hot loop still functional");

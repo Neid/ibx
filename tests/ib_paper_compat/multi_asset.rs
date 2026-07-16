@@ -114,6 +114,7 @@ pub(super) fn phase_forex_order(conns: Conns) -> Conns {
     if order_rejected {
         println!("  SKIP: Forex order rejected (may need trading permissions)\n");
     } else {
+        if skip_unacked_if_closed(order_acked) { return conns; }
         assert!(order_acked, "Forex order should be acknowledged");
         assert!(order_cancelled, "Forex order should be cancelled");
         println!("  PASS\n");
@@ -235,6 +236,7 @@ pub(super) fn phase_futures_order(conns: Conns) -> Conns {
     if order_rejected {
         println!("  SKIP: Futures order rejected (may need trading permissions)\n");
     } else {
+        if skip_unacked_if_closed(order_acked) { return conns; }
         assert!(order_acked, "Futures order should be acknowledged");
         assert!(order_cancelled, "Futures order should be cancelled");
         println!("  PASS\n");
@@ -365,6 +367,7 @@ pub(super) fn phase_options_order(conns: Conns) -> Conns {
     if order_rejected {
         println!("  SKIP: Option order rejected (may need trading permissions)\n");
     } else {
+        if skip_unacked_if_closed(order_acked) { return conns; }
         assert!(order_acked, "Option order should be acknowledged");
         assert!(order_cancelled, "Option order should be cancelled");
         println!("  PASS\n");

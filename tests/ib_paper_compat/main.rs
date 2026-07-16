@@ -43,12 +43,12 @@ fn compat_suite() {
     let suite_start = Instant::now();
 
     let start = Instant::now();
-    let (mut gw, farm_conn, ccp_conn, hmds_conn) = Gateway::connect(&config)
+    let (mut gw, farm_conn, mut ccp_conn, hmds_conn) = Gateway::connect(&config)
         .expect("Gateway::connect() failed");
     let connect_time = start.elapsed();
 
     connection::phase_ccp_auth(&gw, hmds_conn.is_some(), connect_time);
-    connection::phase_extra_farms(&gw, &config);
+    connection::phase_extra_farms(&gw, &config, &mut ccp_conn);
 
     let mut conns = Conns {
         farm: farm_conn,
@@ -163,6 +163,7 @@ fn compat_suite() {
         println!("--- Phase 133: Enriched exec_details ---\n  SKIP: {:?} — needs fills\n", session);
     }
     conns = account::phase_pnl_subscription(conns);
+    conns = account::phase_pnl_subscribe_command(conns);
     conns = account::phase_news_bulletins(conns);
 
     conns = contracts::phase_contract_details(conns);
@@ -398,7 +399,8 @@ fn compat_suite() {
 
     // Session-dependent phases: 2,3,4,6,17,27,28,51,52,61,97,102,105,110,124,126,128,129 = 18
     // Forex fallback phases cover 3 of those when !needs_ticks (107,108,109)
-    let total_phases = 128;
+    // Phase 134 (PnL subscribe/cancel command) is session-independent and always runs.
+    let total_phases = 129;
     let skipped = if needs_ticks { 0 } else { 18 };
     let forex_fallback = if needs_ticks { 0 } else { 3 };
     let ran = total_phases - skipped + forex_fallback;

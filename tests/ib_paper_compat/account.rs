@@ -95,29 +95,26 @@ pub(super) fn phase_account_pnl(conns: Conns) -> Conns {
     let mut probe_done = false;
 
     while Instant::now() < deadline && !probe_done {
+        // Account state is written straight into SharedState by the account-summary
+        // handler, which emits no Event — so poll it every iteration instead of only
+        // when one arrives. Checking it inside the Tick/OrderUpdate arms meant a
+        // Closed session (no tick to wake us, no ack for a $1 limit) never looked at
+        // the account at all, and the phase then blamed tag 9806 for what was really
+        // an absence of events.
+        if !account_received {
+            let acct = shared.portfolio.account();
+            if acct.net_liquidation != 0 {
+                net_liq = acct.net_liquidation;
+                account_received = true;
+            }
+        }
         match event_rx.recv_timeout(Duration::from_millis(100)) {
             Ok(Event::OrderUpdate(update)) => {
-                if !account_received {
-                    let acct = shared.portfolio.account();
-                    if acct.net_liquidation != 0 {
-                        net_liq = acct.net_liquidation;
-                        account_received = true;
-                    }
-                }
                 if update.status == OrderStatus::Submitted {
                     control_tx.send(ControlCommand::Order(OrderRequest::Cancel { order_id })).unwrap();
                 }
                 if matches!(update.status, OrderStatus::Cancelled | OrderStatus::Rejected) {
                     probe_done = true;
-                }
-            }
-            Ok(Event::Tick(_)) => {
-                if !account_received {
-                    let acct = shared.portfolio.account();
-                    if acct.net_liquidation != 0 {
-                        net_liq = acct.net_liquidation;
-                        account_received = true;
-                    }
                 }
             }
             _ => {}
@@ -963,6 +960,56 @@ pub(super) fn phase_pnl_subscription(conns: Conns) -> Conns {
     } else {
         println!("  SKIP: Account data not received in time\n");
     }
+    conns
+}
+
+/// Phase: explicit whole-account P&L subscribe/cancel lifecycle (CCP 6040=142 / cancel).
+///
+/// Distinct from `phase_pnl_subscription`, which only reads account state after an
+/// order. This exercises the `SubscribePnl`/`CancelPnl` ControlCommands directly.
+/// Session-independent: P&L is account data, available whether or not the market is open.
+pub(super) fn phase_pnl_subscribe_command(conns: Conns) -> Conns {
+    println!("--- Phase 134: PnL Subscribe/Cancel Command (CCP 6040=142) ---");
+
+    let account_id = conns.account_id;
+    let shared = Arc::new(SharedState::new());
+    let (event_tx, _event_rx) = crossbeam_channel::unbounded();
+    let (hot_loop, control_tx) = HotLoop::with_connections(
+        shared.clone(), Some(event_tx), account_id.clone(),
+        conns.farm, conns.ccp, conns.hmds, None,
+    );
+
+    let req_id: i64 = 6142;
+    // .unwrap() doubles as a liveness check: a closed channel means the hot loop died.
+    control_tx
+        .send(ControlCommand::SubscribePnl { req_id, account: account_id.clone() })
+        .unwrap();
+    let join = run_hot_loop(hot_loop);
+
+    // The server pushes 6040=143 midnight seeds — one repeating group per open
+    // position. A flat paper account yields no seeds, which is a valid outcome, so
+    // we wait a bounded window and log whatever arrived rather than requiring seeds.
+    let deadline = Instant::now() + Duration::from_secs(8);
+    let mut seeds_seen = 0usize;
+    while Instant::now() < deadline {
+        let seeds = shared.portfolio.midnight_seeds();
+        if !seeds.is_empty() {
+            seeds_seen = seeds.len();
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
+
+    control_tx.send(ControlCommand::CancelPnl { req_id }).unwrap();
+    std::thread::sleep(Duration::from_millis(500));
+
+    let conns = shutdown_and_reclaim(&control_tx, join, account_id);
+
+    // The assertion is the lifecycle itself: a malformed 6040=142 would have
+    // dropped the CCP session, and shutdown_and_reclaim's ccp_keepalive (plus the
+    // CCP-dependent phases that follow) would then fail.
+    println!("  midnight seeds received: {}", seeds_seen);
+    println!("  PASS\n");
     conns
 }
 

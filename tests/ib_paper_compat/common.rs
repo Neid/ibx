@@ -15,9 +15,31 @@ pub(super) use ibx::protocol::connection::{Connection, Frame};
 pub(super) use ibx::protocol::{fix, fixcomp};
 pub(super) use ibx::types::*;
 
+/// Resolve paper-account credentials from the process environment.
+///
+/// Absent credentials abort the suite instead of skipping it. This suite only
+/// verifies something when it reaches real servers, so a skip that still reports
+/// `ok` is indistinguishable from a real pass: the suite stopped compiling at
+/// 93e6995 and nothing noticed, because every run took the skip path and went
+/// green. An empty value counts as absent — an exported-but-blank var is the
+/// same trap in a different shape.
+///
+/// The env is not loaded from `.env` here (no loader dependency); export it
+/// first, e.g. `set -a; . ./.env; set +a`. To skip on purpose (a checkout with
+/// no credentials), set `IBX_ALLOW_SKIP_NO_CREDS=1` and the suite returns `None`
+/// as before.
 pub(super) fn get_config() -> Option<GatewayConfig> {
-    let username = env::var("IB_USERNAME").ok()?;
-    let password = env::var("IB_PASSWORD").ok()?;
+    let var = |k: &str| env::var(k).ok().filter(|v| !v.trim().is_empty());
+    let (username, password) = match (var("IB_USERNAME"), var("IB_PASSWORD")) {
+        (Some(u), Some(p)) => (u, p),
+        _ if var("IBX_ALLOW_SKIP_NO_CREDS").as_deref() == Some("1") => return None,
+        _ => panic!(
+            "IB_USERNAME/IB_PASSWORD unset or empty — the compat suite tests \
+             nothing without real-server credentials, so it fails rather than \
+             passing silently. Export them first (`set -a; . ./.env; set +a`), \
+             or set IBX_ALLOW_SKIP_NO_CREDS=1 to skip deliberately."
+        ),
+    };
     let host = env::var("IB_HOST").unwrap_or_else(|_| "cdc1.ibllc.com".to_string());
     Some(GatewayConfig {
         username,
@@ -235,6 +257,24 @@ pub(super) fn market_session() -> (MarketSession, u16) {
 
     if et_dow == 0 || et_dow == 6 { return (MarketSession::Closed, et_min); }
 
+    // Eastern-Time calendar date (needed for the holiday calendar). Deriving it
+    // from a single ET epoch value avoids month/year rollback bugs at midnight.
+    let et_days = ((now as i64) + (offset as i64) * 60).div_euclid(86400);
+    let (ey, em, ed) = ymd_from_days(et_days);
+    match us_market_holiday(ey, em, ed, et_dow as u32) {
+        Holiday::Closed => return (MarketSession::Closed, et_min),
+        Holiday::EarlyClose => {
+            // Regular trading ends 13:00 ET (780 min); gate out later sessions.
+            let session = match et_min {
+                240..=569 => MarketSession::PreMarket,
+                570..=779 => MarketSession::Regular,
+                _ => MarketSession::Closed,
+            };
+            return (session, et_min);
+        }
+        Holiday::Open => {}
+    }
+
     let session = match et_min {
         240..=569 => MarketSession::PreMarket,
         570..=959 => MarketSession::Regular,
@@ -242,6 +282,209 @@ pub(super) fn market_session() -> (MarketSession, u16) {
         _ => MarketSession::Closed,
     };
     (session, et_min)
+}
+
+// ─── US market holiday calendar ───
+//
+// Gates session-dependent phases so a run on a US market holiday (or a half-day
+// early close) does not spuriously fire tick/fill phases against a closed venue.
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(super) enum Holiday {
+    Open,       // normal trading day
+    Closed,     // full-day market closure
+    EarlyClose, // half day, regular session ends 13:00 ET
+}
+
+/// Days since the Unix epoch for a civil (proleptic Gregorian) date.
+/// Howard Hinnant's `days_from_civil`.
+fn days_from_civil(y: i64, m: u32, d: u32) -> i64 {
+    let yy = if m <= 2 { y - 1 } else { y };
+    let era = (if yy >= 0 { yy } else { yy - 399 }) / 400;
+    let yoe = yy - era * 400;
+    let mp = if m > 2 { m - 3 } else { m + 9 } as u32;
+    let doy = (153 * mp as i64 + 2) / 5 + d as i64 - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146097 + doe - 719468
+}
+
+/// Inverse of `days_from_civil` — civil date `(year, month, day)` from an epoch day count.
+fn ymd_from_days(z: i64) -> (i64, u32, u32) {
+    let z = z + 719468;
+    let era = (if z >= 0 { z } else { z - 146096 }) / 146097;
+    let doe = z - era * 146097;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
+    (if m <= 2 { y + 1 } else { y }, m, d)
+}
+
+/// Day of week for an epoch day count, 0=Sunday .. 6=Saturday.
+fn dow(days: i64) -> u32 {
+    ((days + 4).rem_euclid(7)) as u32
+}
+
+/// Day-of-month of the `n`-th `weekday` (0=Sun) in `(y, m)`.
+fn nth_weekday(y: i64, m: u32, weekday: u32, n: u32) -> u32 {
+    let first = days_from_civil(y, m, 1);
+    let fdow = dow(first);
+    let offset = (weekday + 7 - fdow) % 7;
+    1 + offset + (n - 1) * 7
+}
+
+/// Day-of-month of the last `weekday` (0=Sun) in `(y, m)`.
+fn last_weekday(y: i64, m: u32, weekday: u32) -> u32 {
+    let first_next = if m == 12 { days_from_civil(y + 1, 1, 1) } else { days_from_civil(y, m + 1, 1) };
+    let last = first_next - 1;
+    let ldow = dow(last);
+    let (_, _, ld) = ymd_from_days(last);
+    ld - ((ldow + 7 - weekday) % 7)
+}
+
+/// Gregorian Easter Sunday (Anonymous algorithm). Returns `(month, day)`.
+fn easter(y: i64) -> (u32, u32) {
+    let a = y % 19;
+    let b = y / 100;
+    let c = y % 100;
+    let d = b / 4;
+    let e = b % 4;
+    let f = (b + 8) / 25;
+    let g = (b - f + 1) / 3;
+    let h = (19 * a + b - d - g + 15) % 30;
+    let i = c / 4;
+    let k = c % 4;
+    let l = (32 + 2 * e + 2 * i - h - k) % 7;
+    let mth = (a + 11 * h + 22 * l) / 451;
+    let month = (h + l - 7 * mth + 114) / 31;
+    let day = ((h + l - 7 * mth + 114) % 31) + 1;
+    (month as u32, day as u32)
+}
+
+/// Good Friday = Easter Sunday − 2 days. Returns `(month, day)`.
+fn good_friday(y: i64) -> (u32, u32) {
+    let (em, ed) = easter(y);
+    let gf = days_from_civil(y, em, ed) - 2;
+    let (_, m, d) = ymd_from_days(gf);
+    (m, d)
+}
+
+/// True if `(m, d)` is the observed closure date of a fixed-date holiday `(fm, fd)`.
+/// NYSE convention: Saturday holiday → observed the preceding Friday; Sunday → the following Monday.
+fn observed_fixed(y: i64, fm: u32, fd: u32, m: u32, d: u32) -> bool {
+    let fdow = dow(days_from_civil(y, fm, fd));
+    let (om, od) = if fdow == 6 {
+        let (_, im, id) = ymd_from_days(days_from_civil(y, fm, fd) - 1);
+        (im, id)
+    } else if fdow == 0 {
+        let (_, im, id) = ymd_from_days(days_from_civil(y, fm, fd) + 1);
+        (im, id)
+    } else {
+        (fm, fd)
+    };
+    m == om && d == od
+}
+
+/// Classify an Eastern-Time calendar date against the US equity market calendar.
+/// `dow` is 0=Sunday .. 6=Saturday for `(y, m, d)`.
+fn us_market_holiday(y: i64, m: u32, d: u32, dow: u32) -> Holiday {
+    // ── Full-day closures (checked first; they take precedence over early closes) ──
+    // New Year's Day — Jan 1; a Sunday Jan 1 is observed Monday. A Saturday Jan 1
+    // is NOT made up on the preceding Friday (that Friday is the prior year).
+    if m == 1 && d == 1 && dow != 0 && dow != 6 { return Holiday::Closed; }
+    if m == 1 && d == 2 && dow == 1 { return Holiday::Closed; }
+    // Martin Luther King Jr. Day — 3rd Monday January
+    if m == 1 && d == nth_weekday(y, 1, 1, 3) { return Holiday::Closed; }
+    // Washington's Birthday — 3rd Monday February
+    if m == 2 && d == nth_weekday(y, 2, 1, 3) { return Holiday::Closed; }
+    // Good Friday
+    let (gm, gd) = good_friday(y);
+    if m == gm && d == gd { return Holiday::Closed; }
+    // Memorial Day — last Monday May
+    if m == 5 && d == last_weekday(y, 5, 1) { return Holiday::Closed; }
+    // Juneteenth — Jun 19 (market holiday since 2022), observed
+    if y >= 2022 && observed_fixed(y, 6, 19, m, d) { return Holiday::Closed; }
+    // Independence Day — Jul 4, observed
+    if observed_fixed(y, 7, 4, m, d) { return Holiday::Closed; }
+    // Labor Day — 1st Monday September
+    if m == 9 && d == nth_weekday(y, 9, 1, 1) { return Holiday::Closed; }
+    // Thanksgiving — 4th Thursday November
+    if m == 11 && d == nth_weekday(y, 11, 4, 4) { return Holiday::Closed; }
+    // Christmas — Dec 25, observed
+    if observed_fixed(y, 12, 25, m, d) { return Holiday::Closed; }
+
+    // ── Early closes (regular session ends 13:00 ET) ──
+    // Black Friday — day after Thanksgiving
+    if m == 11 && d == nth_weekday(y, 11, 4, 4) + 1 { return Holiday::EarlyClose; }
+    // Christmas Eve — Dec 24 when a weekday
+    if m == 12 && d == 24 && (1..=5).contains(&dow) { return Holiday::EarlyClose; }
+    // July 3 — when a weekday (and not itself an observed full holiday, handled above)
+    if m == 7 && d == 3 && (1..=5).contains(&dow) { return Holiday::EarlyClose; }
+
+    Holiday::Open
+}
+
+#[cfg(test)]
+mod holiday_tests {
+    use super::*;
+
+    fn kind(y: i64, m: u32, d: u32) -> Holiday {
+        us_market_holiday(y, m, d, dow(days_from_civil(y, m, d)))
+    }
+
+    #[test]
+    fn fixed_and_floating_2026_closures() {
+        assert_eq!(kind(2026, 1, 1), Holiday::Closed);   // New Year (Thu)
+        assert_eq!(kind(2026, 1, 19), Holiday::Closed);  // MLK — 3rd Mon Jan
+        assert_eq!(kind(2026, 2, 16), Holiday::Closed);  // Washington — 3rd Mon Feb
+        assert_eq!(kind(2026, 4, 3), Holiday::Closed);   // Good Friday
+        assert_eq!(kind(2026, 5, 25), Holiday::Closed);  // Memorial — last Mon May
+        assert_eq!(kind(2026, 6, 19), Holiday::Closed);  // Juneteenth (Fri)
+        assert_eq!(kind(2026, 9, 7), Holiday::Closed);   // Labor — 1st Mon Sep
+        assert_eq!(kind(2026, 11, 26), Holiday::Closed); // Thanksgiving — 4th Thu Nov
+        assert_eq!(kind(2026, 12, 25), Holiday::Closed); // Christmas (Fri)
+    }
+
+    #[test]
+    fn observed_weekend_rules() {
+        // Jul 4 2026 is a Saturday → observed Friday Jul 3 (full closure, not early close).
+        assert_eq!(dow(days_from_civil(2026, 7, 4)), 6);
+        assert_eq!(kind(2026, 7, 3), Holiday::Closed);
+        // Jan 1 2023 was a Sunday → observed Monday Jan 2.
+        assert_eq!(dow(days_from_civil(2023, 1, 1)), 0);
+        assert_eq!(kind(2023, 1, 2), Holiday::Closed);
+    }
+
+    #[test]
+    fn early_closes() {
+        // Black Friday 2026 = day after Thanksgiving (Nov 27).
+        assert_eq!(kind(2026, 11, 27), Holiday::EarlyClose);
+        // Christmas Eve 2025 (Wed) is an early close.
+        assert_eq!(kind(2025, 12, 24), Holiday::EarlyClose);
+    }
+
+    #[test]
+    fn normal_trading_day_is_open() {
+        assert_eq!(kind(2026, 7, 8), Holiday::Open); // ordinary Wednesday
+    }
+}
+
+/// Session-aware order-acknowledgment gate for order phases.
+///
+/// On a Closed market, order acknowledgment is unavailable or unreliable: pegged
+/// and snapshot order types need a live reference market, and even plain types ack
+/// slowly if at all on the paper venue over a weekend. A missing ack is therefore
+/// a legitimate SKIP, not a failure. Returns `true` when the caller should
+/// skip-return its `Conns` (and prints the SKIP line as a side effect); on an open
+/// session it returns `false` so the caller's own `assert!` still enforces the ack.
+pub(super) fn skip_unacked_if_closed(order_acked: bool) -> bool {
+    if !order_acked && market_session().0 == MarketSession::Closed {
+        println!("  SKIP: Closed — order not acknowledged (order type/venue needs a live market)\n");
+        return true;
+    }
+    false
 }
 
 // ─── Generic submit+cancel helper ───
@@ -325,9 +568,17 @@ pub(super) fn run_submit_cancel_phase(
         match event_rx.recv_timeout(Duration::from_millis(100)) {
             Ok(Event::OrderUpdate(update)) => {
                 match update.status {
-                    // OPG orders only get PendingSubmit until next open, so
-                    // accept it as the success ack and fire cancel from there.
-                    OrderStatus::PendingSubmit | OrderStatus::Submitted => {
+                    // PreSubmitted (39=A) is the server's ack: received, not yet
+                    // working on the exchange. An at-the-open order stops there until
+                    // the auction and never reaches Submitted (39=0) intraday, so it
+                    // must count as the ack and fire the cancel, or the order rests
+                    // forever and the phase reports "never acknowledged" while the
+                    // acks were in fact arriving (ib-agent#164 timed them at ~120ms).
+                    // PendingSubmit is the local pre-ack state, kept for order types
+                    // that surface it.
+                    OrderStatus::PendingSubmit
+                    | OrderStatus::PreSubmitted
+                    | OrderStatus::Submitted => {
                         order_acked = true;
                         if !cancel_sent {
                             control_tx.send(ControlCommand::Order(OrderRequest::Cancel { order_id })).unwrap();
@@ -357,6 +608,14 @@ pub(super) fn run_submit_cancel_phase(
         assert!(order_filled || order_cancelled, "Order was neither filled nor cancelled");
         if order_filled { println!("  PASS (filled)\n"); } else { println!("  PASS (cancelled)\n"); }
     } else {
+        // Session-aware gate: some order types (Relative/pegged, snapshot, midprice)
+        // peg to a live primary NBBO and are never acknowledged when the market is
+        // closed. Treat an un-acked order on a Closed session as a SKIP, not a
+        // failure — a plain order that acks on a closed market still reaches PASS.
+        if !order_acked && market_session().0 == MarketSession::Closed {
+            println!("  SKIP: Closed — order not acknowledged (order type needs a live market)\n");
+            return conns;
+        }
         assert!(order_acked, "Order was never acknowledged");
         assert!(order_cancelled, "Order was never cancelled");
         println!("  PASS\n");

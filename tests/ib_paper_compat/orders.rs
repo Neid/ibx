@@ -173,6 +173,7 @@ pub(super) fn phase_limit_order(conns: Conns) -> Conns {
     }
 
     assert!(submitted, "Order was never submitted");
+    if skip_unacked_if_closed(order_acked) { return conns; }
     assert!(order_acked, "Order was never acknowledged");
     assert!(order_cancelled, "Order was never cancelled");
 
@@ -250,6 +251,7 @@ pub(super) fn phase_modify_order(conns: Conns) -> Conns {
         println!("  SKIP: Modify test rejected\n");
         return conns;
     }
+    if skip_unacked_if_closed(order_acked) { return conns; }
     assert!(order_acked, "Order was never acknowledged");
     assert!(modify_sent, "Modify was never sent");
     assert!(modify_acked, "Modify was never acknowledged");
@@ -410,6 +412,7 @@ pub(super) fn phase_outside_rth_stop(conns: Conns) -> Conns {
         println!("  SKIP: GTC stop outside RTH rejected\n");
         return conns;
     }
+    if skip_unacked_if_closed(order_acked) { return conns; }
     assert!(order_acked, "GTC stop outside RTH was never acknowledged");
     assert!(order_cancelled, "GTC stop outside RTH was never cancelled");
     println!("  PASS\n");
@@ -476,6 +479,7 @@ pub(super) fn phase_modify_qty(conns: Conns) -> Conns {
         println!("  SKIP: Modify qty test rejected\n");
         return conns;
     }
+    if skip_unacked_if_closed(order_acked) { return conns; }
     assert!(order_acked, "Order was never acknowledged");
     assert!(modify_sent, "Modify was never sent");
     assert!(modify_acked_local, "Qty modify was never acknowledged");
@@ -713,6 +717,7 @@ pub(super) fn phase_bracket_order(conns: Conns) -> Conns {
         println!("  SKIP: Bracket order rejected\n");
         return conns;
     }
+    if skip_unacked_if_closed(parent_acked) { return conns; }
     assert!(parent_acked, "Parent order was never acknowledged");
     println!("  Parent acked: {}, Cancelled: {} orders", parent_acked, cancelled_count);
     println!("  PASS\n");
@@ -847,6 +852,7 @@ pub(super) fn phase_oca_group(conns: Conns) -> Conns {
         println!("  SKIP: OCA order rejected\n");
         return conns;
     }
+    if skip_unacked_if_closed(order1_acked && order2_acked) { return conns; }
     assert!(order1_acked, "Order 1 never acked");
     assert!(order2_acked, "Order 2 never acked");
     println!("  Order1 acked: {}, Order2 acked: {}, Cancelled: {}", order1_acked, order2_acked, cancelled_count);
@@ -1260,6 +1266,7 @@ pub(super) fn phase_cash_qty_order(conns: Conns) -> Conns {
         println!("  SKIP: Cash qty rejected (expected on paper account)\n");
         return conns;
     }
+    if skip_unacked_if_closed(order_acked) { return conns; }
     assert!(order_acked, "Order was never acknowledged");
     assert!(order_cancelled, "Order was never cancelled");
     println!("  PASS\n");
@@ -1319,6 +1326,7 @@ pub(super) fn phase_fractional_order(conns: Conns) -> Conns {
         println!("  SKIP: Fractional rejected (may be blocked by CCP)\n");
         return conns;
     }
+    if skip_unacked_if_closed(order_acked) { return conns; }
     assert!(order_acked, "Order was never acknowledged");
     assert!(order_cancelled, "Order was never cancelled");
     println!("  PASS\n");
@@ -1673,6 +1681,7 @@ pub(super) fn phase_rapid_order_dedup(conns: Conns) -> Conns {
     }
 
     assert_eq!(duplicate_acks, 0, "No duplicate OrderUpdate(Submitted) for same order_id");
+    if skip_unacked_if_closed(acked.len() >= 3) { return conns; }
     assert!(acked.len() >= 3, "At least 3 of 5 orders should be acknowledged, got {}", acked.len());
     println!("  PASS\n");
     conns
@@ -1740,6 +1749,7 @@ pub(super) fn phase_modify_price_and_qty(conns: Conns) -> Conns {
         println!("  SKIP: Order rejected\n");
         return conns;
     }
+    if skip_unacked_if_closed(order_acked) { return conns; }
     assert!(order_acked, "Order was never acknowledged");
     assert!(modify_sent, "Modify was never sent");
     assert!(modify_acked, "Modify (price+qty) was never acknowledged");
@@ -1821,6 +1831,7 @@ pub(super) fn phase_double_modify(conns: Conns) -> Conns {
         println!("  SKIP: Order rejected\n");
         return conns;
     }
+    if skip_unacked_if_closed(phase >= 3) { return conns; }
     assert!(phase >= 3, "Did not complete double modify chain (reached phase {})", phase);
     assert!(order_cancelled, "Final modified order was never cancelled");
     println!("  PASS\n");
@@ -1891,6 +1902,7 @@ pub(super) fn phase_cancel_during_modify(conns: Conns) -> Conns {
         println!("  SKIP: Order rejected\n");
         return conns;
     }
+    if skip_unacked_if_closed(order_acked) { return conns; }
     assert!(order_acked, "Order was never acknowledged");
     assert!(race_sent, "Race condition commands were never sent");
     assert!(order_cancelled, "Order was never cancelled (neither original nor modified)");
@@ -1963,6 +1975,7 @@ pub(super) fn phase_global_cancel(conns: Conns) -> Conns {
         println!("  SKIP: Order rejected\n");
         return conns;
     }
+    if skip_unacked_if_closed(cancel_all_sent) { return conns; }
     assert!(cancel_all_sent, "CancelAll was never sent (not all orders acked)");
     assert_eq!(cancelled.len(), 3, "Expected 3 cancellations, got {}", cancelled.len());
     println!("  All 3 orders cancelled via CancelAll");

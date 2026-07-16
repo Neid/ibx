@@ -1469,6 +1469,7 @@ pub(super) fn phase_historical_and_orders(mut conns: Conns, gw: &Gateway, config
         println!("  Order rejected — verifying historical path still works");
     }
     if !order_rejected {
+        if skip_unacked_if_closed(order_acked) { return conns; }
         assert!(order_acked, "Order should have been acknowledged");
         assert!(order_cancelled, "Order should have been cancelled");
     }

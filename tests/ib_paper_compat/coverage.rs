@@ -39,6 +39,8 @@ const TESTED_CONTROL_COMMANDS: &[&str] = &[
     "FetchHistoricalSchedule",
     "SubscribeDepth",
     "UnsubscribeDepth",
+    "SubscribePnl",
+    "CancelPnl",
     "Shutdown",
 ];
 
@@ -60,16 +62,10 @@ const KNOWN_CONTROL_COMMAND_GAPS: &[(&str, &str)] = &[
         "Gateway-local response path, no CCP round-trip in hot loop yet",
     ),
     (
-        "SubscribePnl",
-        "P&L subscribe path covered by scenarios.rs unit tests, not in ib_paper_compat suite yet",
-    ),
-    (
-        "CancelPnl",
-        "P&L cancel path covered by scenarios.rs unit tests, not in ib_paper_compat suite yet",
-    ),
-    (
         "FetchMktDepthExchanges",
-        "Gateway-local response path, no CCP round-trip in hot loop yet",
+        "Exchange list is cached once from the 6040=102 init burst into a per-session \
+         SharedState, consumed before any phase's hot loop runs — not re-requestable, \
+         so a phase-model integration test cannot observe a non-empty result",
     ),
 ];
 
