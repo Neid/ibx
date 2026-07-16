@@ -48,6 +48,7 @@ pub(crate) fn drain_and_send_orders(
                 let qty_str = format_uint(qty as u64);
                 let price_str = format_price(price);
                 let symbol = context.market.symbol(instrument).to_string();
+                let (sec_type_str, destination) = context.market.order_routing(instrument);
                 let now = chrono_free_timestamp();
                 conn.send_fix(&[
                     (fix::TAG_MSG_TYPE, fix::MSG_NEW_ORDER),
@@ -62,8 +63,8 @@ pub(crate) fn drain_and_send_orders(
                     (44, &price_str),   // Price
                     (59, "0"),          // TIF = DAY
                     (60, &now),         // TransactTime
-                    (167, "STK"),       // SecurityType = CommonStock
-                    (100, "SMART"),     // ExDestination
+                    (167, &sec_type_str),       // SecurityType = CommonStock
+                    (100, &destination),     // ExDestination
                     (15, "USD"),        // Currency
                     (204, "0"),         // CustomerOrFirm
                 ])
@@ -79,6 +80,7 @@ pub(crate) fn drain_and_send_orders(
                 let price_str = format_price(price);
                 let stop_str = format_price(stop_price);
                 let symbol = context.market.symbol(instrument).to_string();
+                let (sec_type_str, destination) = context.market.order_routing(instrument);
                 let now = chrono_free_timestamp();
                 conn.send_fix(&[
                     (fix::TAG_MSG_TYPE, fix::MSG_NEW_ORDER),
@@ -94,8 +96,8 @@ pub(crate) fn drain_and_send_orders(
                     (99, &stop_str),    // StopPx
                     (59, "0"),          // TIF = DAY
                     (60, &now),
-                    (167, "STK"),
-                    (100, "SMART"),
+                    (167, &sec_type_str),
+                    (100, &destination),
                     (15, "USD"),
                     (204, "0"),
                 ])
@@ -110,6 +112,7 @@ pub(crate) fn drain_and_send_orders(
                 let qty_str = format_uint(qty as u64);
                 let price_str = format_price(price);
                 let symbol = context.market.symbol(instrument).to_string();
+                let (sec_type_str, destination) = context.market.order_routing(instrument);
                 let now = chrono_free_timestamp();
                 let mut fields: Vec<(u32, &str)> = vec![
                     (fix::TAG_MSG_TYPE, fix::MSG_NEW_ORDER),
@@ -124,8 +127,8 @@ pub(crate) fn drain_and_send_orders(
                     (44, &price_str),
                     (59, "1"),          // TIF = GTC
                     (60, &now),
-                    (167, "STK"),
-                    (100, "SMART"),
+                    (167, &sec_type_str),
+                    (100, &destination),
                     (15, "USD"),
                     (204, "0"),
                 ];
@@ -151,6 +154,7 @@ pub(crate) fn drain_and_send_orders(
                 let side_str = fix_side(side);
                 let qty_str = format_uint(qty as u64);
                 let symbol = context.market.symbol(instrument).to_string();
+                let (sec_type_str, destination) = context.market.order_routing(instrument);
                 let now = chrono_free_timestamp();
                 log::info!("Sending MKT order: clord={} acct={} sym={} side={} qty={}",
                     clord_str, account_id, symbol, side_str, qty_str);
@@ -166,8 +170,8 @@ pub(crate) fn drain_and_send_orders(
                     (40, "1"),          // OrdType = Market
                     (59, "0"),          // TIF = DAY
                     (60, &now),         // TransactTime
-                    (167, "STK"),       // SecurityType
-                    (100, "SMART"),     // ExDestination
+                    (167, &sec_type_str),       // SecurityType
+                    (100, &destination),     // ExDestination
                     (15, "USD"),        // Currency
                     (204, "0"),         // CustomerOrFirm
                 ])
@@ -182,6 +186,7 @@ pub(crate) fn drain_and_send_orders(
                 let qty_str = format_uint(qty as u64);
                 let stop_str = format_price(stop_price);
                 let symbol = context.market.symbol(instrument).to_string();
+                let (sec_type_str, destination) = context.market.order_routing(instrument);
                 let now = chrono_free_timestamp();
                 conn.send_fix(&[
                     (fix::TAG_MSG_TYPE, fix::MSG_NEW_ORDER),
@@ -196,8 +201,8 @@ pub(crate) fn drain_and_send_orders(
                     (99, &stop_str),    // StopPx
                     (59, "0"),          // TIF = DAY
                     (60, &now),
-                    (167, "STK"),
-                    (100, "SMART"),
+                    (167, &sec_type_str),
+                    (100, &destination),
                     (15, "USD"),
                     (204, "0"),
                 ])
@@ -212,6 +217,7 @@ pub(crate) fn drain_and_send_orders(
                 let qty_str = format_uint(qty as u64);
                 let stop_str = format_price(stop_price);
                 let symbol = context.market.symbol(instrument).to_string();
+                let (sec_type_str, destination) = context.market.order_routing(instrument);
                 let now = chrono_free_timestamp();
                 let mut fields: Vec<(u32, &str)> = vec![
                     (fix::TAG_MSG_TYPE, fix::MSG_NEW_ORDER),
@@ -226,8 +232,8 @@ pub(crate) fn drain_and_send_orders(
                     (99, &stop_str),
                     (59, "1"),          // TIF = GTC
                     (60, &now),
-                    (167, "STK"),
-                    (100, "SMART"),
+                    (167, &sec_type_str),
+                    (100, &destination),
                     (15, "USD"),
                     (204, "0"),
                 ];
@@ -247,6 +253,7 @@ pub(crate) fn drain_and_send_orders(
                 let price_str = format_price(price);
                 let stop_str = format_price(stop_price);
                 let symbol = context.market.symbol(instrument).to_string();
+                let (sec_type_str, destination) = context.market.order_routing(instrument);
                 let now = chrono_free_timestamp();
                 let mut fields: Vec<(u32, &str)> = vec![
                     (fix::TAG_MSG_TYPE, fix::MSG_NEW_ORDER),
@@ -262,8 +269,8 @@ pub(crate) fn drain_and_send_orders(
                     (99, &stop_str),
                     (59, "1"),          // TIF = GTC
                     (60, &now),
-                    (167, "STK"),
-                    (100, "SMART"),
+                    (167, &sec_type_str),
+                    (100, &destination),
                     (15, "USD"),
                     (204, "0"),
                 ];
@@ -282,6 +289,7 @@ pub(crate) fn drain_and_send_orders(
                 let qty_str = format_uint(qty as u64);
                 let price_str = format_price(price);
                 let symbol = context.market.symbol(instrument).to_string();
+                let (sec_type_str, destination) = context.market.order_routing(instrument);
                 let now = chrono_free_timestamp();
                 conn.send_fix(&[
                     (fix::TAG_MSG_TYPE, fix::MSG_NEW_ORDER),
@@ -296,8 +304,8 @@ pub(crate) fn drain_and_send_orders(
                     (44, &price_str),
                     (59, "3"),          // TIF = IOC
                     (60, &now),
-                    (167, "STK"),
-                    (100, "SMART"),
+                    (167, &sec_type_str),
+                    (100, &destination),
                     (15, "USD"),
                     (204, "0"),
                 ])
@@ -312,6 +320,7 @@ pub(crate) fn drain_and_send_orders(
                 let qty_str = format_uint(qty as u64);
                 let price_str = format_price(price);
                 let symbol = context.market.symbol(instrument).to_string();
+                let (sec_type_str, destination) = context.market.order_routing(instrument);
                 let now = chrono_free_timestamp();
                 conn.send_fix(&[
                     (fix::TAG_MSG_TYPE, fix::MSG_NEW_ORDER),
@@ -326,8 +335,8 @@ pub(crate) fn drain_and_send_orders(
                     (44, &price_str),
                     (59, "4"),          // TIF = FOK
                     (60, &now),
-                    (167, "STK"),
-                    (100, "SMART"),
+                    (167, &sec_type_str),
+                    (100, &destination),
                     (15, "USD"),
                     (204, "0"),
                 ])
@@ -342,6 +351,7 @@ pub(crate) fn drain_and_send_orders(
                 let qty_str = format_uint(qty as u64);
                 let trail_str = format_price(trail_amt);
                 let symbol = context.market.symbol(instrument).to_string();
+                let (sec_type_str, destination) = context.market.order_routing(instrument);
                 let now = chrono_free_timestamp();
                 // Per ib-agent#136 capture: amount-based trailing stop carries
                 // the trail amount in both 99 (StopPx) and 211 (PegOffset),
@@ -362,8 +372,8 @@ pub(crate) fn drain_and_send_orders(
                     (18, "a"),          // ExecInst = TrailingStop
                     (59, "0"),          // TIF = DAY
                     (60, &now),
-                    (167, "STK"),
-                    (100, "SMART"),
+                    (167, &sec_type_str),
+                    (100, &destination),
                     (15, "USD"),
                     (204, "0"),
                 ])
@@ -379,6 +389,7 @@ pub(crate) fn drain_and_send_orders(
                 let offset_str = format_price(lmt_offset);
                 let trail_str = format_price(trail_amt);
                 let symbol = context.market.symbol(instrument).to_string();
+                let (sec_type_str, destination) = context.market.order_routing(instrument);
                 let now = chrono_free_timestamp();
                 // Per ib-agent#136 capture: TRAIL LIMIT uses OrdType=TSL (not P),
                 // does NOT carry tag 44 (gateway derives the limit price from
@@ -400,8 +411,8 @@ pub(crate) fn drain_and_send_orders(
                     (211, &trail_str),   // PegOffset = trail amount
                     (59, "0"),           // TIF = DAY
                     (60, &now),
-                    (167, "STK"),
-                    (100, "SMART"),
+                    (167, &sec_type_str),
+                    (100, &destination),
                     (15, "USD"),
                     (204, "0"),
                 ])
@@ -421,6 +432,7 @@ pub(crate) fn drain_and_send_orders(
                 // gateway rejects with "Invalid value in field # 18".
                 let pct_decimal = format!("{:.2}", trail_pct as f64 / 100.0);
                 let symbol = context.market.symbol(instrument).to_string();
+                let (sec_type_str, destination) = context.market.order_routing(instrument);
                 let now = chrono_free_timestamp();
                 conn.send_fix(&[
                     (fix::TAG_MSG_TYPE, fix::MSG_NEW_ORDER),
@@ -438,8 +450,8 @@ pub(crate) fn drain_and_send_orders(
                     (6268, &pct_str),       // TrailingPercent (basis points)
                     (59, "0"),              // TIF = DAY
                     (60, &now),
-                    (167, "STK"),
-                    (100, "SMART"),
+                    (167, &sec_type_str),
+                    (100, &destination),
                     (15, "USD"),
                     (204, "0"),
                 ])
@@ -457,6 +469,7 @@ pub(crate) fn drain_and_send_orders(
                 let side_str = fix_side(side);
                 let qty_str = format_uint(qty as u64);
                 let symbol = context.market.symbol(instrument).to_string();
+                let (sec_type_str, destination) = context.market.order_routing(instrument);
                 let now = chrono_free_timestamp();
                 conn.send_fix(&[
                     (fix::TAG_MSG_TYPE, fix::MSG_NEW_ORDER),
@@ -470,8 +483,8 @@ pub(crate) fn drain_and_send_orders(
                     (40, "5"),          // OrdType = Market on Close
                     (59, "0"),          // TIF = DAY
                     (60, &now),
-                    (167, "STK"),
-                    (100, "SMART"),
+                    (167, &sec_type_str),
+                    (100, &destination),
                     (15, "USD"),
                     (204, "0"),
                 ])
@@ -486,6 +499,7 @@ pub(crate) fn drain_and_send_orders(
                 let qty_str = format_uint(qty as u64);
                 let price_str = format_price(price);
                 let symbol = context.market.symbol(instrument).to_string();
+                let (sec_type_str, destination) = context.market.order_routing(instrument);
                 let now = chrono_free_timestamp();
                 conn.send_fix(&[
                     (fix::TAG_MSG_TYPE, fix::MSG_NEW_ORDER),
@@ -500,8 +514,8 @@ pub(crate) fn drain_and_send_orders(
                     (44, &price_str),   // Limit price
                     (59, "0"),          // TIF = DAY
                     (60, &now),
-                    (167, "STK"),
-                    (100, "SMART"),
+                    (167, &sec_type_str),
+                    (100, &destination),
                     (15, "USD"),
                     (204, "0"),
                 ])
@@ -516,6 +530,7 @@ pub(crate) fn drain_and_send_orders(
                 let qty_str = format_uint(qty as u64);
                 let stop_str = format_price(stop_price);
                 let symbol = context.market.symbol(instrument).to_string();
+                let (sec_type_str, destination) = context.market.order_routing(instrument);
                 let now = chrono_free_timestamp();
                 conn.send_fix(&[
                     (fix::TAG_MSG_TYPE, fix::MSG_NEW_ORDER),
@@ -530,8 +545,8 @@ pub(crate) fn drain_and_send_orders(
                     (99, &stop_str),    // StopPx = trigger price
                     (59, "0"),          // TIF = DAY
                     (60, &now),
-                    (167, "STK"),
-                    (100, "SMART"),
+                    (167, &sec_type_str),
+                    (100, &destination),
                     (15, "USD"),
                     (204, "0"),
                 ])
@@ -547,6 +562,7 @@ pub(crate) fn drain_and_send_orders(
                 let price_str = format_price(price);
                 let stop_str = format_price(stop_price);
                 let symbol = context.market.symbol(instrument).to_string();
+                let (sec_type_str, destination) = context.market.order_routing(instrument);
                 let now = chrono_free_timestamp();
                 conn.send_fix(&[
                     (fix::TAG_MSG_TYPE, fix::MSG_NEW_ORDER),
@@ -562,8 +578,8 @@ pub(crate) fn drain_and_send_orders(
                     (99, &stop_str),    // StopPx = trigger price
                     (59, "0"),          // TIF = DAY
                     (60, &now),
-                    (167, "STK"),
-                    (100, "SMART"),
+                    (167, &sec_type_str),
+                    (100, &destination),
                     (15, "USD"),
                     (204, "0"),
                 ])
@@ -574,6 +590,7 @@ pub(crate) fn drain_and_send_orders(
                 let side_str = fix_side(side);
                 let qty_str = format_uint(qty as u64);
                 let symbol = context.market.symbol(instrument).to_string();
+                let (sec_type_str, destination) = context.market.order_routing(instrument);
                 let parent_str = parent_id.to_string();
                 let tp_str = tp_id.to_string();
                 let sl_str = sl_id.to_string();
@@ -600,8 +617,8 @@ pub(crate) fn drain_and_send_orders(
                     (44, &entry_str),
                     (59, "0"),          // DAY
                     (60, &now),
-                    (167, "STK"),
-                    (100, "SMART"),
+                    (167, &sec_type_str),
+                    (100, &destination),
                     (15, "USD"),
                     (204, "0"),
                 ]);
@@ -624,8 +641,8 @@ pub(crate) fn drain_and_send_orders(
                     (44, &tp_price_str),
                     (59, "1"),          // GTC
                     (60, &now),
-                    (167, "STK"),
-                    (100, "SMART"),
+                    (167, &sec_type_str),
+                    (100, &destination),
                     (15, "USD"),
                     (204, "0"),
                     (6107, &parent_str),       // ParentOrderID
@@ -651,8 +668,8 @@ pub(crate) fn drain_and_send_orders(
                     (99, &sl_price_str),
                     (59, "1"),          // GTC
                     (60, &now),
-                    (167, "STK"),
-                    (100, "SMART"),
+                    (167, &sec_type_str),
+                    (100, &destination),
                     (15, "USD"),
                     (204, "0"),
                     (6107, &parent_str),       // ParentOrderID
@@ -670,6 +687,7 @@ pub(crate) fn drain_and_send_orders(
                 let qty_str = format_uint(qty as u64);
                 let offset_str = format_price(offset);
                 let symbol = context.market.symbol(instrument).to_string();
+                let (sec_type_str, destination) = context.market.order_routing(instrument);
                 let now = chrono_free_timestamp();
                 // Per ib-agent#138 capture: Relative shares OrdType=P with
                 // Trail and is disambiguated by ExecInst=R. Peg offset goes
@@ -688,8 +706,8 @@ pub(crate) fn drain_and_send_orders(
                     (18, "R"),              // ExecInst = Relative
                     (59, "0"),              // TIF = DAY
                     (60, &now),
-                    (167, "STK"),
-                    (100, "SMART"),
+                    (167, &sec_type_str),
+                    (100, &destination),
                     (15, "USD"),
                     (204, "0"),
                 ])
@@ -704,6 +722,7 @@ pub(crate) fn drain_and_send_orders(
                 let qty_str = format_uint(qty as u64);
                 let price_str = format_price(price);
                 let symbol = context.market.symbol(instrument).to_string();
+                let (sec_type_str, destination) = context.market.order_routing(instrument);
                 let now = chrono_free_timestamp();
                 conn.send_fix(&[
                     (fix::TAG_MSG_TYPE, fix::MSG_NEW_ORDER),
@@ -718,8 +737,8 @@ pub(crate) fn drain_and_send_orders(
                     (44, &price_str),
                     (59, "2"),              // TIF = OPG (At the Opening)
                     (60, &now),
-                    (167, "STK"),
-                    (100, "SMART"),
+                    (167, &sec_type_str),
+                    (100, &destination),
                     (15, "USD"),
                     (204, "0"),
                 ])
@@ -734,6 +753,7 @@ pub(crate) fn drain_and_send_orders(
                 let qty_str = format_uint(qty as u64);
                 let price_str = format_price(price);
                 let symbol = context.market.symbol(instrument).to_string();
+                let (sec_type_str, destination) = context.market.order_routing(instrument);
                 let now = chrono_free_timestamp();
                 let priority_str = priority.as_str();
                 // Per ib-agent#136 capture: Adaptive needs 18=e (ExecInst =
@@ -753,8 +773,8 @@ pub(crate) fn drain_and_send_orders(
                     (18, "e"),              // ExecInst = Adaptive algo
                     (59, "0"),              // TIF = DAY
                     (60, &now),
-                    (167, "STK"),
-                    (100, "SMART"),
+                    (167, &sec_type_str),
+                    (100, &destination),
                     (15, "USD"),
                     (204, "0"),
                     (847, "Adaptive"),      // AlgoStrategy
@@ -773,6 +793,7 @@ pub(crate) fn drain_and_send_orders(
                 let qty_str = format_uint(qty as u64);
                 let price_str = format_price(price);
                 let symbol = context.market.symbol(instrument).to_string();
+                let (sec_type_str, destination) = context.market.order_routing(instrument);
                 let now = chrono_free_timestamp();
                 let mut fields: Vec<(u32, &str)> = vec![
                     (fix::TAG_MSG_TYPE, fix::MSG_NEW_ORDER),
@@ -787,8 +808,8 @@ pub(crate) fn drain_and_send_orders(
                     (44, &price_str),
                     (59, "0"),              // TIF = DAY
                     (60, &now),
-                    (167, "STK"),
-                    (100, "SMART"),
+                    (167, &sec_type_str),
+                    (100, &destination),
                     (15, "USD"),
                     (204, "0"),
                 ];
@@ -826,6 +847,7 @@ pub(crate) fn drain_and_send_orders(
                 let qty_str = format_uint(qty as u64);
                 let price_str = format_price(price);
                 let symbol = context.market.symbol(instrument).to_string();
+                let (sec_type_str, destination) = context.market.order_routing(instrument);
                 let now = chrono_free_timestamp();
                 let ref_con_str = ref_con_id.to_string();
                 let peg_decrease_str = if is_peg_decrease { "1" } else { "0" };
@@ -844,8 +866,8 @@ pub(crate) fn drain_and_send_orders(
                     (44, &price_str),    // Limit price
                     (59, "0"),
                     (60, &now),
-                    (167, "STK"),
-                    (100, "SMART"),
+                    (167, &sec_type_str),
+                    (100, &destination),
                     (15, "USD"),
                     (204, "0"),
                     (6941, &ref_con_str),      // referenceContractId
@@ -864,6 +886,7 @@ pub(crate) fn drain_and_send_orders(
                 let qty_str = format_uint(qty as u64);
                 let price_str = format_price(price);
                 let symbol = context.market.symbol(instrument).to_string();
+                let (sec_type_str, destination) = context.market.order_routing(instrument);
                 let now = chrono_free_timestamp();
                 conn.send_fix(&[
                     (fix::TAG_MSG_TYPE, fix::MSG_NEW_ORDER),
@@ -878,8 +901,8 @@ pub(crate) fn drain_and_send_orders(
                     (44, &price_str),    // Limit price
                     (59, "8"),           // TIF = Auction
                     (60, &now),
-                    (167, "STK"),
-                    (100, "SMART"),
+                    (167, &sec_type_str),
+                    (100, &destination),
                     (15, "USD"),
                     (204, "0"),
                 ])
@@ -893,6 +916,7 @@ pub(crate) fn drain_and_send_orders(
                 let side_str = fix_side(side);
                 let qty_str = format_uint(qty as u64);
                 let symbol = context.market.symbol(instrument).to_string();
+                let (sec_type_str, destination) = context.market.order_routing(instrument);
                 let now = chrono_free_timestamp();
                 conn.send_fix(&[
                     (fix::TAG_MSG_TYPE, fix::MSG_NEW_ORDER),
@@ -906,8 +930,8 @@ pub(crate) fn drain_and_send_orders(
                     (40, "K"),           // OrdType = Market to Limit
                     (59, "8"),           // TIF = Auction
                     (60, &now),
-                    (167, "STK"),
-                    (100, "SMART"),
+                    (167, &sec_type_str),
+                    (100, &destination),
                     (15, "USD"),
                     (204, "0"),
                 ])
@@ -923,6 +947,7 @@ pub(crate) fn drain_and_send_orders(
                 let qty_str = format_uint(qty as u64);
                 let price_str = format_price(price);
                 let symbol = context.market.symbol(instrument).to_string();
+                let (sec_type_str, destination) = context.market.order_routing(instrument);
                 let now = chrono_free_timestamp();
                 conn.send_fix(&[
                     (fix::TAG_MSG_TYPE, fix::MSG_NEW_ORDER),
@@ -937,8 +962,8 @@ pub(crate) fn drain_and_send_orders(
                     (44, &price_str),
                     (59, "0"),
                     (60, &now),
-                    (167, "STK"),
-                    (100, "SMART"),
+                    (167, &sec_type_str),
+                    (100, &destination),
                     (15, "USD"),
                     (204, "0"),
                     (6091, "1"),         // What-If flag
@@ -954,6 +979,7 @@ pub(crate) fn drain_and_send_orders(
                 let qty_str = format_qty(qty);
                 let price_str = format_price(price);
                 let symbol = context.market.symbol(instrument).to_string();
+                let (sec_type_str, destination) = context.market.order_routing(instrument);
                 let now = chrono_free_timestamp();
                 conn.send_fix(&[
                     (fix::TAG_MSG_TYPE, fix::MSG_NEW_ORDER),
@@ -968,8 +994,8 @@ pub(crate) fn drain_and_send_orders(
                     (44, &price_str),
                     (59, "0"),
                     (60, &now),
-                    (167, "STK"),
-                    (100, "SMART"),
+                    (167, &sec_type_str),
+                    (100, &destination),
                     (15, "USD"),
                     (204, "0"),
                 ])
@@ -989,6 +1015,7 @@ pub(crate) fn drain_and_send_orders(
                 let adj_stop_str = format_price(adjusted_stop_price);
                 let adj_limit_str = format_price(adjusted_stop_limit_price);
                 let symbol = context.market.symbol(instrument).to_string();
+                let (sec_type_str, destination) = context.market.order_routing(instrument);
                 let now = chrono_free_timestamp();
                 let mut fields: Vec<(u32, &str)> = vec![
                     (fix::TAG_MSG_TYPE, fix::MSG_NEW_ORDER),
@@ -1003,8 +1030,8 @@ pub(crate) fn drain_and_send_orders(
                     (99, &stop_str),        // StopPx
                     (59, "0"),
                     (60, &now),
-                    (167, "STK"),
-                    (100, "SMART"),
+                    (167, &sec_type_str),
+                    (100, &destination),
                     (15, "USD"),
                     (204, "0"),
                     (6257, "1"),            // Has adjustable params flag
@@ -1026,6 +1053,7 @@ pub(crate) fn drain_and_send_orders(
                 let side_str = fix_side(side);
                 let qty_str = format_uint(qty as u64);
                 let symbol = context.market.symbol(instrument).to_string();
+                let (sec_type_str, destination) = context.market.order_routing(instrument);
                 let now = chrono_free_timestamp();
                 conn.send_fix(&[
                     (fix::TAG_MSG_TYPE, fix::MSG_NEW_ORDER),
@@ -1039,8 +1067,8 @@ pub(crate) fn drain_and_send_orders(
                     (40, "K"),          // OrdType = Market to Limit
                     (59, "0"),
                     (60, &now),
-                    (167, "STK"),
-                    (100, "SMART"),
+                    (167, &sec_type_str),
+                    (100, &destination),
                     (15, "USD"),
                     (204, "0"),
                 ])
@@ -1054,6 +1082,7 @@ pub(crate) fn drain_and_send_orders(
                 let side_str = fix_side(side);
                 let qty_str = format_uint(qty as u64);
                 let symbol = context.market.symbol(instrument).to_string();
+                let (sec_type_str, destination) = context.market.order_routing(instrument);
                 let now = chrono_free_timestamp();
                 conn.send_fix(&[
                     (fix::TAG_MSG_TYPE, fix::MSG_NEW_ORDER),
@@ -1067,8 +1096,8 @@ pub(crate) fn drain_and_send_orders(
                     (40, "U"),          // OrdType = Market with Protection
                     (59, "0"),
                     (60, &now),
-                    (167, "STK"),
-                    (100, "SMART"),
+                    (167, &sec_type_str),
+                    (100, &destination),
                     (15, "USD"),
                     (204, "0"),
                 ])
@@ -1083,6 +1112,7 @@ pub(crate) fn drain_and_send_orders(
                 let qty_str = format_uint(qty as u64);
                 let stop_str = format_price(stop_price);
                 let symbol = context.market.symbol(instrument).to_string();
+                let (sec_type_str, destination) = context.market.order_routing(instrument);
                 let now = chrono_free_timestamp();
                 conn.send_fix(&[
                     (fix::TAG_MSG_TYPE, fix::MSG_NEW_ORDER),
@@ -1097,8 +1127,8 @@ pub(crate) fn drain_and_send_orders(
                     (99, &stop_str),    // StopPx
                     (59, "0"),
                     (60, &now),
-                    (167, "STK"),
-                    (100, "SMART"),
+                    (167, &sec_type_str),
+                    (100, &destination),
                     (15, "USD"),
                     (204, "0"),
                 ])
@@ -1112,6 +1142,7 @@ pub(crate) fn drain_and_send_orders(
                 let side_str = fix_side(side);
                 let qty_str = format_uint(qty as u64);
                 let symbol = context.market.symbol(instrument).to_string();
+                let (sec_type_str, _destination) = context.market.order_routing(instrument);
                 let now = chrono_free_timestamp();
                 let mut fields: Vec<(u32, &str)> = vec![
                     (fix::TAG_MSG_TYPE, fix::MSG_NEW_ORDER),
@@ -1125,7 +1156,7 @@ pub(crate) fn drain_and_send_orders(
                     (40, "MIDPX"),      // OrdType = Mid-Price
                     (59, "0"),
                     (60, &now),
-                    (167, "STK"),
+                    (167, &sec_type_str),
                     (100, "ISLAND"),    // Requires directed exchange (not SMART)
                     (15, "USD"),
                     (204, "0"),
@@ -1146,6 +1177,7 @@ pub(crate) fn drain_and_send_orders(
                 let side_str = fix_side(side);
                 let qty_str = format_uint(qty as u64);
                 let symbol = context.market.symbol(instrument).to_string();
+                let (sec_type_str, _destination) = context.market.order_routing(instrument);
                 let now = chrono_free_timestamp();
                 conn.send_fix(&[
                     (fix::TAG_MSG_TYPE, fix::MSG_NEW_ORDER),
@@ -1159,7 +1191,7 @@ pub(crate) fn drain_and_send_orders(
                     (40, "SMKT"),       // OrdType = Snap to Market
                     (59, "0"),
                     (60, &now),
-                    (167, "STK"),
+                    (167, &sec_type_str),
                     (100, "ISLAND"),    // Requires directed exchange
                     (15, "USD"),
                     (204, "0"),
@@ -1174,6 +1206,7 @@ pub(crate) fn drain_and_send_orders(
                 let side_str = fix_side(side);
                 let qty_str = format_uint(qty as u64);
                 let symbol = context.market.symbol(instrument).to_string();
+                let (sec_type_str, _destination) = context.market.order_routing(instrument);
                 let now = chrono_free_timestamp();
                 conn.send_fix(&[
                     (fix::TAG_MSG_TYPE, fix::MSG_NEW_ORDER),
@@ -1187,7 +1220,7 @@ pub(crate) fn drain_and_send_orders(
                     (40, "SMID"),       // OrdType = Snap to Midpoint
                     (59, "0"),
                     (60, &now),
-                    (167, "STK"),
+                    (167, &sec_type_str),
                     (100, "ISLAND"),    // Requires directed exchange
                     (15, "USD"),
                     (204, "0"),
@@ -1202,6 +1235,7 @@ pub(crate) fn drain_and_send_orders(
                 let side_str = fix_side(side);
                 let qty_str = format_uint(qty as u64);
                 let symbol = context.market.symbol(instrument).to_string();
+                let (sec_type_str, _destination) = context.market.order_routing(instrument);
                 let now = chrono_free_timestamp();
                 conn.send_fix(&[
                     (fix::TAG_MSG_TYPE, fix::MSG_NEW_ORDER),
@@ -1215,7 +1249,7 @@ pub(crate) fn drain_and_send_orders(
                     (40, "SREL"),       // OrdType = Snap to Primary
                     (59, "0"),
                     (60, &now),
-                    (167, "STK"),
+                    (167, &sec_type_str),
                     (100, "ISLAND"),    // Requires directed exchange
                     (15, "USD"),
                     (204, "0"),
@@ -1230,6 +1264,7 @@ pub(crate) fn drain_and_send_orders(
                 let side_str = fix_side(side);
                 let qty_str = format_uint(qty as u64);
                 let symbol = context.market.symbol(instrument).to_string();
+                let (sec_type_str, _destination) = context.market.order_routing(instrument);
                 let now = chrono_free_timestamp();
                 let mut fields: Vec<(u32, &str)> = vec![
                     (fix::TAG_MSG_TYPE, fix::MSG_NEW_ORDER),
@@ -1243,7 +1278,7 @@ pub(crate) fn drain_and_send_orders(
                     (40, "E"),          // OrdType = Pegged (no mid-offset tags = PEGMKT)
                     (59, "0"),
                     (60, &now),
-                    (167, "STK"),
+                    (167, &sec_type_str),
                     (100, "ISLAND"),    // Requires directed exchange
                     (15, "USD"),
                     (204, "0"),
@@ -1264,6 +1299,7 @@ pub(crate) fn drain_and_send_orders(
                 let side_str = fix_side(side);
                 let qty_str = format_uint(qty as u64);
                 let symbol = context.market.symbol(instrument).to_string();
+                let (sec_type_str, _destination) = context.market.order_routing(instrument);
                 let now = chrono_free_timestamp();
                 let mut fields: Vec<(u32, &str)> = vec![
                     (fix::TAG_MSG_TYPE, fix::MSG_NEW_ORDER),
@@ -1277,7 +1313,7 @@ pub(crate) fn drain_and_send_orders(
                     (40, "E"),          // OrdType = Pegged (tags 8403/8404 = PEGMID)
                     (59, "0"),
                     (60, &now),
-                    (167, "STK"),
+                    (167, &sec_type_str),
                     (100, "ISLAND"),    // Requires directed exchange
                     (15, "USD"),
                     (204, "0"),
@@ -1376,6 +1412,9 @@ pub(crate) fn drain_and_send_orders(
                 let side_str = orig.map(|o| fix_side(o.side)).unwrap_or("1");
                 let symbol = orig.map(|o| context.market.symbol(o.instrument).to_string())
                     .unwrap_or_default();
+                let (sec_type_str, _destination) = orig
+                    .map(|o| context.market.order_routing(o.instrument))
+                    .unwrap_or_else(|| ("STK".to_string(), "SMART".to_string()));
                 let ord_type_str = crate::types::ord_type_fix_str(orig.map(|o| o.ord_type).unwrap_or(b'2')).to_string();
                 let tif_str = std::str::from_utf8(&[orig.map(|o| o.tif).unwrap_or(b'0')]).unwrap_or("0").to_string();
                 let con_id_str = orig.and_then(|o| context.market.con_id(o.instrument))
@@ -1395,7 +1434,7 @@ pub(crate) fn drain_and_send_orders(
                     (54, side_str),      // Side
                     (40, &ord_type_str), // OrdType
                     (55, &symbol),       // Symbol
-                    (167, "STK"),        // SecurityType
+                    (167, &sec_type_str),        // SecurityType
                     (6035, &symbol),     // LocalSymbol echo
                     (59, &tif_str),      // TIF
                     (6008, &con_id_str), // ConId
@@ -1538,6 +1577,7 @@ fn send_order_ex(
 
     let ver = *context.modify_versions.get(&order_id).unwrap_or(&0);
     let symbol = context.market.symbol(instrument).to_string();
+                let (sec_type_str, destination) = context.market.order_routing(instrument);
     let now = chrono_free_timestamp().to_string();
     let tif_byte = [tif];
     let tif_str = std::str::from_utf8(&tif_byte).unwrap_or("0");
@@ -1662,14 +1702,15 @@ fn send_order_ex(
 
     fields.push((59, tif_str.to_string()));
     fields.push((60, now));
-    fields.push((167, "STK".to_string()));
-    // MIDPX / SNAP* / PEG* require a directed exchange, not SMART.
+    fields.push((167, sec_type_str.clone()));
+    // MIDPX / SNAP* / PEG* require a directed exchange; everything else
+    // routes per the instrument's registered routing (ibx#217).
     let destination = match kind {
         K::MidPrice { .. } | K::SnapMkt | K::SnapMid | K::SnapPri
-        | K::PegMkt { .. } | K::PegMid { .. } => "ISLAND",
-        _ => "SMART",
+        | K::PegMkt { .. } | K::PegMid { .. } => "ISLAND".to_string(),
+        _ => destination,
     };
-    fields.push((100, destination.to_string()));
+    fields.push((100, destination));
     fields.push((15, "USD".to_string()));
     fields.push((204, "0".to_string()));
 

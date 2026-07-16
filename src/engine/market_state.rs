@@ -39,6 +39,12 @@ pub struct MarketState {
     min_tick_scaled: [i64; MAX_INSTRUMENTS],
     /// Per-instrument symbol name. Flat array indexed by InstrumentId.
     symbols: [Option<String>; MAX_INSTRUMENTS],
+    /// Per-instrument security type (API string, e.g. "STK"/"CASH"). Empty
+    /// slot = unknown, treated as stock. Registration used to DROP this
+    /// field silently (ibx#217).
+    sec_types: [Option<String>; MAX_INSTRUMENTS],
+    /// Per-instrument requested exchange. Empty slot = default routing.
+    exchanges: [Option<String>; MAX_INSTRUMENTS],
 }
 
 impl MarketState {
@@ -53,6 +59,8 @@ impl MarketState {
             min_ticks: [0.0; MAX_INSTRUMENTS],
             min_tick_scaled: [0; MAX_INSTRUMENTS],
             symbols: std::array::from_fn(|_| None),
+            sec_types: std::array::from_fn(|_| None),
+            exchanges: std::array::from_fn(|_| None),
         }
     }
 
@@ -107,6 +115,8 @@ impl MarketState {
         self.instrument_to_con_id[instrument as usize] = FREE_SLOT;
         self.quotes[instrument as usize] = Quote::default();
         self.symbols[instrument as usize] = None;
+        self.sec_types[instrument as usize] = None;
+        self.exchanges[instrument as usize] = None;
         self.min_ticks[instrument as usize] = 0.0;
         self.min_tick_scaled[instrument as usize] = 0;
         for slot in self.server_tag_table.iter_mut() {
@@ -174,6 +184,40 @@ impl MarketState {
     /// Set symbol name for an instrument (e.g. "AAPL"). Used for orders.
     pub fn set_symbol(&mut self, id: InstrumentId, symbol: String) {
         self.symbols[id as usize] = Some(symbol);
+    }
+
+    /// Record the security type and requested exchange for an instrument
+    /// (ibx#217): order encoders derive their routing tags from these
+    /// instead of hardcoding stock-on-SMART. Empty strings leave the
+    /// defaults in place.
+    pub fn set_routing(&mut self, id: InstrumentId, sec_type: &str, exchange: &str) {
+        if !sec_type.is_empty() {
+            self.sec_types[id as usize] = Some(sec_type.to_uppercase());
+        }
+        if !exchange.is_empty() {
+            self.exchanges[id as usize] = Some(exchange.to_uppercase());
+        }
+    }
+
+    /// Routing tags for an outbound order on this instrument (ibx#217):
+    /// (security type, destination). Rules: the security type is the
+    /// instrument's real one (default STK); IBKRATS resolves to IDEALPRO
+    /// for CASH and SMART otherwise; CASH without an explicit venue routes
+    /// to IDEALPRO; any other explicit non-SMART exchange is respected;
+    /// everything else routes SMART. For a stock-only order path (ibx#202)
+    /// this yields exactly the previous constants.
+    pub fn order_routing(&self, id: InstrumentId) -> (String, String) {
+        let sec_type = self.sec_types[id as usize]
+            .clone()
+            .unwrap_or_else(|| "STK".to_string());
+        let exchange = self.exchanges[id as usize].as_deref().unwrap_or("");
+        let is_cash = sec_type == "CASH";
+        let destination = match exchange {
+            "IBKRATS" => if is_cash { "IDEALPRO" } else { "SMART" }.to_string(),
+            "" | "SMART" => if is_cash { "IDEALPRO" } else { "SMART" }.to_string(),
+            other => other.to_string(),
+        };
+        (sec_type, destination)
     }
 
     /// Get symbol name for an instrument. O(1) flat array lookup.
@@ -359,6 +403,40 @@ mod tests {
         for i in 0..=MAX_INSTRUMENTS as i64 {
             ms.register(i);
         }
+    }
+
+    // ── ibx#217: routing derivation ──
+
+    #[test]
+    fn order_routing_rules() {
+        let mut ms = MarketState::new();
+        let stk = ms.register(1);
+        // Unset routing = the historical defaults: a stock on SMART.
+        assert_eq!(ms.order_routing(stk), ("STK".into(), "SMART".into()));
+
+        // The registered security type is what goes on the wire.
+        let fx = ms.register(2);
+        ms.set_routing(fx, "CASH", "");
+        assert_eq!(ms.order_routing(fx), ("CASH".into(), "IDEALPRO".into()));
+
+        // IBKRATS resolves to IDEALPRO for CASH, SMART otherwise.
+        let fx2 = ms.register(3);
+        ms.set_routing(fx2, "CASH", "IBKRATS");
+        assert_eq!(ms.order_routing(fx2), ("CASH".into(), "IDEALPRO".into()));
+        let stk2 = ms.register(4);
+        ms.set_routing(stk2, "STK", "IBKRATS");
+        assert_eq!(ms.order_routing(stk2), ("STK".into(), "SMART".into()));
+
+        // An explicit directed exchange is respected.
+        let directed = ms.register(5);
+        ms.set_routing(directed, "STK", "NYSE");
+        assert_eq!(ms.order_routing(directed), ("STK".into(), "NYSE".into()));
+
+        // Unregister clears the routing for slot reuse.
+        ms.unregister(fx);
+        let reused = ms.register(6);
+        assert_eq!(reused, fx);
+        assert_eq!(ms.order_routing(reused), ("STK".into(), "SMART".into()));
     }
 
     // ── ibx#233: unregister + slot reuse ──

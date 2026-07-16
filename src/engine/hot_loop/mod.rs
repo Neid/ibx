@@ -225,11 +225,14 @@ impl HotLoop {
         &mut self,
         con_id: i64,
         symbol: String,
+        sec_type: &str,
+        exchange: &str,
         reply_tx: &Option<crossbeam_channel::Sender<Result<InstrumentId, String>>>,
     ) -> Option<InstrumentId> {
         match self.context.market.try_register(con_id) {
             Some(id) => {
                 self.context.market.set_symbol(id, symbol);
+                self.context.market.set_routing(id, sec_type, exchange);
                 self.shared.market.set_instrument_count(self.context.market.count());
                 if let Some(tx) = reply_tx { let _ = tx.send(Ok(id)); }
                 Some(id)
@@ -386,7 +389,7 @@ impl HotLoop {
         for cmd in cmds {
             match cmd {
                 ControlCommand::Subscribe { con_id, symbol, exchange, sec_type, last_trade_date, strike, right, multiplier, mode_9887, reply_tx } => {
-                    if let Some(id) = self.register_or_reject(con_id, symbol.clone(), &reply_tx) {
+                    if let Some(id) = self.register_or_reject(con_id, symbol.clone(), &sec_type, &exchange, &reply_tx) {
                         self.farm.send_mktdata_subscribe(
                             con_id, &symbol, &exchange, &sec_type,
                             &last_trade_date, strike, &right, &multiplier,
@@ -405,7 +408,7 @@ impl HotLoop {
                     self.try_reclaim_instrument(instrument);
                 }
                 ControlCommand::SubscribeTbt { con_id, symbol, tbt_type, reply_tx } => {
-                    if let Some(id) = self.register_or_reject(con_id, symbol, &reply_tx) {
+                    if let Some(id) = self.register_or_reject(con_id, symbol, "", "", &reply_tx) {
                         self.hmds.send_tbt_subscribe(con_id, id, tbt_type, &mut self.hmds_conn, &mut self.hb);
                     }
                 }
@@ -414,7 +417,7 @@ impl HotLoop {
                     self.try_reclaim_instrument(instrument);
                 }
                 ControlCommand::SubscribeNews { con_id, symbol, providers, reply_tx } => {
-                    if let Some(id) = self.register_or_reject(con_id, symbol, &reply_tx) {
+                    if let Some(id) = self.register_or_reject(con_id, symbol, "", "", &reply_tx) {
                         // Allocate req_id from farm's counter (shared ID space)
                         let req_id = self.farm.next_md_req_id;
                         self.farm.next_md_req_id += 1;
@@ -449,8 +452,8 @@ impl HotLoop {
                 ControlCommand::Order(req) => {
                     self.context.pending_orders.push(req);
                 }
-                ControlCommand::RegisterInstrument { con_id, symbol, reply_tx } => {
-                    self.register_or_reject(con_id, symbol, &reply_tx);
+                ControlCommand::RegisterInstrument { con_id, symbol, sec_type, exchange, reply_tx } => {
+                    self.register_or_reject(con_id, symbol, &sec_type, &exchange, &reply_tx);
                 }
                 ControlCommand::FetchHistorical { req_id, con_id, symbol, end_date_time, duration, bar_size, what_to_show, use_rth, keep_up_to_date } => {
                     // keepUpToDate sends via CCP but bars/end arrive on HMDS — both
