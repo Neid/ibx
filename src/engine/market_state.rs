@@ -11,15 +11,25 @@ const MAX_SERVER_TAG: usize = 65536;
 /// Sentinel value for empty server_tag slots.
 const NO_INSTRUMENT: u32 = u32::MAX;
 
+/// Sentinel conId marking a freed instrument slot (ibx#233). Cannot collide
+/// with a real conId (0 occurs in practice for conId-less contracts).
+const FREE_SLOT: i64 = i64::MIN;
+
 /// Pre-allocated quote storage indexed by InstrumentId.
 /// All quotes live in a contiguous array for cache efficiency.
 pub struct MarketState {
     quotes: [Quote; MAX_INSTRUMENTS],
-    /// Number of active instruments (for iteration bounds).
+    /// High-water mark: slots ever allocated (iteration bound). Freed slots
+    /// below this mark are reused via `free_ids` before new ones are taken,
+    /// so the MAX_INSTRUMENTS cap bounds CONCURRENT instruments, not the
+    /// session's cumulative total (ibx#233).
     active_count: u32,
+    /// Freed slot ids available for reuse.
+    free_ids: Vec<InstrumentId>,
     /// Maps IB conId → internal InstrumentId. O(1) lookup.
     con_id_to_instrument: HashMap<i64, InstrumentId>,
-    /// Reverse map: InstrumentId → conId. Flat array lookup.
+    /// Reverse map: InstrumentId → conId. Flat array lookup. `FREE_SLOT`
+    /// marks a reclaimed slot.
     instrument_to_con_id: [i64; MAX_INSTRUMENTS],
     /// O(1) server_tag → InstrumentId lookup. Server tags are small integers.
     server_tag_table: Box<[u32; MAX_SERVER_TAG]>,
@@ -36,6 +46,7 @@ impl MarketState {
         Self {
             quotes: [Quote::default(); MAX_INSTRUMENTS],
             active_count: 0,
+            free_ids: Vec::new(),
             con_id_to_instrument: HashMap::new(),
             instrument_to_con_id: [0; MAX_INSTRUMENTS],
             server_tag_table: Box::new([NO_INSTRUMENT; MAX_SERVER_TAG]),
@@ -45,17 +56,66 @@ impl MarketState {
         }
     }
 
-    /// Register an IB contract, returns the assigned InstrumentId.
-    pub fn register(&mut self, con_id: i64) -> InstrumentId {
+    /// Register an IB contract, returns the assigned InstrumentId, or None
+    /// when MAX_INSTRUMENTS distinct contracts are live concurrently
+    /// (ibx#233). Freed slots are reused first, so unsubscribed contracts
+    /// no longer count against the cap.
+    pub fn try_register(&mut self, con_id: i64) -> Option<InstrumentId> {
         if let Some(&id) = self.con_id_to_instrument.get(&con_id) {
-            return id;
+            return Some(id);
         }
-        let id = self.active_count;
-        assert!((id as usize) < MAX_INSTRUMENTS, "too many instruments");
+        let id = match self.free_ids.pop() {
+            Some(id) => id,
+            None => {
+                if (self.active_count as usize) >= MAX_INSTRUMENTS {
+                    return None;
+                }
+                let id = self.active_count;
+                self.active_count += 1;
+                id
+            }
+        };
         self.con_id_to_instrument.insert(con_id, id);
         self.instrument_to_con_id[id as usize] = con_id;
-        self.active_count += 1;
-        id
+        Some(id)
+    }
+
+    /// Register an IB contract, returns the assigned InstrumentId.
+    /// Panics when the table is full — use `try_register` on any path that
+    /// must survive that condition (the engine's handlers do; ibx#233).
+    pub fn register(&mut self, con_id: i64) -> InstrumentId {
+        self.try_register(con_id).expect("too many instruments")
+    }
+
+    /// Reclaim an instrument slot (ibx#233): the id becomes reusable by the
+    /// next registration. Clears the quote, symbol, tick size, conId maps
+    /// and any server tags pointing at the slot. Returns the conId that was
+    /// registered, or None if the id is out of range or already free.
+    ///
+    /// Caller contract: nothing may still reference the id (open orders,
+    /// tick-by-tick or news subscriptions) — a reused id would repoint those
+    /// references at the wrong contract.
+    pub fn unregister(&mut self, instrument: InstrumentId) -> Option<i64> {
+        if instrument >= self.active_count {
+            return None;
+        }
+        let con_id = self.instrument_to_con_id[instrument as usize];
+        if con_id == FREE_SLOT {
+            return None;
+        }
+        self.con_id_to_instrument.remove(&con_id);
+        self.instrument_to_con_id[instrument as usize] = FREE_SLOT;
+        self.quotes[instrument as usize] = Quote::default();
+        self.symbols[instrument as usize] = None;
+        self.min_ticks[instrument as usize] = 0.0;
+        self.min_tick_scaled[instrument as usize] = 0;
+        for slot in self.server_tag_table.iter_mut() {
+            if *slot == instrument {
+                *slot = NO_INSTRUMENT;
+            }
+        }
+        self.free_ids.push(instrument);
+        Some(con_id)
     }
 
     /// Map an IB server_tag (from 35=Q subscription ack) to an InstrumentId.
@@ -70,20 +130,26 @@ impl MarketState {
         }
     }
 
-    /// Number of registered instruments.
+    /// Slot iteration bound (high-water mark). Freed slots below this count
+    /// exist but hold zeroed data until reused; consumers iterating
+    /// `0..count()` read harmless defaults for them.
     pub fn count(&self) -> u32 {
         self.active_count
     }
 
-    /// Iterate over all registered (InstrumentId, con_id) pairs.
+    /// Iterate over all live (InstrumentId, con_id) pairs, skipping freed slots.
     pub fn active_instruments(&self) -> impl Iterator<Item = (InstrumentId, i64)> + '_ {
-        (0..self.active_count).map(move |id| (id, self.instrument_to_con_id[id as usize]))
+        (0..self.active_count)
+            .map(move |id| (id, self.instrument_to_con_id[id as usize]))
+            .filter(|(_, con_id)| *con_id != FREE_SLOT)
     }
 
-    /// Look up con_id by InstrumentId. O(1) flat array lookup.
+    /// Look up con_id by InstrumentId. O(1) flat array lookup. None for
+    /// out-of-range ids and freed slots.
     pub fn con_id(&self, instrument: InstrumentId) -> Option<i64> {
         if instrument < self.active_count {
-            Some(self.instrument_to_con_id[instrument as usize])
+            let con_id = self.instrument_to_con_id[instrument as usize];
+            if con_id != FREE_SLOT { Some(con_id) } else { None }
         } else {
             None
         }
@@ -293,6 +359,87 @@ mod tests {
         for i in 0..=MAX_INSTRUMENTS as i64 {
             ms.register(i);
         }
+    }
+
+    // ── ibx#233: unregister + slot reuse ──
+
+    #[test]
+    fn try_register_full_returns_none_not_panic() {
+        let mut ms = MarketState::new();
+        for i in 0..MAX_INSTRUMENTS as i64 {
+            assert!(ms.try_register(i).is_some());
+        }
+        assert_eq!(ms.try_register(9999), None, "full table must reject, not panic");
+        // Existing conIds still resolve at the cap.
+        assert!(ms.try_register(0).is_some());
+    }
+
+    #[test]
+    fn unregister_frees_slot_for_reuse() {
+        let mut ms = MarketState::new();
+        let a = ms.register(100);
+        let b = ms.register(200);
+        let c = ms.register(300);
+        assert_eq!(ms.unregister(b), Some(200));
+        // Freed id is reused before a new slot is taken.
+        let d = ms.try_register(400).unwrap();
+        assert_eq!(d, b);
+        assert_eq!(ms.con_id(d), Some(400));
+        assert_eq!(ms.instrument_by_con_id(200), None, "old conId must not resolve");
+        assert_eq!(ms.con_id(a), Some(100));
+        assert_eq!(ms.con_id(c), Some(300));
+    }
+
+    #[test]
+    fn cap_bounds_concurrent_not_cumulative() {
+        // The ibx#233 watchlist scenario: cycle far more than MAX_INSTRUMENTS
+        // distinct contracts through one session, one live at a time.
+        let mut ms = MarketState::new();
+        for i in 0..(MAX_INSTRUMENTS as i64 * 4) {
+            let id = ms.try_register(1000 + i).expect("cycling one instrument must never exhaust the table");
+            assert_eq!(ms.unregister(id), Some(1000 + i));
+        }
+        assert_eq!(ms.active_instruments().count(), 0);
+    }
+
+    #[test]
+    fn unregister_clears_slot_state() {
+        let mut ms = MarketState::new();
+        let id = ms.register(100);
+        ms.set_symbol(id, "AAPL".to_string());
+        ms.set_min_tick(id, 0.01);
+        ms.register_server_tag(42, id);
+        ms.quote_mut(id).bid = 150 * PRICE_SCALE;
+
+        assert_eq!(ms.unregister(id), Some(100));
+        assert_eq!(ms.symbol(id), "?");
+        assert_eq!(ms.min_tick(id), 0.0);
+        assert_eq!(ms.min_tick_scaled(id), 0);
+        assert_eq!(ms.instrument_by_server_tag(42), None);
+        assert_eq!(ms.quote(id).bid, 0, "stale quote must not survive into a reused slot");
+    }
+
+    #[test]
+    fn unregister_unknown_or_freed_returns_none() {
+        let mut ms = MarketState::new();
+        assert_eq!(ms.unregister(0), None, "never-registered id");
+        let id = ms.register(100);
+        assert_eq!(ms.unregister(id), Some(100));
+        assert_eq!(ms.unregister(id), None, "double unregister");
+        assert_eq!(ms.unregister(250), None, "out of range");
+    }
+
+    #[test]
+    fn active_instruments_skips_freed_slots() {
+        let mut ms = MarketState::new();
+        let a = ms.register(100);
+        let b = ms.register(200);
+        let c = ms.register(300);
+        ms.unregister(b);
+        let live: Vec<_> = ms.active_instruments().collect();
+        assert_eq!(live, vec![(a, 100), (c, 300)]);
+        // count() stays the iteration bound (high-water), not the live count.
+        assert_eq!(ms.count(), 3);
     }
 
     #[test]

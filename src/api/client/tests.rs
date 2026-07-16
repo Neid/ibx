@@ -203,6 +203,19 @@ fn req_mkt_data_ex_propagates_mode_9887() {
     }
 }
 
+// ibx#233: a second live subscription on the same contract would clobber
+// the first's reverse mapping and orphan it silently. Reject at the call.
+#[test]
+fn req_mkt_data_duplicate_instrument_is_rejected() {
+    let (client, rx, _shared) = test_client();
+    // Existing live subscription for SPY (instrument 0) under req_id 1.
+    client.core.instrument_to_req.lock().unwrap().insert(0, 1);
+
+    let err = client.req_mkt_data(2, &spy(), "", false, false).unwrap_err();
+    assert!(err.contains("req_id 1"), "got: {}", err);
+    assert!(rx.try_recv().is_err(), "nothing may reach the engine");
+}
+
 #[test]
 fn cancel_mkt_data_sends_unsubscribe() {
     let (client, rx, _shared) = test_client();

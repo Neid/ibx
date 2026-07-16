@@ -332,11 +332,44 @@ impl CcpState {
                         }
                         "186" => {
                             if let Some(matches) = crate::control::contracts::parse_matching_symbols_response(msg) {
-                                if !matches.is_empty() {
-                                    if let Some(req_id) = self.pending_matching_symbols.first().copied() {
-                                        self.pending_matching_symbols.remove(0);
-                                        shared.reference.push_matching_symbols(req_id, matches);
-                                    }
+                                // A 186 frame is the real answer only when it
+                                // carries the match-count tag 146 — present
+                                // even when the count is zero. Frames without
+                                // it are not-ready acks: popping on one would
+                                // deliver a bogus empty answer and orphan the
+                                // data frame that follows (observed live; the
+                                // same ack-then-data shape as the what-if
+                                // path). See ibx#228.
+                                if extract_tag_value(msg, b"146=").is_none() {
+                                    log::debug!("matching-symbols ack frame (no tag 146) — awaiting data frame");
+                                } else {
+                                // Match the reply to its request by the req_id
+                                // the server echoes in tag 320, NOT by queue
+                                // order: FIFO cross-attributes out-of-order
+                                // replies (ibx#228, same fix as pending_secdef).
+                                let echoed = extract_tag_value(msg, b"320=")
+                                    .and_then(|v| v.parse::<u32>().ok());
+                                let pos = match echoed {
+                                    Some(rid) => self.pending_matching_symbols.iter().position(|p| *p == rid),
+                                    // No echo on the wire: attribution is only
+                                    // safe with a single request in flight.
+                                    None if self.pending_matching_symbols.len() == 1 => Some(0),
+                                    None => None,
+                                };
+                                if let Some(pos) = pos {
+                                    let req_id = self.pending_matching_symbols.remove(pos);
+                                    // An empty result is a legitimate answer
+                                    // ("no such symbol") and MUST be delivered:
+                                    // dropping it left the caller waiting forever
+                                    // and the stale queue head misattributed
+                                    // every later reply (ibx#228).
+                                    shared.reference.push_matching_symbols(req_id, matches);
+                                } else {
+                                    log::warn!(
+                                        "matching-symbols reply not attributable: echoed={:?} pending={:?}",
+                                        echoed, self.pending_matching_symbols,
+                                    );
+                                }
                                 }
                             }
                         }
@@ -2013,6 +2046,121 @@ mod tests {
         assert_eq!(errors[0].0, 9);
         assert_eq!(errors[0].1, 200);
         assert_eq!(shared.reference.drain_contract_details_end(), vec![9]);
+    }
+
+    // ── ibx#228: matching-symbols attribution ──
+
+    fn matching_symbols_msg(req_id: &str, symbols: &[(&str, &str)]) -> Vec<u8> {
+        let count = symbols.len().to_string();
+        let mut fields: Vec<(u32, &str)> = vec![
+            (crate::protocol::fix::TAG_MSG_TYPE, "U"),
+            (6040, "186"),
+            (320, req_id),
+            (146, &count), // match count — marks a data frame (even when 0)
+        ];
+        for (sym, con_id) in symbols {
+            fields.push((55, sym));
+            fields.push((167, "CS"));
+            fields.push((15, "USD"));
+            fields.push((6008, con_id));
+        }
+        crate::protocol::fix::fix_build(&fields, 1)
+    }
+
+    /// A 186 frame with no match-count tag: the not-ready ack that precedes
+    /// the data frame.
+    fn matching_symbols_ack(req_id: &str) -> Vec<u8> {
+        crate::protocol::fix::fix_build(&[
+            (crate::protocol::fix::TAG_MSG_TYPE, "U"),
+            (6040, "186"),
+            (320, req_id),
+        ], 1)
+    }
+
+    fn u186_test_state() -> (CcpState, Context, SharedState) {
+        (CcpState::new(), Context::new(), SharedState::new())
+    }
+
+    #[test]
+    fn matching_symbols_matched_by_echoed_req_id_not_fifo() {
+        let (mut ccp, mut context, shared) = u186_test_state();
+        ccp.pending_matching_symbols.push(1);
+        ccp.pending_matching_symbols.push(2);
+
+        // Request 2's reply arrives FIRST (out of order).
+        let msg = matching_symbols_msg("2", &[("AAPL", "265598")]);
+        ccp.process_ccp_message(&msg, &mut None, &mut context, &shared, &None, &mut HeartbeatState::new(), "DU1");
+
+        let delivered = shared.reference.drain_matching_symbols();
+        assert_eq!(delivered.len(), 1);
+        assert_eq!(delivered[0].0, 2, "reply must land on the echoed req_id, not the queue head");
+        assert_eq!(delivered[0].1.len(), 1);
+        assert_eq!(ccp.pending_matching_symbols, vec![1]);
+    }
+
+    #[test]
+    fn matching_symbols_empty_result_pops_and_delivers() {
+        let (mut ccp, mut context, shared) = u186_test_state();
+        ccp.pending_matching_symbols.push(1);
+        ccp.pending_matching_symbols.push(2);
+
+        // Unknown pattern: zero matches. Must still pop req 1 and deliver
+        // the empty answer — previously this poisoned the queue head and
+        // every later reply was off by one, forever (ibx#228).
+        let msg = matching_symbols_msg("1", &[]);
+        ccp.process_ccp_message(&msg, &mut None, &mut context, &shared, &None, &mut HeartbeatState::new(), "DU1");
+
+        let delivered = shared.reference.drain_matching_symbols();
+        assert_eq!(delivered.len(), 1);
+        assert_eq!(delivered[0].0, 1);
+        assert!(delivered[0].1.is_empty(), "empty result is a legitimate answer");
+        assert_eq!(ccp.pending_matching_symbols, vec![2],
+            "queue must not be poisoned by an empty result");
+
+        // The next reply attributes correctly.
+        let msg = matching_symbols_msg("2", &[("MSFT", "272093")]);
+        ccp.process_ccp_message(&msg, &mut None, &mut context, &shared, &None, &mut HeartbeatState::new(), "DU1");
+        let delivered = shared.reference.drain_matching_symbols();
+        assert_eq!(delivered[0].0, 2);
+        assert!(ccp.pending_matching_symbols.is_empty());
+    }
+
+    #[test]
+    fn matching_symbols_ack_frame_does_not_consume_the_request() {
+        let (mut ccp, mut context, shared) = u186_test_state();
+        ccp.pending_matching_symbols.push(1);
+
+        // The not-ready ack (no tag 146) arrives first — it must not pop the
+        // request; delivering it as an empty answer orphans the data frame
+        // that follows (observed live, ibx#228).
+        let msg = matching_symbols_ack("1");
+        ccp.process_ccp_message(&msg, &mut None, &mut context, &shared, &None, &mut HeartbeatState::new(), "DU1");
+        assert!(shared.reference.drain_matching_symbols().is_empty());
+        assert_eq!(ccp.pending_matching_symbols, vec![1]);
+
+        // The data frame then delivers.
+        let msg = matching_symbols_msg("1", &[("AAPL", "265598")]);
+        ccp.process_ccp_message(&msg, &mut None, &mut context, &shared, &None, &mut HeartbeatState::new(), "DU1");
+        let delivered = shared.reference.drain_matching_symbols();
+        assert_eq!(delivered.len(), 1);
+        assert_eq!(delivered[0].0, 1);
+        assert_eq!(delivered[0].1.len(), 1);
+        assert!(ccp.pending_matching_symbols.is_empty());
+    }
+
+    #[test]
+    fn matching_symbols_unattributable_reply_is_dropped_not_misattributed() {
+        let (mut ccp, mut context, shared) = u186_test_state();
+        ccp.pending_matching_symbols.push(1);
+        ccp.pending_matching_symbols.push(2);
+
+        // Echoed id matches nothing pending: with two in flight, guessing
+        // would cross-attribute — drop with a warn instead.
+        let msg = matching_symbols_msg("99", &[("AAPL", "265598")]);
+        ccp.process_ccp_message(&msg, &mut None, &mut context, &shared, &None, &mut HeartbeatState::new(), "DU1");
+
+        assert!(shared.reference.drain_matching_symbols().is_empty());
+        assert_eq!(ccp.pending_matching_symbols, vec![1, 2]);
     }
 
     #[test]

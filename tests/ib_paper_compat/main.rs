@@ -1003,3 +1003,97 @@ fn timeout_sweeps_phase_live() {
 
     println!("\n  PASS — happy paths complete under the deadline sweeps (ibx#231/ibx#227 validated)\n");
 }
+
+/// ibx#233 / ibx#228 focused live entry.
+/// Part 1 (ibx#233): subscribe SPY, cancel, re-subscribe — the second
+/// registration must REUSE the reclaimed slot id, proving unsubscribed
+/// contracts no longer consume the instrument table.
+/// Part 2 (ibx#228): a symbol search with zero matches must still deliver
+/// (an empty answer on the right req_id), and a following search must land
+/// on ITS req_id — previously the empty result poisoned the queue and every
+/// later reply was misattributed.
+/// Run: cargo test --test ib_paper_compat reclaim_and_symbol_search_phase_live -- --ignored --nocapture
+#[test]
+#[ignore]
+fn reclaim_and_symbol_search_phase_live() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let config = match get_config() {
+        Some(c) => c,
+        None => { println!("Skipping: IB credentials not set"); return; }
+    };
+
+    println!("=== ibx#233/ibx#228: slot reclaim + symbol search ===\n");
+    let (gw, farm, ccp, hmds) = Gateway::connect(&config)
+        .expect("Gateway::connect failed");
+    let account_id = gw.account_id.clone();
+    drop(gw);
+
+    let shared = std::sync::Arc::new(SharedState::new());
+    let (event_tx, _event_rx) = crossbeam_channel::unbounded();
+    let (hot_loop, control_tx) = HotLoop::with_connections(
+        shared.clone(), Some(event_tx), account_id.clone(),
+        farm, ccp, hmds, None,
+    );
+    let join = run_hot_loop(hot_loop);
+
+    let subscribe = |req: &str| {
+        let (tx, rx) = crossbeam_channel::bounded(1);
+        control_tx.send(ControlCommand::Subscribe {
+            con_id: 756733, symbol: "SPY".into(), exchange: String::new(),
+            sec_type: String::new(), last_trade_date: String::new(), strike: 0.0,
+            right: String::new(), multiplier: String::new(), mode_9887: 0,
+            reply_tx: Some(tx),
+        }).expect("send subscribe failed");
+        rx.recv_timeout(Duration::from_secs(10))
+            .unwrap_or_else(|_| panic!("{}: no registration reply", req))
+            .unwrap_or_else(|e| panic!("{}: registration rejected: {}", req, e))
+    };
+
+    // ── Part 1: reclaim + reuse ──
+    let id1 = subscribe("first subscribe");
+    println!("  first subscribe: instrument id {}", id1);
+    std::thread::sleep(Duration::from_secs(2));
+    control_tx.send(ControlCommand::Unsubscribe { instrument: id1 }).expect("send unsubscribe failed");
+    std::thread::sleep(Duration::from_secs(2));
+    let id2 = subscribe("re-subscribe");
+    println!("  re-subscribe: instrument id {}", id2);
+    assert_eq!(id2, id1,
+        "reclaimed slot must be reused — the cap would stay cumulative (ibx#233)");
+
+    // ── Part 2: symbol search ──
+    control_tx.send(ControlCommand::FetchMatchingSymbols { req_id: 7001, pattern: "ZZZZQQXX".into() })
+        .expect("send matching symbols failed");
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let mut empty_delivered = false;
+    while Instant::now() < deadline && !empty_delivered {
+        for (rid, matches) in shared.reference.drain_matching_symbols() {
+            println!("  symbol_samples: req_id={} matches={}", rid, matches.len());
+            assert_eq!(rid, 7001, "reply misattributed (ibx#228)");
+            assert!(matches.is_empty(), "garbage pattern should have no matches");
+            empty_delivered = true;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    assert!(empty_delivered,
+        "empty symbol-search result was never delivered — queue poisoned (ibx#228)");
+
+    control_tx.send(ControlCommand::FetchMatchingSymbols { req_id: 7002, pattern: "AAPL".into() })
+        .expect("send matching symbols failed");
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let mut aapl_delivered = false;
+    while Instant::now() < deadline && !aapl_delivered {
+        for (rid, matches) in shared.reference.drain_matching_symbols() {
+            println!("  symbol_samples: req_id={} matches={}", rid, matches.len());
+            assert_eq!(rid, 7002, "reply landed on the wrong req_id (ibx#228)");
+            assert!(!matches.is_empty(), "AAPL search should match");
+            aapl_delivered = true;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    assert!(aapl_delivered, "AAPL symbol search never delivered");
+
+    let _ = control_tx.send(ControlCommand::Shutdown);
+    let _ = join.join();
+
+    println!("\n  PASS — slot reclaimed and reused; symbol search attributes correctly (ibx#233/ibx#228 validated)\n");
+}

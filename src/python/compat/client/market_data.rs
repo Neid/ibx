@@ -101,6 +101,7 @@ impl EClient {
     fn cancel_tick_by_tick_data(&self, req_id: i64) -> PyResult<()> {
         if let Some(instrument) = self.core.req_to_instrument.lock().unwrap().remove(&req_id) {
             self.core.instrument_to_req.lock().unwrap().remove(&instrument);
+            self.core.forget_instrument(instrument);
             let tx = self.tx()?;
             tx.send(ControlCommand::UnsubscribeTbt { instrument })
                 .map_err(|e| PyRuntimeError::new_err(format!("Engine stopped: {}", e)))?;

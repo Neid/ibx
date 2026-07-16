@@ -194,6 +194,59 @@ impl HotLoop {
     /// emit `Event::Disconnected` so consumers see the dead engine without
     /// having to wait for the next outbound call to fail. Use this from the
     /// engine-spawn site instead of `run()` directly (ibx#182).
+    /// try_register + full-table rejection (ibx#233). On a full table the
+    /// reply channel gets an Err — the caller's request fails loudly and the
+    /// hot loop keeps running. Previously this was an assert! that killed
+    /// the engine for the rest of the process.
+    fn register_or_reject(
+        &mut self,
+        con_id: i64,
+        symbol: String,
+        reply_tx: &Option<crossbeam_channel::Sender<Result<InstrumentId, String>>>,
+    ) -> Option<InstrumentId> {
+        match self.context.market.try_register(con_id) {
+            Some(id) => {
+                self.context.market.set_symbol(id, symbol);
+                self.shared.market.set_instrument_count(self.context.market.count());
+                if let Some(tx) = reply_tx { let _ = tx.send(Ok(id)); }
+                Some(id)
+            }
+            None => {
+                log::error!("Instrument table full: rejecting registration for con_id={}", con_id);
+                if let Some(tx) = reply_tx {
+                    let _ = tx.send(Err(format!(
+                        "instrument table full: {} contracts are live concurrently; \
+                         cancel unused market-data subscriptions to free slots",
+                        crate::types::MAX_INSTRUMENTS
+                    )));
+                }
+                None
+            }
+        }
+    }
+
+    /// Reclaim an instrument slot if nothing references it any more
+    /// (ibx#233): no open orders, no tick-by-tick subscription, no news
+    /// subscription. A reused id would repoint those references at the
+    /// wrong contract, so referenced slots stay resident until released.
+    fn try_reclaim_instrument(&mut self, instrument: InstrumentId) {
+        if !self.context.open_orders_for(instrument).is_empty() {
+            return;
+        }
+        if self.hmds.tbt_subscriptions.iter().any(|(id, _, _)| *id == instrument) {
+            return;
+        }
+        if self.ccp.news_subscriptions.iter().any(|(id, _)| *id == instrument) {
+            return;
+        }
+        if self.context.market.unregister(instrument).is_some() {
+            // Zero the shared-side quote so a reused slot cannot serve the
+            // previous contract's prices before its first tick.
+            self.shared.market.push_quote(instrument, &crate::types::Quote::default());
+            log::info!("Reclaimed instrument slot {}", instrument);
+        }
+    }
+
     pub fn run_with_panic_recovery(mut self) {
         let event_tx = self.event_tx.clone();
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -311,17 +364,15 @@ impl HotLoop {
         for cmd in cmds {
             match cmd {
                 ControlCommand::Subscribe { con_id, symbol, exchange, sec_type, last_trade_date, strike, right, multiplier, mode_9887, reply_tx } => {
-                    let id = self.context.market.register(con_id);
-                    self.context.market.set_symbol(id, symbol.clone());
-                    self.shared.market.set_instrument_count(self.context.market.count());
-                    if let Some(tx) = reply_tx { let _ = tx.send(id); }
-                    self.farm.send_mktdata_subscribe(
-                        con_id, &symbol, &exchange, &sec_type,
-                        &last_trade_date, strike, &right, &multiplier,
-                        id, mode_9887,
-                        &mut self.farm_conn,
-                        &mut self.hb,
-                    );
+                    if let Some(id) = self.register_or_reject(con_id, symbol.clone(), &reply_tx) {
+                        self.farm.send_mktdata_subscribe(
+                            con_id, &symbol, &exchange, &sec_type,
+                            &last_trade_date, strike, &right, &multiplier,
+                            id, mode_9887,
+                            &mut self.farm_conn,
+                            &mut self.hb,
+                        );
+                    }
                 }
                 ControlCommand::Unsubscribe { instrument } => {
                     self.farm.send_mktdata_unsubscribe(
@@ -329,29 +380,28 @@ impl HotLoop {
                         &mut self.farm_conn,
                         &mut self.hb,
                     );
+                    self.try_reclaim_instrument(instrument);
                 }
                 ControlCommand::SubscribeTbt { con_id, symbol, tbt_type, reply_tx } => {
-                    let id = self.context.market.register(con_id);
-                    self.context.market.set_symbol(id, symbol);
-                    self.shared.market.set_instrument_count(self.context.market.count());
-                    if let Some(tx) = reply_tx { let _ = tx.send(id); }
-                    self.hmds.send_tbt_subscribe(con_id, id, tbt_type, &mut self.hmds_conn, &mut self.hb);
+                    if let Some(id) = self.register_or_reject(con_id, symbol, &reply_tx) {
+                        self.hmds.send_tbt_subscribe(con_id, id, tbt_type, &mut self.hmds_conn, &mut self.hb);
+                    }
                 }
                 ControlCommand::UnsubscribeTbt { instrument } => {
                     self.hmds.send_tbt_unsubscribe(instrument, &mut self.hmds_conn, &mut self.hb);
+                    self.try_reclaim_instrument(instrument);
                 }
                 ControlCommand::SubscribeNews { con_id, symbol, providers, reply_tx } => {
-                    let id = self.context.market.register(con_id);
-                    self.context.market.set_symbol(id, symbol);
-                    self.shared.market.set_instrument_count(self.context.market.count());
-                    if let Some(tx) = reply_tx { let _ = tx.send(id); }
-                    // Allocate req_id from farm's counter (shared ID space)
-                    let req_id = self.farm.next_md_req_id;
-                    self.farm.next_md_req_id += 1;
-                    self.ccp.send_news_subscribe(con_id, id, &providers, req_id, &mut self.ccp_conn, &mut self.hb);
+                    if let Some(id) = self.register_or_reject(con_id, symbol, &reply_tx) {
+                        // Allocate req_id from farm's counter (shared ID space)
+                        let req_id = self.farm.next_md_req_id;
+                        self.farm.next_md_req_id += 1;
+                        self.ccp.send_news_subscribe(con_id, id, &providers, req_id, &mut self.ccp_conn, &mut self.hb);
+                    }
                 }
                 ControlCommand::UnsubscribeNews { instrument } => {
                     self.ccp.send_news_unsubscribe(instrument, &mut self.ccp_conn, &mut self.hb);
+                    self.try_reclaim_instrument(instrument);
                 }
                 ControlCommand::UpdateParam { key, value } => {
                     let _ = (key, value);
@@ -360,10 +410,7 @@ impl HotLoop {
                     self.context.pending_orders.push(req);
                 }
                 ControlCommand::RegisterInstrument { con_id, symbol, reply_tx } => {
-                    let id = self.context.market.register(con_id);
-                    self.context.market.set_symbol(id, symbol);
-                    self.shared.market.set_instrument_count(self.context.market.count());
-                    if let Some(tx) = reply_tx { let _ = tx.send(id); }
+                    self.register_or_reject(con_id, symbol, &reply_tx);
                 }
                 ControlCommand::FetchHistorical { req_id, con_id, symbol, end_date_time, duration, bar_size, what_to_show, use_rth, keep_up_to_date } => {
                     // keepUpToDate sends via CCP but bars/end arrive on HMDS — both

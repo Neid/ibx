@@ -413,10 +413,12 @@ impl ClientCore {
     #[cfg(test)]
     const REGISTRATION_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(1);
 
-    /// Wait for the hot loop to process a registration command and return the assigned ID.
-    fn recv_registration(reply_rx: crossbeam_channel::Receiver<InstrumentId>) -> Result<InstrumentId, String> {
+    /// Wait for the hot loop to process a registration command and return the
+    /// assigned ID. The engine replies Err when the instrument table is full
+    /// (ibx#233) — previously that condition killed the hot loop.
+    fn recv_registration(reply_rx: crossbeam_channel::Receiver<Result<InstrumentId, String>>) -> Result<InstrumentId, String> {
         reply_rx.recv_timeout(Self::REGISTRATION_TIMEOUT)
-            .map_err(|_| "Registration timed out".to_string())
+            .map_err(|_| "Registration timed out".to_string())?
     }
 
     /// Find instrument ID for a contract, registering if needed.
@@ -481,6 +483,25 @@ impl ClientCore {
             });
         }
 
+        // instrument_to_req maps ONE req_id per instrument: a second live
+        // subscription would clobber the first's reverse mapping and orphan
+        // it silently — no ticks, no error (ibx#233). Reject up front via
+        // the client-side conId cache, before anything reaches the engine.
+        {
+            let cache = self.con_id_to_instrument.lock().unwrap();
+            if let Some(&iid) = cache.get(&con_id) {
+                if let Some(&existing) = self.instrument_to_req.lock().unwrap().get(&iid) {
+                    if existing != req_id {
+                        return Err(format!(
+                            "contract (con_id {}) already has a live market-data \
+                             subscription under req_id {}: cancel it first or \
+                             reuse that req_id", con_id, existing,
+                        ));
+                    }
+                }
+            }
+        }
+
         let (reply_tx, reply_rx) = crossbeam_channel::bounded(1);
         control_tx.send(ControlCommand::RegisterInstrument { con_id, symbol: symbol.to_string(), reply_tx: None })
             .map_err(|e| format!("Engine stopped: {}", e))?;
@@ -498,6 +519,7 @@ impl ClientCore {
         }).map_err(|e| format!("Engine stopped: {}", e))?;
 
         let instrument_id = Self::recv_registration(reply_rx)?;
+        self.con_id_to_instrument.lock().unwrap().insert(con_id, instrument_id);
         self.req_to_instrument.lock().unwrap().insert(req_id, instrument_id);
         self.instrument_to_req.lock().unwrap().insert(instrument_id, req_id);
         if snapshot {
@@ -517,10 +539,20 @@ impl ClientCore {
             self.last_quotes.lock().unwrap().remove(&instrument);
             self.mdt_sent.lock().unwrap().remove(&req_id);
             let needs_news = self.news_instruments.lock().unwrap().remove(&instrument);
+            self.forget_instrument(instrument);
             (Some(instrument), needs_news)
         } else {
             (None, false)
         }
+    }
+
+    /// Drop the client-side conId cache entries for an instrument id. The
+    /// engine may reclaim and reuse the slot after an unsubscribe (ibx#233);
+    /// a stale cache entry would silently point the old conId at whatever
+    /// contract inherits the id. A later request for that conId simply
+    /// re-registers.
+    pub fn forget_instrument(&self, instrument: InstrumentId) {
+        self.con_id_to_instrument.lock().unwrap().retain(|_, iid| *iid != instrument);
     }
 
     pub fn set_news_providers(&self, providers: &str) {
@@ -571,6 +603,7 @@ impl ClientCore {
         }).map_err(|e| format!("Engine stopped: {}", e))?;
 
         let instrument_id = Self::recv_registration(reply_rx)?;
+        self.con_id_to_instrument.lock().unwrap().insert(con_id, instrument_id);
         self.req_to_instrument.lock().unwrap().insert(req_id, instrument_id);
         self.instrument_to_req.lock().unwrap().insert(instrument_id, req_id);
         Ok(instrument_id)
