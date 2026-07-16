@@ -1193,11 +1193,27 @@ pub(crate) fn format_price(price: Price) -> StackStr {
     s
 }
 
-/// Parse a FIX tag value as a Price (fixed-point). Returns 0 if absent or unparseable.
+/// Parse a FIX tag value as a Price (fixed-point). Returns 0 if absent,
+/// unparseable, or non-finite. Rust's f64 parser accepts "nan"/"inf", but on
+/// the wire those are not-available sentinels, not values: the gateway's own
+/// field parser maps nan/unparseable to unset (ibx#214). Without the finite
+/// filter, "nan" saturated to 0 and "inf" to i64::MAX.
 pub(crate) fn parse_price_tag(val: Option<&String>) -> Price {
     val.and_then(|s| s.parse::<f64>().ok())
+        .filter(|f| f.is_finite())
         .map(|f| (f * PRICE_SCALE as f64) as Price)
         .unwrap_or(0)
+}
+
+/// Decode a wire TIF byte to the API TIF string. Exact inverse of
+/// `api::types::Order::tif_byte` (DTC also encodes to '6' and decodes as GTD).
+/// The old inline map decoded '7' (never emitted) as OPG and dropped
+/// OPG ('2') and AUC ('8') to "" (ibx#220).
+pub(crate) fn decode_tif(tif: u8) -> &'static str {
+    match tif {
+        b'0' => "DAY", b'1' => "GTC", b'2' => "OPG", b'3' => "IOC",
+        b'4' => "FOK", b'6' => "GTD", b'8' => "AUC", _ => "",
+    }
 }
 
 /// Format a fixed-point Qty (QTY_SCALE = 10^4) to a decimal string. Zero alloc.
@@ -1320,6 +1336,24 @@ mod tests {
     use crate::bridge::{Event, SharedState};
     use crate::types::*;
     use std::time::Duration;
+
+    // ibx#214: f64::from_str accepts "nan"/"inf", so a not-available sentinel
+    // of "nan" collapsed to price 0 (and "inf" saturated to i64::MAX) instead
+    // of being treated as unset.
+    #[test]
+    fn parse_price_tag_rejects_non_finite_sentinels() {
+        let s = |v: &str| v.to_string();
+        assert_eq!(parse_price_tag(Some(&s("nan"))), 0);
+        assert_eq!(parse_price_tag(Some(&s("NaN"))), 0);
+        assert_eq!(parse_price_tag(Some(&s("inf"))), 0);
+        assert_eq!(parse_price_tag(Some(&s("-inf"))), 0);
+        assert_eq!(parse_price_tag(Some(&s("n/a"))), 0);
+        assert_eq!(parse_price_tag(None), 0);
+        // Genuine numbers still parse, including a true zero.
+        assert_eq!(parse_price_tag(Some(&s("0"))), 0);
+        assert_eq!(parse_price_tag(Some(&s("434.71"))), (434.71 * PRICE_SCALE as f64) as Price);
+        assert_eq!(parse_price_tag(Some(&s("-1.5"))), (-1.5 * PRICE_SCALE as f64) as Price);
+    }
 
     #[test]
     fn inject_tick_emits_events() {

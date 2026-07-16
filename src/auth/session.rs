@@ -1056,14 +1056,20 @@ mod tests {
         assert_eq!(parts[0].len(), 8); // 4-byte hex
     }
 
+    // The machine_id is persistent (read from the hwid file / IBX_HWID env,
+    // created once — see read_or_create_hwid, ib-agent#132), so repeated calls
+    // must return the SAME id. This test previously asserted the pre-#132
+    // behavior (random id per call) and failed once a hwid file existed.
     #[test]
-    fn hw_info_two_calls_differ() {
+    fn hw_info_machine_id_is_stable_across_calls() {
         let info1 = get_hw_info();
         let info2 = get_hw_info();
         let machine1 = info1.split('|').next().unwrap();
         let machine2 = info2.split('|').next().unwrap();
-        // Random machine IDs should differ (8-hex-char random, collision negligible)
-        assert_ne!(machine1, machine2, "Two random machine IDs should differ");
+        assert_eq!(machine1, machine2, "Persistent machine ID must not change between calls");
+        assert_eq!(machine1.len(), 8);
+        assert!(machine1.chars().all(|c| c.is_ascii_hexdigit()),
+            "machine ID must be 8 hex chars, got {machine1:?}");
     }
 
     #[test]

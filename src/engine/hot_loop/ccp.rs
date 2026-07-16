@@ -14,7 +14,7 @@ use crate::types::{
 };
 use crossbeam_channel::Sender;
 
-use super::{HeartbeatState, emit, parse_price_tag};
+use super::{HeartbeatState, emit, parse_price_tag, decode_tif};
 
 /// Bound for an in-flight contract-details request (secdef reply or
 /// per-exchange fan-out). Refreshed on fan-out activity; on expiry the
@@ -569,7 +569,7 @@ impl CcpState {
                                 // The master row may be parked awaiting its
                                 // schedule pair; firing end now would order
                                 // end BEFORE the row (ibx#227). Defer it to
-                                // the pair resolution (or its 3s sweep).
+                                // the pair's resolution (or its 3s sweep).
                                 if let Some(pair) = self.pending_schedule_pair.iter_mut()
                                     .find(|p| p.api_req_id == req_id)
                                 {
@@ -722,12 +722,22 @@ impl CcpState {
         // which must be delivered. Guarding on `> 0.0` silently dropped those
         // and left the caller's pending what-if to time out (ibx#205).
         // The not-ready ack is not always emitted — close/reject previews send a
-        // single data frame — so accept the first frame whose 6092 parses, with
-        // no assumption that an ack precedes it. Mirrors the gateway's own
-        // real-frame test (a field is "set" when it parses). Captured byte-level
-        // in ib-agent#160; 6094 is a present-and-numeric fallback if ever needed.
+        // single data frame — so accept the first data frame with no assumption
+        // that an ack precedes it. A frame is the real preview when ANY of the
+        // six margin fields (6826/6827/6828 before, 6092/6093/6094 after)
+        // parses as a finite number, mirroring the gateway's own real-frame
+        // test: each field is "set" when it parses, unset on nan/unparseable,
+        // and the frame is real when any field is set (ibx#213, ibx#214). The
+        // ack carries "n/a" in all six, so it never matches. Captured
+        // byte-level in ib-agent#160.
         if parsed.get(&6091).map(|s| s.as_str()) == Some("1") {
-            if parsed.get(&6092).and_then(|s| s.parse::<f64>().ok()).is_some() {
+            const MARGIN_TAGS: [u32; 6] = [6826, 6827, 6828, 6092, 6093, 6094];
+            let is_data_frame = MARGIN_TAGS.iter().any(|tag| {
+                parsed.get(tag)
+                    .and_then(|s| s.parse::<f64>().ok())
+                    .is_some_and(|f| f.is_finite())
+            });
+            if is_data_frame {
                 if let Some(order) = context.order(clord_id).copied() {
                     let response = crate::types::WhatIfResponse {
                         order_id: clord_id,
@@ -953,10 +963,7 @@ impl CcpState {
                     crate::types::Side::Buy => "BUY",
                     crate::types::Side::Sell | crate::types::Side::ShortSell => "SELL",
                 };
-                let t = match ctx_order.tif {
-                    b'0' => "DAY", b'1' => "GTC", b'3' => "IOC", b'4' => "FOK",
-                    b'7' => "OPG", b'6' => "GTD", _ => "",
-                };
+                let t = decode_tif(ctx_order.tif);
                 let o = match ctx_order.ord_type {
                     b'1' => "MKT", b'2' => "LMT", b'3' => "STP", b'4' => "STP LMT",
                     b'P' => "TRAIL", _ => "",
@@ -1924,16 +1931,25 @@ mod tests {
         assert_eq!(ccp.exec_id_order.len(), EXEC_ID_WINDOW);
     }
 
-    // Build a what-if (6091=1) ExecReport map for order 42 with the given
-    // post-trade init-margin literal exactly as the gateway puts it on the wire.
-    fn what_if_frame(init_margin_after: &str) -> std::collections::HashMap<u32, String> {
+    // Build a what-if (6091=1) ExecReport map for order 42. `margin_fields`
+    // holds (tag, literal wire value) pairs exactly as the gateway puts them
+    // on the wire (ib-agent#160).
+    fn what_if_frame(margin_fields: &[(u32, &str)]) -> std::collections::HashMap<u32, String> {
         let mut m = std::collections::HashMap::new();
         m.insert(11u32, "42".to_string()); // ClOrdID
         m.insert(6091u32, "1".to_string()); // what-if marker
-        m.insert(6826u32, "976.07".to_string()); // init_margin_before
-        m.insert(6092u32, init_margin_after.to_string()); // init_margin_after
+        for (tag, val) in margin_fields {
+            m.insert(*tag, val.to_string());
+        }
         m
     }
+
+    // The full six margin fields of the captured true-zero close preview
+    // (ib-agent#160 scenario 2b).
+    const ZERO_CLOSE_FIELDS: [(u32, &str); 6] = [
+        (6826, "976.07"), (6827, "887.34"), (6828, "945924.53"),
+        (6092, "0"), (6093, "0"), (6094, "945923.47"),
+    ];
 
     fn what_if_test_state() -> (CcpState, Context, SharedState) {
         let mut context = Context::new();
@@ -1959,7 +1975,7 @@ mod tests {
     #[test]
     fn what_if_zero_init_margin_is_delivered() {
         let (mut ccp, mut context, shared) = what_if_test_state();
-        let frame = what_if_frame("0");
+        let frame = what_if_frame(&ZERO_CLOSE_FIELDS);
         ccp.handle_exec_report(&frame, &mut context, &shared, &None, "");
         let responses = shared.orders.drain_what_if_responses();
         assert_eq!(responses.len(), 1, "zero-margin preview must be delivered");
@@ -1968,17 +1984,83 @@ mod tests {
         assert!(context.order(42).is_none());
     }
 
-    // The not-ready ack carries the literal "n/a" in the margin fields; it must
-    // be skipped (parse fails) so only the real data frame surfaces.
+    // The not-ready ack carries the literal "n/a" in all six margin fields
+    // (ib-agent#160); it must be skipped so only the real data frame surfaces.
     #[test]
     fn what_if_not_ready_ack_is_skipped() {
         let (mut ccp, mut context, shared) = what_if_test_state();
-        let frame = what_if_frame("n/a");
+        let frame = what_if_frame(&[
+            (6826, "n/a"), (6827, "n/a"), (6828, "n/a"),
+            (6092, "n/a"), (6093, "n/a"), (6094, "n/a"),
+        ]);
         ccp.handle_exec_report(&frame, &mut context, &shared, &None, "");
         assert!(shared.orders.drain_what_if_responses().is_empty(),
             "n/a ack must not surface as a response");
         // The order stays pending for the subsequent data frame.
         assert!(context.order(42).is_some());
+    }
+
+    // ibx#213: the gateway's real-frame test is "any of the six margin fields
+    // is set", not "6092 is set". A preview that omits 6092 but carries
+    // numeric siblings must be delivered, with the absent field read as 0.
+    #[test]
+    fn what_if_without_6092_but_numeric_siblings_is_delivered() {
+        let (mut ccp, mut context, shared) = what_if_test_state();
+        let frame = what_if_frame(&[(6093, "0"), (6094, "945923.47")]);
+        ccp.handle_exec_report(&frame, &mut context, &shared, &None, "");
+        let responses = shared.orders.drain_what_if_responses();
+        assert_eq!(responses.len(), 1, "sibling-only preview must be delivered");
+        assert_eq!(responses[0].init_margin_after, 0);
+        assert_eq!(responses[0].equity_with_loan_after,
+            (945923.47 * PRICE_SCALE as f64) as Price);
+        assert!(context.order(42).is_none());
+    }
+
+    // ibx#214: "nan" parses as f64::NAN, so it passed the old parse-success
+    // gate and surfaced as a bogus zero-margin preview. The gateway treats
+    // nan as unset, so an all-nan frame is not a data frame.
+    #[test]
+    fn what_if_nan_sentinels_are_skipped() {
+        let (mut ccp, mut context, shared) = what_if_test_state();
+        let frame = what_if_frame(&[
+            (6826, "nan"), (6827, "nan"), (6828, "nan"),
+            (6092, "nan"), (6093, "nan"), (6094, "nan"),
+        ]);
+        ccp.handle_exec_report(&frame, &mut context, &shared, &None, "");
+        assert!(shared.orders.drain_what_if_responses().is_empty(),
+            "all-nan frame must not surface as a response");
+        assert!(context.order(42).is_some());
+    }
+
+    // Mixed frame: a nan field is unset, but one finite sibling makes the
+    // frame real. The nan field itself must read as 0, not poison the price.
+    #[test]
+    fn what_if_nan_field_with_finite_sibling_is_delivered() {
+        let (mut ccp, mut context, shared) = what_if_test_state();
+        let frame = what_if_frame(&[(6092, "nan"), (6094, "945923.47")]);
+        ccp.handle_exec_report(&frame, &mut context, &shared, &None, "");
+        let responses = shared.orders.drain_what_if_responses();
+        assert_eq!(responses.len(), 1);
+        assert_eq!(responses[0].init_margin_after, 0, "nan field reads as unset/0");
+        assert_eq!(responses[0].equity_with_loan_after,
+            (945923.47 * PRICE_SCALE as f64) as Price);
+    }
+
+    // ibx#220: the TIF decoder must be the exact inverse of the outbound
+    // encoder. The old map decoded '7' (never emitted) as OPG and dropped
+    // OPG and AUC to "".
+    #[test]
+    fn tif_round_trips_through_encoder_and_decoder() {
+        for tif in ["DAY", "GTC", "OPG", "IOC", "FOK", "GTD", "AUC"] {
+            let order = api::Order { tif: tif.to_string(), ..Default::default() };
+            assert_eq!(decode_tif(order.tif_byte()), tif,
+                "TIF {tif} must survive encode->decode");
+        }
+        // DTC shares the GTD wire byte and decodes as GTD.
+        let dtc = api::Order { tif: "DTC".to_string(), ..Default::default() };
+        assert_eq!(decode_tif(dtc.tif_byte()), "GTD");
+        // Unknown bytes decode to empty, not a wrong TIF.
+        assert_eq!(decode_tif(b'7'), "");
     }
 
     // ── ibx#227: contract-details deadline sweep ──
