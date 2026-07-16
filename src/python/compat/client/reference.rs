@@ -6,6 +6,7 @@ use pyo3::prelude::*;
 use crate::types::*;
 use super::EClient;
 use super::super::contract::Contract;
+use crate::client_core::ClientCore;
 
 #[pymethods]
 impl EClient {
@@ -26,6 +27,10 @@ impl EClient {
     ) -> PyResult<()> {
         let tx = self.tx()?;
         let _ = (format_date, chart_options);
+        if !what_to_show.eq_ignore_ascii_case("SCHEDULE") {
+            ClientCore::validate_historical_args(bar_size_setting, what_to_show, keep_up_to_date)
+                .map_err(|e| PyRuntimeError::new_err(e))?;
+        }
         if what_to_show.eq_ignore_ascii_case("SCHEDULE") {
             tx.send(ControlCommand::FetchHistoricalSchedule {
                 req_id: req_id as u32,

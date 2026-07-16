@@ -3,6 +3,7 @@
 use crate::types::*;
 
 use super::{Contract, EClient};
+use crate::client_core::ClientCore;
 
 impl EClient {
     // ── Historical Data ──
@@ -13,6 +14,7 @@ impl EClient {
         end_date_time: &str, duration: &str, bar_size: &str,
         what_to_show: &str, use_rth: bool, _format_date: i32, keep_up_to_date: bool,
     ) -> Result<(), String> {
+        ClientCore::validate_historical_args(bar_size, what_to_show, keep_up_to_date)?;
         self.send(ControlCommand::FetchHistorical {
             req_id: req_id as u32,
             con_id: contract.con_id,

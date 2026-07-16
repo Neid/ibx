@@ -1296,6 +1296,28 @@ impl ClientCore {
         Ok(())
     }
 
+    /// Validate historical-request arguments before anything reaches the
+    /// engine (ibx#232): an unrecognized bar_size previously fell back to
+    /// 5-minute bars silently (via TWO divergent tables), and an
+    /// unrecognized what_to_show fell back to TRADES. The caller gets a
+    /// synchronous Err at the call instead of plausible, wrong candles.
+    pub fn validate_historical_args(
+        bar_size: &str,
+        what_to_show: &str,
+        keep_up_to_date: bool,
+    ) -> Result<(), String> {
+        let bs = crate::control::historical::BarSize::from_api_str(bar_size)?;
+        crate::control::historical::BarDataType::from_api_str(what_to_show)?;
+        if keep_up_to_date && !bs.supports_keep_up_to_date() {
+            return Err(format!(
+                "bar_size '{}' is not supported with keep_up_to_date=true: \
+                 supported sizes are 1 secs, 5 secs, 5 mins, 1 hour, 1 day",
+                bar_size,
+            ));
+        }
+        Ok(())
+    }
+
     /// Reject orders whose contract is not a common stock.
     ///
     /// The outbound order encoding in `engine::hot_loop::order_builder` only

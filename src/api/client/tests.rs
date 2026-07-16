@@ -1103,6 +1103,44 @@ fn req_historical_data_sends_fetch_historical() {
     }
 }
 
+// ── ibx#232: unknown bar_size / what_to_show reject instead of silently
+// falling back to 5-minute / TRADES bars ──
+
+#[test]
+fn req_historical_data_rejects_unknown_bar_size() {
+    let (client, rx, _shared) = test_client();
+    // The issue's exact repro: "1 Min" (wrong case) used to return 5-minute
+    // candles with no error.
+    let err = client.req_historical_data(5, &spy(), "", "2 D", "1 Min", "TRADES", true, 1, false).unwrap_err();
+    assert!(err.contains("bar_size"), "got: {}", err);
+    assert!(rx.try_recv().is_err(), "nothing may reach the engine");
+}
+
+#[test]
+fn req_historical_data_rejects_unknown_what_to_show() {
+    let (client, rx, _shared) = test_client();
+    let err = client.req_historical_data(5, &spy(), "", "2 D", "1 min", "TRADE", true, 1, false).unwrap_err();
+    assert!(err.contains("what_to_show"), "got: {}", err);
+    assert!(rx.try_recv().is_err());
+}
+
+#[test]
+fn req_historical_data_rejects_unsupported_keep_up_to_date_size() {
+    let (client, rx, _shared) = test_client();
+    // "1 min" is valid on the batch path but not supported for streaming —
+    // it used to silently downgrade to 5-minute bars on this path only.
+    let err = client.req_historical_data(5, &spy(), "", "1 D", "1 min", "TRADES", true, 1, true).unwrap_err();
+    assert!(err.contains("keep_up_to_date"), "got: {}", err);
+    assert!(rx.try_recv().is_err());
+}
+
+#[test]
+fn req_historical_data_accepts_streamable_keep_up_to_date_size() {
+    let (client, rx, _shared) = test_client();
+    client.req_historical_data(5, &spy(), "", "1 D", "5 mins", "TRADES", true, 1, true).unwrap();
+    assert!(matches!(rx.try_recv().unwrap(), ControlCommand::FetchHistorical { keep_up_to_date: true, .. }));
+}
+
 #[test]
 fn cancel_historical_data_sends_cancel() {
     let (client, rx, _shared) = test_client();

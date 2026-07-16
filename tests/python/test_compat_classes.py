@@ -119,6 +119,22 @@ def test_contract_details_defaults():
     assert cd.contract.con_id == 0
 
 
+def test_contract_details_contract_is_mutable_in_place():
+    # ibx#230: the getter used to hand back a CLONE, so this mutation was a
+    # silent no-op and `cd.contract is cd.contract` was False.
+    cd = ContractDetails()
+    cd.contract.con_id = 265598
+    assert cd.contract.con_id == 265598
+    assert cd.contract is cd.contract
+
+    c = Contract()
+    c.con_id = 999
+    cd.contract = c
+    assert cd.contract is c
+    cd.contract.symbol = "AAPL"
+    assert c.symbol == "AAPL"
+
+
 # ── OrderState ──
 
 def test_order_state_defaults():

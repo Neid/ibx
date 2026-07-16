@@ -671,16 +671,7 @@ impl ContractDetails {
         let c = Contract {
             con_id: def.con_id as i64,
             symbol: def.symbol.clone(),
-            sec_type: match def.sec_type {
-                crate::control::contracts::SecurityType::Stock => "STK",
-                crate::control::contracts::SecurityType::Option => "OPT",
-                crate::control::contracts::SecurityType::Future => "FUT",
-                crate::control::contracts::SecurityType::Forex => "CASH",
-                crate::control::contracts::SecurityType::Index => "IND",
-                crate::control::contracts::SecurityType::Bond => "BOND",
-                crate::control::contracts::SecurityType::Warrant => "WAR",
-                _ => "STK",
-            }.to_string(),
+            sec_type: def.sec_type.to_api_str().to_string(),
             exchange: def.exchange.clone(),
             primary_exchange: def.primary_exchange.clone(),
             currency: def.currency.clone(),
@@ -693,7 +684,8 @@ impl ContractDetails {
         };
         Self {
             contract: c,
-            market_name: String::new(),
+            // Parsed from the reply all along but thrown away (ibx#230).
+            market_name: def.market_name.clone(),
             min_tick: def.min_tick,
             order_types: def.order_types.join(","),
             valid_exchanges: def.valid_exchanges.join(","),
@@ -903,6 +895,28 @@ mod tests {
         let cd = ContractDetails::default();
         assert_eq!(cd.contract.con_id, 0);
         assert_eq!(cd.min_tick, 0.0);
+    }
+
+    // ibx#230: the reported Contract must round-trip — sec_type is the
+    // official API string, and market_name is no longer thrown away.
+    #[test]
+    fn contract_details_from_definition_round_trips() {
+        let def = crate::control::contracts::ContractDefinition {
+            con_id: 265598,
+            symbol: "AAPL".into(),
+            sec_type: crate::control::contracts::SecurityType::Stock,
+            market_name: "NMS".into(),
+            ..Default::default()
+        };
+        let details = ContractDetails::from_definition(&def);
+        assert_eq!(details.contract.sec_type, "STK", "not the Debug derive 'Stock'");
+        assert_eq!(details.market_name, "NMS");
+        // Unclassifiable instruments must not claim to be stocks.
+        let def = crate::control::contracts::ContractDefinition {
+            sec_type: crate::control::contracts::SecurityType::Other,
+            ..Default::default()
+        };
+        assert_eq!(ContractDetails::from_definition(&def).contract.sec_type, "");
     }
 
     // ── ContractDescription ──

@@ -1962,10 +1962,12 @@ impl BarData {
 
 /// ibapi-compatible ContractDetails class.
 #[pyclass(from_py_object)]
-#[derive(Clone, Default)]
 pub struct ContractDetails {
+    /// Stored as `Py<Contract>` so the getter hands Python THE contained
+    /// object, not a copy: with a plain field, `details.contract.con_id = x`
+    /// mutated a temporary clone and was a silent no-op (ibx#230).
     #[pyo3(get, set)]
-    pub contract: Contract,
+    pub contract: Py<Contract>,
     #[pyo3(get, set)]
     pub market_name: String,
     #[pyo3(get, set)]
@@ -2014,22 +2016,84 @@ pub struct ContractDetails {
 impl ContractDetails {
     #[new]
     #[pyo3(signature = ())]
-    fn py_new() -> Self {
-        Self::default()
+    fn py_new(py: Python<'_>) -> Self {
+        Self::new_default(py)
     }
 
-    fn __repr__(&self) -> String {
+    fn __repr__(&self, py: Python<'_>) -> String {
         format!("ContractDetails(symbol='{}', longName='{}')",
-            self.contract.symbol, self.long_name)
+            self.contract.borrow(py).symbol, self.long_name)
+    }
+}
+
+impl Clone for ContractDetails {
+    /// `Py<Contract>` clones by reference under the GIL: the copy shares the
+    /// same Python Contract object, matching Python assignment semantics.
+    fn clone(&self) -> Self {
+        Python::attach(|py| Self {
+            contract: self.contract.clone_ref(py),
+            market_name: self.market_name.clone(),
+            min_tick: self.min_tick,
+            order_types: self.order_types.clone(),
+            valid_exchanges: self.valid_exchanges.clone(),
+            long_name: self.long_name.clone(),
+            last_trade_date: self.last_trade_date.clone(),
+            multiplier: self.multiplier.clone(),
+            market_rule_id: self.market_rule_id,
+            strike: self.strike,
+            right: self.right.clone(),
+            primary_exchange: self.primary_exchange.clone(),
+            local_symbol: self.local_symbol.clone(),
+            trading_class: self.trading_class.clone(),
+            stock_type: self.stock_type.clone(),
+            category: self.category.clone(),
+            country: self.country.clone(),
+            isin: self.isin.clone(),
+            min_size: self.min_size,
+            trading_hours: self.trading_hours.clone(),
+            liquid_hours: self.liquid_hours.clone(),
+            time_zone_id: self.time_zone_id.clone(),
+        })
     }
 }
 
 impl ContractDetails {
-    pub fn from_definition(def: &crate::control::contracts::ContractDefinition) -> Self {
+    /// Fresh instance with an owned default Contract. `Py<Contract>` has no
+    /// Default, so this replaces the derived constructor (ibx#230).
+    pub fn new_default(py: Python<'_>) -> Self {
+        Self {
+            contract: Py::new(py, Contract::default()).expect("Contract allocation failed"),
+            market_name: String::new(),
+            min_tick: 0.0,
+            order_types: String::new(),
+            valid_exchanges: String::new(),
+            long_name: String::new(),
+            last_trade_date: String::new(),
+            multiplier: String::new(),
+            market_rule_id: 0,
+            strike: 0.0,
+            right: String::new(),
+            primary_exchange: String::new(),
+            local_symbol: String::new(),
+            trading_class: String::new(),
+            stock_type: String::new(),
+            category: String::new(),
+            country: String::new(),
+            isin: String::new(),
+            min_size: 0.0,
+            trading_hours: String::new(),
+            liquid_hours: String::new(),
+            time_zone_id: String::new(),
+        }
+    }
+
+    pub fn from_definition(py: Python<'_>, def: &crate::control::contracts::ContractDefinition) -> Self {
         let mut c = Contract::default();
         c.con_id = def.con_id as i64;
+        // Official API string ("STK"), not the Debug derive ("Stock"): the
+        // returned Contract must round-trip into another request (ibx#230).
+        c.sec_type = def.sec_type.to_api_str().to_string();
         c.symbol = def.symbol.clone();
-        c.sec_type = format!("{:?}", def.sec_type);
         c.exchange = def.exchange.clone();
         c.primary_exchange = def.primary_exchange.clone();
         c.currency = def.currency.clone();
@@ -2040,8 +2104,9 @@ impl ContractDetails {
         c.multiplier = if def.multiplier != 1.0 { format!("{}", def.multiplier) } else { String::new() };
 
         Self {
-            contract: c,
-            market_name: String::new(),
+            contract: Py::new(py, c).expect("Contract allocation failed"),
+            // Parsed from the reply all along but thrown away (ibx#230).
+            market_name: def.market_name.clone(),
             min_tick: def.min_tick,
             order_types: def.order_types.join(","),
             valid_exchanges: def.valid_exchanges.join(","),

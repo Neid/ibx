@@ -602,21 +602,6 @@ impl HmdsState {
         self.tbt_price_state[instrument as usize] = (0, 0, 0);
     }
 
-    pub(crate) fn send_historical_request(
-        &mut self,
-        req_id: u32,
-        con_id: i64,
-        end_date_time: &str,
-        duration: &str,
-        bar_size: &str,
-        what_to_show: &str,
-        use_rth: bool,
-        hmds_conn: &mut Option<Connection>,
-        hb: &mut HeartbeatState,
-    ) {
-        self.send_historical_request_ex(req_id, con_id, end_date_time, duration, bar_size, what_to_show, use_rth, false, "", hmds_conn, hb);
-    }
-
     pub(crate) fn send_historical_request_ex(
         &mut self,
         req_id: u32,
@@ -630,6 +615,7 @@ impl HmdsState {
         symbol: &str,
         hmds_conn: &mut Option<Connection>,
         hb: &mut HeartbeatState,
+        shared: &SharedState,
     ) {
         let duration = duration.to_lowercase();
         let duration = duration.as_str();
@@ -642,40 +628,25 @@ impl HmdsState {
         let qid = self.next_hmds_query_id;
         self.next_hmds_query_id += 1;
 
-        let data_type = match what_to_show.to_uppercase().as_str() {
-            "MIDPOINT" => crate::control::historical::BarDataType::Midpoint,
-            "BID" => crate::control::historical::BarDataType::Bid,
-            "ASK" => crate::control::historical::BarDataType::Ask,
-            "BID_ASK" => crate::control::historical::BarDataType::BidAsk,
-            "ADJUSTED_LAST" => crate::control::historical::BarDataType::AdjustedLast,
-            "HISTORICAL_VOLATILITY" => crate::control::historical::BarDataType::HistoricalVolatility,
-            "OPTION_IMPLIED_VOLATILITY" => crate::control::historical::BarDataType::ImpliedVolatility,
-            _ => crate::control::historical::BarDataType::Trades,
+        // One shared table, rejection instead of a silent Min5/TRADES
+        // fallback (ibx#232). The client validates synchronously before the
+        // command is sent; this is the engine-side backstop for raw
+        // control-channel callers.
+        let data_type = match crate::control::historical::BarDataType::from_api_str(what_to_show) {
+            Ok(dt) => dt,
+            Err(e) => {
+                log::error!("historical req_id={}: {}", req_id, e);
+                super::push_hmds_error(shared, req_id, e, true);
+                return;
+            }
         };
-
-        let bs = match bar_size {
-            "1 secs" | "1 sec" => crate::control::historical::BarSize::Sec1,
-            "5 secs" => crate::control::historical::BarSize::Sec5,
-            "10 secs" => crate::control::historical::BarSize::Sec10,
-            "15 secs" => crate::control::historical::BarSize::Sec15,
-            "30 secs" => crate::control::historical::BarSize::Sec30,
-            "1 min" => crate::control::historical::BarSize::Min1,
-            "2 mins" => crate::control::historical::BarSize::Min2,
-            "3 mins" => crate::control::historical::BarSize::Min3,
-            "5 mins" => crate::control::historical::BarSize::Min5,
-            "10 mins" => crate::control::historical::BarSize::Min10,
-            "15 mins" => crate::control::historical::BarSize::Min15,
-            "20 mins" => crate::control::historical::BarSize::Min20,
-            "30 mins" => crate::control::historical::BarSize::Min30,
-            "1 hour" => crate::control::historical::BarSize::Hour1,
-            "2 hours" => crate::control::historical::BarSize::Hour2,
-            "3 hours" => crate::control::historical::BarSize::Hour3,
-            "4 hours" => crate::control::historical::BarSize::Hour4,
-            "8 hours" => crate::control::historical::BarSize::Hour8,
-            "1 day" => crate::control::historical::BarSize::Day1,
-            "1 week" | "1W" => crate::control::historical::BarSize::Week1,
-            "1 month" | "1M" => crate::control::historical::BarSize::Month1,
-            _ => crate::control::historical::BarSize::Min5,
+        let bs = match crate::control::historical::BarSize::from_api_str(bar_size) {
+            Ok(bs) => bs,
+            Err(e) => {
+                log::error!("historical req_id={}: {}", req_id, e);
+                super::push_hmds_error(shared, req_id, e, true);
+                return;
+            }
         };
 
         let query_id = format!("hist_{}", qid);
@@ -723,7 +694,8 @@ impl HmdsState {
         hb: &mut HeartbeatState,
         sign_key: &[u8],
         sign_iv: &std::sync::Mutex<Vec<u8>>,
-    ) {
+        shared: &SharedState,
+    ) -> bool {
         // Reuse the same request builder but with keep_up_to_date=true
         let duration = duration.to_lowercase();
         let end_date_time = if end_date_time.is_empty() {
@@ -734,24 +706,34 @@ impl HmdsState {
         let qid = self.next_hmds_query_id;
         self.next_hmds_query_id += 1;
 
-        let data_type = match what_to_show.to_uppercase().as_str() {
-            "MIDPOINT" => crate::control::historical::BarDataType::Midpoint,
-            "BID" => crate::control::historical::BarDataType::Bid,
-            "ASK" => crate::control::historical::BarDataType::Ask,
-            "BID_ASK" => crate::control::historical::BarDataType::BidAsk,
-            "ADJUSTED_LAST" => crate::control::historical::BarDataType::AdjustedLast,
-            "HISTORICAL_VOLATILITY" => crate::control::historical::BarDataType::HistoricalVolatility,
-            "OPTION_IMPLIED_VOLATILITY" => crate::control::historical::BarDataType::ImpliedVolatility,
-            _ => crate::control::historical::BarDataType::Trades,
+        // Same shared table as the batch path — the second, five-entry copy
+        // silently downgraded "1 min" (and 16 other sizes) to Min5 on this
+        // path only (ibx#232). Unsupported streaming sizes reject loudly.
+        let data_type = match crate::control::historical::BarDataType::from_api_str(what_to_show) {
+            Ok(dt) => dt,
+            Err(e) => {
+                log::error!("keepUpToDate req_id={}: {}", req_id, e);
+                super::push_hmds_error(shared, req_id, e, true);
+                return false;
+            }
         };
-
-        let bs = match bar_size {
-            "1 secs" | "1 sec" => crate::control::historical::BarSize::Sec1,
-            "5 secs" => crate::control::historical::BarSize::Sec5,
-            "5 mins" => crate::control::historical::BarSize::Min5,
-            "1 hour" => crate::control::historical::BarSize::Hour1,
-            "1 day" => crate::control::historical::BarSize::Day1,
-            _ => crate::control::historical::BarSize::Min5,
+        let bs = match crate::control::historical::BarSize::from_api_str(bar_size) {
+            Ok(bs) if bs.supports_keep_up_to_date() => bs,
+            Ok(_) => {
+                let e = format!(
+                    "bar_size '{}' is not supported with keep_up_to_date=true: \
+                     supported sizes are 1 secs, 5 secs, 5 mins, 1 hour, 1 day",
+                    bar_size,
+                );
+                log::error!("keepUpToDate req_id={}: {}", req_id, e);
+                super::push_hmds_error(shared, req_id, e, true);
+                return false;
+            }
+            Err(e) => {
+                log::error!("keepUpToDate req_id={}: {}", req_id, e);
+                super::push_hmds_error(shared, req_id, e, true);
+                return false;
+            }
         };
 
         let query_id = format!("hist_{}", qid);
@@ -799,6 +781,7 @@ impl HmdsState {
             hb.last_ccp_sent = Instant::now();
         }
         self.pending_historical.push((query_id, req_id, Instant::now() + HISTORICAL_IDLE_TIMEOUT));
+        true
     }
 
     pub(crate) fn send_historical_cancel(&mut self, query_id: &str, hmds_conn: &mut Option<Connection>, hb: &mut HeartbeatState) {
@@ -822,12 +805,16 @@ impl HmdsState {
         }
     }
 
-    pub(crate) fn send_head_timestamp_request(&mut self, req_id: u32, con_id: i64, what_to_show: &str, use_rth: bool, hmds_conn: &mut Option<Connection>, hb: &mut HeartbeatState) {
-        let data_type = match what_to_show.to_uppercase().as_str() {
-            "MIDPOINT" => crate::control::historical::BarDataType::Midpoint,
-            "BID" => crate::control::historical::BarDataType::Bid,
-            "ASK" => crate::control::historical::BarDataType::Ask,
-            _ => crate::control::historical::BarDataType::Trades,
+    pub(crate) fn send_head_timestamp_request(&mut self, req_id: u32, con_id: i64, what_to_show: &str, use_rth: bool, hmds_conn: &mut Option<Connection>, hb: &mut HeartbeatState, shared: &SharedState) {
+        // Same shared table as the bar paths — this was a third divergent
+        // copy with a silent TRADES fallback (ibx#232).
+        let data_type = match crate::control::historical::BarDataType::from_api_str(what_to_show) {
+            Ok(dt) => dt,
+            Err(e) => {
+                log::error!("head timestamp req_id={}: {}", req_id, e);
+                super::push_hmds_error(shared, req_id, e, false);
+                return;
+            }
         };
         let req = crate::control::historical::HeadTimestampRequest {
             con_id: con_id as u32,
@@ -1172,6 +1159,29 @@ mod tests {
         assert_eq!(errors, vec![(42, 162, "No head timestamp".to_string())]);
         // Head-ts is not a bar request — no historical_data sentinel should fire.
         assert!(shared.reference.drain_historical_data().is_empty());
+    }
+
+    // ── ibx#232: unknown bar_size rejects at the engine too (backstop for
+    // raw control-channel callers; the client validates synchronously) ──
+
+    #[test]
+    fn engine_rejects_unknown_bar_size_with_error_and_sentinel() {
+        let mut hmds = HmdsState::new();
+        let shared = SharedState::new();
+        let mut hb = HeartbeatState::new();
+        let mut conn: Option<Connection> = None;
+
+        hmds.send_historical_request_ex(9, 756733, "", "2 d", "1 Min", "TRADES",
+            true, false, "SPY", &mut conn, &mut hb, &shared);
+
+        assert!(hmds.pending_historical.is_empty(), "rejected request must not go pending");
+        let errors = shared.reference.drain_historical_errors();
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].1, 162);
+        assert!(errors[0].2.contains("bar_size"), "got: {}", errors[0].2);
+        let hist = shared.reference.drain_historical_data();
+        assert_eq!(hist.len(), 1, "terminal sentinel must unblock waiters");
+        assert!(hist[0].1.is_complete);
     }
 
     // ── ibx#231: idle-deadline sweep ──

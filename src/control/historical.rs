@@ -21,6 +21,30 @@ pub enum BarDataType {
 }
 
 impl BarDataType {
+    /// Parse the official API what_to_show string. Unknown values were
+    /// previously coerced to TRADES silently, so a misspelled "BID" quietly
+    /// returned trade bars (ibx#232). An empty string is the documented
+    /// TRADES default; anything else must match exactly (case-insensitive).
+    pub fn from_api_str(s: &str) -> Result<BarDataType, String> {
+        Ok(match s.to_uppercase().as_str() {
+            "" | "TRADES" => Self::Trades,
+            "MIDPOINT" => Self::Midpoint,
+            "BID" => Self::Bid,
+            "ASK" => Self::Ask,
+            "BID_ASK" => Self::BidAsk,
+            "ADJUSTED_LAST" => Self::AdjustedLast,
+            "HISTORICAL_VOLATILITY" => Self::HistoricalVolatility,
+            "OPTION_IMPLIED_VOLATILITY" => Self::ImpliedVolatility,
+            other => {
+                return Err(format!(
+                    "Unsupported what_to_show '{}': expected TRADES, MIDPOINT, \
+                     BID, ASK, BID_ASK, ADJUSTED_LAST, HISTORICAL_VOLATILITY \
+                     or OPTION_IMPLIED_VOLATILITY", other,
+                ));
+            }
+        })
+    }
+
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::Trades => "Last",
@@ -62,6 +86,53 @@ pub enum BarSize {
 }
 
 impl BarSize {
+    /// Parse the official API bar-size string. THE single table for every
+    /// request path — two divergent copies previously fell back to Min5
+    /// silently, so a typo or an unsupported size returned plausible,
+    /// complete, WRONG candles (ibx#232). Case-sensitive on purpose: the
+    /// official API strings are exact.
+    pub fn from_api_str(s: &str) -> Result<BarSize, String> {
+        Ok(match s {
+            "1 secs" | "1 sec" => Self::Sec1,
+            "5 secs" => Self::Sec5,
+            "10 secs" => Self::Sec10,
+            "15 secs" => Self::Sec15,
+            "30 secs" => Self::Sec30,
+            "1 min" => Self::Min1,
+            "2 mins" => Self::Min2,
+            "3 mins" => Self::Min3,
+            "5 mins" => Self::Min5,
+            "10 mins" => Self::Min10,
+            "15 mins" => Self::Min15,
+            "20 mins" => Self::Min20,
+            "30 mins" => Self::Min30,
+            "1 hour" => Self::Hour1,
+            "2 hours" => Self::Hour2,
+            "3 hours" => Self::Hour3,
+            "4 hours" => Self::Hour4,
+            "8 hours" => Self::Hour8,
+            "1 day" => Self::Day1,
+            "1 week" | "1W" => Self::Week1,
+            "1 month" | "1M" => Self::Month1,
+            other => {
+                return Err(format!(
+                    "Unsupported bar_size '{}': expected one of 1 secs, 5 secs, \
+                     10 secs, 15 secs, 30 secs, 1 min, 2 mins, 3 mins, 5 mins, \
+                     10 mins, 15 mins, 20 mins, 30 mins, 1 hour, 2 hours, \
+                     3 hours, 4 hours, 8 hours, 1 day, 1 week, 1 month \
+                     (case-sensitive)", other,
+                ));
+            }
+        })
+    }
+
+    /// Bar sizes the keepUpToDate streaming path supports. The rest are
+    /// accepted on the batch path only; sending them with
+    /// keep_up_to_date=true previously downgraded to Min5 silently (ibx#232).
+    pub fn supports_keep_up_to_date(&self) -> bool {
+        matches!(self, Self::Sec1 | Self::Sec5 | Self::Min5 | Self::Hour1 | Self::Day1)
+    }
+
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::Sec1 => "1 secs",
@@ -713,6 +784,52 @@ mod tests {
         assert_eq!(BarSize::Min5.as_str(), "5 mins");
         assert_eq!(BarSize::Hour1.as_str(), "1 hour");
         assert_eq!(BarSize::Day1.as_str(), "1 day");
+    }
+
+    // ── ibx#232: single parse table, rejection instead of Min5/TRADES ──
+
+    #[test]
+    fn bar_size_from_api_str_accepts_all_official_strings() {
+        let all = [
+            "1 secs", "5 secs", "10 secs", "15 secs", "30 secs",
+            "1 min", "2 mins", "3 mins", "5 mins", "10 mins", "15 mins",
+            "20 mins", "30 mins", "1 hour", "2 hours", "3 hours", "4 hours",
+            "8 hours", "1 day", "1 week", "1 month",
+        ];
+        for s in all {
+            assert!(BarSize::from_api_str(s).is_ok(), "'{}' must parse", s);
+        }
+        assert_eq!(BarSize::from_api_str("1 min").unwrap(), BarSize::Min1);
+    }
+
+    #[test]
+    fn bar_size_from_api_str_rejects_unknown_and_wrong_case() {
+        // The issue's exact repro: "1 Min" silently became 5-minute bars.
+        for s in ["1 Min", "1min", "1 minute", "7 mins", ""] {
+            let err = BarSize::from_api_str(s).unwrap_err();
+            assert!(err.contains("bar_size"), "'{}' -> {}", s, err);
+        }
+    }
+
+    #[test]
+    fn bar_size_keep_up_to_date_support() {
+        for s in ["1 secs", "5 secs", "5 mins", "1 hour", "1 day"] {
+            assert!(BarSize::from_api_str(s).unwrap().supports_keep_up_to_date(), "{}", s);
+        }
+        for s in ["10 secs", "1 min", "15 mins", "4 hours", "1 week"] {
+            assert!(!BarSize::from_api_str(s).unwrap().supports_keep_up_to_date(), "{}", s);
+        }
+    }
+
+    #[test]
+    fn bar_data_type_from_api_str() {
+        assert_eq!(BarDataType::from_api_str("TRADES").unwrap(), BarDataType::Trades);
+        assert_eq!(BarDataType::from_api_str("trades").unwrap(), BarDataType::Trades);
+        assert_eq!(BarDataType::from_api_str("").unwrap(), BarDataType::Trades);
+        assert_eq!(BarDataType::from_api_str("BID_ASK").unwrap(), BarDataType::BidAsk);
+        // A misspelled value used to quietly return trade bars.
+        assert!(BarDataType::from_api_str("TRADE").is_err());
+        assert!(BarDataType::from_api_str("BIDD").is_err());
     }
 
     #[test]

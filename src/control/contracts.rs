@@ -55,6 +55,26 @@ pub enum SecurityType {
 }
 
 impl SecurityType {
+    /// Official API string ("STK", "OPT", ...). THE single mapping for
+    /// everything user-visible — the callbacks previously reported a Debug
+    /// derive ("Stock"), which no request path accepts, so a returned
+    /// Contract could not be fed back into another call (ibx#230).
+    /// `Other` maps to "" on purpose: an instrument the engine could not
+    /// classify must not masquerade as a stock — the order path is
+    /// STK-only and that one wrong guess would not be caught downstream.
+    pub fn to_api_str(&self) -> &'static str {
+        match self {
+            Self::Stock => "STK",
+            Self::Option => "OPT",
+            Self::Future => "FUT",
+            Self::Forex => "CASH",
+            Self::Index => "IND",
+            Self::Bond => "BOND",
+            Self::Warrant => "WAR",
+            Self::Other => "",
+        }
+    }
+
     /// Convert from API string.
     pub fn to_fix(&self) -> &'static str {
         match self {
@@ -1138,6 +1158,24 @@ mod tests {
         assert_eq!(matches[0].derivative_types, vec!["OPT", "WAR"]);
         assert_eq!(matches[1].symbol, "APP");
         assert_eq!(matches[1].con_id, 481863646);
+    }
+
+    // ibx#230: user-visible sec_type must be the official API string, and
+    // an unclassifiable instrument must not masquerade as a stock.
+    #[test]
+    fn sec_type_to_api_str_round_trips_and_other_is_empty() {
+        assert_eq!(SecurityType::Stock.to_api_str(), "STK");
+        assert_eq!(SecurityType::Forex.to_api_str(), "CASH");
+        assert_eq!(SecurityType::Warrant.to_api_str(), "WAR");
+        assert_eq!(SecurityType::Other.to_api_str(), "");
+        // Every non-Other variant survives the round trip back through the
+        // inbound parser (which accepts API strings too), so a reported
+        // Contract can be fed into another request.
+        for st in [SecurityType::Stock, SecurityType::Option, SecurityType::Future,
+                   SecurityType::Forex, SecurityType::Index, SecurityType::Bond,
+                   SecurityType::Warrant] {
+            assert_eq!(SecurityType::from_fix(st.to_api_str()), st, "{:?}", st);
+        }
     }
 
     #[test]

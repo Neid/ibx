@@ -418,10 +418,11 @@ impl HotLoop {
                     if self.hmds_conn.is_none() {
                         self.emit_hmds_unavailable(req_id, true);
                     } else if keep_up_to_date {
-                        self.hmds.send_historical_request_via_ccp(req_id, con_id, &end_date_time, &duration, &bar_size, &what_to_show, use_rth, &symbol, &mut self.ccp_conn, &mut self.hb, &self.ccp.ccp_sign_key, &self.ccp.ccp_sign_iv);
-                        self.hmds.keep_up_to_date_reqs.insert(req_id);
+                        if self.hmds.send_historical_request_via_ccp(req_id, con_id, &end_date_time, &duration, &bar_size, &what_to_show, use_rth, &symbol, &mut self.ccp_conn, &mut self.hb, &self.ccp.ccp_sign_key, &self.ccp.ccp_sign_iv, &self.shared) {
+                            self.hmds.keep_up_to_date_reqs.insert(req_id);
+                        }
                     } else {
-                        self.hmds.send_historical_request_ex(req_id, con_id, &end_date_time, &duration, &bar_size, &what_to_show, use_rth, false, &symbol, &mut self.hmds_conn, &mut self.hb);
+                        self.hmds.send_historical_request_ex(req_id, con_id, &end_date_time, &duration, &bar_size, &what_to_show, use_rth, false, &symbol, &mut self.hmds_conn, &mut self.hb, &self.shared);
                     }
                 }
                 ControlCommand::CancelHistorical { req_id } => {
@@ -435,7 +436,7 @@ impl HotLoop {
                     if self.hmds_conn.is_none() {
                         self.emit_hmds_unavailable(req_id, false);
                     } else {
-                        self.hmds.send_head_timestamp_request(req_id, con_id, &what_to_show, use_rth, &mut self.hmds_conn, &mut self.hb);
+                        self.hmds.send_head_timestamp_request(req_id, con_id, &what_to_show, use_rth, &mut self.hmds_conn, &mut self.hb, &self.shared);
                     }
                 }
                 ControlCommand::FetchContractDetails { req_id, con_id, symbol, sec_type, exchange, currency } => {
@@ -1132,12 +1133,21 @@ pub(crate) fn hmds_reconnect_backoff(attempt: u32) -> std::time::Duration {
 /// `historical_data_end` fires. Without this, requests issued while HMDS is
 /// down hang silently (ibx#187).
 pub(crate) fn push_hmds_unavailable(shared: &SharedState, req_id: u32, from_historical: bool) {
+    push_hmds_error(
+        shared, req_id,
+        "Historical data service connection is not available".to_string(),
+        from_historical,
+    );
+}
+
+/// Surface an HMDS-side request failure: error 162 plus, for bar requests,
+/// the terminal completion sentinel so a blocked wait unblocks.
+pub(crate) fn push_hmds_error(shared: &SharedState, req_id: u32, message: String, from_historical: bool) {
     const HMDS_ERROR_CODE: i32 = 162;
-    const ERROR_MSG: &str = "Historical data service connection is not available";
     shared.reference.push_historical_error(
         req_id,
         HMDS_ERROR_CODE,
-        ERROR_MSG.to_string(),
+        message,
     );
     if from_historical {
         shared.reference.push_historical_data(

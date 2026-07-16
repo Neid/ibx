@@ -43,19 +43,6 @@ fn extract_tag_value(msg: &[u8], prefix: &[u8]) -> Option<String> {
     None
 }
 
-fn sec_type_to_str(sec_type: crate::control::contracts::SecurityType) -> &'static str {
-    match sec_type {
-        crate::control::contracts::SecurityType::Stock => "STK",
-        crate::control::contracts::SecurityType::Option => "OPT",
-        crate::control::contracts::SecurityType::Future => "FUT",
-        crate::control::contracts::SecurityType::Forex => "CASH",
-        crate::control::contracts::SecurityType::Index => "IND",
-        crate::control::contracts::SecurityType::Bond => "BOND",
-        crate::control::contracts::SecurityType::Warrant => "WAR",
-        _ => "STK",
-    }
-}
-
 fn perm_id_from_fix_order_id(s: &str) -> i64 {
     // Hash only the stable prefix: "00cf16ed.000225ed.69ca0941" (drop ".0001")
     let stable = match s.rmatch_indices('.').next() {
@@ -460,7 +447,7 @@ impl CcpState {
                     if let Some(def) = crate::control::contracts::parse_secdef_response(msg) {
                         let api_req_id = self.pending_fanout[idx].api_req_id;
                         if def.con_id != 0 {
-                            let sec_type_str = sec_type_to_str(def.sec_type);
+                            let sec_type_str = def.sec_type.to_api_str();
                             shared.reference.cache_contract(def.con_id as i64, api::Contract {
                                 con_id: def.con_id as i64,
                                 symbol: def.symbol.clone(),
@@ -494,7 +481,7 @@ impl CcpState {
                 if let Some(def) = crate::control::contracts::parse_secdef_response(msg) {
                     let is_last_wire = crate::control::contracts::secdef_response_is_last(msg);
                     if def.con_id != 0 {
-                        let sec_type_str = sec_type_to_str(def.sec_type);
+                        let sec_type_str = def.sec_type.to_api_str();
                         shared.reference.cache_contract(def.con_id as i64, api::Contract {
                             con_id: def.con_id as i64,
                             symbol: def.symbol.clone(),

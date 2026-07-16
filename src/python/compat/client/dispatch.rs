@@ -351,7 +351,7 @@ impl EClient {
         // Drain contract details -> contractDetails + contractDetailsEnd
         let contract_defs = shared.reference.drain_contract_details();
         for (req_id, def) in contract_defs {
-            let details = ContractDetails::from_definition(&def);
+            let details = ContractDetails::from_definition(py, &def);
             let details_py = Py::new(py, details)?.into_any();
             call_wrapper!(self.wrapper, py, "contract_details",
                 (req_id as i64, &details_py));
@@ -404,17 +404,20 @@ impl EClient {
         let scanner_results = shared.reference.drain_scanner_data();
         for (req_id, result) in scanner_results {
             for (rank, entry) in result.entries.iter().enumerate() {
-                let mut cd = ContractDetails::default();
-                cd.contract.con_id = entry.con_id as i64;
-                // Look up cached contract for symbol info
-                if let Some(ac) = self.core.get_contract(entry.con_id as i64, shared) {
-                    cd.contract.symbol = ac.symbol;
-                    cd.contract.sec_type = ac.sec_type;
-                    cd.contract.exchange = ac.exchange;
-                    cd.contract.currency = ac.currency;
-                    cd.contract.local_symbol = ac.local_symbol;
-                    cd.contract.primary_exchange = ac.primary_exchange;
-                    cd.contract.trading_class = ac.trading_class;
+                let cd = ContractDetails::new_default(py);
+                {
+                    let mut contract = cd.contract.borrow_mut(py);
+                    contract.con_id = entry.con_id as i64;
+                    // Look up cached contract for symbol info
+                    if let Some(ac) = self.core.get_contract(entry.con_id as i64, shared) {
+                        contract.symbol = ac.symbol;
+                        contract.sec_type = ac.sec_type;
+                        contract.exchange = ac.exchange;
+                        contract.currency = ac.currency;
+                        contract.local_symbol = ac.local_symbol;
+                        contract.primary_exchange = ac.primary_exchange;
+                        contract.trading_class = ac.trading_class;
+                    }
                 }
                 let cd_py = Py::new(py, cd)?.into_any();
                 call_wrapper!(self.wrapper, py, "scanner_data", (req_id as i64, rank as i32, &cd_py, "", "", "", ""));
