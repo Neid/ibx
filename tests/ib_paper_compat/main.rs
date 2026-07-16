@@ -98,6 +98,7 @@ fn compat_suite() {
                             Frame::FixComp(r) => (r, "FIXCOMP"),
                             Frame::Binary(r) => (r, "Binary"),
                             Frame::Fix(r) => (r, "FIX"),
+                            Frame::Control(r) => (r, "Control"),
                         };
                         let (unsigned, valid) = conn.unsign(raw);
                         if label == "FIXCOMP" {

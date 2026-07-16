@@ -78,6 +78,8 @@ pub(super) fn ccp_keepalive(ccp: &mut Connection) {
         for frame in frames {
             let raw = match &frame {
                 Frame::Fix(r) | Frame::FixComp(r) | Frame::Binary(r) => r,
+                // Control-state frames are not consumed downstream (ibx#185).
+                Frame::Control(_) => continue,
             };
             let (unsigned, _) = ccp.unsign(raw);
             let msg = if matches!(frame, Frame::FixComp(_)) {
