@@ -111,12 +111,18 @@ pub(super) fn ccp_keepalive(ccp: &mut Connection) {
     ]);
 }
 
-/// Generate a unique order ID based on current time.
+/// Generate a unique order ID based on current time. The trailing three
+/// digits come from a process-wide counter: two calls in the same
+/// millisecond (e.g. allocating a parent and child id back-to-back)
+/// otherwise return the SAME id, and the second order clobbers the first.
 pub(super) fn next_order_id() -> OrderId {
-    std::time::SystemTime::now()
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    let base = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
-        .as_millis() as u64 * 1000
+        .as_millis() as u64 * 1000;
+    base + (SEQ.fetch_add(1, Ordering::Relaxed) % 1000)
 }
 
 /// Check if CCP connection is alive and reconnect the full gateway if not.
@@ -295,6 +301,7 @@ pub(super) fn run_submit_cancel_phase(
         OrderRequest::SubmitLimitFractional { order_id, .. } => *order_id,
         OrderRequest::SubmitAdjustableStop { order_id, .. } => *order_id,
         OrderRequest::SubmitTrailingStopPctEx { order_id, .. } => *order_id,
+        OrderRequest::SubmitEx { order_id, .. } => *order_id,
         OrderRequest::SubmitBracket { parent_id, .. } => *parent_id,
         OrderRequest::Cancel { order_id } => *order_id,
         OrderRequest::CancelAll { .. } => 0,

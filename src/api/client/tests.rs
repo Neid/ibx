@@ -343,6 +343,144 @@ fn place_order_limit_hidden_uses_limit_ex() {
     }
 }
 
+// ── ibx#224: every order type must carry attrs + tif when set ──
+
+#[test]
+fn place_order_stop_with_parent_and_gtc_uses_submit_ex() {
+    let (client, rx, shared) = test_client();
+    shared.market.set_instrument_count(1);
+    let order = Order {
+        action: "SELL".into(), total_quantity: 1.0, order_type: "STP".into(),
+        aux_price: 240.0, tif: "GTC".into(), parent_id: 42,
+        oca_group: "77".into(), ..Default::default()
+    };
+    client.place_order(1, &spy(), &order).unwrap();
+
+    let cmd = rx.try_recv().unwrap();
+    match cmd {
+        ControlCommand::Order(OrderRequest::SubmitEx { kind, tif, attrs, .. }) => {
+            assert!(matches!(kind, crate::types::OrderKind::Stop { stop_price }
+                if stop_price == (240.0 * PRICE_SCALE_F) as i64));
+            assert_eq!(tif, b'1'); // GTC
+            assert_eq!(attrs.parent_id, 42);
+            assert_eq!(attrs.oca_group, 77);
+        }
+        _ => panic!("expected SubmitEx, got {:?}", cmd),
+    }
+}
+
+#[test]
+fn place_order_market_outside_rth_uses_submit_ex() {
+    let (client, rx, shared) = test_client();
+    shared.market.set_instrument_count(1);
+    let order = Order {
+        action: "BUY".into(), total_quantity: 1.0, order_type: "MKT".into(),
+        outside_rth: true, ..Default::default()
+    };
+    client.place_order(1, &spy(), &order).unwrap();
+
+    let cmd = rx.try_recv().unwrap();
+    match cmd {
+        ControlCommand::Order(OrderRequest::SubmitEx { kind, tif, attrs, .. }) => {
+            assert!(matches!(kind, crate::types::OrderKind::Market));
+            assert_eq!(tif, b'0'); // DAY
+            assert!(attrs.outside_rth);
+        }
+        _ => panic!("expected SubmitEx, got {:?}", cmd),
+    }
+}
+
+#[test]
+fn place_order_trailing_amount_with_oca_uses_submit_ex() {
+    let (client, rx, shared) = test_client();
+    shared.market.set_instrument_count(1);
+    let order = Order {
+        action: "SELL".into(), total_quantity: 1.0, order_type: "TRAIL".into(),
+        aux_price: 2.0, tif: "GTC".into(), oca_group: "exit_9".into(),
+        oca_type: 2, ..Default::default()
+    };
+    client.place_order(1, &spy(), &order).unwrap();
+
+    let cmd = rx.try_recv().unwrap();
+    match cmd {
+        ControlCommand::Order(OrderRequest::SubmitEx { kind, tif, attrs, .. }) => {
+            assert!(matches!(kind, crate::types::OrderKind::TrailingStop { trail_amt }
+                if trail_amt == (2.0 * PRICE_SCALE_F) as i64));
+            assert_eq!(tif, b'1');
+            assert_eq!(attrs.oca_group_str, "exit_9");
+            assert_eq!(attrs.oca_type, 2); // ibx#215
+        }
+        _ => panic!("expected SubmitEx, got {:?}", cmd),
+    }
+}
+
+#[test]
+fn place_order_empty_tif_stays_plain() {
+    // tif "" is DAY (the official API default) — no extended routing.
+    let (client, rx, shared) = test_client();
+    shared.market.set_instrument_count(1);
+    let order = Order {
+        action: "BUY".into(), total_quantity: 1.0, order_type: "STP".into(),
+        aux_price: 240.0, ..Default::default()
+    };
+    client.place_order(1, &spy(), &order).unwrap();
+    assert!(matches!(rx.try_recv().unwrap(),
+        ControlCommand::Order(OrderRequest::SubmitStop { .. })));
+}
+
+// ── ibx#226: transmit=false must be rejected, not silently ignored ──
+
+#[test]
+fn place_order_transmit_false_is_rejected() {
+    let (client, rx, shared) = test_client();
+    shared.market.set_instrument_count(1);
+    let order = Order {
+        action: "BUY".into(), total_quantity: 1.0, order_type: "LMT".into(),
+        lmt_price: 100.0, transmit: false, ..Default::default()
+    };
+    let err = client.place_order(1, &spy(), &order).unwrap_err();
+    assert!(err.to_string().contains("transmit=false"), "got: {}", err);
+    assert!(rx.try_recv().is_err(), "nothing may reach the engine");
+}
+
+#[test]
+fn place_order_unknown_tif_is_rejected() {
+    let (client, rx, shared) = test_client();
+    shared.market.set_instrument_count(1);
+    let order = Order {
+        action: "BUY".into(), total_quantity: 1.0, order_type: "LMT".into(),
+        lmt_price: 100.0, tif: "GTX".into(), ..Default::default()
+    };
+    let err = client.place_order(1, &spy(), &order).unwrap_err();
+    assert!(err.to_string().contains("tif"), "got: {}", err);
+    assert!(rx.try_recv().is_err());
+}
+
+#[test]
+fn place_order_all_or_none_trail_is_rejected() {
+    let (client, rx, shared) = test_client();
+    shared.market.set_instrument_count(1);
+    let order = Order {
+        action: "SELL".into(), total_quantity: 1.0, order_type: "TRAIL".into(),
+        aux_price: 2.0, all_or_none: true, ..Default::default()
+    };
+    let err = client.place_order(1, &spy(), &order).unwrap_err();
+    assert!(err.to_string().contains("all_or_none"), "got: {}", err);
+    assert!(rx.try_recv().is_err());
+}
+
+// ── ibx#215: oca_type carried and coerced ──
+
+#[test]
+fn attrs_oca_type_coerces_out_of_range_to_unset() {
+    let order = Order { oca_type: 9, ..Default::default() };
+    assert_eq!(order.attrs().oca_type, 0);
+    let order = Order { oca_type: 4, ..Default::default() };
+    assert_eq!(order.attrs().oca_type, 4);
+    let order = Order { oca_type: -1, ..Default::default() };
+    assert_eq!(order.attrs().oca_type, 0);
+}
+
 #[test]
 fn place_order_stop() {
     let (client, rx, shared) = test_client();

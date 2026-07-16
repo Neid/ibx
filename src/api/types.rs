@@ -447,6 +447,12 @@ impl Order {
             conditions: self.conditions.clone(),
             conditions_cancel_order: self.conditions_cancel_order,
             conditions_ignore_rth: self.conditions_ignore_rth,
+            // Keep 1..=4; anything else is "unset" and emits the gateway
+            // default 3 (ReduceOnFillNonBlock). See ibx#215.
+            oca_type: match self.oca_type {
+                1..=4 => self.oca_type as u8,
+                _ => 0,
+            },
         }
     }
 

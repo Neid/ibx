@@ -294,6 +294,10 @@ pub struct OrderAttrs {
     pub conditions_cancel_order: bool,
     /// Evaluate conditions outside regular trading hours (IB tag 6151). Default false.
     pub conditions_ignore_rth: bool,
+    /// OCA cancellation semantics (IB tag 6209), 1..=4. 0 = not set, which
+    /// emits the gateway default 3 (ReduceOnFillNonBlock). Only emitted when
+    /// an OCA group is present. See ibx#215.
+    pub oca_type: u8,
 }
 
 /// A condition that must be met before an order activates.
@@ -423,6 +427,39 @@ pub enum AlgoParams {
         start_time: String,
         end_time: String,
     },
+}
+
+/// The order-type-specific part of an extended order submission: which
+/// order type and its price parameters. Used by `OrderRequest::SubmitEx`,
+/// which pairs any of these with a TIF and an `OrderAttrs` block, so every
+/// order type can carry extended attributes without a per-type `*Ex`
+/// variant (ibx#224).
+#[derive(Debug, Clone, Copy)]
+pub enum OrderKind {
+    Market,
+    Limit { price: Price },
+    Stop { stop_price: Price },
+    StopLimit { price: Price, stop_price: Price },
+    /// Trailing stop by absolute amount.
+    TrailingStop { trail_amt: Price },
+    /// Trailing stop limit; `lmt_offset` is the limit-vs-trail offset (tag 6370).
+    TrailingStopLimit { lmt_offset: Price, trail_amt: Price },
+    /// Trailing stop by percentage. Basis points: 100 = 1%.
+    TrailPct { trail_pct: u32 },
+    Moc,
+    Loc { price: Price },
+    Mit { stop_price: Price },
+    Lit { price: Price, stop_price: Price },
+    Mtl,
+    MktPrt,
+    StpPrt { stop_price: Price },
+    MidPrice { price_cap: Price },
+    SnapMkt,
+    SnapMid,
+    SnapPri,
+    PegMkt { offset: Price },
+    PegMid { offset: Price },
+    Rel { offset: Price },
 }
 
 /// Order request sent via control channel, processed by engine.
@@ -577,6 +614,19 @@ pub enum OrderRequest {
         side: Side,
         qty: u32,
         price: Price,
+        tif: u8,
+        attrs: OrderAttrs,
+    },
+    /// Extended submission for any order type: `kind` selects the order type
+    /// and its prices, paired with a TIF and the full `OrderAttrs` block.
+    /// This is how non-LMT types carry parent_id/oca_group/outside_rth/tif
+    /// (ibx#224).
+    SubmitEx {
+        order_id: OrderId,
+        instrument: InstrumentId,
+        side: Side,
+        qty: u32,
+        kind: OrderKind,
         tif: u8,
         attrs: OrderAttrs,
     },
@@ -798,7 +848,8 @@ impl OrderRequest {
             | Self::SubmitMtlAuc { order_id, .. }
             | Self::SubmitWhatIf { order_id, .. }
             | Self::SubmitLimitFractional { order_id, .. }
-            | Self::SubmitAdjustableStop { order_id, .. } => *order_id,
+            | Self::SubmitAdjustableStop { order_id, .. }
+            | Self::SubmitEx { order_id, .. } => *order_id,
             Self::SubmitBracket { parent_id, .. } => *parent_id,
         }
     }

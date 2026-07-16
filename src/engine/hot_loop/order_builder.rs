@@ -8,7 +8,7 @@ use crate::protocol::connection::Connection;
 use crate::protocol::fix;
 use crate::types::{AlgoParams, OrderCondition, OrderRequest, OrderStatus, OrderUpdate, Side};
 
-use super::{HeartbeatState, format_price, format_qty, format_int, format_uint};
+use super::{HeartbeatState, format_price, format_qty, format_uint};
 
 pub(crate) fn drain_and_send_orders(
     ccp_conn: &mut Option<Connection>,
@@ -129,130 +129,12 @@ pub(crate) fn drain_and_send_orders(
                 conn.send_fix(&fields)
             }
             OrderRequest::SubmitLimitEx { order_id, instrument, side, qty, price, tif, attrs } => {
-                context.insert_order(crate::types::Order::new(
-                    order_id, instrument, side, qty, price, b'2', tif, 0,
-                ));
-                let ver = *context.modify_versions.get(&order_id).unwrap_or(&0);
-                let clord_str = format!("{}.{}", order_id, ver);
-                let side_str = fix_side(side);
-                let qty_str = format_uint(qty as u64);
-                let price_str = format_price(price);
-                let tif_byte = [tif];
-                let tif_str = std::str::from_utf8(&tif_byte).unwrap_or("0");
-                let symbol = context.market.symbol(instrument).to_string();
-                let now = chrono_free_timestamp();
-                let display_str = format_uint(attrs.display_size as u64);
-                let min_qty_str = format_uint(attrs.min_qty as u64);
-                let gat_str = if attrs.good_after > 0 { unix_to_ib_datetime(attrs.good_after) } else { String::new() };
-                let gtd_time_str = if attrs.good_till > 0 { unix_to_ib_utc_dash(attrs.good_till) } else { String::new() };
-                let gtd_date_str = if attrs.good_till_date_ymd > 0 { format!("{:08}", attrs.good_till_date_ymd) } else { String::new() };
-                let oca_str = if !attrs.oca_group_str.is_empty() {
-                    attrs.oca_group_str.clone()
-                } else if attrs.oca_group > 0 {
-                    format!("OCA_{}", attrs.oca_group)
-                } else {
-                    String::new()
-                };
-                let parent_str = if attrs.parent_id > 0 {
-                    // Match parent ClOrdID format: "{order_id}.{ver}" — assume ver=0 for initial submission
-                    format!("{}.0", attrs.parent_id)
-                } else { String::new() };
-                let mut fields: Vec<(u32, &str)> = vec![
-                    (fix::TAG_MSG_TYPE, fix::MSG_NEW_ORDER),
-                    (fix::TAG_SENDING_TIME, &now),
-                    (11, &clord_str),
-                    (1, account_id),
-                    (21, "2"),
-                    (55, &symbol),
-                    (54, side_str),
-                    (38, &qty_str),
-                    (40, "2"),              // OrdType = Limit
-                    (44, &price_str),
-                    (59, tif_str),
-                    (60, &now),
-                    (167, "STK"),
-                    (100, "SMART"),
-                    (15, "USD"),
-                    (204, "0"),
-                ];
-                if attrs.display_size > 0 {
-                    fields.push((111, &display_str));
-                }
-                if attrs.min_qty > 0 {
-                    fields.push((110, &min_qty_str));
-                }
-                if attrs.outside_rth {
-                    fields.push((6433, "1"));
-                }
-                if attrs.hidden {
-                    fields.push((6135, "1"));
-                }
-                if attrs.good_after > 0 {
-                    fields.push((168, &gat_str));
-                }
-                // GTD expiry: date-only -> tag 432; time-precise -> tag 126 (UTC).
-                // Mutually exclusive — never both (gateway rejects both together).
-                if attrs.good_till_date_ymd > 0 {
-                    fields.push((432, &gtd_date_str));
-                } else if attrs.good_till > 0 {
-                    fields.push((126, &gtd_time_str));
-                }
-                if !oca_str.is_empty() {
-                    fields.push((583, &oca_str));
-                    fields.push((6209, "CancelOnFillWBlock"));
-                }
-                if attrs.parent_id > 0 {
-                    fields.push((6107, &parent_str));
-                }
-                let disc_str;
-                if attrs.discretionary_amt > 0 {
-                    disc_str = format_price(attrs.discretionary_amt);
-                    fields.push((9813, &disc_str));
-                }
-                if attrs.sweep_to_fill {
-                    fields.push((6102, "1"));
-                }
-                if attrs.all_or_none {
-                    fields.push((18, "G"));
-                }
-                let trigger_str;
-                if attrs.trigger_method > 0 {
-                    trigger_str = attrs.trigger_method.to_string();
-                    fields.push((6115, &trigger_str));
-                }
-                let cash_qty_str;
-                if attrs.cash_qty > 0 {
-                    cash_qty_str = format_price(attrs.cash_qty);
-                    fields.push((5920, &cash_qty_str));
-                }
-                // Condition tags (6136+ framework)
-                let cond_strs = build_condition_strings(&attrs.conditions);
-                if !attrs.conditions.is_empty() {
-                    let count_str = &cond_strs[0]; // first element is count
-                    fields.push((6136, count_str));
-                    if attrs.conditions_cancel_order {
-                        fields.push((6128, "1"));
-                    }
-                    if attrs.conditions_ignore_rth {
-                        fields.push((6151, "1"));
-                    }
-                    // Per-condition tags start at index 1, 11 strings per condition
-                    for i in 0..attrs.conditions.len() {
-                        let base = 1 + i * 11;
-                        fields.push((6222, &cond_strs[base]));      // condType
-                        fields.push((6137, &cond_strs[base + 1]));  // conjunction
-                        fields.push((6126, &cond_strs[base + 2]));  // operator
-                        fields.push((6123, &cond_strs[base + 3]));  // conId
-                        fields.push((6124, &cond_strs[base + 4]));  // exchange
-                        fields.push((6127, &cond_strs[base + 5]));  // triggerMethod
-                        fields.push((6125, &cond_strs[base + 6]));  // price
-                        fields.push((6223, &cond_strs[base + 7]));  // time
-                        fields.push((6245, &cond_strs[base + 8]));  // percent
-                        fields.push((6263, &cond_strs[base + 9]));  // volume
-                        fields.push((6246, &cond_strs[base + 10])); // execution
-                    }
-                }
-                conn.send_fix(&fields)
+                send_order_ex(conn, context, account_id, order_id, instrument, side, qty,
+                    crate::types::OrderKind::Limit { price }, tif, &attrs)
+            }
+            OrderRequest::SubmitEx { order_id, instrument, side, qty, kind, tif, attrs } => {
+                send_order_ex(conn, context, account_id, order_id, instrument, side, qty,
+                    kind, tif, &attrs)
             }
             OrderRequest::SubmitMarket { order_id, instrument, side, qty } => {
                 context.insert_order(crate::types::Order::new(
@@ -557,74 +439,8 @@ pub(crate) fn drain_and_send_orders(
                 ])
             }
             OrderRequest::SubmitTrailingStopPctEx { order_id, instrument, side, qty, trail_pct, tif, attrs } => {
-                context.insert_order(crate::types::Order::new(
-                    order_id, instrument, side, qty, 0, b'P', tif, 0,
-                ));
-                let ver = *context.modify_versions.get(&order_id).unwrap_or(&0);
-                let clord_str = format!("{}.{}", order_id, ver);
-                let side_str = fix_side(side);
-                let qty_str = format_uint(qty as u64);
-                let pct_str = trail_pct.to_string();
-                // Per ib-agent#156 capture: percent-trail mirrors 99/211 as the
-                // percent in decimal form (1.00 for 1%), alongside 6268 in basis
-                // points and 18=a (ExecInst=TrailingStop). Without 99/211/18 the
-                // gateway rejects with "Invalid value in field # 18".
-                let pct_decimal = format!("{:.2}", trail_pct as f64 / 100.0);
-                let symbol = context.market.symbol(instrument).to_string();
-                let now = chrono_free_timestamp();
-                let tif_byte = [tif];
-                let tif_str = std::str::from_utf8(&tif_byte).unwrap_or("0");
-                let oca_str = if !attrs.oca_group_str.is_empty() {
-                    attrs.oca_group_str.clone()
-                } else if attrs.oca_group > 0 {
-                    format!("OCA_{}", attrs.oca_group)
-                } else {
-                    String::new()
-                };
-                let parent_str = if attrs.parent_id > 0 {
-                    format!("{}.0", attrs.parent_id)
-                } else { String::new() };
-                let gtd_time_str = if attrs.good_till > 0 { unix_to_ib_utc_dash(attrs.good_till) } else { String::new() };
-                let gtd_date_str = if attrs.good_till_date_ymd > 0 { format!("{:08}", attrs.good_till_date_ymd) } else { String::new() };
-                let mut fields: Vec<(u32, &str)> = vec![
-                    (fix::TAG_MSG_TYPE, fix::MSG_NEW_ORDER),
-                    (fix::TAG_SENDING_TIME, &now),
-                    (11, &clord_str),
-                    (1, account_id),
-                    (21, "2"),
-                    (55, &symbol),
-                    (54, side_str),
-                    (38, &qty_str),
-                    (40, "P"),              // OrdType = Trailing Stop
-                    (99, &pct_decimal),     // StopPx = percent as decimal
-                    (211, &pct_decimal),    // PegOffset = percent as decimal (mirror of 99)
-                    (18, "a"),              // ExecInst = TrailingStop
-                    (6268, &pct_str),       // TrailingPercent (basis points)
-                    (59, tif_str),
-                    (60, &now),
-                    (167, "STK"),
-                    (100, "SMART"),
-                    (15, "USD"),
-                    (204, "0"),
-                ];
-                if attrs.outside_rth {
-                    fields.push((6433, "1"));
-                }
-                // GTD expiry: date-only -> tag 432; time-precise -> tag 126 (UTC).
-                // Mutually exclusive — never both (gateway rejects both together).
-                if attrs.good_till_date_ymd > 0 {
-                    fields.push((432, &gtd_date_str));
-                } else if attrs.good_till > 0 {
-                    fields.push((126, &gtd_time_str));
-                }
-                if !oca_str.is_empty() {
-                    fields.push((583, &oca_str));
-                    fields.push((6209, "CancelOnFillWBlock"));
-                }
-                if attrs.parent_id > 0 {
-                    fields.push((6107, &parent_str));
-                }
-                conn.send_fix(&fields)
+                send_order_ex(conn, context, account_id, order_id, instrument, side, qty,
+                    crate::types::OrderKind::TrailPct { trail_pct }, tif, &attrs)
             }
             OrderRequest::SubmitMoc { order_id, instrument, side, qty } => {
                 context.insert_order(crate::types::Order::new(
@@ -808,7 +624,7 @@ pub(crate) fn drain_and_send_orders(
                     (204, "0"),
                     (6107, &parent_str),       // ParentOrderID
                     (583, &oca_group),         // OCAGroup
-                    (6209, "CancelOnFillWBlock"), // OCA cancel-on-fill
+                    (6209, "ReduceOnFillNonBlock"), // OCA type: gateway default 3 (ibx#215)
                 ]);
 
                 // 3. Stop-loss child: stop exit, linked to parent, in OCA group
@@ -835,7 +651,7 @@ pub(crate) fn drain_and_send_orders(
                     (204, "0"),
                     (6107, &parent_str),       // ParentOrderID
                     (583, &oca_group),         // OCAGroup
-                    (6209, "CancelOnFillWBlock"), // OCA cancel-on-fill
+                    (6209, "ReduceOnFillNonBlock"), // OCA type: gateway default 3 (ibx#215)
                 ])
             }
             OrderRequest::SubmitRel { order_id, instrument, side, qty, offset } => {
@@ -1612,6 +1428,290 @@ fn fix_side(side: Side) -> &'static str {
         Side::Sell => "2",
         Side::ShortSell => "5",
     }
+}
+
+/// Map the OCA type code (1..=4) to its tag 6209 wire label. 0/unset and
+/// out-of-range coerce to 3 (ReduceOnFillNonBlock), the gateway default
+/// (ibx#215).
+fn oca_type_str(oca_type: u8) -> &'static str {
+    match oca_type {
+        1 => "CancelOnFillWBlock",
+        2 => "ReduceOnFillWBlock",
+        4 => "ReduceOnFillWBlockFromTotal",
+        _ => "ReduceOnFillNonBlock",
+    }
+}
+
+/// One shared encoder for every extended order submission (ibx#224): the
+/// order-type-specific tags come from `kind`; the TIF and the full
+/// `OrderAttrs` block are emitted identically for all kinds.
+/// `SubmitLimitEx`, `SubmitTrailingStopPctEx` and `SubmitEx` all route
+/// through here so the attrs emission cannot drift between order types.
+#[allow(clippy::too_many_arguments)]
+fn send_order_ex(
+    conn: &mut Connection,
+    context: &mut Context,
+    account_id: &str,
+    order_id: crate::types::OrderId,
+    instrument: crate::types::InstrumentId,
+    side: Side,
+    qty: u32,
+    kind: crate::types::OrderKind,
+    tif: u8,
+    attrs: &crate::types::OrderAttrs,
+) -> std::io::Result<()> {
+    use crate::types::OrderKind as K;
+
+    // Engine-state entry: ord_type byte, tracked price, and tracked stop
+    // price per kind — mirrors the corresponding plain variants exactly.
+    let (ord_type_byte, track_price, track_stop) = match kind {
+        K::Market => (b'1', 0, 0),
+        K::Limit { price } => (b'2', price, 0),
+        K::Stop { stop_price } => (b'3', stop_price, stop_price),
+        K::StopLimit { price, stop_price } => (b'4', price, stop_price),
+        K::TrailingStop { .. } => (b'P', 0, 0),
+        K::TrailingStopLimit { lmt_offset, .. } => (b'P', lmt_offset, 0),
+        K::TrailPct { .. } => (b'P', 0, 0),
+        K::Moc => (b'5', 0, 0),
+        K::Loc { price } => (b'B', price, 0),
+        K::Mit { stop_price } => (b'J', stop_price, stop_price),
+        K::Lit { price, stop_price } => (b'K', price, stop_price),
+        K::Mtl => (b'K', 0, 0),
+        K::MktPrt => (b'U', 0, 0),
+        K::StpPrt { stop_price } => (crate::types::ORD_STP_PRT, 0, stop_price),
+        K::MidPrice { price_cap } => (crate::types::ORD_MIDPX, price_cap, 0),
+        K::SnapMkt => (crate::types::ORD_SNAP_MKT, 0, 0),
+        K::SnapMid => (crate::types::ORD_SNAP_MID, 0, 0),
+        K::SnapPri => (crate::types::ORD_SNAP_PRI, 0, 0),
+        K::PegMkt { offset } => (crate::types::ORD_PEG_MKT, 0, offset),
+        K::PegMid { offset } => (crate::types::ORD_PEG_MID, 0, offset),
+        K::Rel { offset } => (b'R', 0, offset),
+    };
+    context.insert_order(crate::types::Order::new(
+        order_id, instrument, side, qty, track_price, ord_type_byte, tif, track_stop,
+    ));
+
+    let ver = *context.modify_versions.get(&order_id).unwrap_or(&0);
+    let symbol = context.market.symbol(instrument).to_string();
+    let now = chrono_free_timestamp().to_string();
+    let tif_byte = [tif];
+    let tif_str = std::str::from_utf8(&tif_byte).unwrap_or("0");
+
+    let mut fields: Vec<(u32, String)> = vec![
+        (fix::TAG_MSG_TYPE, fix::MSG_NEW_ORDER.to_string()),
+        (fix::TAG_SENDING_TIME, now.clone()),
+        (11, format!("{}.{}", order_id, ver)),
+        (1, account_id.to_string()),
+        (21, "2".to_string()),
+        (55, symbol),
+        (54, fix_side(side).to_string()),
+        (38, format_uint(qty as u64).to_string()),
+    ];
+
+    // Order type (40) plus its price tags and type-specific companions —
+    // identical values to the corresponding plain variants. Kinds that put
+    // an instruction in tag 18 (TrailingStop/TrailPct = a, Rel = R) cannot
+    // also carry all_or_none (18=G); validate_order rejects that
+    // combination up front, and the emission below skips 18=G as a second
+    // line of defense.
+    let mut has_base_exec_inst = false;
+    match kind {
+        K::Market => fields.push((40, "1".to_string())),
+        K::Limit { price } => {
+            fields.push((40, "2".to_string()));
+            fields.push((44, format_price(price).to_string()));
+        }
+        K::Stop { stop_price } => {
+            fields.push((40, "3".to_string()));
+            fields.push((99, format_price(stop_price).to_string()));
+        }
+        K::StopLimit { price, stop_price } => {
+            fields.push((40, "4".to_string()));
+            fields.push((44, format_price(price).to_string()));
+            fields.push((99, format_price(stop_price).to_string()));
+        }
+        K::TrailingStop { trail_amt } => {
+            // Per ib-agent#136 capture: amount-based trailing stop carries
+            // the trail amount in both 99 and 211 and requires 18=a.
+            let t = format_price(trail_amt).to_string();
+            fields.push((40, "P".to_string()));
+            fields.push((99, t.clone()));
+            fields.push((211, t));
+            fields.push((18, "a".to_string()));
+            has_base_exec_inst = true;
+        }
+        K::TrailingStopLimit { lmt_offset, trail_amt } => {
+            // Per ib-agent#136 capture: TRAIL LIMIT uses OrdType=TSL, no
+            // tag 44, no tag 18; trail amount in both 99 and 211; 6370 is
+            // the limit-vs-trail offset.
+            let t = format_price(trail_amt).to_string();
+            fields.push((40, "TSL".to_string()));
+            fields.push((99, t.clone()));
+            fields.push((6370, format_price(lmt_offset).to_string()));
+            fields.push((211, t));
+        }
+        K::TrailPct { trail_pct } => {
+            // Per ib-agent#156 capture: percent-trail mirrors 99/211 as the
+            // percent in decimal form (1.00 for 1%), alongside 6268 in
+            // basis points and 18=a.
+            let pct_decimal = format!("{:.2}", trail_pct as f64 / 100.0);
+            fields.push((40, "P".to_string()));
+            fields.push((99, pct_decimal.clone()));
+            fields.push((211, pct_decimal));
+            fields.push((18, "a".to_string()));
+            fields.push((6268, trail_pct.to_string()));
+            has_base_exec_inst = true;
+        }
+        K::Moc => fields.push((40, "5".to_string())),
+        K::Loc { price } => {
+            fields.push((40, "B".to_string()));
+            fields.push((44, format_price(price).to_string()));
+        }
+        K::Mit { stop_price } => {
+            fields.push((40, "J".to_string()));
+            fields.push((99, format_price(stop_price).to_string()));
+        }
+        K::Lit { price, stop_price } => {
+            fields.push((40, "LT".to_string())); // per ib-agent#138
+            fields.push((44, format_price(price).to_string()));
+            fields.push((99, format_price(stop_price).to_string()));
+        }
+        K::Mtl => fields.push((40, "K".to_string())),
+        K::MktPrt => fields.push((40, "U".to_string())),
+        K::StpPrt { stop_price } => {
+            fields.push((40, "SP".to_string()));
+            fields.push((99, format_price(stop_price).to_string()));
+        }
+        K::MidPrice { price_cap } => {
+            fields.push((40, "MIDPX".to_string()));
+            if price_cap > 0 {
+                fields.push((44, format_price(price_cap).to_string()));
+            }
+        }
+        K::SnapMkt => fields.push((40, "SMKT".to_string())),
+        K::SnapMid => fields.push((40, "SMID".to_string())),
+        K::SnapPri => fields.push((40, "SREL".to_string())),
+        K::PegMkt { offset } => {
+            fields.push((40, "E".to_string()));
+            if offset > 0 {
+                fields.push((211, format_price(offset).to_string()));
+            }
+        }
+        K::PegMid { offset } => {
+            fields.push((40, "E".to_string()));
+            fields.push((8403, "0.0".to_string())); // midOffsetAtWhole — differentiates PEGMID
+            fields.push((8404, "0.0".to_string())); // midOffsetAtHalf
+            if offset > 0 {
+                fields.push((211, format_price(offset).to_string()));
+            }
+        }
+        K::Rel { offset } => {
+            // Per ib-agent#138 capture: Relative shares OrdType=P and is
+            // disambiguated by 18=R; peg offset on 211, no tag 44.
+            fields.push((40, "P".to_string()));
+            fields.push((211, format_price(offset).to_string()));
+            fields.push((18, "R".to_string()));
+            has_base_exec_inst = true;
+        }
+    }
+
+    fields.push((59, tif_str.to_string()));
+    fields.push((60, now));
+    fields.push((167, "STK".to_string()));
+    // MIDPX / SNAP* / PEG* require a directed exchange, not SMART.
+    let destination = match kind {
+        K::MidPrice { .. } | K::SnapMkt | K::SnapMid | K::SnapPri
+        | K::PegMkt { .. } | K::PegMid { .. } => "ISLAND",
+        _ => "SMART",
+    };
+    fields.push((100, destination.to_string()));
+    fields.push((15, "USD".to_string()));
+    fields.push((204, "0".to_string()));
+
+    // Extended attributes — same tag order as the historical SubmitLimitEx
+    // block.
+    if attrs.display_size > 0 {
+        fields.push((111, format_uint(attrs.display_size as u64).to_string()));
+    }
+    if attrs.min_qty > 0 {
+        fields.push((110, format_uint(attrs.min_qty as u64).to_string()));
+    }
+    if attrs.outside_rth {
+        fields.push((6433, "1".to_string()));
+    }
+    if attrs.hidden {
+        fields.push((6135, "1".to_string()));
+    }
+    if attrs.good_after > 0 {
+        fields.push((168, unix_to_ib_datetime(attrs.good_after)));
+    }
+    // GTD expiry: date-only -> tag 432; time-precise -> tag 126 (UTC).
+    // Mutually exclusive — never both (gateway rejects both together).
+    if attrs.good_till_date_ymd > 0 {
+        fields.push((432, format!("{:08}", attrs.good_till_date_ymd)));
+    } else if attrs.good_till > 0 {
+        fields.push((126, unix_to_ib_utc_dash(attrs.good_till)));
+    }
+    let oca_str = if !attrs.oca_group_str.is_empty() {
+        attrs.oca_group_str.clone()
+    } else if attrs.oca_group > 0 {
+        format!("OCA_{}", attrs.oca_group)
+    } else {
+        String::new()
+    };
+    if !oca_str.is_empty() {
+        fields.push((583, oca_str));
+        fields.push((6209, oca_type_str(attrs.oca_type).to_string()));
+    }
+    if attrs.parent_id > 0 {
+        // Match parent ClOrdID format: "{order_id}.{ver}" — assume ver=0
+        // for initial submission.
+        fields.push((6107, format!("{}.0", attrs.parent_id)));
+    }
+    if attrs.discretionary_amt > 0 {
+        fields.push((9813, format_price(attrs.discretionary_amt).to_string()));
+    }
+    if attrs.sweep_to_fill {
+        fields.push((6102, "1".to_string()));
+    }
+    if attrs.all_or_none && !has_base_exec_inst {
+        fields.push((18, "G".to_string()));
+    }
+    if attrs.trigger_method > 0 {
+        fields.push((6115, attrs.trigger_method.to_string()));
+    }
+    if attrs.cash_qty > 0 {
+        fields.push((5920, format_price(attrs.cash_qty).to_string()));
+    }
+    // Condition tags (6136+ framework)
+    if !attrs.conditions.is_empty() {
+        let cond_strs = build_condition_strings(&attrs.conditions);
+        fields.push((6136, cond_strs[0].clone())); // first element is count
+        if attrs.conditions_cancel_order {
+            fields.push((6128, "1".to_string()));
+        }
+        if attrs.conditions_ignore_rth {
+            fields.push((6151, "1".to_string()));
+        }
+        // Per-condition tags start at index 1, 11 strings per condition
+        for i in 0..attrs.conditions.len() {
+            let base = 1 + i * 11;
+            fields.push((6222, cond_strs[base].clone()));      // condType
+            fields.push((6137, cond_strs[base + 1].clone()));  // conjunction
+            fields.push((6126, cond_strs[base + 2].clone()));  // operator
+            fields.push((6123, cond_strs[base + 3].clone()));  // conId
+            fields.push((6124, cond_strs[base + 4].clone()));  // exchange
+            fields.push((6127, cond_strs[base + 5].clone()));  // triggerMethod
+            fields.push((6125, cond_strs[base + 6].clone()));  // price
+            fields.push((6223, cond_strs[base + 7].clone()));  // time
+            fields.push((6245, cond_strs[base + 8].clone()));  // percent
+            fields.push((6263, cond_strs[base + 9].clone()));  // volume
+            fields.push((6246, cond_strs[base + 10].clone())); // execution
+        }
+    }
+
+    let refs: Vec<(u32, &str)> = fields.iter().map(|(t, s)| (*t, s.as_str())).collect();
+    conn.send_fix(&refs)
 }
 
 fn build_algo_tags(algo: &AlgoParams) -> (&'static str, Vec<String>) {

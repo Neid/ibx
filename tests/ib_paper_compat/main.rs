@@ -683,3 +683,128 @@ fn cancel_by_perm_id_phase_live() {
     println!("  Cancel confirmed in {}ms", cancel_ms);
     println!("\n  PASS — cancel_order_by_perm_id works (ibx#191 PR B validated)\n");
 }
+
+/// ibx#224 / ibx#215 focused live entry — validates the `SubmitEx` wire path:
+/// a bracket-style child (STP, GTC, parent_id + oca_group) placed against a
+/// resting parent. Before ibx#224 those attrs were dropped and the child
+/// went live as an unlinked DAY stop.
+///
+/// Flow: parent LMT GTC BUY 1 SPY @ $1 (never fills) → child STP GTC SELL 1
+/// @ $0.50 via `SubmitEx` linked with parent_id + oca_group → both must ack
+/// (child must not be rejected) → cancel the parent → the child must cascade
+/// to Cancelled without an explicit cancel, which proves the server saw the
+/// parent link.
+/// Run: cargo test --test ib_paper_compat submit_ex_bracket_child_phase_live -- --ignored --nocapture
+#[test]
+#[ignore]
+fn submit_ex_bracket_child_phase_live() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let config = match get_config() {
+        Some(c) => c,
+        None => { println!("Skipping: IB credentials not set"); return; }
+    };
+
+    println!("=== ibx#224/ibx#215: SubmitEx bracket child ===\n");
+    let (gw, farm, ccp, hmds) = Gateway::connect(&config)
+        .expect("Gateway::connect failed");
+    let account_id = gw.account_id.clone();
+    drop(gw);
+
+    let parent_id = common::next_order_id();
+    let child_id = common::next_order_id();
+    assert_ne!(parent_id, child_id, "order id collision — parent/child tracking would be meaningless");
+    println!("  parent orderId = {}, child orderId = {}", parent_id, child_id);
+
+    let shared = std::sync::Arc::new(SharedState::new());
+    let (event_tx, event_rx) = crossbeam_channel::unbounded();
+    let (mut hot_loop, control_tx) = HotLoop::with_connections(
+        shared.clone(), Some(event_tx), account_id.clone(),
+        farm, ccp, hmds, None,
+    );
+    let inst_id = hot_loop.context_mut().register_instrument(756733);
+    hot_loop.context_mut().set_symbol(inst_id, "SPY".to_string());
+
+    // Parent: resting far-below-market entry (proven pattern from the
+    // cross-session test).
+    control_tx.send(ControlCommand::Order(OrderRequest::SubmitLimitGtc {
+        order_id: parent_id, instrument: inst_id, side: Side::Buy, qty: 1,
+        price: 1_00_000_000, outside_rth: true,
+    })).expect("send parent failed");
+
+    // Child: the ibx#224 shape — STP + GTC + parent_id + oca_group. A sell
+    // stop at $0.50 can never trigger even if something goes wrong.
+    control_tx.send(ControlCommand::Order(OrderRequest::SubmitEx {
+        order_id: child_id, instrument: inst_id, side: Side::Sell, qty: 1,
+        kind: ibx::types::OrderKind::Stop { stop_price: 50_000_000 },
+        tif: b'1', // GTC
+        attrs: ibx::types::OrderAttrs {
+            parent_id,
+            oca_group: parent_id,
+            outside_rth: true,
+            ..ibx::types::OrderAttrs::default()
+        },
+    })).expect("send child failed");
+
+    let join = run_hot_loop(hot_loop);
+
+    // Wait for both to ack.
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let (mut parent_acked, mut child_acked) = (false, false);
+    let mut rejected: Option<u64> = None;
+    while Instant::now() < deadline && !(parent_acked && child_acked) && rejected.is_none() {
+        if let Ok(Event::OrderUpdate(u)) = event_rx.recv_timeout(Duration::from_millis(100)) {
+            println!("  [update] oid={} status={:?} parentId={}", u.order_id, u.status, u.parent_id);
+            match u.status {
+                OrderStatus::Submitted | OrderStatus::PreSubmitted => {
+                    if u.order_id == parent_id { parent_acked = true; }
+                    if u.order_id == child_id { child_acked = true; }
+                }
+                OrderStatus::Rejected => rejected = Some(u.order_id),
+                _ => {}
+            }
+        }
+    }
+
+    if let Some(oid) = rejected {
+        // Best-effort cleanup of whatever did rest before failing.
+        let _ = control_tx.send(ControlCommand::Order(OrderRequest::Cancel { order_id: parent_id }));
+        let _ = control_tx.send(ControlCommand::Order(OrderRequest::Cancel { order_id: child_id }));
+        std::thread::sleep(Duration::from_secs(3));
+        let _ = control_tx.send(ControlCommand::Shutdown);
+        let _ = join.join();
+        panic!("order {} rejected — SubmitEx encoding not accepted; check GUI for leftovers", oid);
+    }
+    assert!(parent_acked, "parent never acked within 30s — cleanup {}/{} via GUI", parent_id, child_id);
+    assert!(child_acked, "child never acked within 30s — the SubmitEx child likely vanished; cleanup {} via GUI", parent_id);
+    println!("  Both acked. Cancelling parent, expecting child to cascade...");
+
+    // Cancel the parent only. A linked child must cascade to Cancelled.
+    control_tx.send(ControlCommand::Order(OrderRequest::Cancel { order_id: parent_id }))
+        .expect("send parent cancel failed");
+
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let (mut parent_cancelled, mut child_cancelled) = (false, false);
+    while Instant::now() < deadline && !(parent_cancelled && child_cancelled) {
+        if let Ok(Event::OrderUpdate(u)) = event_rx.recv_timeout(Duration::from_millis(100)) {
+            println!("  [update] oid={} status={:?}", u.order_id, u.status);
+            if u.status == OrderStatus::Cancelled {
+                if u.order_id == parent_id { parent_cancelled = true; }
+                if u.order_id == child_id { child_cancelled = true; }
+            }
+        }
+    }
+
+    // Safety net: never leave the child resting, even on failure.
+    if !child_cancelled {
+        let _ = control_tx.send(ControlCommand::Order(OrderRequest::Cancel { order_id: child_id }));
+        std::thread::sleep(Duration::from_secs(3));
+    }
+    let _ = control_tx.send(ControlCommand::Shutdown);
+    let _ = join.join();
+
+    assert!(parent_cancelled, "parent cancel not confirmed within 30s — check GUI");
+    assert!(child_cancelled,
+        "child did NOT cascade-cancel with its parent — parent link not honored on the wire (ibx#224)");
+
+    println!("\n  PASS — SubmitEx child linked, held, and cascade-cancelled (ibx#224/ibx#215 validated)\n");
+}

@@ -923,6 +923,7 @@ impl CcpState {
                 Some("CancelOnFillWBlock") => 1,
                 Some("ReduceOnFillWBlock") => 2,
                 Some("ReduceOnFillNonBlock") => 3,
+                Some("ReduceOnFillWBlockFromTotal") => 4,
                 _ => 3, // default
             };
             let algo_strategy = parsed.get(&847).cloned().unwrap_or_default();

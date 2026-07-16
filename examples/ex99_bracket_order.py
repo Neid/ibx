@@ -107,7 +107,13 @@ def get_price(client, wrapper):
 
 
 def make_bracket(wrapper, price):
-    """Build a bracket: parent BUY LMT (won't fill) + TP + trailing stop."""
+    """Build a bracket: parent BUY LMT (won't fill) + TP + trailing stop.
+
+    NOTE: there is no transmit=False staging — every place_order call goes
+    live immediately (transmit=False is rejected, see ibx#226). The bracket
+    is linked server-side through parent_id + oca_group: children rest in
+    PreSubmitted until the parent fills.
+    """
     parent_id = alloc_id(wrapper)
     tp_id = alloc_id(wrapper)
     sl_id = alloc_id(wrapper)
@@ -120,7 +126,6 @@ def make_bracket(wrapper, price):
     parent.lmt_price = round(price * 0.80, 2)  # 20% below — won't fill
     parent.tif = "GTC"
     parent.outside_rth = True
-    parent.transmit = False  # hold until all children submitted
 
     tp = Order()
     tp.action = "SELL"
@@ -132,7 +137,6 @@ def make_bracket(wrapper, price):
     tp.parent_id = parent_id
     tp.oca_group = oca
     tp.oca_type = 1
-    tp.transmit = False  # hold
 
     sl = Order()
     sl.action = "SELL"
@@ -144,13 +148,18 @@ def make_bracket(wrapper, price):
     sl.parent_id = parent_id
     sl.oca_group = oca
     sl.oca_type = 1
-    sl.transmit = True  # transmit entire bracket
 
     return parent_id, tp_id, sl_id, parent, tp, sl
 
 
 def make_bracket_at_market(wrapper, price):
-    """Build a bracket with MKT parent (will fill) + TP + trailing stop."""
+    """Build a bracket with MKT parent (will fill) + TP + trailing stop.
+
+    No staging (see make_bracket): the MKT parent is live from its
+    place_order call, so it can fill before the children are placed.
+    Place the children immediately after the parent to keep that window
+    as small as possible.
+    """
     parent_id = alloc_id(wrapper)
     tp_id = alloc_id(wrapper)
     sl_id = alloc_id(wrapper)
@@ -161,7 +170,6 @@ def make_bracket_at_market(wrapper, price):
     parent.total_quantity = 1
     parent.order_type = "MKT"
     parent.tif = "DAY"
-    parent.transmit = False
 
     tp = Order()
     tp.action = "SELL"
@@ -173,7 +181,6 @@ def make_bracket_at_market(wrapper, price):
     tp.parent_id = parent_id
     tp.oca_group = oca
     tp.oca_type = 1
-    tp.transmit = False
 
     sl = Order()
     sl.action = "SELL"
@@ -185,7 +192,6 @@ def make_bracket_at_market(wrapper, price):
     sl.parent_id = parent_id
     sl.oca_group = oca
     sl.oca_type = 1
-    sl.transmit = True
 
     return parent_id, tp_id, sl_id, parent, tp, sl
 

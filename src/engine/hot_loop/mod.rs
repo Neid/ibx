@@ -1050,14 +1050,6 @@ impl std::fmt::Debug for StackStr {
     }
 }
 
-/// Format an integer (order_id, qty, etc.) to a stack string. Zero alloc.
-#[inline]
-pub(crate) fn format_int(val: i64) -> StackStr {
-    let mut s = StackStr::new();
-    s.write_i64(val);
-    s
-}
-
 /// Format an unsigned integer to a stack string. Zero alloc.
 #[inline]
 pub(crate) fn format_uint(val: u64) -> StackStr {

@@ -1172,7 +1172,45 @@ impl ClientCore {
     /// Call this before `find_or_register_instrument` to fail fast.
     pub fn validate_order(order: &ApiOrder) -> Result<(), String> {
         order.side()?;
+
+        // transmit=false cannot be honoured: every order is sent to the
+        // broker immediately when place_order is called; there is no
+        // staging concept. Accepting it would send a "staged" bracket
+        // parent live on its own, so reject loudly at the call instead.
+        // See: https://github.com/deepentropy/ibx/issues/226
+        if !order.transmit {
+            return Err(
+                "transmit=false is not supported: orders are transmitted \
+                 immediately on place_order; there is no staging concept, so \
+                 the order would go live despite transmit=false. Place child \
+                 orders with parent_id/oca_group set and keep transmit=true \
+                 (the engine links them server-side)."
+                    .into(),
+            );
+        }
+
+        // An unrecognized tif would otherwise be sent as DAY silently.
+        match order.tif.as_str() {
+            "" | "DAY" | "GTC" | "IOC" | "FOK" | "OPG" | "GTD" | "DTC" | "AUC" => {}
+            other => {
+                return Err(format!(
+                    "Unsupported tif '{}': use DAY, GTC, IOC, FOK, OPG, GTD, DTC or AUC",
+                    other
+                ));
+            }
+        }
+
         let order_type = order.order_type.to_uppercase();
+
+        // These order types carry a type-specific instruction in the same
+        // slot all-or-none uses, so the two cannot be combined.
+        if order.all_or_none && matches!(order_type.as_str(), "TRAIL" | "REL") {
+            return Err(format!(
+                "all_or_none is not supported with {} orders",
+                order.order_type
+            ));
+        }
+
         if order.algo_strategy.eq_ignore_ascii_case("Adaptive") {
             return Ok(());
         }
@@ -1295,11 +1333,27 @@ impl ClientCore {
             }));
         }
 
+        // Every order type must carry extended attributes and a non-DAY tif
+        // when the caller sets them — dropping them silently produced
+        // unlinked, immediate-DAY bracket children (ibx#224). An empty tif
+        // is treated as DAY, matching the official API default.
+        let extended = order.has_extended_attrs()
+            || !matches!(order.tif.as_str(), "" | "DAY");
+        let ex = |kind: OrderKind| OrderRequest::SubmitEx {
+            order_id, instrument, side, qty,
+            kind,
+            tif: order.tif_byte(),
+            attrs: order.attrs(),
+        };
+
         let req = match order_type.as_str() {
-            "MKT" => OrderRequest::SubmitMarket { order_id, instrument, side, qty },
+            "MKT" => {
+                if extended { ex(OrderKind::Market) }
+                else { OrderRequest::SubmitMarket { order_id, instrument, side, qty } }
+            }
             "LMT" => {
                 let price = (order.lmt_price * PRICE_SCALE_F) as i64;
-                if order.has_extended_attrs() || order.tif != "DAY" {
+                if extended {
                     OrderRequest::SubmitLimitEx {
                         order_id, instrument, side, qty, price,
                         tif: order.tif_byte(),
@@ -1311,17 +1365,19 @@ impl ClientCore {
             }
             "STP" => {
                 let stop = (order.aux_price * PRICE_SCALE_F) as i64;
-                OrderRequest::SubmitStop { order_id, instrument, side, qty, stop_price: stop }
+                if extended { ex(OrderKind::Stop { stop_price: stop }) }
+                else { OrderRequest::SubmitStop { order_id, instrument, side, qty, stop_price: stop } }
             }
             "STP LMT" => {
                 let price = (order.lmt_price * PRICE_SCALE_F) as i64;
                 let stop = (order.aux_price * PRICE_SCALE_F) as i64;
-                OrderRequest::SubmitStopLimit { order_id, instrument, side, qty, price, stop_price: stop }
+                if extended { ex(OrderKind::StopLimit { price, stop_price: stop }) }
+                else { OrderRequest::SubmitStopLimit { order_id, instrument, side, qty, price, stop_price: stop } }
             }
             "TRAIL" => {
                 if order.trailing_percent > 0.0 {
                     let pct = (order.trailing_percent * 100.0) as u32;
-                    if order.has_extended_attrs() || order.tif != "DAY" {
+                    if extended {
                         OrderRequest::SubmitTrailingStopPctEx {
                             order_id, instrument, side, qty, trail_pct: pct,
                             tif: order.tif_byte(),
@@ -1332,7 +1388,8 @@ impl ClientCore {
                     }
                 } else {
                     let trail = (order.aux_price * PRICE_SCALE_F) as i64;
-                    OrderRequest::SubmitTrailingStop { order_id, instrument, side, qty, trail_amt: trail }
+                    if extended { ex(OrderKind::TrailingStop { trail_amt: trail }) }
+                    else { OrderRequest::SubmitTrailingStop { order_id, instrument, side, qty, trail_amt: trail } }
                 }
             }
             "TRAIL LIMIT" => {
@@ -1346,48 +1403,74 @@ impl ClientCore {
                 };
                 let lmt_offset = (offset_f * PRICE_SCALE_F) as i64;
                 let trail = (order.aux_price * PRICE_SCALE_F) as i64;
-                OrderRequest::SubmitTrailingStopLimit { order_id, instrument, side, qty, lmt_offset, trail_amt: trail }
+                if extended { ex(OrderKind::TrailingStopLimit { lmt_offset, trail_amt: trail }) }
+                else { OrderRequest::SubmitTrailingStopLimit { order_id, instrument, side, qty, lmt_offset, trail_amt: trail } }
             }
-            "MOC" => OrderRequest::SubmitMoc { order_id, instrument, side, qty },
+            "MOC" => {
+                if extended { ex(OrderKind::Moc) }
+                else { OrderRequest::SubmitMoc { order_id, instrument, side, qty } }
+            }
             "LOC" => {
                 let price = (order.lmt_price * PRICE_SCALE_F) as i64;
-                OrderRequest::SubmitLoc { order_id, instrument, side, qty, price }
+                if extended { ex(OrderKind::Loc { price }) }
+                else { OrderRequest::SubmitLoc { order_id, instrument, side, qty, price } }
             }
             "MIT" => {
                 let stop = (order.aux_price * PRICE_SCALE_F) as i64;
-                OrderRequest::SubmitMit { order_id, instrument, side, qty, stop_price: stop }
+                if extended { ex(OrderKind::Mit { stop_price: stop }) }
+                else { OrderRequest::SubmitMit { order_id, instrument, side, qty, stop_price: stop } }
             }
             "LIT" => {
                 let price = (order.lmt_price * PRICE_SCALE_F) as i64;
                 let stop = (order.aux_price * PRICE_SCALE_F) as i64;
-                OrderRequest::SubmitLit { order_id, instrument, side, qty, price, stop_price: stop }
+                if extended { ex(OrderKind::Lit { price, stop_price: stop }) }
+                else { OrderRequest::SubmitLit { order_id, instrument, side, qty, price, stop_price: stop } }
             }
-            "MTL" => OrderRequest::SubmitMtl { order_id, instrument, side, qty },
-            "MKT PRT" => OrderRequest::SubmitMktPrt { order_id, instrument, side, qty },
+            "MTL" | "BOX TOP" => {
+                if extended { ex(OrderKind::Mtl) }
+                else { OrderRequest::SubmitMtl { order_id, instrument, side, qty } }
+            }
+            "MKT PRT" => {
+                if extended { ex(OrderKind::MktPrt) }
+                else { OrderRequest::SubmitMktPrt { order_id, instrument, side, qty } }
+            }
             "STP PRT" => {
                 let stop = (order.aux_price * PRICE_SCALE_F) as i64;
-                OrderRequest::SubmitStpPrt { order_id, instrument, side, qty, stop_price: stop }
+                if extended { ex(OrderKind::StpPrt { stop_price: stop }) }
+                else { OrderRequest::SubmitStpPrt { order_id, instrument, side, qty, stop_price: stop } }
             }
             "REL" => {
                 let offset = (order.aux_price * PRICE_SCALE_F) as i64;
-                OrderRequest::SubmitRel { order_id, instrument, side, qty, offset }
+                if extended { ex(OrderKind::Rel { offset }) }
+                else { OrderRequest::SubmitRel { order_id, instrument, side, qty, offset } }
             }
             "PEG MKT" => {
                 let offset = (order.aux_price * PRICE_SCALE_F) as i64;
-                OrderRequest::SubmitPegMkt { order_id, instrument, side, qty, offset }
+                if extended { ex(OrderKind::PegMkt { offset }) }
+                else { OrderRequest::SubmitPegMkt { order_id, instrument, side, qty, offset } }
             }
             "PEG MID" | "PEG MIDPT" => {
                 let offset = (order.aux_price * PRICE_SCALE_F) as i64;
-                OrderRequest::SubmitPegMid { order_id, instrument, side, qty, offset }
+                if extended { ex(OrderKind::PegMid { offset }) }
+                else { OrderRequest::SubmitPegMid { order_id, instrument, side, qty, offset } }
             }
             "MIDPX" | "MIDPRICE" => {
                 let cap = (order.lmt_price * PRICE_SCALE_F) as i64;
-                OrderRequest::SubmitMidPrice { order_id, instrument, side, qty, price_cap: cap }
+                if extended { ex(OrderKind::MidPrice { price_cap: cap }) }
+                else { OrderRequest::SubmitMidPrice { order_id, instrument, side, qty, price_cap: cap } }
             }
-            "SNAP MKT" => OrderRequest::SubmitSnapMkt { order_id, instrument, side, qty },
-            "SNAP MID" | "SNAP MIDPT" => OrderRequest::SubmitSnapMid { order_id, instrument, side, qty },
-            "SNAP PRI" | "SNAP PRIM" => OrderRequest::SubmitSnapPri { order_id, instrument, side, qty },
-            "BOX TOP" => OrderRequest::SubmitMtl { order_id, instrument, side, qty },
+            "SNAP MKT" => {
+                if extended { ex(OrderKind::SnapMkt) }
+                else { OrderRequest::SubmitSnapMkt { order_id, instrument, side, qty } }
+            }
+            "SNAP MID" | "SNAP MIDPT" => {
+                if extended { ex(OrderKind::SnapMid) }
+                else { OrderRequest::SubmitSnapMid { order_id, instrument, side, qty } }
+            }
+            "SNAP PRI" | "SNAP PRIM" => {
+                if extended { ex(OrderKind::SnapPri) }
+                else { OrderRequest::SubmitSnapPri { order_id, instrument, side, qty } }
+            }
             _ => return Err(format!("Unsupported order type: '{}'", order.order_type)),
         };
 
