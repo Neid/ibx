@@ -16,6 +16,13 @@ use crossbeam_channel::Sender;
 
 use super::{HeartbeatState, emit, parse_price_tag};
 
+/// Bound for an in-flight contract-details request (secdef reply or
+/// per-exchange fan-out). Refreshed on fan-out activity; on expiry the
+/// request surfaces error 200 + contract_details_end instead of hanging
+/// forever (ibx#227). A gateway rejection arrives in well under a second,
+/// and a full 27-exchange fan-out completes within a few.
+const SECDEF_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
 /// Number of most-recent ExecIDs retained for fill deduplication. Bounds the
 /// memory of `seen_exec_ids` while staying large enough that a server replay
 /// after a reconnect burst still hits the window.
@@ -77,7 +84,12 @@ pub(crate) struct CcpState {
     /// first 35=d reply is also the last (server emits no 323=5/6 terminator
     /// for these). Multi-record by-symbol/matching-symbols requests push
     /// `false` and rely on the response-type sentinel for is_last.
-    pub(crate) pending_secdef: Vec<(u32, bool)>,
+    /// In-flight secdef requests: (req_id, single_shot, deadline). The
+    /// deadline is swept by `sweep_contract_details` so a request the
+    /// gateway never answers (SessionReject, dead socket, lost reply)
+    /// surfaces error 200 + contract_details_end instead of hanging
+    /// forever (ibx#227).
+    pub(crate) pending_secdef: Vec<(u32, bool, Instant)>,
     pub(crate) pending_matching_symbols: Vec<u32>,
     /// keepUpToDate historical queries routed through CCP: (query_id, req_id)
     pub(crate) pending_kut_historical: Vec<(String, u32)>,
@@ -136,6 +148,10 @@ pub(crate) struct PendingFanout {
     pub api_req_id: u32,
     pub fanout_req_ids: Vec<String>,
     pub received: usize,
+    /// Idle deadline, refreshed on every per-exchange reply. One lost or
+    /// unparseable fan-out reply out of ~27 previously left the counter
+    /// short forever and contract_details_end never fired (ibx#227).
+    pub deadline: Instant,
 }
 
 impl CcpState {
@@ -428,6 +444,7 @@ impl CcpState {
                         shared.reference.push_contract_details(api_req_id, def.clone());
                         emit(event_tx, Event::ContractDetails { req_id: api_req_id, details: def });
                         self.pending_fanout[idx].received += 1;
+                        self.pending_fanout[idx].deadline = Instant::now() + SECDEF_TIMEOUT;
                         if self.pending_fanout[idx].received >= self.pending_fanout[idx].fanout_req_ids.len() {
                             shared.reference.push_contract_details_end(api_req_id);
                             emit(event_tx, Event::ContractDetailsEnd(api_req_id));
@@ -467,7 +484,7 @@ impl CcpState {
                     let matched_idx: Option<usize> = response_req_id.as_ref()
                         .and_then(|rid| rid.parse::<u32>().ok())
                         .and_then(|rid_u32| {
-                            self.pending_secdef.iter().position(|(pid, _)| *pid == rid_u32)
+                            self.pending_secdef.iter().position(|(pid, _, _)| *pid == rid_u32)
                         });
                     let single_shot = matched_idx
                         .map(|i| self.pending_secdef[i].1).unwrap_or(false);
@@ -527,10 +544,20 @@ impl CcpState {
                         // symbol resolves to a single exchange and there's
                         // nothing to fan out to).
                         if is_by_symbol && !is_last_wire {
-                            self.pending_secdef.retain(|(rid, ss)| !(*rid == req_id && !*ss));
+                            self.pending_secdef.retain(|(rid, ss, _)| !(*rid == req_id && !*ss));
                             if fanout_exchanges.is_empty() || con_id == 0 {
-                                shared.reference.push_contract_details_end(req_id);
-                                emit(event_tx, Event::ContractDetailsEnd(req_id));
+                                // The master row may be parked awaiting its
+                                // schedule pair; firing end now would order
+                                // end BEFORE the row (ibx#227). Defer it to
+                                // the pair resolution (or its 3s sweep).
+                                if let Some(pair) = self.pending_schedule_pair.iter_mut()
+                                    .find(|p| p.api_req_id == req_id)
+                                {
+                                    pair.is_last = true;
+                                } else {
+                                    shared.reference.push_contract_details_end(req_id);
+                                    emit(event_tx, Event::ContractDetailsEnd(req_id));
+                                }
                             } else {
                                 let mut fanout_req_ids = Vec::with_capacity(fanout_exchanges.len());
                                 for exch in &fanout_exchanges {
@@ -548,6 +575,7 @@ impl CcpState {
                                     api_req_id: req_id,
                                     fanout_req_ids,
                                     received: 0,
+                                    deadline: Instant::now() + SECDEF_TIMEOUT,
                                 });
                             }
                         }
@@ -1138,6 +1166,59 @@ impl CcpState {
     }
 
     /// Drop pending schedule pairs past their deadline, emitting partial details.
+    /// Fail contract-details requests whose deadline has passed (ibx#227):
+    /// both plain/by-symbol secdef lookups the gateway never answered and
+    /// by-symbol fan-outs missing one or more per-exchange replies. On
+    /// expiry the caller gets error 200 plus contract_details_end, so a
+    /// blocked wait unblocks with no API change. Internal sentinel req_ids
+    /// (>= 0xF000_0000: cache auto-fetch, scanner enrichment) are dropped
+    /// silently — no user is waiting on them.
+    pub(crate) fn sweep_contract_details(
+        &mut self,
+        shared: &SharedState,
+        event_tx: &Option<Sender<Event>>,
+    ) {
+        if self.pending_secdef.is_empty() && self.pending_fanout.is_empty() {
+            return;
+        }
+        let now = Instant::now();
+        let mut expired: Vec<u32> = Vec::new();
+        self.pending_secdef.retain(|(req_id, _, deadline)| {
+            if now >= *deadline {
+                if *req_id < 0xF000_0000 {
+                    expired.push(*req_id);
+                } else {
+                    log::warn!("Internal secdef timeout: req_id={:#x}", req_id);
+                }
+                false
+            } else {
+                true
+            }
+        });
+        self.pending_fanout.retain(|p| {
+            if now >= p.deadline {
+                log::warn!(
+                    "Contract-details fan-out timeout: api_req_id={} received {} of {}",
+                    p.api_req_id, p.received, p.fanout_req_ids.len(),
+                );
+                expired.push(p.api_req_id);
+                false
+            } else {
+                true
+            }
+        });
+        for req_id in expired {
+            log::warn!("Contract-details timeout: req_id={} — no gateway reply within {:?}",
+                req_id, SECDEF_TIMEOUT);
+            shared.reference.push_historical_error(
+                req_id, 200,
+                "contract details request timed out — no reply from the gateway".to_string(),
+            );
+            shared.reference.push_contract_details_end(req_id);
+            emit(event_tx, Event::ContractDetailsEnd(req_id));
+        }
+    }
+
     pub(crate) fn sweep_pending_schedule_pairs(
         &mut self,
         shared: &SharedState,
@@ -1312,9 +1393,13 @@ impl CcpState {
             ]);
             log::info!("Sent secdef request: req_id={} con_id={}", req_id, con_id);
             hb.last_ccp_sent = Instant::now();
+        } else {
+            // No CCP socket: the entry still gets a deadline, so the caller
+            // receives error 200 + end via the sweep instead of silence (ibx#227).
+            log::warn!("secdef request req_id={} queued with no CCP socket", req_id);
         }
         // Known-conId lookup: single record, no paginated terminator.
-        self.pending_secdef.push((req_id, true));
+        self.pending_secdef.push((req_id, true, Instant::now() + SECDEF_TIMEOUT));
     }
 
     pub(crate) fn send_secdef_request_by_symbol(&mut self, req_id: u32, symbol: &str, sec_type: &str, exchange: &str, currency: &str, ccp_conn: &mut Option<Connection>, hb: &mut HeartbeatState) {
@@ -1338,11 +1423,14 @@ impl CcpState {
             ]);
             log::info!("Sent secdef-by-symbol: req_id={} symbol={} sec_type={}", req_id, symbol, sec_type);
             hb.last_ccp_sent = Instant::now();
+        } else {
+            // See send_secdef_request: sweep converts this to a visible error.
+            log::warn!("secdef-by-symbol request req_id={} queued with no CCP socket", req_id);
         }
         // By-symbol lookup: master reply carries `6046={exch_list}`. The
         // server never emits a 323=5/6 terminator; completion is detected
         // by counting per-exchange fan-out replies (see `pending_fanout`).
-        self.pending_secdef.push((req_id, false));
+        self.pending_secdef.push((req_id, false, Instant::now() + SECDEF_TIMEOUT));
     }
 
     /// Send a per-exchange fan-out request after a by-symbol master reply.
@@ -1869,5 +1957,82 @@ mod tests {
             "n/a ack must not surface as a response");
         // The order stays pending for the subsequent data frame.
         assert!(context.order(42).is_some());
+    }
+
+    // ── ibx#227: contract-details deadline sweep ──
+
+    #[test]
+    fn sweep_times_out_pending_secdef_with_error_and_end() {
+        let mut ccp = CcpState::new();
+        let shared = SharedState::new();
+        let past = Instant::now() - std::time::Duration::from_secs(1);
+        ccp.pending_secdef.push((7, true, past));
+
+        ccp.sweep_contract_details(&shared, &None);
+
+        assert!(ccp.pending_secdef.is_empty(), "expired entry must be reclaimed");
+        let errors = shared.reference.drain_historical_errors();
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].0, 7);
+        assert_eq!(errors[0].1, 200);
+        assert_eq!(shared.reference.drain_contract_details_end(), vec![7],
+            "end must fire so a blocked wait unblocks");
+    }
+
+    #[test]
+    fn sweep_drops_internal_secdef_silently() {
+        let mut ccp = CcpState::new();
+        let shared = SharedState::new();
+        let past = Instant::now() - std::time::Duration::from_secs(1);
+        // Internal sentinel (cache auto-fetch): no user is waiting on it.
+        ccp.pending_secdef.push((0xF000_0001, true, past));
+
+        ccp.sweep_contract_details(&shared, &None);
+
+        assert!(ccp.pending_secdef.is_empty());
+        assert!(shared.reference.drain_historical_errors().is_empty());
+        assert!(shared.reference.drain_contract_details_end().is_empty());
+    }
+
+    #[test]
+    fn sweep_times_out_incomplete_fanout() {
+        let mut ccp = CcpState::new();
+        let shared = SharedState::new();
+        ccp.pending_fanout.push(PendingFanout {
+            api_req_id: 9,
+            fanout_req_ids: (0..27).map(|i| format!("ibxfan-9-{i}")).collect(),
+            received: 26, // one reply lost — previously hung forever
+            deadline: Instant::now() - std::time::Duration::from_secs(1),
+        });
+
+        ccp.sweep_contract_details(&shared, &None);
+
+        assert!(ccp.pending_fanout.is_empty());
+        let errors = shared.reference.drain_historical_errors();
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].0, 9);
+        assert_eq!(errors[0].1, 200);
+        assert_eq!(shared.reference.drain_contract_details_end(), vec![9]);
+    }
+
+    #[test]
+    fn sweep_spares_live_entries() {
+        let mut ccp = CcpState::new();
+        let shared = SharedState::new();
+        let future = Instant::now() + SECDEF_TIMEOUT;
+        ccp.pending_secdef.push((7, true, future));
+        ccp.pending_fanout.push(PendingFanout {
+            api_req_id: 9,
+            fanout_req_ids: vec!["ibxfan-9-0".to_string()],
+            received: 0,
+            deadline: future,
+        });
+
+        ccp.sweep_contract_details(&shared, &None);
+
+        assert_eq!(ccp.pending_secdef.len(), 1);
+        assert_eq!(ccp.pending_fanout.len(), 1);
+        assert!(shared.reference.drain_historical_errors().is_empty());
+        assert!(shared.reference.drain_contract_details_end().is_empty());
     }
 }

@@ -261,6 +261,8 @@ impl HotLoop {
             );
             self.ccp.sweep_pending_schedule_pairs(&self.shared, &self.event_tx);
             self.ccp.sweep_scanner_enrichments(&self.shared);
+            self.ccp.sweep_contract_details(&self.shared, &self.event_tx);
+            self.hmds.sweep_pending_historical(&self.shared);
             if ccp_was_ok && self.ccp.disconnected {
                 self.spawn_ccp_reconnect();
             }
@@ -377,8 +379,8 @@ impl HotLoop {
                 }
                 ControlCommand::CancelHistorical { req_id } => {
                     self.hmds.keep_up_to_date_reqs.remove(&req_id);
-                    if let Some(pos) = self.hmds.pending_historical.iter().position(|(_, rid)| *rid == req_id) {
-                        let (query_id, _) = self.hmds.pending_historical.remove(pos);
+                    if let Some(pos) = self.hmds.pending_historical.iter().position(|(_, rid, _)| *rid == req_id) {
+                        let (query_id, _, _) = self.hmds.pending_historical.remove(pos);
                         self.hmds.send_historical_cancel(&query_id, &mut self.hmds_conn, &mut self.hb);
                     }
                 }

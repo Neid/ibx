@@ -11,13 +11,26 @@ use crossbeam_channel::Sender;
 
 use super::{HeartbeatState, emit, find_body_after_tag, extract_raw_tag};
 
+/// Idle bound for an in-flight historical query: if no bar segment, error,
+/// or completion arrives for this long, the request is failed with error 162
+/// and a terminal sentinel instead of hanging forever (ibx#231). The
+/// gateway's pacing limiter drops requests silently, which is otherwise
+/// indistinguishable from a permanent hang.
+const HISTORICAL_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+
 pub(crate) struct HmdsState {
     pub(crate) next_tbt_req_id: u32,
     pub(crate) tbt_subscriptions: Vec<(InstrumentId, String, TbtType)>,
     pub(crate) tbt_price_state: [(i64, i64, i64); MAX_INSTRUMENTS],
     pub(crate) next_hmds_query_id: u32,
     pub(crate) disconnected: bool,
-    pub(crate) pending_historical: Vec<(String, u32)>,
+    /// In-flight historical bar queries: (query_id, req_id, idle deadline).
+    /// The deadline is refreshed on every matched bar segment and swept by
+    /// `sweep_pending_historical` — a gateway that goes silent (e.g. the
+    /// pacing limiter tripping) no longer hangs the request forever
+    /// (ibx#231). keepUpToDate entries are exempt: they stay resident by
+    /// design and their bars flow on a different path.
+    pub(crate) pending_historical: Vec<(String, u32, Instant)>,
     pub(crate) pending_head_ts: Vec<(String, u32)>,
     pub(crate) pending_scanner_params: bool,
     pub(crate) pending_scanner: Vec<(String, u32)>,
@@ -186,9 +199,11 @@ impl HmdsState {
                         &xml_tag[..xml_tag.len().min(200)],
                     );
                     if let Some(resp) = crate::control::historical::parse_bar_response(xml_tag) {
-                        if let Some(pos) = self.pending_historical.iter().position(|(qid, _)| resp.query_id.starts_with(qid.as_str())) {
-                            let (_, req_id) = self.pending_historical[pos];
+                        if let Some(pos) = self.pending_historical.iter().position(|(qid, _, _)| resp.query_id.starts_with(qid.as_str())) {
+                            let (_, req_id, _) = self.pending_historical[pos];
                             let is_complete = resp.is_complete;
+                            // Activity on this query — push the idle deadline out (ibx#231).
+                            self.pending_historical[pos].2 = Instant::now() + HISTORICAL_IDLE_TIMEOUT;
                             // ibx#182 follow-up: bisect — log every matched bar response.
                             // If we see this fire repeatedly with eoq=false and never an
                             // eoq=true follow-up, we're in case L170 (gateway never sends
@@ -256,7 +271,7 @@ impl HmdsState {
                         }
                         if !matched {
                             // Check keepUpToDate historical queries
-                            for (qid, req_id) in &self.pending_historical {
+                            for (qid, req_id, _) in &self.pending_historical {
                                 if xml_tag.contains(qid.as_str()) && self.keep_up_to_date_reqs.contains(req_id) {
                                     // Store as rtbar subscription so 35=G bars get dispatched
                                     self.rtbar_subs.push((qid.clone(), *req_id, Some(ticker_id), min_tick));
@@ -283,8 +298,8 @@ impl HmdsState {
                         let mut released_req_id: Option<u32> = None;
                         let mut from_historical = false;
                         if let Some(qid) = &query_id {
-                            if let Some(pos) = self.pending_historical.iter().position(|(q, _)| q == qid) {
-                                let (_, req_id) = self.pending_historical.remove(pos);
+                            if let Some(pos) = self.pending_historical.iter().position(|(q, _, _)| q == qid) {
+                                let (_, req_id, _) = self.pending_historical.remove(pos);
                                 self.keep_up_to_date_reqs.remove(&req_id);
                                 released_req_id = Some(req_id);
                                 from_historical = true;
@@ -689,7 +704,7 @@ impl HmdsState {
             log::info!("Sent historical request: req_id={} con_id={} bar_size={}", req_id, con_id, bar_size);
             hb.last_hmds_sent = Instant::now();
         }
-        self.pending_historical.push((query_id, req_id));
+        self.pending_historical.push((query_id, req_id, Instant::now() + HISTORICAL_IDLE_TIMEOUT));
     }
 
     /// Send keepUpToDate historical request via CCP (FIXCOMP compressed).
@@ -783,7 +798,7 @@ impl HmdsState {
             let _ = conn.send_raw(&to_send);
             hb.last_ccp_sent = Instant::now();
         }
-        self.pending_historical.push((query_id, req_id));
+        self.pending_historical.push((query_id, req_id, Instant::now() + HISTORICAL_IDLE_TIMEOUT));
     }
 
     pub(crate) fn send_historical_cancel(&mut self, query_id: &str, hmds_conn: &mut Option<Connection>, hb: &mut HeartbeatState) {
@@ -1053,6 +1068,48 @@ impl HmdsState {
         }
         self.pending_schedule.push((query_id, req_id));
     }
+
+    /// Fail historical queries whose idle deadline has passed (ibx#231).
+    /// Mirrors the `<QueryError>` path: surfaces error 162 plus a terminal
+    /// `is_complete=true` sentinel so a consumer blocked on
+    /// historical_data_end unblocks with no API change. keepUpToDate
+    /// subscriptions are exempt — they stay resident by design and their
+    /// live bars flow on the rtbar path.
+    pub(crate) fn sweep_pending_historical(&mut self, shared: &SharedState) {
+        if self.pending_historical.is_empty() {
+            return;
+        }
+        let now = Instant::now();
+        let mut expired: Vec<(String, u32)> = Vec::new();
+        let kut = &self.keep_up_to_date_reqs;
+        self.pending_historical.retain(|(qid, req_id, deadline)| {
+            if now >= *deadline && !kut.contains(req_id) {
+                expired.push((qid.clone(), *req_id));
+                false
+            } else {
+                true
+            }
+        });
+        for (query_id, req_id) in expired {
+            log::warn!(
+                "HMDS historical timeout: req_id={} query_id={} — no response within {:?}",
+                req_id, query_id, HISTORICAL_IDLE_TIMEOUT,
+            );
+            shared.reference.push_historical_error(
+                req_id, 162,
+                "historical request timed out — no response from the gateway".to_string(),
+            );
+            shared.reference.push_historical_data(
+                req_id,
+                crate::control::historical::HistoricalResponse {
+                    query_id,
+                    timezone: String::new(),
+                    is_complete: true,
+                    bars: Vec::new(),
+                },
+            );
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1077,7 +1134,7 @@ mod tests {
         let shared = SharedState::new();
         let mut hb = HeartbeatState::new();
         let mut conn: Option<Connection> = None;
-        hmds.pending_historical.push(("hist_1003".to_string(), 11));
+        hmds.pending_historical.push(("hist_1003".to_string(), 11, Instant::now() + HISTORICAL_IDLE_TIMEOUT));
         hmds.keep_up_to_date_reqs.insert(11);
 
         let msg = make_query_error_msg("hist_1003", "Invalid time length");
@@ -1117,13 +1174,53 @@ mod tests {
         assert!(shared.reference.drain_historical_data().is_empty());
     }
 
+    // ── ibx#231: idle-deadline sweep ──
+
+    #[test]
+    fn sweep_times_out_idle_historical_with_error_and_end_sentinel() {
+        let mut hmds = HmdsState::new();
+        let shared = SharedState::new();
+        // Deadline already in the past — the gateway went silent.
+        hmds.pending_historical.push(("hist_1010".to_string(), 21, Instant::now() - std::time::Duration::from_secs(1)));
+
+        hmds.sweep_pending_historical(&shared);
+
+        assert!(hmds.pending_historical.is_empty(), "expired entry must be reclaimed");
+        let errors = shared.reference.drain_historical_errors();
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].0, 21);
+        assert_eq!(errors[0].1, 162);
+        let hist = shared.reference.drain_historical_data();
+        assert_eq!(hist.len(), 1, "terminal sentinel must unblock historical_data_end waiters");
+        assert_eq!(hist[0].0, 21);
+        assert!(hist[0].1.is_complete);
+        assert!(hist[0].1.bars.is_empty());
+    }
+
+    #[test]
+    fn sweep_spares_keep_up_to_date_and_live_entries() {
+        let mut hmds = HmdsState::new();
+        let shared = SharedState::new();
+        // keepUpToDate entry: resident by design, even past its deadline.
+        hmds.pending_historical.push(("hist_kut".to_string(), 30, Instant::now() - std::time::Duration::from_secs(1)));
+        hmds.keep_up_to_date_reqs.insert(30);
+        // Live entry: deadline in the future.
+        hmds.pending_historical.push(("hist_live".to_string(), 31, Instant::now() + HISTORICAL_IDLE_TIMEOUT));
+
+        hmds.sweep_pending_historical(&shared);
+
+        assert_eq!(hmds.pending_historical.len(), 2, "neither entry may be swept");
+        assert!(shared.reference.drain_historical_errors().is_empty());
+        assert!(shared.reference.drain_historical_data().is_empty());
+    }
+
     #[test]
     fn query_error_for_unknown_query_id_drops_nothing_and_emits_no_error() {
         let mut hmds = HmdsState::new();
         let shared = SharedState::new();
         let mut hb = HeartbeatState::new();
         let mut conn: Option<Connection> = None;
-        hmds.pending_historical.push(("hist_1003".to_string(), 11));
+        hmds.pending_historical.push(("hist_1003".to_string(), 11, Instant::now() + HISTORICAL_IDLE_TIMEOUT));
 
         let msg = make_query_error_msg("hist_9999", "Boom");
         hmds.process_hmds_message(&msg, &mut conn, &shared, &None, &mut hb);

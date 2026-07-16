@@ -906,3 +906,100 @@ fn snap_to_tick_phase_live() {
 
     println!("\n  PASS — off-grid price snapped to the tick grid and accepted (ibx#216 validated)\n");
 }
+
+/// ibx#231 / ibx#227 focused live entry — validates that the new deadline
+/// sweeps do NOT fire on healthy traffic: a normal contract-details lookup
+/// (by con_id and by symbol, including the fan-out) and a normal historical
+/// request all still complete with rows/bars followed by their end signals,
+/// well inside the sweep deadlines. The timeout paths themselves are
+/// unit-tested; this guards the happy path against a premature sweep and
+/// the changed end-ordering for by-symbol lookups.
+/// Run: cargo test --test ib_paper_compat timeout_sweeps_phase_live -- --ignored --nocapture
+#[test]
+#[ignore]
+fn timeout_sweeps_phase_live() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let config = match get_config() {
+        Some(c) => c,
+        None => { println!("Skipping: IB credentials not set"); return; }
+    };
+
+    println!("=== ibx#231/ibx#227: happy paths under the deadline sweeps ===\n");
+    let (gw, farm, ccp, hmds) = Gateway::connect(&config)
+        .expect("Gateway::connect failed");
+    let account_id = gw.account_id.clone();
+    drop(gw);
+
+    let shared = std::sync::Arc::new(SharedState::new());
+    let (event_tx, event_rx) = crossbeam_channel::unbounded();
+    let (mut hot_loop, control_tx) = HotLoop::with_connections(
+        shared.clone(), Some(event_tx), account_id.clone(),
+        farm, ccp, hmds, None,
+    );
+    let inst_id = hot_loop.context_mut().register_instrument(756733);
+    hot_loop.context_mut().set_symbol(inst_id, "SPY".to_string());
+    let join = run_hot_loop(hot_loop);
+
+    // Helper: wait for rows + end on a req_id, in order.
+    let wait_details = |req_id: u32, label: &str| -> (usize, bool, bool) {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        let (mut rows, mut end, mut row_after_end) = (0usize, false, false);
+        while Instant::now() < deadline && !end {
+            match event_rx.recv_timeout(Duration::from_millis(100)) {
+                Ok(Event::ContractDetails { req_id: r, .. }) if r == req_id => {
+                    if end { row_after_end = true; }
+                    rows += 1;
+                }
+                Ok(Event::ContractDetailsEnd(r)) if r == req_id => end = true,
+                _ => {}
+            }
+        }
+        println!("  {}: rows={} end={} row_after_end={}", label, rows, end, row_after_end);
+        (rows, end, row_after_end)
+    };
+
+    // 1. By con_id — single record.
+    control_tx.send(ControlCommand::FetchContractDetails {
+        req_id: 6001, con_id: 756733, symbol: String::new(),
+        sec_type: String::new(), exchange: String::new(), currency: String::new(),
+    }).expect("send details by con_id failed");
+    let (rows, end, _) = wait_details(6001, "by-conId SPY");
+    assert!(rows >= 1, "by-conId lookup returned no rows");
+    assert!(end, "by-conId end never fired — sweep may have eaten the reply (ibx#227)");
+
+    // 2. By symbol — exercises the fan-out counter and the deferred-end path.
+    control_tx.send(ControlCommand::FetchContractDetails {
+        req_id: 6002, con_id: 0, symbol: "AAPL".into(),
+        sec_type: "STK".into(), exchange: String::new(), currency: "USD".into(),
+    }).expect("send details by symbol failed");
+    let (rows, end, row_after_end) = wait_details(6002, "by-symbol AAPL fan-out");
+    assert!(rows >= 1, "by-symbol lookup returned no rows");
+    assert!(end, "by-symbol end never fired within 30s (ibx#227)");
+    assert!(!row_after_end, "a row arrived AFTER end — ordering regression (ibx#227)");
+
+    // 3. Historical bars — must complete without tripping the idle sweep.
+    control_tx.send(ControlCommand::FetchHistorical {
+        req_id: 6003, con_id: 756733, symbol: "SPY".into(),
+        end_date_time: String::new(), duration: "5 D".into(), bar_size: "1 day".into(),
+        what_to_show: "TRADES".into(), use_rth: true, keep_up_to_date: false,
+    }).expect("send historical failed");
+    let deadline = Instant::now() + Duration::from_secs(45);
+    let (mut bars, mut complete, mut hist_err) = (0usize, false, None::<String>);
+    while Instant::now() < deadline && !complete && hist_err.is_none() {
+        if let Ok(Event::HistoricalData { req_id: 6003, data }) = event_rx.recv_timeout(Duration::from_millis(100)) {
+            bars += data.bars.len();
+            complete = data.is_complete;
+        }
+        for (rid, code, msg) in shared.reference.drain_historical_errors() {
+            if rid == 6003 { hist_err = Some(format!("error {}: {}", code, msg)); }
+        }
+    }
+    println!("  historical SPY 5D/1day: bars={} complete={} err={:?}", bars, complete, hist_err);
+    assert!(hist_err.is_none(), "healthy historical request errored: {:?} (ibx#231 sweep too eager?)", hist_err);
+    assert!(complete && bars >= 3, "historical did not complete (bars={})", bars);
+
+    let _ = control_tx.send(ControlCommand::Shutdown);
+    let _ = join.join();
+
+    println!("\n  PASS — happy paths complete under the deadline sweeps (ibx#231/ibx#227 validated)\n");
+}
