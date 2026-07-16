@@ -16,6 +16,22 @@ pub type Qty = i64;
 pub const PRICE_SCALE: i64 = 100_000_000; // 10^8
 pub const QTY_SCALE: i64 = 10_000; // 10^4
 
+/// Snap a fixed-point price to the nearest multiple of `tick` (ties round
+/// away from zero). A non-positive tick means the grid is unknown and the
+/// price is returned unchanged. Pure integer math — exact on the fixed-point
+/// representation. See ibx#216.
+pub fn snap_to_tick(price: Price, tick: i64) -> Price {
+    if tick <= 0 {
+        return price;
+    }
+    let half = tick / 2;
+    if price >= 0 {
+        ((price + half) / tick) * tick
+    } else {
+        -(((-price + half) / tick) * tick)
+    }
+}
+
 /// Maximum number of concurrently tracked instruments.
 pub const MAX_INSTRUMENTS: usize = 256;
 
@@ -853,6 +869,130 @@ impl OrderRequest {
             Self::SubmitBracket { parent_id, .. } => *parent_id,
         }
     }
+
+    /// Extract the instrument from any submit variant. None for
+    /// Cancel/Modify, which carry no instrument (the engine resolves it from
+    /// the tracked order).
+    pub fn instrument(&self) -> Option<InstrumentId> {
+        match self {
+            Self::Cancel { .. } | Self::Modify { .. } => None,
+            Self::CancelAll { instrument }
+            | Self::SubmitLimit { instrument, .. }
+            | Self::SubmitMarket { instrument, .. }
+            | Self::SubmitStop { instrument, .. }
+            | Self::SubmitStopLimit { instrument, .. }
+            | Self::SubmitLimitGtc { instrument, .. }
+            | Self::SubmitStopGtc { instrument, .. }
+            | Self::SubmitStopLimitGtc { instrument, .. }
+            | Self::SubmitLimitIoc { instrument, .. }
+            | Self::SubmitLimitFok { instrument, .. }
+            | Self::SubmitTrailingStop { instrument, .. }
+            | Self::SubmitTrailingStopLimit { instrument, .. }
+            | Self::SubmitTrailingStopPct { instrument, .. }
+            | Self::SubmitTrailingStopPctEx { instrument, .. }
+            | Self::SubmitMoc { instrument, .. }
+            | Self::SubmitLoc { instrument, .. }
+            | Self::SubmitMit { instrument, .. }
+            | Self::SubmitLit { instrument, .. }
+            | Self::SubmitLimitEx { instrument, .. }
+            | Self::SubmitRel { instrument, .. }
+            | Self::SubmitLimitOpg { instrument, .. }
+            | Self::SubmitAdaptive { instrument, .. }
+            | Self::SubmitMtl { instrument, .. }
+            | Self::SubmitMktPrt { instrument, .. }
+            | Self::SubmitStpPrt { instrument, .. }
+            | Self::SubmitMidPrice { instrument, .. }
+            | Self::SubmitSnapMkt { instrument, .. }
+            | Self::SubmitSnapMid { instrument, .. }
+            | Self::SubmitSnapPri { instrument, .. }
+            | Self::SubmitPegMkt { instrument, .. }
+            | Self::SubmitPegMid { instrument, .. }
+            | Self::SubmitAlgo { instrument, .. }
+            | Self::SubmitPegBench { instrument, .. }
+            | Self::SubmitLimitAuc { instrument, .. }
+            | Self::SubmitMtlAuc { instrument, .. }
+            | Self::SubmitWhatIf { instrument, .. }
+            | Self::SubmitLimitFractional { instrument, .. }
+            | Self::SubmitAdjustableStop { instrument, .. }
+            | Self::SubmitEx { instrument, .. }
+            | Self::SubmitBracket { instrument, .. } => Some(*instrument),
+        }
+    }
+
+    /// Snap every outbound price-like field to the instrument's tick grid
+    /// (ibx#216). `tick` is the fixed-point tick from
+    /// `MarketState::min_tick_scaled`; 0 (unknown — no market-data
+    /// subscription seen yet) leaves prices unchanged. Percent-based fields
+    /// (trailing percent) and non-price fields (quantities, cash amounts)
+    /// are not touched.
+    pub fn snap_prices(&mut self, tick: i64) {
+        if tick <= 0 {
+            return;
+        }
+        let s = |p: &mut Price| *p = snap_to_tick(*p, tick);
+        match self {
+            Self::Cancel { .. } | Self::CancelAll { .. }
+            | Self::SubmitMarket { .. } | Self::SubmitMoc { .. }
+            | Self::SubmitMtl { .. } | Self::SubmitMktPrt { .. }
+            | Self::SubmitSnapMkt { .. } | Self::SubmitSnapMid { .. }
+            | Self::SubmitSnapPri { .. } | Self::SubmitMtlAuc { .. }
+            | Self::SubmitTrailingStopPct { .. }
+            | Self::SubmitTrailingStopPctEx { .. } => {}
+            Self::Modify { price, .. } => s(price),
+            Self::SubmitLimit { price, .. }
+            | Self::SubmitLimitGtc { price, .. }
+            | Self::SubmitLimitIoc { price, .. }
+            | Self::SubmitLimitFok { price, .. }
+            | Self::SubmitLimitEx { price, .. }
+            | Self::SubmitLimitOpg { price, .. }
+            | Self::SubmitLimitAuc { price, .. }
+            | Self::SubmitLimitFractional { price, .. }
+            | Self::SubmitAdaptive { price, .. }
+            | Self::SubmitAlgo { price, .. }
+            | Self::SubmitWhatIf { price, .. }
+            | Self::SubmitLoc { price, .. } => s(price),
+            Self::SubmitStop { stop_price, .. }
+            | Self::SubmitStopGtc { stop_price, .. }
+            | Self::SubmitMit { stop_price, .. }
+            | Self::SubmitStpPrt { stop_price, .. } => s(stop_price),
+            Self::SubmitStopLimit { price, stop_price, .. }
+            | Self::SubmitStopLimitGtc { price, stop_price, .. }
+            | Self::SubmitLit { price, stop_price, .. } => { s(price); s(stop_price); }
+            Self::SubmitTrailingStop { trail_amt, .. } => s(trail_amt),
+            Self::SubmitTrailingStopLimit { lmt_offset, trail_amt, .. } => { s(lmt_offset); s(trail_amt); }
+            Self::SubmitMidPrice { price_cap, .. } => s(price_cap),
+            Self::SubmitRel { offset, .. }
+            | Self::SubmitPegMkt { offset, .. }
+            | Self::SubmitPegMid { offset, .. } => s(offset),
+            Self::SubmitBracket { entry_price, take_profit, stop_loss, .. } => {
+                s(entry_price); s(take_profit); s(stop_loss);
+            }
+            Self::SubmitPegBench { price, pegged_change_amount, ref_change_amount, .. } => {
+                s(price); s(pegged_change_amount); s(ref_change_amount);
+            }
+            Self::SubmitAdjustableStop {
+                stop_price, trigger_price, adjusted_stop_price, adjusted_stop_limit_price, ..
+            } => {
+                s(stop_price); s(trigger_price); s(adjusted_stop_price); s(adjusted_stop_limit_price);
+            }
+            Self::SubmitEx { kind, .. } => match kind {
+                OrderKind::Market | OrderKind::Moc | OrderKind::Mtl | OrderKind::MktPrt
+                | OrderKind::SnapMkt | OrderKind::SnapMid | OrderKind::SnapPri
+                | OrderKind::TrailPct { .. } => {}
+                OrderKind::Limit { price } | OrderKind::Loc { price } => s(price),
+                OrderKind::Stop { stop_price }
+                | OrderKind::Mit { stop_price }
+                | OrderKind::StpPrt { stop_price } => s(stop_price),
+                OrderKind::StopLimit { price, stop_price }
+                | OrderKind::Lit { price, stop_price } => { s(price); s(stop_price); }
+                OrderKind::TrailingStop { trail_amt } => s(trail_amt),
+                OrderKind::TrailingStopLimit { lmt_offset, trail_amt } => { s(lmt_offset); s(trail_amt); }
+                OrderKind::MidPrice { price_cap } => s(price_cap),
+                OrderKind::PegMkt { offset } | OrderKind::PegMid { offset }
+                | OrderKind::Rel { offset } => s(offset),
+            },
+        }
+    }
 }
 
 /// Pre-allocated buffer for pending order requests. Never allocates on the hot path.
@@ -1556,6 +1696,101 @@ mod tests {
             }
             _ => panic!("wrong variant"),
         }
+    }
+
+    // ── ibx#216: snap-to-tick ──
+
+    const TICK_CENT: i64 = PRICE_SCALE / 100; // 0.01
+
+    #[test]
+    fn snap_to_tick_rounds_to_nearest() {
+        // 150.123 on a 0.01 grid -> 150.12
+        assert_eq!(snap_to_tick(15_012_300_000, TICK_CENT), 15_012_000_000);
+        // 150.126 -> 150.13
+        assert_eq!(snap_to_tick(15_012_600_000, TICK_CENT), 15_013_000_000);
+        // Exact multiples unchanged.
+        assert_eq!(snap_to_tick(15_012_000_000, TICK_CENT), 15_012_000_000);
+        // Tie (150.125) rounds away from zero -> 150.13
+        assert_eq!(snap_to_tick(15_012_500_000, TICK_CENT), 15_013_000_000);
+        // Negative price mirrors: -150.125 -> -150.13
+        assert_eq!(snap_to_tick(-15_012_500_000, TICK_CENT), -15_013_000_000);
+        // 0.05 grid: 10.02 -> 10.00, 10.03 -> 10.05
+        let nickel = 5 * TICK_CENT;
+        assert_eq!(snap_to_tick(10_02_000_000, nickel), 10_00_000_000);
+        assert_eq!(snap_to_tick(10_03_000_000, nickel), 10_05_000_000);
+        // Unknown tick: unchanged.
+        assert_eq!(snap_to_tick(15_012_345_678, 0), 15_012_345_678);
+        assert_eq!(snap_to_tick(15_012_345_678, -1), 15_012_345_678);
+        // Zero price stays zero (MidPrice "no cap" sentinel).
+        assert_eq!(snap_to_tick(0, TICK_CENT), 0);
+    }
+
+    #[test]
+    fn snap_prices_limit_and_stop_fields() {
+        let mut req = OrderRequest::SubmitStopLimit {
+            order_id: 1, instrument: 0, side: Side::Buy, qty: 1,
+            price: 15_012_345_678, stop_price: 15_099_999_999,
+        };
+        req.snap_prices(TICK_CENT);
+        match req {
+            OrderRequest::SubmitStopLimit { price, stop_price, .. } => {
+                assert_eq!(price, 15_012_000_000);
+                assert_eq!(stop_price, 15_100_000_000);
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn snap_prices_submit_ex_kind() {
+        let mut req = OrderRequest::SubmitEx {
+            order_id: 1, instrument: 0, side: Side::Sell, qty: 1,
+            kind: OrderKind::Stop { stop_price: 24_000_123_456 },
+            tif: b'1', attrs: OrderAttrs::default(),
+        };
+        req.snap_prices(TICK_CENT);
+        match req {
+            OrderRequest::SubmitEx { kind: OrderKind::Stop { stop_price }, .. } => {
+                assert_eq!(stop_price, 24_000_000_000);
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn snap_prices_leaves_percent_trail_alone() {
+        // trail_pct is basis points, not a price — must never be snapped.
+        let mut req = OrderRequest::SubmitTrailingStopPct {
+            order_id: 1, instrument: 0, side: Side::Sell, qty: 1, trail_pct: 137,
+        };
+        req.snap_prices(TICK_CENT);
+        match req {
+            OrderRequest::SubmitTrailingStopPct { trail_pct, .. } => assert_eq!(trail_pct, 137),
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn snap_prices_unknown_tick_is_noop() {
+        let mut req = OrderRequest::SubmitLimit {
+            order_id: 1, instrument: 0, side: Side::Buy, qty: 1, price: 15_012_345_678,
+        };
+        req.snap_prices(0);
+        match req {
+            OrderRequest::SubmitLimit { price, .. } => assert_eq!(price, 15_012_345_678),
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn instrument_accessor_covers_submits() {
+        let req = OrderRequest::SubmitMarket { order_id: 1, instrument: 7, side: Side::Buy, qty: 1 };
+        assert_eq!(req.instrument(), Some(7));
+        assert_eq!(OrderRequest::Cancel { order_id: 1 }.instrument(), None);
+        assert_eq!(
+            OrderRequest::Modify { new_order_id: 2, order_id: 1, price: 0, qty: 1 }.instrument(),
+            None
+        );
     }
 
     #[test]

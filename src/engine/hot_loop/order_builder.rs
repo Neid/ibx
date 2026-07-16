@@ -29,8 +29,14 @@ pub(crate) fn drain_and_send_orders(
         Some(c) => c,
         None => return,
     };
-    for order_req in orders {
+    for mut order_req in orders {
         let oid = order_req.order_id();
+        // Snap every price to the contract's tick grid before encoding
+        // (ibx#216). The tick comes from the market-data subscription ack;
+        // without one it is 0 and prices pass through unchanged.
+        if let Some(instrument) = order_req.instrument() {
+            order_req.snap_prices(context.market.min_tick_scaled(instrument));
+        }
         let result = match order_req {
             OrderRequest::SubmitLimit { order_id, instrument, side, qty, price } => {
                 context.insert_order(crate::types::Order::new(
@@ -1333,6 +1339,10 @@ pub(crate) fn drain_and_send_orders(
             }
             OrderRequest::Modify { new_order_id, order_id, price, qty } => {
                 let orig = context.order(order_id).copied();
+                // Modify carries no instrument; resolve it from the tracked
+                // order to snap the new price to the tick grid (ibx#216).
+                let price = orig.map_or(price, |o| crate::types::snap_to_tick(
+                    price, context.market.min_tick_scaled(o.instrument)));
                 if let Some(orig) = orig {
                     context.insert_order(crate::types::Order::new(
                         new_order_id, orig.instrument, orig.side, qty, price,

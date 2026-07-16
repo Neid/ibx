@@ -809,3 +809,100 @@ fn submit_ex_bracket_child_phase_live() {
 
     println!("\n  PASS — SubmitEx child linked, held, and cascade-cancelled (ibx#224/ibx#215 validated)\n");
 }
+
+/// ibx#216 focused live entry — validates snap-to-tick on the outbound path.
+/// Subscribes SPY market data (the subscribe ack carries the tick size the
+/// engine stores), then places a resting LMT GTC BUY 1 SPY at the off-grid
+/// price $1.001234. The engine must snap it to $1.00 before encoding; the
+/// assertion reads the price back from the server-echoed open-order cache.
+/// Run: cargo test --test ib_paper_compat snap_to_tick_phase_live -- --ignored --nocapture
+#[test]
+#[ignore]
+fn snap_to_tick_phase_live() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let config = match get_config() {
+        Some(c) => c,
+        None => { println!("Skipping: IB credentials not set"); return; }
+    };
+
+    println!("=== ibx#216: snap-to-tick ===\n");
+    let (gw, farm, ccp, hmds) = Gateway::connect(&config)
+        .expect("Gateway::connect failed");
+    let account_id = gw.account_id.clone();
+    drop(gw);
+
+    let order_id = common::next_order_id();
+    println!("  orderId = {}", order_id);
+
+    let shared = std::sync::Arc::new(SharedState::new());
+    let (event_tx, event_rx) = crossbeam_channel::unbounded();
+    let (mut hot_loop, control_tx) = HotLoop::with_connections(
+        shared.clone(), Some(event_tx), account_id.clone(),
+        farm, ccp, hmds, None,
+    );
+    let inst_id = hot_loop.context_mut().register_instrument(756733);
+    hot_loop.context_mut().set_symbol(inst_id, "SPY".to_string());
+
+    // Subscribe first: the subscribe ack is what populates the engine's
+    // per-instrument tick size. Without it the snap is a no-op.
+    control_tx.send(ControlCommand::Subscribe {
+        con_id: 756733, symbol: "SPY".into(), exchange: String::new(),
+        sec_type: String::new(), last_trade_date: String::new(), strike: 0.0,
+        right: String::new(), multiplier: String::new(), mode_9887: 0, reply_tx: None,
+    }).expect("send subscribe failed");
+
+    let join = run_hot_loop(hot_loop);
+
+    // Give the subscribe ack time to land so the tick size is known.
+    std::thread::sleep(Duration::from_secs(5));
+
+    // Off-grid on a $0.01 grid: must go out as $1.00.
+    control_tx.send(ControlCommand::Order(OrderRequest::SubmitLimitGtc {
+        order_id, instrument: inst_id, side: Side::Buy, qty: 1,
+        price: 1_00_123_400, outside_rth: true,
+    })).expect("send order failed");
+
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let (mut acked, mut rejected) = (false, false);
+    while Instant::now() < deadline && !acked && !rejected {
+        if let Ok(Event::OrderUpdate(u)) = event_rx.recv_timeout(Duration::from_millis(100)) {
+            println!("  [update] oid={} status={:?}", u.order_id, u.status);
+            match u.status {
+                OrderStatus::Submitted | OrderStatus::PreSubmitted => acked = true,
+                OrderStatus::Rejected => rejected = true,
+                _ => {}
+            }
+        }
+    }
+    assert!(!rejected, "off-grid price was rejected — snap-to-tick did not apply (ibx#216)");
+    assert!(acked, "order never acked within 30s — cleanup orderId={} via GUI", order_id);
+
+    // Read the price back from the server-echoed open-order cache.
+    std::thread::sleep(Duration::from_secs(2));
+    let core = ibx::client_core::ClientCore::new();
+    let echoed = core.collect_open_orders(&shared)
+        .into_iter()
+        .find(|(oid, _)| *oid == order_id)
+        .map(|(_, t)| t.order.lmt_price);
+    println!("  server-echoed lmt_price: {:?}", echoed);
+
+    // Cleanup before asserting on the echo.
+    control_tx.send(ControlCommand::Order(OrderRequest::Cancel { order_id }))
+        .expect("send cancel failed");
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let mut cancelled = false;
+    while Instant::now() < deadline && !cancelled {
+        if let Ok(Event::OrderUpdate(u)) = event_rx.recv_timeout(Duration::from_millis(100)) {
+            if u.order_id == order_id && u.status == OrderStatus::Cancelled { cancelled = true; }
+        }
+    }
+    let _ = control_tx.send(ControlCommand::Shutdown);
+    let _ = join.join();
+    assert!(cancelled, "cancel not confirmed within 30s — cleanup orderId={} via GUI", order_id);
+
+    let echoed = echoed.expect("order missing from the open-order cache after ack");
+    assert!((echoed - 1.00).abs() < 1e-9,
+        "server echoed lmt_price {} — expected the snapped 1.00 (ibx#216)", echoed);
+
+    println!("\n  PASS — off-grid price snapped to the tick grid and accepted (ibx#216 validated)\n");
+}
