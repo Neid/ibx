@@ -749,6 +749,10 @@ pub struct SharedState {
     pub orders: OrderState,
     pub reference: ReferenceState,
     pub portfolio: PortfolioState,
+    /// Last measured auth-connection round-trip time in nanoseconds
+    /// (0 = never measured). Sampled from the test-request/echo cycle —
+    /// see `HotLoop` liveness and `ControlCommand::Ping` (ibx#158).
+    ccp_rtt_ns: AtomicU64,
     /// Notifier for waking consumers (e.g. Python event loop) when data arrives.
     notify_mutex: Mutex<bool>,
     notify_condvar: Condvar,
@@ -761,8 +765,27 @@ impl SharedState {
             orders: OrderState::new(),
             reference: ReferenceState::new(),
             portfolio: PortfolioState::new(),
+            ccp_rtt_ns: AtomicU64::new(0),
             notify_mutex: Mutex::new(false),
             notify_condvar: Condvar::new(),
+        }
+    }
+
+    /// Record an auth-connection RTT sample (ibx#158). Hot-loop side.
+    #[inline]
+    pub fn set_ccp_rtt(&self, rtt: std::time::Duration) {
+        self.ccp_rtt_ns.store(rtt.as_nanos().min(u64::MAX as u128) as u64, Ordering::Relaxed);
+    }
+
+    /// Last measured auth-connection round-trip time, if any (ibx#158).
+    /// A gauge, not a benchmark: the sample is the interval from a test
+    /// request to the first inbound traffic that followed it, which on an
+    /// active feed can undercount by racing data already in flight.
+    #[inline]
+    pub fn last_ccp_rtt(&self) -> Option<std::time::Duration> {
+        match self.ccp_rtt_ns.load(Ordering::Relaxed) {
+            0 => None,
+            ns => Some(std::time::Duration::from_nanos(ns)),
         }
     }
 

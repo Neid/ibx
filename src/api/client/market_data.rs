@@ -135,6 +135,24 @@ impl EClient {
     }
 
     /// Set market data type preference (1=live, 2=frozen, 3=delayed, 4=delayed-frozen).
+    /// Request an auth-connection round-trip time sample (ibx#158): sends a
+    /// lightweight liveness probe with no side effects on subscriptions,
+    /// contract caches, or pacing budgets. The result lands asynchronously —
+    /// poll `last_rtt()` after a moment. No-op while a probe is already in
+    /// flight or the connection is down.
+    pub fn req_ping(&self) -> Result<(), String> {
+        self.send(ControlCommand::Ping)
+    }
+
+    /// Last measured auth-connection round-trip time, if any (ibx#158).
+    /// A gauge, not a benchmark: the sample is the interval from a probe to
+    /// the first inbound traffic that followed it, which on an active feed
+    /// can undercount by racing data already in flight. Also sampled
+    /// automatically whenever liveness sends its own probe.
+    pub fn last_rtt(&self) -> Option<std::time::Duration> {
+        self.shared.last_ccp_rtt()
+    }
+
     /// NOT supported end to end (ibx#234): the requested type is stored
     /// locally but never sent to the gateway, so subscriptions always
     /// deliver realtime data and delayed tick variants never arrive.

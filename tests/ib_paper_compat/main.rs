@@ -1099,3 +1099,52 @@ fn reclaim_and_symbol_search_phase_live() {
 
     println!("\n  PASS — slot reclaimed and reused; symbol search attributes correctly (ibx#233/ibx#228 validated)\n");
 }
+
+/// ibx#158 focused live entry — validates the on-demand RTT sample: send a
+/// ping, expect a round-trip measurement to land in shared state.
+/// Run: cargo test --test ib_paper_compat rtt_ping_phase_live -- --ignored --nocapture
+#[test]
+#[ignore]
+fn rtt_ping_phase_live() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let config = match get_config() {
+        Some(c) => c,
+        None => { println!("Skipping: IB credentials not set"); return; }
+    };
+
+    println!("=== ibx#158: RTT ping ===
+");
+    let (gw, farm, ccp, hmds) = Gateway::connect(&config)
+        .expect("Gateway::connect failed");
+    let account_id = gw.account_id.clone();
+    drop(gw);
+
+    let shared = std::sync::Arc::new(SharedState::new());
+    let (event_tx, _event_rx) = crossbeam_channel::unbounded();
+    let (hot_loop, control_tx) = HotLoop::with_connections(
+        shared.clone(), Some(event_tx), account_id.clone(),
+        farm, ccp, hmds, None,
+    );
+    let join = run_hot_loop(hot_loop);
+
+    assert!(shared.last_ccp_rtt().is_none(), "no sample before any probe");
+    control_tx.send(ControlCommand::Ping).expect("send ping failed");
+
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let mut rtt = None;
+    while Instant::now() < deadline && rtt.is_none() {
+        rtt = shared.last_ccp_rtt();
+        std::thread::sleep(Duration::from_millis(50));
+    }
+
+    let _ = control_tx.send(ControlCommand::Shutdown);
+    let _ = join.join();
+
+    let rtt = rtt.expect("RTT sample never arrived within 15s (ibx#158)");
+    println!("  measured RTT: {:.2} ms", rtt.as_secs_f64() * 1_000.0);
+    assert!(rtt.as_millis() < 10_000, "implausible RTT: {:?}", rtt);
+
+    println!("
+  PASS — on-demand RTT sample delivered (ibx#158 validated)
+");
+}

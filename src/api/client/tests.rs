@@ -1433,6 +1433,19 @@ fn quote_escape_hatch() {
     assert!(client.quote(99).is_none());
 }
 
+// ibx#158: RTT is None until measured, then reflects the stored sample;
+// req_ping goes out as a Ping command.
+#[test]
+fn rtt_none_until_measured_and_ping_sends_command() {
+    let (client, rx, shared) = test_client();
+    assert_eq!(client.last_rtt(), None);
+    client.req_ping().unwrap();
+    assert!(matches!(rx.try_recv().unwrap(), ControlCommand::Ping));
+
+    shared.set_ccp_rtt(std::time::Duration::from_micros(1234));
+    assert_eq!(client.last_rtt(), Some(std::time::Duration::from_micros(1234)));
+}
+
 #[test]
 fn quote_by_instrument_direct() {
     let shared = Arc::new(SharedState::new());

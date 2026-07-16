@@ -428,6 +428,24 @@ impl HotLoop {
                 ControlCommand::UpdateParam { key, value } => {
                     let _ = (key, value);
                 }
+                ControlCommand::Ping => {
+                    // On-demand RTT sample (ibx#158). Reuses the liveness
+                    // test-request machinery; a pending liveness test is
+                    // already a measurement in flight, so don't stomp it.
+                    if self.hb.pending_ccp_test.is_none() {
+                        if let Some(conn) = self.ccp_conn.as_mut() {
+                            let ts = chrono_free_timestamp();
+                            let test_id = self.hb.next_test_id();
+                            let _ = conn.send_fix(&[
+                                (fix::TAG_MSG_TYPE, fix::MSG_TEST_REQUEST),
+                                (fix::TAG_SENDING_TIME, &ts),
+                                (fix::TAG_TEST_REQ_ID, &test_id),
+                            ]);
+                            self.hb.pending_ccp_test = Some((test_id, Instant::now()));
+                            self.hb.last_ccp_sent = Instant::now();
+                        }
+                    }
+                }
                 ControlCommand::Order(req) => {
                     self.context.pending_orders.push(req);
                 }

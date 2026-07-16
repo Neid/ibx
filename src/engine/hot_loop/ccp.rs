@@ -211,7 +211,12 @@ impl CcpState {
                     }
                     Ok(_) => {
                         hb.last_ccp_recv = Instant::now();
-                        hb.pending_ccp_test = None;
+                        // RTT sample (ibx#158): interval from the test request
+                        // to the first inbound traffic after it. On a quiet
+                        // link (the ping use case) that is the echo itself.
+                        if let Some((_, sent_at)) = hb.pending_ccp_test.take() {
+                            shared.set_ccp_rtt(hb.last_ccp_recv.duration_since(sent_at));
+                        }
                     }
                 }
                 let frames = conn.extract_frames();

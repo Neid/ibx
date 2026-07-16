@@ -1281,6 +1281,10 @@ pub enum ControlCommand {
         use_rth: bool,
         keep_up_to_date: bool,
     },
+    /// Measure auth-connection round-trip time (ibx#158): sends a
+    /// test request immediately; the sample lands in
+    /// `SharedState::last_ccp_rtt` when the reply arrives.
+    Ping,
     /// Cancel a historical data request.
     CancelHistorical { req_id: u32 },
     /// Request head timestamp via historical data connection.

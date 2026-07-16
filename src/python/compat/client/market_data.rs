@@ -109,6 +109,29 @@ impl EClient {
         Ok(())
     }
 
+    /// Request an auth-connection round-trip time sample (ibx#158): sends a
+    /// lightweight liveness probe with no side effects on subscriptions,
+    /// contract caches, or pacing budgets. Poll `last_rtt_ms()` after a
+    /// moment for the result.
+    fn req_ping(&self) -> PyResult<()> {
+        let tx = self.tx()?;
+        tx.send(ControlCommand::Ping)
+            .map_err(|e| PyRuntimeError::new_err(format!("Engine stopped: {}", e)))?;
+        Ok(())
+    }
+
+    /// Last measured auth-connection round-trip time in milliseconds, or
+    /// None if never measured (ibx#158). A gauge, not a benchmark — see
+    /// `req_ping`. Also sampled automatically by the engine's own liveness
+    /// probes.
+    fn last_rtt_ms(&self) -> PyResult<Option<f64>> {
+        let shared = match self.shared.lock().unwrap().clone() {
+            Some(s) => s,
+            None => return Ok(None),
+        };
+        Ok(shared.last_ccp_rtt().map(|d| d.as_secs_f64() * 1_000.0))
+    }
+
     /// NOT supported end to end (ibx#234): the requested type (1=live,
     /// 2=frozen, 3=delayed, 4=delayed-frozen) is stored locally but never
     /// sent to the gateway, so subscriptions always deliver realtime data
