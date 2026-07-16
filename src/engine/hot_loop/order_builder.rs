@@ -64,7 +64,8 @@ pub(crate) fn drain_and_send_orders(
                     (59, "0"),          // TIF = DAY
                     (60, &now),         // TransactTime
                     (167, &sec_type_str),       // SecurityType = CommonStock
-                    (100, &destination),     // ExDestination
+                    (100, &destination),
+                    (6210, &destination),     // ExDestination
                     (15, "USD"),        // Currency
                     (204, "0"),         // CustomerOrFirm
                 ])
@@ -98,6 +99,7 @@ pub(crate) fn drain_and_send_orders(
                     (60, &now),
                     (167, &sec_type_str),
                     (100, &destination),
+                    (6210, &destination),
                     (15, "USD"),
                     (204, "0"),
                 ])
@@ -129,6 +131,7 @@ pub(crate) fn drain_and_send_orders(
                     (60, &now),
                     (167, &sec_type_str),
                     (100, &destination),
+                    (6210, &destination),
                     (15, "USD"),
                     (204, "0"),
                 ];
@@ -171,7 +174,8 @@ pub(crate) fn drain_and_send_orders(
                     (59, "0"),          // TIF = DAY
                     (60, &now),         // TransactTime
                     (167, &sec_type_str),       // SecurityType
-                    (100, &destination),     // ExDestination
+                    (100, &destination),
+                    (6210, &destination),     // ExDestination
                     (15, "USD"),        // Currency
                     (204, "0"),         // CustomerOrFirm
                 ])
@@ -203,6 +207,7 @@ pub(crate) fn drain_and_send_orders(
                     (60, &now),
                     (167, &sec_type_str),
                     (100, &destination),
+                    (6210, &destination),
                     (15, "USD"),
                     (204, "0"),
                 ])
@@ -234,6 +239,7 @@ pub(crate) fn drain_and_send_orders(
                     (60, &now),
                     (167, &sec_type_str),
                     (100, &destination),
+                    (6210, &destination),
                     (15, "USD"),
                     (204, "0"),
                 ];
@@ -271,6 +277,7 @@ pub(crate) fn drain_and_send_orders(
                     (60, &now),
                     (167, &sec_type_str),
                     (100, &destination),
+                    (6210, &destination),
                     (15, "USD"),
                     (204, "0"),
                 ];
@@ -306,6 +313,7 @@ pub(crate) fn drain_and_send_orders(
                     (60, &now),
                     (167, &sec_type_str),
                     (100, &destination),
+                    (6210, &destination),
                     (15, "USD"),
                     (204, "0"),
                 ])
@@ -337,6 +345,7 @@ pub(crate) fn drain_and_send_orders(
                     (60, &now),
                     (167, &sec_type_str),
                     (100, &destination),
+                    (6210, &destination),
                     (15, "USD"),
                     (204, "0"),
                 ])
@@ -374,6 +383,7 @@ pub(crate) fn drain_and_send_orders(
                     (60, &now),
                     (167, &sec_type_str),
                     (100, &destination),
+                    (6210, &destination),
                     (15, "USD"),
                     (204, "0"),
                 ])
@@ -413,6 +423,7 @@ pub(crate) fn drain_and_send_orders(
                     (60, &now),
                     (167, &sec_type_str),
                     (100, &destination),
+                    (6210, &destination),
                     (15, "USD"),
                     (204, "0"),
                 ])
@@ -452,6 +463,7 @@ pub(crate) fn drain_and_send_orders(
                     (60, &now),
                     (167, &sec_type_str),
                     (100, &destination),
+                    (6210, &destination),
                     (15, "USD"),
                     (204, "0"),
                 ])
@@ -485,6 +497,7 @@ pub(crate) fn drain_and_send_orders(
                     (60, &now),
                     (167, &sec_type_str),
                     (100, &destination),
+                    (6210, &destination),
                     (15, "USD"),
                     (204, "0"),
                 ])
@@ -516,6 +529,7 @@ pub(crate) fn drain_and_send_orders(
                     (60, &now),
                     (167, &sec_type_str),
                     (100, &destination),
+                    (6210, &destination),
                     (15, "USD"),
                     (204, "0"),
                 ])
@@ -547,6 +561,7 @@ pub(crate) fn drain_and_send_orders(
                     (60, &now),
                     (167, &sec_type_str),
                     (100, &destination),
+                    (6210, &destination),
                     (15, "USD"),
                     (204, "0"),
                 ])
@@ -580,6 +595,7 @@ pub(crate) fn drain_and_send_orders(
                     (60, &now),
                     (167, &sec_type_str),
                     (100, &destination),
+                    (6210, &destination),
                     (15, "USD"),
                     (204, "0"),
                 ])
@@ -619,6 +635,7 @@ pub(crate) fn drain_and_send_orders(
                     (60, &now),
                     (167, &sec_type_str),
                     (100, &destination),
+                    (6210, &destination),
                     (15, "USD"),
                     (204, "0"),
                 ]);
@@ -643,6 +660,7 @@ pub(crate) fn drain_and_send_orders(
                     (60, &now),
                     (167, &sec_type_str),
                     (100, &destination),
+                    (6210, &destination),
                     (15, "USD"),
                     (204, "0"),
                     (6107, &parent_str),       // ParentOrderID
@@ -670,6 +688,7 @@ pub(crate) fn drain_and_send_orders(
                     (60, &now),
                     (167, &sec_type_str),
                     (100, &destination),
+                    (6210, &destination),
                     (15, "USD"),
                     (204, "0"),
                     (6107, &parent_str),       // ParentOrderID
@@ -708,6 +727,7 @@ pub(crate) fn drain_and_send_orders(
                     (60, &now),
                     (167, &sec_type_str),
                     (100, &destination),
+                    (6210, &destination),
                     (15, "USD"),
                     (204, "0"),
                 ])
@@ -739,6 +759,7 @@ pub(crate) fn drain_and_send_orders(
                     (60, &now),
                     (167, &sec_type_str),
                     (100, &destination),
+                    (6210, &destination),
                     (15, "USD"),
                     (204, "0"),
                 ])
@@ -775,6 +796,7 @@ pub(crate) fn drain_and_send_orders(
                     (60, &now),
                     (167, &sec_type_str),
                     (100, &destination),
+                    (6210, &destination),
                     (15, "USD"),
                     (204, "0"),
                     (847, "Adaptive"),      // AlgoStrategy
@@ -810,6 +832,7 @@ pub(crate) fn drain_and_send_orders(
                     (60, &now),
                     (167, &sec_type_str),
                     (100, &destination),
+                    (6210, &destination),
                     (15, "USD"),
                     (204, "0"),
                 ];
@@ -868,6 +891,7 @@ pub(crate) fn drain_and_send_orders(
                     (60, &now),
                     (167, &sec_type_str),
                     (100, &destination),
+                    (6210, &destination),
                     (15, "USD"),
                     (204, "0"),
                     (6941, &ref_con_str),      // referenceContractId
@@ -903,6 +927,7 @@ pub(crate) fn drain_and_send_orders(
                     (60, &now),
                     (167, &sec_type_str),
                     (100, &destination),
+                    (6210, &destination),
                     (15, "USD"),
                     (204, "0"),
                 ])
@@ -932,6 +957,7 @@ pub(crate) fn drain_and_send_orders(
                     (60, &now),
                     (167, &sec_type_str),
                     (100, &destination),
+                    (6210, &destination),
                     (15, "USD"),
                     (204, "0"),
                 ])
@@ -964,6 +990,7 @@ pub(crate) fn drain_and_send_orders(
                     (60, &now),
                     (167, &sec_type_str),
                     (100, &destination),
+                    (6210, &destination),
                     (15, "USD"),
                     (204, "0"),
                     (6091, "1"),         // What-If flag
@@ -996,6 +1023,7 @@ pub(crate) fn drain_and_send_orders(
                     (60, &now),
                     (167, &sec_type_str),
                     (100, &destination),
+                    (6210, &destination),
                     (15, "USD"),
                     (204, "0"),
                 ])
@@ -1032,6 +1060,7 @@ pub(crate) fn drain_and_send_orders(
                     (60, &now),
                     (167, &sec_type_str),
                     (100, &destination),
+                    (6210, &destination),
                     (15, "USD"),
                     (204, "0"),
                     (6257, "1"),            // Has adjustable params flag
@@ -1069,6 +1098,7 @@ pub(crate) fn drain_and_send_orders(
                     (60, &now),
                     (167, &sec_type_str),
                     (100, &destination),
+                    (6210, &destination),
                     (15, "USD"),
                     (204, "0"),
                 ])
@@ -1098,6 +1128,7 @@ pub(crate) fn drain_and_send_orders(
                     (60, &now),
                     (167, &sec_type_str),
                     (100, &destination),
+                    (6210, &destination),
                     (15, "USD"),
                     (204, "0"),
                 ])
@@ -1129,6 +1160,7 @@ pub(crate) fn drain_and_send_orders(
                     (60, &now),
                     (167, &sec_type_str),
                     (100, &destination),
+                    (6210, &destination),
                     (15, "USD"),
                     (204, "0"),
                 ])
@@ -1157,7 +1189,8 @@ pub(crate) fn drain_and_send_orders(
                     (59, "0"),
                     (60, &now),
                     (167, &sec_type_str),
-                    (100, "ISLAND"),    // Requires directed exchange (not SMART)
+                    (100, "ISLAND"),    // Requires directed exchange
+                    (6210, "ISLAND"),
                     (15, "USD"),
                     (204, "0"),
                 ];
@@ -1193,6 +1226,7 @@ pub(crate) fn drain_and_send_orders(
                     (60, &now),
                     (167, &sec_type_str),
                     (100, "ISLAND"),    // Requires directed exchange
+                    (6210, "ISLAND"),
                     (15, "USD"),
                     (204, "0"),
                 ])
@@ -1222,6 +1256,7 @@ pub(crate) fn drain_and_send_orders(
                     (60, &now),
                     (167, &sec_type_str),
                     (100, "ISLAND"),    // Requires directed exchange
+                    (6210, "ISLAND"),
                     (15, "USD"),
                     (204, "0"),
                 ])
@@ -1251,6 +1286,7 @@ pub(crate) fn drain_and_send_orders(
                     (60, &now),
                     (167, &sec_type_str),
                     (100, "ISLAND"),    // Requires directed exchange
+                    (6210, "ISLAND"),
                     (15, "USD"),
                     (204, "0"),
                 ])
@@ -1280,6 +1316,7 @@ pub(crate) fn drain_and_send_orders(
                     (60, &now),
                     (167, &sec_type_str),
                     (100, "ISLAND"),    // Requires directed exchange
+                    (6210, "ISLAND"),
                     (15, "USD"),
                     (204, "0"),
                 ];
@@ -1315,6 +1352,7 @@ pub(crate) fn drain_and_send_orders(
                     (60, &now),
                     (167, &sec_type_str),
                     (100, "ISLAND"),    // Requires directed exchange
+                    (6210, "ISLAND"),
                     (15, "USD"),
                     (204, "0"),
                     (8403, "0.0"),      // midOffsetAtWhole — differentiates PEGMID from PEGMKT
@@ -1710,7 +1748,10 @@ fn send_order_ex(
         | K::PegMkt { .. } | K::PegMid { .. } => "ISLAND".to_string(),
         _ => destination,
     };
-    fields.push((100, destination));
+    fields.push((100, destination.clone()));
+    // Secondary routing field — the reference encoder always writes it
+    // alongside the destination (ib-agent#165).
+    fields.push((6210, destination));
     fields.push((15, "USD".to_string()));
     fields.push((204, "0".to_string()));
 
