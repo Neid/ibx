@@ -86,8 +86,13 @@ impl EClient {
         };
 
         let shared = self.shared_state()?;
-        tx.send(ControlCommand::RegisterInstrument { con_id: contract.con_id, symbol: contract.symbol.clone(), reply_tx: None })
-            .map_err(|e| PyRuntimeError::new_err(format!("Engine stopped: {}", e)))?;
+        tx.send(ControlCommand::RegisterInstrument {
+            con_id: contract.con_id,
+            symbol: contract.symbol.clone(),
+            sec_type: contract.sec_type.clone(),
+            exchange: contract.exchange.clone(),
+            reply_tx: None,
+        }).map_err(|e| PyRuntimeError::new_err(format!("Engine stopped: {}", e)))?;
         self.core.register_tbt(
             &shared, &tx, req_id,
             contract.con_id, &contract.symbol, tbt_type,
