@@ -1444,8 +1444,12 @@ fn quote_by_instrument_direct() {
     let handle = std::thread::spawn(|| {});
     let client = EClient::from_parts(shared, tx, handle, "DU123".into());
 
-    let quote = client.quote_by_instrument(2);
+    let quote = client.quote_by_instrument(2).expect("registered id");
     assert_eq!(quote.ask, 300 * PRICE_SCALE);
+
+    // ibx#234: an out-of-range id is a caller error, not a panic across
+    // the language boundary.
+    assert!(client.quote_by_instrument(999).is_none());
 }
 
 #[test]

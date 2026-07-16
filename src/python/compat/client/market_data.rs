@@ -109,7 +109,12 @@ impl EClient {
         Ok(())
     }
 
-    /// Set market data type (1=live, 2=frozen, 3=delayed, 4=delayed-frozen).
+    /// NOT supported end to end (ibx#234): the requested type (1=live,
+    /// 2=frozen, 3=delayed, 4=delayed-frozen) is stored locally but never
+    /// sent to the gateway, so subscriptions always deliver realtime data
+    /// and delayed tick variants never arrive. Requesting a non-realtime
+    /// type logs a warning, and the `market_data_type` callback reports the
+    /// DELIVERED type (realtime) rather than echoing the request.
     fn req_market_data_type(&self, market_data_type: i32) -> PyResult<()> {
         self.core.set_market_data_type(market_data_type);
         Ok(())
@@ -222,7 +227,10 @@ impl EClient {
             Some(s) => s,
             None => return Ok(None),
         };
-        let q = shared.market.quote(instrument);
+        // Out-of-range id: None, not a cross-language panic (ibx#234).
+        let Some(q) = shared.market.try_quote(instrument) else {
+            return Ok(None);
+        };
         Python::attach(|py| {
             let ps = super::super::super::types::PRICE_SCALE_F;
             let qs = crate::types::QTY_SCALE as f64;

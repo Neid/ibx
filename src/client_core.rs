@@ -20,6 +20,9 @@ use crate::api::types::{
 use crate::bridge::SharedState;
 use crate::types::*;
 
+/// The only market data type the engine delivers (1 = realtime, ibx#234).
+const MDT_REALTIME: i32 = 1;
+
 // ── Tick type constants matching ibapi ──
 
 pub const TICK_BID: i32 = 1;
@@ -666,15 +669,30 @@ impl ClientCore {
 
     // ── Market data type tracking ──
 
+    /// Store the requested market data type. NOT sent to the gateway — the
+    /// engine has no wire path for it, so subscriptions always deliver
+    /// realtime data (ibx#234). Requesting anything else warns loudly
+    /// instead of pretending.
     pub fn set_market_data_type(&self, mdt: i32) {
+        if mdt != MDT_REALTIME {
+            log::warn!(
+                "req_market_data_type({}) is not supported: the type is not \
+                 sent to the gateway and subscriptions remain realtime; \
+                 delayed tick variants are never emitted (ibx#234)",
+                mdt,
+            );
+        }
         self.market_data_type.store(mdt, Ordering::Relaxed);
     }
 
     /// Check if the `market_data_type` callback should fire for this req_id.
-    /// Returns `Some(mdt)` on the first call per req_id that has data, `None` thereafter.
+    /// Returns `Some(type)` on the first call per req_id that has data, `None`
+    /// thereafter. Always reports realtime — the DELIVERED type — rather than
+    /// echoing a requested type the engine never transmitted; the old echo
+    /// confirmed a state that did not exist (ibx#234).
     pub fn check_mdt_needed(&self, req_id: i64, has_data: bool) -> Option<i32> {
         if has_data && self.mdt_sent.lock().unwrap().insert(req_id) {
-            Some(self.market_data_type.load(Ordering::Relaxed))
+            Some(MDT_REALTIME)
         } else {
             None
         }

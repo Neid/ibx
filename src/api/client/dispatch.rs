@@ -235,6 +235,7 @@ impl EClient {
                     volume: bar.volume,
                     wap: bar.wap,
                     bar_count: bar.count as i32,
+                    timezone: response.timezone.clone(),
                 };
                 wrapper.historical_data(req_id as i64, &bd);
             }

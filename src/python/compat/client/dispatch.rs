@@ -327,6 +327,7 @@ impl EClient {
                 let bar_obj = BarData::new(
                     bar.time.clone(), bar.open, bar.high, bar.low, bar.close,
                     bar.volume, bar.wap, bar.count as i32,
+                    response.timezone.clone(),
                 );
                 let bar_py = Py::new(py, bar_obj)?.into_any();
                 if is_update {
@@ -508,6 +509,7 @@ impl EClient {
                 let bar_obj = BarData::new(
                     format!("{}", bar.timestamp), bar.open, bar.high, bar.low, bar.close,
                     bar.volume as i64, bar.wap, bar.count,
+                    String::new(), // streaming bars carry no timezone (ibx#234)
                 );
                 let bar_py = Py::new(py, bar_obj)?.into_any();
                 call_wrapper!(self.wrapper, py, "historical_data_update", (req_id as i64, &bar_py));

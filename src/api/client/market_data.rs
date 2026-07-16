@@ -10,6 +10,12 @@ impl EClient {
     /// Subscribe to market data. Matches `reqMktData` in C++.
     /// When `snapshot` is true, delivers the first available quote then calls
     /// `tick_snapshot_end` and auto-cancels the subscription.
+    ///
+    /// `generic_tick_list` is NOT transmitted to the gateway, with one
+    /// exception: "292" additionally subscribes per-contract news. Other
+    /// generic tick types (RTVolume and friends) have no emission path, and
+    /// `tick_generic` never fires (ibx#234). Delayed data cannot be
+    /// requested either — see `req_market_data_type`.
     pub fn req_mkt_data(
         &self, req_id: i64, contract: &Contract,
         generic_tick_list: &str, snapshot: bool, regulatory_snapshot: bool,
@@ -129,6 +135,12 @@ impl EClient {
     }
 
     /// Set market data type preference (1=live, 2=frozen, 3=delayed, 4=delayed-frozen).
+    /// NOT supported end to end (ibx#234): the requested type is stored
+    /// locally but never sent to the gateway, so subscriptions always
+    /// deliver realtime data and delayed tick variants never arrive.
+    /// Requesting a non-realtime type logs a warning, and the
+    /// `market_data_type` callback reports the DELIVERED type (realtime)
+    /// rather than echoing the request.
     pub fn req_market_data_type(&self, market_data_type: i32) {
         self.core.set_market_data_type(market_data_type);
     }
@@ -149,8 +161,9 @@ impl EClient {
     }
 
     /// Direct SeqLock read by InstrumentId (for callers who track IDs themselves).
+    /// Returns None for an out-of-range id — this used to panic (ibx#234).
     #[inline]
-    pub fn quote_by_instrument(&self, instrument: InstrumentId) -> Quote {
-        self.shared.market.quote(instrument)
+    pub fn quote_by_instrument(&self, instrument: InstrumentId) -> Option<Quote> {
+        self.shared.market.try_quote(instrument)
     }
 }

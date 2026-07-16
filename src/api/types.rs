@@ -635,6 +635,11 @@ pub struct BarData {
     pub volume: i64,
     pub wap: f64,
     pub bar_count: i32,
+    /// Timezone of `date` as reported by the reply (ibx#234) — previously
+    /// parsed and then discarded, leaving the bare timestamp string as the
+    /// only (unverifiable) evidence of what the bar times mean. Empty on
+    /// streaming updates, which carry no timezone of their own.
+    pub timezone: String,
 }
 
 impl Default for BarData {
@@ -648,6 +653,7 @@ impl Default for BarData {
             volume: 0,
             wap: 0.0,
             bar_count: 0,
+            timezone: String::new(),
         }
     }
 }

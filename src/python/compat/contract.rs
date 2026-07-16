@@ -1942,14 +1942,20 @@ pub struct BarData {
     pub wap: f64,
     #[pyo3(get, set)]
     pub bar_count: i32,
+    /// Timezone of `date` as reported by the reply (ibx#234) — previously
+    /// parsed and then discarded, leaving the bare timestamp string as the
+    /// only (unverifiable) evidence of what the bar times mean. Empty on
+    /// streaming updates, which carry no timezone of their own.
+    #[pyo3(get, set)]
+    pub timezone: String,
 }
 
 #[pymethods]
 impl BarData {
     #[new]
-    #[pyo3(signature = (date="".to_string(), open=0.0, high=0.0, low=0.0, close=0.0, volume=0, wap=0.0, bar_count=0))]
-    pub fn new(date: String, open: f64, high: f64, low: f64, close: f64, volume: i64, wap: f64, bar_count: i32) -> Self {
-        Self { date, open, high, low, close, volume, wap, bar_count }
+    #[pyo3(signature = (date="".to_string(), open=0.0, high=0.0, low=0.0, close=0.0, volume=0, wap=0.0, bar_count=0, timezone="".to_string()))]
+    pub fn new(date: String, open: f64, high: f64, low: f64, close: f64, volume: i64, wap: f64, bar_count: i32, timezone: String) -> Self {
+        Self { date, open, high, low, close, volume, wap, bar_count, timezone }
     }
 
     fn __repr__(&self) -> String {

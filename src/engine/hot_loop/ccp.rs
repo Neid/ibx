@@ -300,6 +300,23 @@ impl CcpState {
                 let reason = parsed.get(&58).map(|s| s.as_str()).unwrap_or("unknown");
                 let ref_tag = parsed.get(&371).map(|s| s.as_str()).unwrap_or("?");
                 log::warn!("SessionReject: reason='{}' refTag={}", reason, ref_tag);
+                // ibx#229: a rejection of an in-flight contract-details
+                // request was warn-only — the caller saw neither error()
+                // nor end (a hang until the ibx#227 sweep, and before that
+                // forever). The reject carries no request id, so attribute
+                // it only when it cannot be ambiguous: exactly one pending
+                // lookup. Otherwise the sweep bounds the damage.
+                if self.pending_secdef.len() == 1 && self.pending_fanout.is_empty() {
+                    let (req_id, _, _) = self.pending_secdef.remove(0);
+                    if req_id < 0xF000_0000 {
+                        shared.reference.push_historical_error(
+                            req_id, 200,
+                            format!("contract details request rejected: {}", reason),
+                        );
+                        shared.reference.push_contract_details_end(req_id);
+                        emit(event_tx, Event::ContractDetailsEnd(req_id));
+                    }
+                }
             }
             "U" => {
                 if let Some(comm) = parsed.get(&6040) {

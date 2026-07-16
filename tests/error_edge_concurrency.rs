@@ -488,7 +488,7 @@ fn concurrent_quote_by_instrument() {
         let c = client.clone();
         thread::spawn(move || {
             for _ in 0..5_000 {
-                let q = c.quote_by_instrument(0);
+                let q = c.quote_by_instrument(0).expect("in-range id");
                 assert!(q.bid == 0 || q.bid == 200 * PRICE_SCALE);
             }
         })

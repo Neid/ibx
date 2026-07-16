@@ -149,9 +149,24 @@ impl MarketDataState {
     }
 
     /// Read a quote snapshot (lock-free via SeqLock).
+    /// Unchecked hot-path accessor: `id` must be a registered InstrumentId
+    /// (< MAX_INSTRUMENTS) or this panics. External surfaces go through
+    /// `try_quote` (ibx#234).
     #[inline]
     pub fn quote(&self, id: InstrumentId) -> Quote {
         self.quotes[id as usize].read()
+    }
+
+    /// Bounds-checked quote read for user-supplied instrument ids: an
+    /// out-of-range id is a caller error, not a reason to panic the process
+    /// through the language boundary (ibx#234).
+    #[inline]
+    pub fn try_quote(&self, id: InstrumentId) -> Option<Quote> {
+        if (id as usize) < MAX_INSTRUMENTS {
+            Some(self.quotes[id as usize].read())
+        } else {
+            None
+        }
     }
 
     /// Number of registered instruments.
