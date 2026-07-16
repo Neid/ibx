@@ -442,7 +442,15 @@ impl Order {
             discretionary_amt: (self.discretionary_amt * PRICE_SCALE_F) as Price,
             sweep_to_fill: self.sweep_to_fill,
             all_or_none: self.all_or_none,
-            trigger_method: self.trigger_method as u8,
+            // Valid trigger-method codes only (ibx#223): the raw `as u8`
+            // cast wrapped the gateway's -1 (Unknown) to 255, and
+            // out-of-range codes went to the wire verbatim. Anything
+            // unrecognized coerces to 0 (default = not emitted), matching
+            // the gateway's unknown->default handling.
+            trigger_method: match self.trigger_method {
+                0..=4 | 7 | 8 => self.trigger_method as u8,
+                _ => 0,
+            },
             cash_qty: (self.cash_qty * PRICE_SCALE_F) as Price,
             conditions: self.conditions.clone(),
             conditions_cancel_order: self.conditions_cancel_order,
@@ -895,6 +903,17 @@ mod tests {
         let cd = ContractDetails::default();
         assert_eq!(cd.contract.con_id, 0);
         assert_eq!(cd.min_tick, 0.0);
+    }
+
+    // ibx#223: the raw cast wrapped -1 to 255 and forwarded out-of-range
+    // trigger codes to the wire verbatim.
+    #[test]
+    fn attrs_trigger_method_coerces_invalid_codes() {
+        for (input, expected) in [(-1, 0u8), (5, 0), (6, 0), (9, 0), (255, 0),
+                                  (0, 0), (2, 2), (4, 4), (7, 7), (8, 8)] {
+            let o = Order { trigger_method: input, ..Default::default() };
+            assert_eq!(o.attrs().trigger_method, expected, "input {}", input);
+        }
     }
 
     // ibx#230: the reported Contract must round-trip — sec_type is the

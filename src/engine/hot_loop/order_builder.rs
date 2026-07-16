@@ -1305,13 +1305,17 @@ pub(crate) fn drain_and_send_orders(
                     });
                 let clord_str = format!("C{}", order_id);
                 let now = chrono_free_timestamp();
-                conn.send_fix(&[
+                let result = conn.send_fix(&[
                     (fix::TAG_MSG_TYPE, fix::MSG_ORDER_CANCEL),
                     (fix::TAG_SENDING_TIME, &now),
                     (11, &clord_str),   // ClOrdID (cancel)
                     (41, &orig_clord),  // OrigClOrdID (latest version)
                     (60, &now),         // TransactTime
-                ])
+                ]);
+                if result.is_ok() {
+                    synthesize_pending_cancel(context, shared, order_id);
+                }
+                result
             }
             OrderRequest::CancelAll { instrument } => {
                 let open_ids: Vec<u64> = context.open_orders_for(instrument)
@@ -1334,6 +1338,9 @@ pub(crate) fn drain_and_send_orders(
                         (41, &orig_clord),
                         (60, &now),
                     ]);
+                    if last_result.is_ok() {
+                        synthesize_pending_cancel(context, shared, oid);
+                    }
                 }
                 last_result
             }
@@ -1437,6 +1444,34 @@ fn fix_side(side: Side) -> &'static str {
         Side::Buy => "1",
         Side::Sell => "2",
         Side::ShortSell => "5",
+    }
+}
+
+/// Synthesize the PendingCancel phase when a cancel request goes out
+/// (ibx#211): the server acks a normal cancel with the terminal code only —
+/// it never sends the pending-cancel code — so without this local
+/// transition consumers jump straight from Submitted to Cancelled. The
+/// server's ack (or a fill that raced the cancel) then advances the status;
+/// a cancel reject restores the working status via the forced setter.
+fn synthesize_pending_cancel(
+    context: &mut Context,
+    shared: &Arc<SharedState>,
+    order_id: crate::types::OrderId,
+) {
+    if !context.update_order_status(order_id, OrderStatus::PendingCancel) {
+        return; // unknown order, already terminal, or already pending-cancel
+    }
+    if let Some(order) = context.order(order_id).copied() {
+        shared.orders.push_order_update(OrderUpdate {
+            order_id,
+            instrument: order.instrument,
+            status: OrderStatus::PendingCancel,
+            filled_qty: order.filled as i64,
+            remaining_qty: order.qty as i64 - order.filled as i64,
+            perm_id: 0,
+            parent_id: 0,
+            timestamp_ns: context.now_ns(),
+        });
     }
 }
 
@@ -1866,4 +1901,49 @@ fn build_condition_strings(conditions: &[OrderCondition]) -> Vec<String> {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::Order;
+
+    fn order(oid: u64, filled: u32, status: OrderStatus) -> Order {
+        Order {
+            order_id: oid, instrument: 0, side: Side::Buy, price: 100,
+            qty: 10, filled, status, ord_type: b'2', tif: b'0', stop_price: 0,
+        }
+    }
+
+    // ibx#211: an outbound cancel synthesizes the PendingCancel phase the
+    // server never sends for a normal cancel.
+    #[test]
+    fn synthesize_pending_cancel_updates_and_notifies() {
+        let mut context = Context::new();
+        let shared = Arc::new(SharedState::new());
+        context.insert_order(order(7, 3, OrderStatus::PartiallyFilled));
+
+        synthesize_pending_cancel(&mut context, &shared, 7);
+
+        assert_eq!(context.order(7).unwrap().status, OrderStatus::PendingCancel);
+        let updates = shared.orders.drain_order_updates();
+        assert_eq!(updates.len(), 1);
+        assert_eq!(updates[0].status, OrderStatus::PendingCancel);
+        assert_eq!(updates[0].filled_qty, 3);
+        assert_eq!(updates[0].remaining_qty, 7);
+    }
+
+    #[test]
+    fn synthesize_pending_cancel_skips_terminal_and_unknown_orders() {
+        let mut context = Context::new();
+        let shared = Arc::new(SharedState::new());
+        // Late cancel racing a fill: the order is done, no phase to report.
+        context.insert_order(order(8, 10, OrderStatus::Filled));
+
+        synthesize_pending_cancel(&mut context, &shared, 8);
+        synthesize_pending_cancel(&mut context, &shared, 999);
+
+        assert_eq!(context.order(8).unwrap().status, OrderStatus::Filled);
+        assert!(shared.orders.drain_order_updates().is_empty());
+    }
 }

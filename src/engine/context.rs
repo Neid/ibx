@@ -917,7 +917,34 @@ impl Context {
         self.modify_versions.entry(oid).or_insert(0);
     }
 
-    pub fn update_order_status(&mut self, order_id: OrderId, status: OrderStatus) {
+    /// Apply a server-reported status. Returns true when the stored status
+    /// actually changed. Guarded (ibx#212): a stale or reordered frame must
+    /// not regress the lifecycle — terminal states are absorbing, and a
+    /// lower-rank status never overwrites a higher one. Deliberate
+    /// regressions go through `set_order_status_forced`.
+    pub fn update_order_status(&mut self, order_id: OrderId, status: OrderStatus) -> bool {
+        if let Some(order) = self.open_orders.get_mut(&order_id) {
+            let prev = order.status;
+            if prev == status {
+                return false;
+            }
+            if prev.is_terminal() || status.rank() < prev.rank() {
+                log::debug!(
+                    "Order {} status guard: keeping {:?}, dropping stale {:?} (ibx#212)",
+                    order_id, prev, status,
+                );
+                return false;
+            }
+            order.status = status;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Set a status unconditionally — for deliberate lifecycle regressions
+    /// only (cancel-reject restore, disconnect reconciliation).
+    pub fn set_order_status_forced(&mut self, order_id: OrderId, status: OrderStatus) {
         if let Some(order) = self.open_orders.get_mut(&order_id) {
             order.status = status;
         }
@@ -1177,6 +1204,77 @@ mod tests {
 
         // Cancelled orders not in open_orders_for (filters by Submitted)
         assert!(ctx.open_orders_for(0).is_empty());
+    }
+
+    // ── ibx#212: monotonic status guard ──
+
+    fn submitted_order(ctx: &mut Context, oid: u64) {
+        ctx.insert_order(Order {
+            order_id: oid, instrument: 0, side: Side::Buy, price: 100,
+            qty: 100, filled: 0, status: OrderStatus::Submitted,
+            ord_type: b'2', tif: b'0', stop_price: 0,
+        });
+    }
+
+    #[test]
+    fn stale_presubmitted_does_not_regress_submitted() {
+        let mut ctx = Context::new();
+        submitted_order(&mut ctx, 1);
+        assert!(!ctx.update_order_status(1, OrderStatus::PreSubmitted),
+            "regression must be rejected");
+        assert_eq!(ctx.order(1).unwrap().status, OrderStatus::Submitted);
+    }
+
+    #[test]
+    fn terminal_states_are_absorbing() {
+        let mut ctx = Context::new();
+        submitted_order(&mut ctx, 1);
+        assert!(ctx.update_order_status(1, OrderStatus::Filled));
+        // A late mass-status snapshot must not resurrect the order.
+        for stale in [OrderStatus::Submitted, OrderStatus::Cancelled, OrderStatus::PendingCancel] {
+            assert!(!ctx.update_order_status(1, stale), "{:?} must not overwrite Filled", stale);
+        }
+        assert_eq!(ctx.order(1).unwrap().status, OrderStatus::Filled);
+    }
+
+    #[test]
+    fn cancel_and_fill_progressions_still_flow() {
+        let mut ctx = Context::new();
+        submitted_order(&mut ctx, 1);
+        // Cancel of a partially filled order, and a fill landing while the
+        // cancel is pending, are both legitimate.
+        assert!(ctx.update_order_status(1, OrderStatus::PartiallyFilled));
+        assert!(ctx.update_order_status(1, OrderStatus::PendingCancel));
+        assert!(ctx.update_order_status(1, OrderStatus::Filled));
+    }
+
+    #[test]
+    fn modify_ack_returns_to_submitted() {
+        let mut ctx = Context::new();
+        submitted_order(&mut ctx, 1);
+        assert!(ctx.update_order_status(1, OrderStatus::PendingReplace));
+        assert!(ctx.update_order_status(1, OrderStatus::Submitted),
+            "modify ack returns the order to working");
+    }
+
+    #[test]
+    fn forced_setter_bypasses_guard() {
+        let mut ctx = Context::new();
+        submitted_order(&mut ctx, 1);
+        assert!(ctx.update_order_status(1, OrderStatus::PendingCancel));
+        // The ibx#212 guard blocks the ordinary path...
+        assert!(!ctx.update_order_status(1, OrderStatus::Submitted));
+        // ...but a cancel reject restores the working status deliberately.
+        ctx.set_order_status_forced(1, OrderStatus::Submitted);
+        assert_eq!(ctx.order(1).unwrap().status, OrderStatus::Submitted);
+    }
+
+    #[test]
+    fn unchanged_status_reports_no_change() {
+        let mut ctx = Context::new();
+        submitted_order(&mut ctx, 1);
+        assert!(!ctx.update_order_status(1, OrderStatus::Submitted));
+        assert!(!ctx.update_order_status(999, OrderStatus::Cancelled), "unknown order");
     }
 
     #[test]

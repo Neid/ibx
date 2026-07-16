@@ -69,6 +69,35 @@ pub enum OrderStatus {
     Uncertain,
 }
 
+impl OrderStatus {
+    /// Lifecycle progress rank for the monotonic status guard (ibx#212).
+    /// A stale or reordered frame must not move an order's reported status
+    /// backwards (e.g. a late PreSubmitted after Submitted, or a mass-status
+    /// snapshot after a fill). Same-rank transitions are free — the tiers
+    /// group states that legitimately alternate. Deliberate regressions
+    /// (cancel-reject restore, disconnect reconciliation) bypass the guard
+    /// via `Context::set_order_status_forced`.
+    pub fn rank(self) -> u8 {
+        match self {
+            Self::Uncertain => 0,
+            Self::PendingSubmit => 1,
+            Self::PreSubmitted => 2,
+            // Working tier: a modify ack returns PendingReplace to
+            // Submitted, and Inactive orders can reactivate.
+            Self::Submitted | Self::PendingReplace | Self::Inactive => 3,
+            // A partially filled order can still be cancelled, and a fill
+            // can land while a cancel is pending.
+            Self::PendingCancel | Self::PartiallyFilled => 4,
+            Self::Filled | Self::Cancelled | Self::Rejected => 5,
+        }
+    }
+
+    /// Terminal states are absorbing: no ordinary frame may leave them.
+    pub fn is_terminal(self) -> bool {
+        matches!(self, Self::Filled | Self::Cancelled | Self::Rejected)
+    }
+}
+
 /// Current quote for an instrument. Cache-line aligned for hot-path access.
 #[derive(Clone, Copy)]
 #[repr(C, align(64))]

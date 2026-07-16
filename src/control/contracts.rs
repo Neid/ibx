@@ -75,7 +75,7 @@ impl SecurityType {
         }
     }
 
-    /// Convert from API string.
+    /// Convert to the wire encoding.
     pub fn to_fix(&self) -> &'static str {
         match self {
             Self::Stock => "CS",
@@ -85,7 +85,11 @@ impl SecurityType {
             Self::Index => "IND",
             Self::Bond => "BOND",
             Self::Warrant => "WAR",
-            Self::Other => "CS",
+            // An unrecognized security type must not be sent as a stock —
+            // that misroutes the request silently (ibx#223). Empty draws a
+            // visible gateway error instead, matching its own
+            // unknown-to-none handling.
+            Self::Other => "",
         }
     }
 
@@ -582,11 +586,8 @@ pub fn parse_schedule_response(data: &[u8]) -> Option<ContractSchedule> {
         match *tag {
             TAG_SESSION_START => {
                 if in_session {
-                    let session = ScheduleSession {
-                        start: start.clone(), end: end.clone(), trade_date: trade_date.clone(),
-                    };
-                    if is_trading { trading_hours.push(session.clone()); }
-                    if is_liquid { liquid_hours.push(session); }
+                    flush_session(&mut trading_hours, &mut liquid_hours,
+                        start.clone(), end.clone(), trade_date.clone(), is_trading, is_liquid);
                 }
                 start = val.clone();
                 end.clear();
@@ -603,29 +604,68 @@ pub fn parse_schedule_response(data: &[u8]) -> Option<ContractSchedule> {
         }
     }
     if in_session {
-        let session = ScheduleSession {
-            start, end, trade_date,
-        };
-        if is_trading { trading_hours.push(session.clone()); }
-        if is_liquid { liquid_hours.push(session); }
+        flush_session(&mut trading_hours, &mut liquid_hours,
+            start, end, trade_date, is_trading, is_liquid);
     }
 
     Some(ContractSchedule { timezone, trading_hours, liquid_hours })
 }
 
+/// Append a parsed session to the hour lists. A session with NEITHER flag
+/// set is a closed day; it used to be dropped, leaving "market closed"
+/// indistinguishable from "data missing" (ibx#223). It is kept as a
+/// zero-length session in both lists, which renders as `<date>:CLOSED`.
+fn flush_session(
+    trading_hours: &mut Vec<ScheduleSession>,
+    liquid_hours: &mut Vec<ScheduleSession>,
+    start: String,
+    end: String,
+    trade_date: String,
+    is_trading: bool,
+    is_liquid: bool,
+) {
+    let closed = !is_trading && !is_liquid;
+    let session = ScheduleSession {
+        end: if closed { start.clone() } else { end },
+        start,
+        trade_date,
+    };
+    if closed {
+        trading_hours.push(session.clone());
+        liquid_hours.push(session);
+    } else {
+        if is_trading { trading_hours.push(session.clone()); }
+        if is_liquid { liquid_hours.push(session); }
+    }
+}
+
 /// Format a list of sessions into a semicolon-delimited string.
 ///
-/// Output: `"YYYYMMDD:HHMM-YYYYMMDD:HHMM;YYYYMMDD:HHMM-YYYYMMDD:HHMM;..."`.
+/// Output: `"YYYYMMDD:HHMM-YYYYMMDD:HHMM;YYYYMMDD:CLOSED;..."`.
 /// Times are in UTC as received from the upstream wire — consumers should
 /// convert to local time using the paired timezone identifier when displaying.
+/// A zero-length session is a closed day and renders as `<date>:CLOSED`,
+/// the official-API convention (ibx#223).
 /// Returns an empty string if `sessions` is empty.
 pub fn format_sessions_string(sessions: &[ScheduleSession]) -> String {
     let mut out = String::with_capacity(sessions.len() * 32);
     for (i, s) in sessions.iter().enumerate() {
         if i > 0 { out.push(';'); }
-        out.push_str(&trim_session_endpoint(&s.start));
-        out.push('-');
-        out.push_str(&trim_session_endpoint(&s.end));
+        if s.start == s.end {
+            let date = if s.trade_date.len() >= 8 {
+                &s.trade_date[..8]
+            } else if s.start.len() >= 8 {
+                &s.start[..8]
+            } else {
+                s.start.as_str()
+            };
+            out.push_str(date);
+            out.push_str(":CLOSED");
+        } else {
+            out.push_str(&trim_session_endpoint(&s.start));
+            out.push('-');
+            out.push_str(&trim_session_endpoint(&s.end));
+        }
     }
     out
 }
@@ -1158,6 +1198,44 @@ mod tests {
         assert_eq!(matches[0].derivative_types, vec!["OPT", "WAR"]);
         assert_eq!(matches[1].symbol, "APP");
         assert_eq!(matches[1].con_id, 481863646);
+    }
+
+    // ibx#223: a closed day (neither hours flag set) must be represented,
+    // not dropped — "market closed" and "data missing" were previously
+    // indistinguishable.
+    #[test]
+    fn schedule_closed_day_is_kept_and_renders_closed() {
+        let msg = fix::fix_build(
+            &[
+                (TAG_MSG_TYPE, "U"),
+                (TAG_SUB_PROTOCOL, "107"),
+                (TAG_SCHEDULE_TIMEZONE, "US/Eastern"),
+                (TAG_SESSION_COUNT, "2"),
+                // Saturday: closed — no 6843/6844 flags.
+                (TAG_SESSION_START, "20260718-00:00:00"),
+                (TAG_SESSION_END, "20260718-00:00:00"),
+                (TAG_TRADE_DATE, "20260718"),
+                // Monday: normal trading session.
+                (TAG_SESSION_START, "20260720-13:30:00"),
+                (TAG_SESSION_END, "20260720-20:00:00"),
+                (TAG_TRADE_DATE, "20260720"),
+                (TAG_IS_TRADING_HOURS, "1"),
+                (TAG_IS_LIQUID_HOURS, "1"),
+            ],
+            1,
+        );
+        let sched = parse_schedule_response(&msg).unwrap();
+        assert_eq!(sched.trading_hours.len(), 2, "closed day must appear");
+        assert_eq!(sched.liquid_hours.len(), 2);
+        let rendered = format_sessions_string(&sched.trading_hours);
+        assert_eq!(rendered, "20260718:CLOSED;20260720:1330-20260720:2000");
+    }
+
+    // ibx#223: an unrecognized security type must not be encoded as a stock.
+    #[test]
+    fn to_fix_other_is_not_stock() {
+        assert_eq!(SecurityType::Other.to_fix(), "");
+        assert_eq!(SecurityType::from_fix(""), SecurityType::Other);
     }
 
     // ibx#230: user-visible sec_type must be the official API string, and

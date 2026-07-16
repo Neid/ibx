@@ -789,9 +789,9 @@ impl CcpState {
             }
         };
 
-        let prev_status = context.order(clord_id).map(|o| o.status);
-        let status_changed = prev_status != Some(status);
-        context.update_order_status(clord_id, status);
+        // The guard's verdict doubles as the change flag (ibx#212): a stale
+        // frame the guard rejects must not surface as an order_status either.
+        let status_changed = context.update_order_status(clord_id, status);
 
         let mut had_fill = false;
         if matches!(exec_type, "F" | "1" | "2") && last_shares > 0 {
@@ -1101,7 +1101,9 @@ impl CcpState {
             } else {
                 crate::types::OrderStatus::Submitted
             };
-            context.update_order_status(oid, restore_status);
+            // Deliberate regression (PendingCancel back to working) — the
+            // ibx#212 guard would rightly block it on the ordinary path.
+            context.set_order_status_forced(oid, restore_status);
             order.instrument
         } else {
             0
