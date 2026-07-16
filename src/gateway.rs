@@ -675,6 +675,10 @@ fn reconnect_ccp_attempt(auth: &ReconnectAuth, token_hash: &str, host: &str, dep
             let redirect_host = target.split(':').next().unwrap_or(&target).to_string();
             log::info!("CCP reconnect redirected to {}", redirect_host);
             drop(tls);
+            // Floor before following (ibx#218): this runs on the background
+            // reconnect thread, and an instant re-dial chain risks the same
+            // rate limiting the backoff ladder exists for.
+            std::thread::sleep(Duration::from_secs(2));
             return reconnect_ccp_attempt(auth, token_hash, &redirect_host, depth + 1);
         }
         Err(e) => return Err(e),

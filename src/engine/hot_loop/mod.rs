@@ -20,12 +20,22 @@ use farm::FarmState;
 use ccp::CcpState;
 use hmds::HmdsState;
 
-/// Auth server heartbeat interval (10 seconds, configurable).
-const CCP_HEARTBEAT_SECS: u64 = 10;
-/// Farm heartbeat interval (30 seconds).
-const FARM_HEARTBEAT_SECS: u64 = 30;
-/// Grace period before declaring timeout (1 second).
-const HEARTBEAT_GRACE_SECS: u64 = 1;
+/// Auth server heartbeat interval — single source in config (ibx#219
+/// removed the duplicate definitions here).
+const CCP_HEARTBEAT_SECS: u64 = crate::config::CCP_HEARTBEAT;
+/// Farm heartbeat interval — single source in config.
+const FARM_HEARTBEAT_SECS: u64 = crate::config::FARM_HEARTBEAT;
+/// Liveness (ibx#219), aligned with the gateway's transport thresholds:
+/// send a test request when nothing has been received for this long...
+const LIVENESS_TEST_SECS: u64 = 15;
+/// ...and declare the connection dead when nothing has been received for
+/// this long. The old scheme declared death at ~21s — racing the server's
+/// own ~35s reset and losing to transient stalls the server tolerates.
+const LIVENESS_DEAD_SECS: u64 = 35;
+/// Grace window after (re)connect before liveness is enforced (ibx#219):
+/// early-connection jitter must not trigger a false disconnect during a
+/// period the server itself treats as warm-up. Heartbeats are still sent.
+const LIVENESS_WARMUP_SECS: u64 = 60;
 
 /// The pinned-core hot loop. Pushes events to SharedState + optional event channel.
 pub struct HotLoop {
@@ -34,6 +44,9 @@ pub struct HotLoop {
     context: Context,
     /// Core ID to pin the hot loop thread to. None = no pinning.
     core_id: Option<usize>,
+    /// Next scheduled CCP/farm reconnect attempt (jittered backoff, ibx#218).
+    ccp_next_attempt_at: Option<Instant>,
+    farm_next_attempt_at: Option<Instant>,
     /// Farm connection for market data (market data farm).
     pub farm_conn: Option<Connection>,
     /// Auth connection for order management.
@@ -84,6 +97,11 @@ pub struct HeartbeatState {
     pub last_hmds_recv: Instant,
     /// Pending test request for auth: (test_req_id, sent_at).
     pub pending_ccp_test: Option<(String, Instant)>,
+    /// When each connection (re)connected — liveness is not enforced during
+    /// the warm-up window that follows (ibx#219).
+    pub ccp_up_since: Instant,
+    pub farm_up_since: Instant,
+    pub hmds_up_since: Instant,
     /// Pending test request for farm: (test_req_id, sent_at).
     pub pending_farm_test: Option<(String, Instant)>,
     /// Pending test request for historical: (test_req_id, sent_at).
@@ -103,6 +121,9 @@ impl HeartbeatState {
             last_hmds_sent: now,
             last_hmds_recv: now,
             pending_ccp_test: None,
+            ccp_up_since: Instant::now(),
+            farm_up_since: Instant::now(),
+            hmds_up_since: Instant::now(),
             pending_farm_test: None,
             pending_hmds_test: None,
             test_req_counter: 0,
@@ -135,6 +156,8 @@ impl HotLoop {
             hmds: HmdsState::new(),
             reconnect_auth: None,
             pending_farm_reconnect: None,
+            ccp_next_attempt_at: None,
+            farm_next_attempt_at: None,
             farm_reconnect_attempt: 0,
             pending_ccp_reconnect: None,
             ccp_reconnect_attempt: 0,
@@ -280,9 +303,7 @@ impl HotLoop {
                 &mut self.farm_conn, &mut self.context, &self.shared,
                 &self.event_tx, &mut self.hb,
             );
-            if farm_was_ok && self.farm.disconnected {
-                self.spawn_farm_reconnect();
-            }
+            let _ = farm_was_ok; // reconnects are scheduled below (ibx#218)
 
             // 1b. Busy-poll historical socket for tick-by-tick data
             self.hmds.poll(
@@ -316,9 +337,7 @@ impl HotLoop {
             self.ccp.sweep_scanner_enrichments(&self.shared);
             self.ccp.sweep_contract_details(&self.shared, &self.event_tx);
             self.hmds.sweep_pending_historical(&self.shared);
-            if ccp_was_ok && self.ccp.disconnected {
-                self.spawn_ccp_reconnect();
-            }
+            let _ = ccp_was_ok; // reconnects are scheduled below (ibx#218)
 
             // 4. Check control_plane_rx (SPSC) for commands
             self.poll_control_commands();
@@ -326,10 +345,13 @@ impl HotLoop {
             // 5. Heartbeat check (auth 10s, farm 30s)
             self.check_heartbeats();
 
-            // 5b. Poll pending reconnects (non-blocking)
+            // 5b. Poll pending reconnects and schedule the next attempts
+            //     (jittered backoff instead of immediate re-dials, ibx#218)
             self.poll_farm_reconnect();
             self.poll_ccp_reconnect();
             self.poll_hmds_reconnect();
+            self.maybe_spawn_farm_reconnect();
+            self.maybe_spawn_ccp_reconnect();
             self.maybe_spawn_hmds_reconnect();
 
             // 6. Wake any waiting consumers (e.g. Python event loop)
@@ -623,14 +645,12 @@ impl HotLoop {
                 self.hb.last_ccp_sent = now;
             }
 
-            if since_recv > CCP_HEARTBEAT_SECS + HEARTBEAT_GRACE_SECS {
-                if let Some((_, sent_at)) = &self.hb.pending_ccp_test {
-                    if now.duration_since(*sent_at).as_secs() > CCP_HEARTBEAT_SECS {
-                        log::error!("CCP heartbeat timeout — connection lost");
-                        self.ccp.handle_disconnect(&mut self.context, &self.event_tx);
-                        self.spawn_ccp_reconnect();
-                    }
-                } else {
+            let warmed_up = now.duration_since(self.hb.ccp_up_since).as_secs() >= LIVENESS_WARMUP_SECS;
+            if warmed_up && since_recv > LIVENESS_TEST_SECS {
+                if since_recv > LIVENESS_DEAD_SECS {
+                    log::error!("CCP liveness timeout ({}s silent) — connection lost", since_recv);
+                    self.ccp.handle_disconnect(&mut self.context, &self.event_tx);
+                } else if self.hb.pending_ccp_test.is_none() {
                     let test_id = self.hb.next_test_id();
                     let _ = conn.send_fix(&[
                         (fix::TAG_MSG_TYPE, fix::MSG_TEST_REQUEST),
@@ -658,14 +678,12 @@ impl HotLoop {
                 self.hb.last_farm_sent = now;
             }
 
-            if since_recv > FARM_HEARTBEAT_SECS + HEARTBEAT_GRACE_SECS {
-                if let Some((_, sent_at)) = &self.hb.pending_farm_test {
-                    if now.duration_since(*sent_at).as_secs() > FARM_HEARTBEAT_SECS {
-                        log::error!("Farm heartbeat timeout — connection lost");
-                        self.farm.handle_disconnect(&mut self.context, &self.event_tx);
-                        self.spawn_farm_reconnect();
-                    }
-                } else {
+            let warmed_up = now.duration_since(self.hb.farm_up_since).as_secs() >= LIVENESS_WARMUP_SECS;
+            if warmed_up && since_recv > LIVENESS_TEST_SECS {
+                if since_recv > LIVENESS_DEAD_SECS {
+                    log::error!("Farm liveness timeout ({}s silent) — connection lost", since_recv);
+                    self.farm.handle_disconnect(&mut self.context, &self.event_tx);
+                } else if self.hb.pending_farm_test.is_none() {
                     let test_id = self.hb.next_test_id();
                     let _ = conn.send_fix(&[
                         (fix::TAG_MSG_TYPE, fix::MSG_TEST_REQUEST),
@@ -693,13 +711,12 @@ impl HotLoop {
                 self.hb.last_hmds_sent = now;
             }
 
-            if since_recv > FARM_HEARTBEAT_SECS + HEARTBEAT_GRACE_SECS {
-                if let Some((_, sent_at)) = &self.hb.pending_hmds_test {
-                    if now.duration_since(*sent_at).as_secs() > FARM_HEARTBEAT_SECS {
-                        log::error!("HMDS heartbeat timeout — connection lost");
-                        self.hmds.disconnected = true;
-                    }
-                } else {
+            let warmed_up = now.duration_since(self.hb.hmds_up_since).as_secs() >= LIVENESS_WARMUP_SECS;
+            if warmed_up && since_recv > LIVENESS_TEST_SECS {
+                if since_recv > LIVENESS_DEAD_SECS {
+                    log::error!("HMDS liveness timeout ({}s silent) — connection lost", since_recv);
+                    self.hmds.disconnected = true;
+                } else if self.hb.pending_hmds_test.is_none() {
                     let test_id = self.hb.next_test_id();
                     let _ = conn.send_fix(&[
                         (fix::TAG_MSG_TYPE, fix::MSG_TEST_REQUEST),
@@ -766,6 +783,58 @@ impl HotLoop {
         }
     }
 
+    /// Schedule-then-spawn farm reconnects on the jittered backoff ladder
+    /// (ibx#218). Called every loop iteration; no-op while connected or an
+    /// attempt is in flight.
+    fn maybe_spawn_farm_reconnect(&mut self) {
+        if !self.farm.disconnected || self.pending_farm_reconnect.is_some() {
+            return;
+        }
+        match self.farm_next_attempt_at {
+            None => {
+                let delay = reconnect_backoff(self.farm_reconnect_attempt);
+                log::info!("Farm reconnect attempt {} scheduled in {:?} (ibx#218)",
+                    self.farm_reconnect_attempt + 1, delay);
+                self.farm_next_attempt_at = Some(Instant::now() + delay);
+            }
+            Some(due) if Instant::now() >= due => {
+                self.farm_next_attempt_at = None;
+                self.spawn_farm_reconnect();
+                if self.pending_farm_reconnect.is_none() {
+                    // Could not spawn (no cached credentials): re-check in a
+                    // minute instead of warn-spamming every iteration.
+                    self.farm_next_attempt_at =
+                        Some(Instant::now() + std::time::Duration::from_secs(60));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// See `maybe_spawn_farm_reconnect`.
+    fn maybe_spawn_ccp_reconnect(&mut self) {
+        if !self.ccp.disconnected || self.pending_ccp_reconnect.is_some() {
+            return;
+        }
+        match self.ccp_next_attempt_at {
+            None => {
+                let delay = reconnect_backoff(self.ccp_reconnect_attempt);
+                log::info!("CCP reconnect attempt {} scheduled in {:?} (ibx#218)",
+                    self.ccp_reconnect_attempt + 1, delay);
+                self.ccp_next_attempt_at = Some(Instant::now() + delay);
+            }
+            Some(due) if Instant::now() >= due => {
+                self.ccp_next_attempt_at = None;
+                self.spawn_ccp_reconnect();
+                if self.pending_ccp_reconnect.is_none() {
+                    self.ccp_next_attempt_at =
+                        Some(Instant::now() + std::time::Duration::from_secs(60));
+                }
+            }
+            _ => {}
+        }
+    }
+
     /// Spawn a background thread to reconnect the farm using cached credentials.
     fn spawn_farm_reconnect(&mut self) {
         if self.pending_farm_reconnect.is_some() { return; } // already in progress
@@ -807,13 +876,18 @@ impl HotLoop {
                 log::info!("Farm auto-reconnect succeeded (attempt {})", self.farm_reconnect_attempt);
                 self.reconnect_farm(conn);
                 self.farm_reconnect_attempt = 0;
+                self.farm_next_attempt_at = None;
+                self.hb.farm_up_since = Instant::now();
                 self.pending_farm_reconnect = None;
             }
             Ok(Err(e)) => {
                 log::error!("Farm auto-reconnect failed (attempt {}): {}", self.farm_reconnect_attempt, e);
                 self.pending_farm_reconnect = None;
-                if self.farm_reconnect_attempt >= 3 {
-                    log::error!("Farm auto-reconnect exhausted {} retries — notifying Python", self.farm_reconnect_attempt);
+                // Notify once after three straight failures; retries continue
+                // on the backoff ladder — the old 3-attempt hard cap gave up
+                // sooner than the gateway would (ibx#218).
+                if self.farm_reconnect_attempt == 3 {
+                    log::error!("Farm auto-reconnect failed 3 times — notifying (retries continue)");
                     emit(&self.event_tx, Event::Disconnected);
                 }
             }
@@ -860,13 +934,16 @@ impl HotLoop {
                 log::info!("CCP auto-reconnect succeeded (attempt {})", self.ccp_reconnect_attempt);
                 self.reconnect_ccp(conn);
                 self.ccp_reconnect_attempt = 0;
+                self.ccp_next_attempt_at = None;
+                self.hb.ccp_up_since = Instant::now();
                 self.pending_ccp_reconnect = None;
             }
             Ok(Err(e)) => {
                 log::error!("CCP auto-reconnect failed (attempt {}): {}", self.ccp_reconnect_attempt, e);
                 self.pending_ccp_reconnect = None;
-                if self.ccp_reconnect_attempt >= 3 {
-                    log::error!("CCP auto-reconnect exhausted {} retries — notifying Python", self.ccp_reconnect_attempt);
+                // See the farm path: notify once, keep retrying (ibx#218).
+                if self.ccp_reconnect_attempt == 3 {
+                    log::error!("CCP auto-reconnect failed 3 times — notifying (retries continue)");
                     emit(&self.event_tx, Event::Disconnected);
                 }
             }
@@ -1120,6 +1197,20 @@ pub(crate) fn emit(event_tx: &Option<Sender<Event>>, event: Event) {
 /// `min(64, 3 * 2^(attempt-1))` seconds — approximates the captured cadence
 /// of 3.2 / 11.4 / 18.5 / 42.7 / 63.7 s the official client uses.
 #[inline]
+/// Jittered reconnect backoff for CCP/farm (ibx#218), mirroring the
+/// gateway's ladder: delay = min(2s floor + ladder + jitter, 82s). The
+/// ladder climbs 0/5/15/30/50/60s per consecutive failure and the jitter
+/// range grows 5s -> 20s (+5s per failure). Immediate rapid-fire re-dials
+/// risk server-side rate limiting and eviction. (HMDS keeps its own
+/// capture-matched doubling schedule below.)
+pub(crate) fn reconnect_backoff(failures: u32) -> std::time::Duration {
+    const LADDER_MS: [u64; 6] = [0, 5_000, 15_000, 30_000, 50_000, 60_000];
+    let ladder = LADDER_MS[(failures as usize).min(LADDER_MS.len() - 1)];
+    let jitter_max = (5_000 + 5_000 * failures as u64).min(20_000);
+    let jitter = rand::random::<u64>() % jitter_max;
+    std::time::Duration::from_millis((2_000 + ladder + jitter).min(82_000))
+}
+
 pub(crate) fn hmds_reconnect_backoff(attempt: u32) -> std::time::Duration {
     let n = attempt.saturating_sub(1).min(31);
     let secs = (3u64.saturating_mul(1u64 << n)).min(64);
@@ -1496,6 +1587,41 @@ mod tests {
         assert_eq!(hist[0].0, 7);
         assert!(hist[0].1.is_complete);
         assert!(hist[0].1.bars.is_empty());
+    }
+
+    #[test]
+    // ibx#218: the CCP/farm ladder — floor 2s, ladder 0/5/15/30/50/60s,
+    // jitter range growing 5s -> 20s, ceiling 82s.
+    #[test]
+    fn reconnect_backoff_ladder_bounds() {
+        use std::time::Duration;
+        let expect = |failures: u32, lo: u64, hi: u64| {
+            for _ in 0..50 {
+                let d = reconnect_backoff(failures);
+                assert!(d >= Duration::from_millis(lo) && d < Duration::from_millis(hi),
+                    "failures={} got {:?}, expected [{}ms, {}ms)", failures, d, lo, hi);
+            }
+        };
+        expect(0, 2_000, 7_000);    // 2s + 0 + jitter(0..5s)
+        expect(1, 7_000, 17_000);   // 2s + 5s + jitter(0..10s)
+        expect(2, 17_000, 32_000);  // 2s + 15s + jitter(0..15s)
+        expect(3, 32_000, 52_000);  // 2s + 30s + jitter(0..20s)
+        expect(5, 62_000, 82_001);  // 2s + 60s + jitter(0..20s), capped 82s
+        expect(50, 62_000, 82_001); // ladder index capped
+    }
+
+    // ibx#219: the liveness ladder must be ordered and inside the server's
+    // own thresholds (test at 15s, dead at 35s, warm-up 60s).
+    #[test]
+    fn liveness_thresholds_ordered() {
+        assert!(CCP_HEARTBEAT_SECS < LIVENESS_TEST_SECS);
+        assert!(LIVENESS_TEST_SECS < LIVENESS_DEAD_SECS);
+        assert_eq!(LIVENESS_TEST_SECS, 15);
+        assert_eq!(LIVENESS_DEAD_SECS, 35);
+        assert_eq!(LIVENESS_WARMUP_SECS, 60);
+        // The duplicate interval constants are gone — these now alias config.
+        assert_eq!(CCP_HEARTBEAT_SECS, crate::config::CCP_HEARTBEAT);
+        assert_eq!(FARM_HEARTBEAT_SECS, crate::config::FARM_HEARTBEAT);
     }
 
     #[test]
