@@ -806,7 +806,22 @@ impl CcpState {
         }
 
         let status = match ord_status {
-            "0" | "5" => crate::types::OrderStatus::Submitted,
+            "0" => {
+                // 39=0 is New on the wire, but the gateway reports PreSubmitted
+                // until the order is actually routed to and acknowledged by an
+                // exchange (for example a limit order resting pre-market). Routing
+                // shows up on the same exec report as a non-empty ExDestination
+                // (tag 100) plus an exec ref (tag 198) other than "NONE"; before
+                // routing both are absent/"NONE". Captured in ib-agent#162 (ibx#210).
+                let routed = parsed.get(&100).is_some_and(|s| !s.is_empty())
+                    || parsed.get(&198).is_some_and(|s| s != "NONE" && !s.is_empty());
+                if routed {
+                    crate::types::OrderStatus::Submitted
+                } else {
+                    crate::types::OrderStatus::PreSubmitted
+                }
+            }
+            "5" => crate::types::OrderStatus::Submitted,
             "A" => crate::types::OrderStatus::PreSubmitted,
             "E" => crate::types::OrderStatus::PendingReplace,
             "6" => crate::types::OrderStatus::PendingCancel,
@@ -2066,6 +2081,62 @@ mod tests {
         assert_eq!(responses[0].init_margin_after, 0, "nan field reads as unset/0");
         assert_eq!(responses[0].equity_with_loan_after,
             (945923.47 * PRICE_SCALE as f64) as Price);
+    }
+
+    // ibx#210: a working order carries wire 39=0 whether it is routed or not.
+    // The gateway reports PreSubmitted while it waits (e.g. placed pre-market)
+    // and Submitted only once routed to an exchange. The discriminator is the
+    // routing tags on the same exec report, not a distinct wire status
+    // (ib-agent#162).
+    fn ord_status_test_state() -> (CcpState, Context, SharedState) {
+        let mut context = Context::new();
+        let instrument = context.register_instrument(756733);
+        context.insert_order(crate::types::Order::new(
+            42, instrument, Side::Buy, 1, 100 * PRICE_SCALE, b'2', b'0', 0,
+        )); // starts at PendingSubmit
+        (CcpState::new(), context, SharedState::new())
+    }
+
+    fn exec_report_frame(pairs: &[(u32, &str)]) -> std::collections::HashMap<u32, String> {
+        let mut m = std::collections::HashMap::new();
+        m.insert(11u32, "42".to_string()); // ClOrdID
+        for (tag, val) in pairs {
+            m.insert(*tag, val.to_string());
+        }
+        m
+    }
+
+    #[test]
+    fn ord_status_new_unrouted_is_presubmitted() {
+        let (mut ccp, mut context, shared) = ord_status_test_state();
+        // 39=0, no ExDestination, exec ref "NONE" — waiting, not yet routed.
+        let frame = exec_report_frame(&[(39, "0"), (150, "0"), (198, "NONE")]);
+        ccp.handle_exec_report(&frame, &mut context, &shared, &None, "");
+        assert_eq!(context.order(42).unwrap().status,
+            crate::types::OrderStatus::PreSubmitted);
+    }
+
+    #[test]
+    fn ord_status_new_routed_is_submitted() {
+        let (mut ccp, mut context, shared) = ord_status_test_state();
+        // 39=0 with the order routed to ARCA — working.
+        let frame = exec_report_frame(&[(39, "0"), (150, "0"), (100, "ARCA"), (198, "ARCA:1")]);
+        ccp.handle_exec_report(&frame, &mut context, &shared, &None, "");
+        assert_eq!(context.order(42).unwrap().status,
+            crate::types::OrderStatus::Submitted);
+    }
+
+    #[test]
+    fn ord_status_presubmitted_then_routed_advances_to_submitted() {
+        let (mut ccp, mut context, shared) = ord_status_test_state();
+        let waiting = exec_report_frame(&[(39, "0"), (150, "0"), (198, "NONE")]);
+        ccp.handle_exec_report(&waiting, &mut context, &shared, &None, "");
+        assert_eq!(context.order(42).unwrap().status,
+            crate::types::OrderStatus::PreSubmitted);
+        let routed = exec_report_frame(&[(39, "0"), (150, "0"), (100, "ARCA"), (198, "ARCA:1")]);
+        ccp.handle_exec_report(&routed, &mut context, &shared, &None, "");
+        assert_eq!(context.order(42).unwrap().status,
+            crate::types::OrderStatus::Submitted);
     }
 
     // ibx#220: the TIF decoder must be the exact inverse of the outbound
