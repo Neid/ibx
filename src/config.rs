@@ -30,7 +30,15 @@ pub const FIX_RECV_BUF: usize = 4096;
 /// Timeouts (seconds).
 pub const TIMEOUT_FIX_LOGON: f64 = 10.0;
 pub const TIMEOUT_FIX_READ: f64 = 30.0;
-pub const TIMEOUT_FARM_LOGON: f64 = 5.0;
+/// Overall wall-clock budget for a farm logon exchange (key exchange excluded).
+/// Raised from 5 s: on a high-latency regional gateway a single response
+/// segment can lag past 5 s, and the read must retry against this deadline
+/// rather than treat one timeout as fatal (ibx#237).
+pub const TIMEOUT_FARM_LOGON: f64 = 20.0;
+/// Poll granularity for farm logon reads. Short so a transient WouldBlock /
+/// TimedOut (os error 35 on macOS) is retried against the deadline instead of
+/// aborting the connection (ibx#237).
+pub const FARM_LOGON_POLL_MS: u64 = 250;
 pub const TIMEOUT_SSL_AUTH: u64 = 20;
 pub const TIMEOUT_FARM_CONNECT: u64 = 8;
 

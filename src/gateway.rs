@@ -237,7 +237,11 @@ pub fn farm_logon_exchange(
     read_mac_key: &[u8],
     initial_read_iv: &[u8],
 ) -> io::Result<(Vec<u8>, Vec<u8>, Vec<u8>)> {
-    stream.set_read_timeout(Some(Duration::from_secs_f64(TIMEOUT_FARM_LOGON)))?;
+    // Poll on a short read timeout and tolerate transient WouldBlock/TimedOut
+    // returns until an overall deadline. A single slow response segment from a
+    // high-latency regional gateway must not tear down the connection (ibx#237).
+    stream.set_read_timeout(Some(Duration::from_millis(FARM_LOGON_POLL_MS)))?;
+    let deadline = std::time::Instant::now() + Duration::from_secs_f64(TIMEOUT_FARM_LOGON);
     let mut buf = Vec::new();
     let mut read_iv = initial_read_iv.to_vec();
 
@@ -249,7 +253,21 @@ pub fn farm_logon_exchange(
                 break msg;
             }
             let mut tmp = [0u8; FARM_RECV_BUF];
-            let n = stream.read(&mut tmp)?;
+            let n = match stream.read(&mut tmp) {
+                Ok(n) => n,
+                Err(e) if e.kind() == io::ErrorKind::WouldBlock
+                    || e.kind() == io::ErrorKind::TimedOut =>
+                {
+                    if std::time::Instant::now() >= deadline {
+                        return Err(io::Error::new(
+                            io::ErrorKind::TimedOut,
+                            "farm logon timed out waiting for server response",
+                        ));
+                    }
+                    continue;
+                }
+                Err(e) => return Err(e),
+            };
             if n == 0 {
                 return Err(io::Error::new(
                     io::ErrorKind::ConnectionReset,
@@ -299,7 +317,7 @@ pub fn farm_logon_exchange(
                         session::SoftTokenOutcome::Passed => {}
                         session::SoftTokenOutcome::Unknown => {
                             log::warn!("Soft token rejected — falling back to SRP farm auth");
-                            stream.set_read_timeout(Some(Duration::from_secs(15)))?;
+                            stream.set_read_timeout(Some(Duration::from_millis(FARM_LOGON_POLL_MS)))?;
                             session::do_srp_farm(stream, username, password)?;
                         }
                     }

@@ -497,8 +497,27 @@ const MAX_FARM_MSG_SIZE: usize = 65536;
 fn recv_8eq1(stream: &mut TcpStream) -> io::Result<Vec<u8>> {
     let mut buf = Vec::with_capacity(4096);
     let mut tmp = [0u8; 4096];
+    // Tolerate transient WouldBlock/TimedOut (os error 35 on macOS) from the
+    // short poll timeout until an overall deadline; a slow segment from a
+    // high-latency regional gateway must not fail the auth exchange (ibx#237).
+    let deadline = std::time::Instant::now()
+        + std::time::Duration::from_secs_f64(TIMEOUT_FARM_LOGON);
     loop {
-        let n = stream.read(&mut tmp)?;
+        let n = match stream.read(&mut tmp) {
+            Ok(n) => n,
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock
+                || e.kind() == io::ErrorKind::TimedOut =>
+            {
+                if std::time::Instant::now() >= deadline {
+                    return Err(io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        "farm auth timed out waiting for server response",
+                    ));
+                }
+                continue;
+            }
+            Err(e) => return Err(e),
+        };
         if n == 0 {
             return Err(io::Error::new(
                 io::ErrorKind::ConnectionReset,
