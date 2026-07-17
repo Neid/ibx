@@ -190,10 +190,9 @@ impl HmdsState {
             }
             "W" => {
                 if let Some(xml_tag) = parsed.get(&6118) {
-                    // ibx#183 follow-up: unconditional XML root tracer — logs the head
-                    // of every W/6118 payload so we can see the element type even when
-                    // it falls through every parse branch silently.
-                    log::warn!(
+                    // Per-frame XML root tracer (kept at debug: fires on every
+                    // W/6118 payload). Unmatched payloads still warn below.
+                    log::debug!(
                         "HMDS W xml head (len={}): {:?}",
                         xml_tag.len(),
                         &xml_tag[..xml_tag.len().min(200)],
@@ -204,11 +203,10 @@ impl HmdsState {
                             let is_complete = resp.is_complete;
                             // Activity on this query — push the idle deadline out (ibx#231).
                             self.pending_historical[pos].2 = Instant::now() + HISTORICAL_IDLE_TIMEOUT;
-                            // ibx#182 follow-up: bisect — log every matched bar response.
-                            // If we see this fire repeatedly with eoq=false and never an
-                            // eoq=true follow-up, we're in case L170 (gateway never sends
-                            // the completion sentinel for this request).
-                            log::warn!(
+                            // Bar completion rides <eoq>true> in the final segmented
+                            // ResultSetBar; earlier segments carry <eoq>false>
+                            // (ib-agent#169). Kept at debug: fires per bar batch.
+                            log::debug!(
                                 "HMDS W matched: req_id={} query_id={:?} eoq={} bars={}",
                                 req_id, resp.query_id, is_complete, resp.bars.len()
                             );
@@ -428,6 +426,14 @@ impl HmdsState {
                                     shared.reference.push_fundamental_data(req_id, data);
                                 }
                             }
+                        }
+                        "10022" => {
+                            // ConAdjResponse: corporate-actions / dividend history,
+                            // pushed once per contract per session on the first
+                            // historical request (any bar size). Not a bar frame and
+                            // not a completion sentinel — bar completion rides
+                            // <eoq>true> in the ResultSetBar. Recognized and skipped
+                            // (ib-agent#169, ibx#183).
                         }
                         _ => {}
                     }
@@ -1113,6 +1119,66 @@ mod tests {
         msg.extend_from_slice(xml.as_bytes());
         msg.push(0x01);
         msg
+    }
+
+    fn make_bar_msg(query_id: &str, eoq: bool) -> Vec<u8> {
+        let xml = format!(
+            "<ResultSetBar><id>{}</id><eoq>{}</eoq><tz>UTC</tz><Events>\
+             <Bar><time>20260714-13:30:00</time><open>100.0</open><close>100.5</close>\
+             <high>100.7</high><low>99.9</low><weightedAvg>100.2</weightedAvg>\
+             <volume>1000</volume><count>10</count></Bar></Events></ResultSetBar>",
+            query_id, if eoq { "true" } else { "false" },
+        );
+        let mut msg = Vec::new();
+        msg.extend_from_slice(b"35=W\x016118=");
+        msg.extend_from_slice(xml.as_bytes());
+        msg.push(0x01);
+        msg
+    }
+
+    #[test]
+    fn segmented_bar_reply_completes_on_eoq_true() {
+        // ibx#183 / ib-agent#169: a segmented bar reply carries <eoq>false> on
+        // early frames and <eoq>true> on the final one. The pending entry must
+        // persist through the false frames and be released on the true frame.
+        let mut hmds = HmdsState::new();
+        let shared = SharedState::new();
+        let mut hb = HeartbeatState::new();
+        let mut conn: Option<Connection> = None;
+        hmds.pending_historical.push(("q7".to_string(), 21, Instant::now() + HISTORICAL_IDLE_TIMEOUT));
+
+        hmds.process_hmds_message(&make_bar_msg("q7", false), &mut conn, &shared, &None, &mut hb);
+        assert_eq!(hmds.pending_historical.len(), 1, "entry must persist through eoq=false");
+
+        hmds.process_hmds_message(&make_bar_msg("q7", true), &mut conn, &shared, &None, &mut hb);
+        assert!(hmds.pending_historical.is_empty(), "eoq=true must release the pending entry");
+
+        let hist = shared.reference.drain_historical_data();
+        assert_eq!(hist.len(), 2);
+        assert!(!hist[0].1.is_complete, "first segment incomplete");
+        assert!(hist[1].1.is_complete, "final segment complete");
+    }
+
+    #[test]
+    fn conadj_response_frame_is_skipped_without_disturbing_pending() {
+        // ibx#183 / ib-agent#169: the 6040=10022 ConAdjResponse (corporate
+        // actions) is pushed once per contract on the first historical request.
+        // It must be recognized and skipped, not treated as bar or completion.
+        let mut hmds = HmdsState::new();
+        let shared = SharedState::new();
+        let mut hb = HeartbeatState::new();
+        let mut conn: Option<Connection> = None;
+        hmds.pending_historical.push(("q8".to_string(), 22, Instant::now() + HISTORICAL_IDLE_TIMEOUT));
+
+        let mut msg = Vec::new();
+        msg.extend_from_slice(b"35=U\x016040=10022\x016118=");
+        msg.extend_from_slice(b"<ConAdjResponse><id>ContractAdjustment1</id></ConAdjResponse>");
+        msg.push(0x01);
+        hmds.process_hmds_message(&msg, &mut conn, &shared, &None, &mut hb);
+
+        assert_eq!(hmds.pending_historical.len(), 1, "ConAdjResponse must not touch pending historical");
+        assert!(shared.reference.drain_historical_data().is_empty());
+        assert!(shared.reference.drain_historical_errors().is_empty());
     }
 
     #[test]
