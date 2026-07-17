@@ -835,6 +835,13 @@ pub enum OrderRequest {
         adjusted_stop_price: Price,
         /// Only used when adjusted_order_type is StopLimit or TrailLimit. 0 = not set.
         adjusted_stop_limit_price: Price,
+        /// Trailing amount for a Trail/TrailLimit conversion (tag 6260). When the
+        /// unit is amount it is a price offset (scaled); when percent it is the
+        /// percent value scaled (1.00% = PRICE_SCALE). 0 = not set.
+        adjusted_trailing_amount: Price,
+        /// Unit of `adjusted_trailing_amount` on the wire (tag 6269): 0 = amount,
+        /// 100 = percent. Other values are rejected by the gateway.
+        adjustable_trailing_unit: i32,
     },
     Cancel {
         order_id: OrderId,
@@ -1000,9 +1007,13 @@ impl OrderRequest {
                 s(price); s(pegged_change_amount); s(ref_change_amount);
             }
             Self::SubmitAdjustableStop {
-                stop_price, trigger_price, adjusted_stop_price, adjusted_stop_limit_price, ..
+                stop_price, trigger_price, adjusted_stop_price, adjusted_stop_limit_price,
+                adjusted_trailing_amount, adjustable_trailing_unit, ..
             } => {
                 s(stop_price); s(trigger_price); s(adjusted_stop_price); s(adjusted_stop_limit_price);
+                // Snap the trailing amount only when it is an absolute price
+                // offset; a percent (unit 100) is not a price and must not snap.
+                if *adjustable_trailing_unit == 0 { s(adjusted_trailing_amount); }
             }
             Self::SubmitEx { kind, .. } => match kind {
                 OrderKind::Market | OrderKind::Moc | OrderKind::Mtl | OrderKind::MktPrt

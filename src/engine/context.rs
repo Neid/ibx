@@ -828,12 +828,15 @@ impl Context {
         adjusted_order_type: AdjustedOrderType,
         adjusted_stop_price: Price,
         adjusted_stop_limit_price: Price,
+        adjusted_trailing_amount: Price,
+        adjustable_trailing_unit: i32,
     ) -> OrderId {
         let id = self.next_order_id;
         self.next_order_id += 1;
         self.pending_orders.push(OrderRequest::SubmitAdjustableStop {
             order_id: id, instrument, side, qty, stop_price, trigger_price,
             adjusted_order_type, adjusted_stop_price, adjusted_stop_limit_price,
+            adjusted_trailing_amount, adjustable_trailing_unit,
         });
         id
     }
@@ -1675,6 +1678,8 @@ mod tests {
             AdjustedOrderType::StopLimit,
             253_20 * (PRICE_SCALE / 100), // adjusted_stop
             252_20 * (PRICE_SCALE / 100), // adjusted_limit
+            0,                             // adjusted_trailing_amount (StopLimit: unused)
+            0,                             // adjustable_trailing_unit
         );
         let orders: Vec<_> = ctx.drain_pending_orders().collect();
         assert_eq!(orders.len(), 1);

@@ -1434,6 +1434,38 @@ impl ClientCore {
             }));
         }
 
+        // Adjustable stop: a base STP that converts to another order type when
+        // its trigger is reached. Signalled by a non-empty adjustedOrderType,
+        // which is empty on every ordinary order, so this affects nothing else.
+        // A Trail/TrailLimit conversion carries the trailing amount + unit
+        // (tags 6260/6269, ib-agent#167). (ibx#225)
+        if !order.adjusted_order_type.is_empty() {
+            let adjusted = match order.adjusted_order_type.to_uppercase().as_str() {
+                "STP" => AdjustedOrderType::Stop,
+                "STP LMT" => AdjustedOrderType::StopLimit,
+                "TRAIL" => AdjustedOrderType::Trail,
+                "TRAIL LIMIT" => AdjustedOrderType::TrailLimit,
+                other => return Err(format!("unknown adjustedOrderType '{}'", other)),
+            };
+            let scale = |v: f64| (v * PRICE_SCALE_F) as i64;
+            // adjusted_trailing_amount defaults to f64::MAX when unset.
+            let adj_trail = if order.adjusted_trailing_amount == f64::MAX {
+                0.0
+            } else {
+                order.adjusted_trailing_amount
+            };
+            return Ok(ControlCommand::Order(OrderRequest::SubmitAdjustableStop {
+                order_id, instrument, side, qty,
+                stop_price: scale(order.aux_price),
+                trigger_price: scale(order.trigger_price),
+                adjusted_order_type: adjusted,
+                adjusted_stop_price: scale(order.adjusted_stop_price),
+                adjusted_stop_limit_price: scale(order.adjusted_stop_limit_price),
+                adjusted_trailing_amount: scale(adj_trail),
+                adjustable_trailing_unit: order.adjustable_trailing_unit,
+            }));
+        }
+
         // Every order type must carry extended attributes and a non-DAY tif
         // when the caller sets them — dropping them silently produced
         // unlinked, immediate-DAY bracket children (ibx#224). An empty tif

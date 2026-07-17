@@ -319,6 +319,65 @@ fn place_order_limit() {
 }
 
 #[test]
+fn place_order_adjustable_trail_carries_trailing_amount_and_unit() {
+    // ibx#225 / ib-agent#167: a base STP that converts to a TRAIL must carry
+    // the trailing amount and unit through to the SubmitAdjustableStop request.
+    let (client, rx, shared) = test_client();
+    shared.market.set_instrument_count(1);
+    let order = Order {
+        action: "SELL".into(), total_quantity: 1.0, order_type: "STP".into(),
+        aux_price: 11.00,                          // base stop price
+        adjusted_order_type: "TRAIL".into(),
+        trigger_price: 11.00,
+        adjusted_stop_price: 10.00,
+        adjusted_trailing_amount: 0.50,
+        adjustable_trailing_unit: 0,               // amount
+        ..Default::default()
+    };
+    client.place_order(1, &spy(), &order).unwrap();
+
+    let cmd = rx.try_recv().unwrap();
+    match cmd {
+        ControlCommand::Order(OrderRequest::SubmitAdjustableStop {
+            adjusted_order_type, stop_price, trigger_price, adjusted_stop_price,
+            adjusted_trailing_amount, adjustable_trailing_unit, .. }) => {
+            assert_eq!(adjusted_order_type, crate::types::AdjustedOrderType::Trail);
+            assert_eq!(stop_price, (11.00 * PRICE_SCALE_F) as i64);
+            assert_eq!(trigger_price, (11.00 * PRICE_SCALE_F) as i64);
+            assert_eq!(adjusted_stop_price, (10.00 * PRICE_SCALE_F) as i64);
+            assert_eq!(adjusted_trailing_amount, (0.50 * PRICE_SCALE_F) as i64);
+            assert_eq!(adjustable_trailing_unit, 0);
+        }
+        _ => panic!("expected SubmitAdjustableStop, got {:?}", cmd),
+    }
+}
+
+#[test]
+fn place_order_adjustable_trail_percent_unit_passes_through() {
+    // Percent unit (100) must survive; the trailing amount is a percent value.
+    let (client, rx, shared) = test_client();
+    shared.market.set_instrument_count(1);
+    let order = Order {
+        action: "SELL".into(), total_quantity: 1.0, order_type: "STP".into(),
+        aux_price: 11.00,
+        adjusted_order_type: "TRAIL".into(),
+        adjusted_trailing_amount: 1.00,            // 1.00%
+        adjustable_trailing_unit: 100,             // percent
+        ..Default::default()
+    };
+    client.place_order(1, &spy(), &order).unwrap();
+
+    match rx.try_recv().unwrap() {
+        ControlCommand::Order(OrderRequest::SubmitAdjustableStop {
+            adjustable_trailing_unit, adjusted_trailing_amount, .. }) => {
+            assert_eq!(adjustable_trailing_unit, 100);
+            assert_eq!(adjusted_trailing_amount, (1.00 * PRICE_SCALE_F) as i64);
+        }
+        cmd => panic!("expected SubmitAdjustableStop, got {:?}", cmd),
+    }
+}
+
+#[test]
 fn place_order_limit_gtc_uses_limit_ex() {
     let (client, rx, shared) = test_client();
     shared.market.set_instrument_count(1);

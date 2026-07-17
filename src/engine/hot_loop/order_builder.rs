@@ -1030,7 +1030,8 @@ pub(crate) fn drain_and_send_orders(
             }
             OrderRequest::SubmitAdjustableStop { order_id, instrument, side, qty,
                 stop_price, trigger_price, adjusted_order_type,
-                adjusted_stop_price, adjusted_stop_limit_price } => {
+                adjusted_stop_price, adjusted_stop_limit_price,
+                adjusted_trailing_amount, adjustable_trailing_unit } => {
                 context.insert_order(crate::types::Order::new(
                     order_id, instrument, side, qty, 0, b'3', b'0', stop_price,
                 ));
@@ -1042,6 +1043,8 @@ pub(crate) fn drain_and_send_orders(
                 let trigger_str = format_price(trigger_price);
                 let adj_stop_str = format_price(adjusted_stop_price);
                 let adj_limit_str = format_price(adjusted_stop_limit_price);
+                let adj_trail_str = format_price(adjusted_trailing_amount);
+                let adj_unit_str = adjustable_trailing_unit.to_string();
                 let symbol = context.market.symbol(instrument).to_string();
                 let (sec_type_str, destination) = context.market.order_routing(instrument);
                 let now = chrono_free_timestamp();
@@ -1070,6 +1073,16 @@ pub(crate) fn drain_and_send_orders(
                 ];
                 if adjusted_stop_limit_price > 0 {
                     fields.push((6262, &adj_limit_str)); // Adjusted stop limit price
+                }
+                // When the stop converts to a trailing type, carry the trailing
+                // amount (6260) and its unit (6269: 0=amount, 100=percent).
+                // Captured in ib-agent#167 (ibx#225).
+                if matches!(adjusted_order_type,
+                    crate::types::AdjustedOrderType::Trail
+                    | crate::types::AdjustedOrderType::TrailLimit)
+                {
+                    fields.push((6260, &adj_trail_str));
+                    fields.push((6269, &adj_unit_str));
                 }
                 conn.send_fix(&fields)
             }
