@@ -340,6 +340,7 @@ impl Context {
             side,
             qty,
             trail_amt,
+            trail_stop_price: 0,
         });
         id
     }
@@ -361,6 +362,7 @@ impl Context {
             qty,
             lmt_offset,
             trail_amt,
+            trail_stop_price: 0,
         });
         id
     }
@@ -380,6 +382,7 @@ impl Context {
             side,
             qty,
             trail_pct,
+            trail_stop_price: 0,
         });
         id
     }

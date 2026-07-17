@@ -485,12 +485,15 @@ pub enum OrderKind {
     Limit { price: Price },
     Stop { stop_price: Price },
     StopLimit { price: Price, stop_price: Price },
-    /// Trailing stop by absolute amount.
-    TrailingStop { trail_amt: Price },
+    /// Trailing stop by absolute amount. `trail_stop_price` is the optional
+    /// initial stop trigger (tag 6117); 0 = not set.
+    TrailingStop { trail_amt: Price, trail_stop_price: Price },
     /// Trailing stop limit; `lmt_offset` is the limit-vs-trail offset (tag 6370).
-    TrailingStopLimit { lmt_offset: Price, trail_amt: Price },
+    /// `trail_stop_price` is the optional initial stop trigger (tag 6117); 0 = not set.
+    TrailingStopLimit { lmt_offset: Price, trail_amt: Price, trail_stop_price: Price },
     /// Trailing stop by percentage. Basis points: 100 = 1%.
-    TrailPct { trail_pct: u32 },
+    /// `trail_stop_price` is the optional initial stop trigger (tag 6117); 0 = not set.
+    TrailPct { trail_pct: u32, trail_stop_price: Price },
     Moc,
     Loc { price: Price },
     Mit { stop_price: Price },
@@ -583,6 +586,8 @@ pub enum OrderRequest {
         side: Side,
         qty: u32,
         trail_amt: Price,
+        /// Optional initial stop trigger (tag 6117); 0 = not set.
+        trail_stop_price: Price,
     },
     SubmitTrailingStopLimit {
         order_id: OrderId,
@@ -593,6 +598,8 @@ pub enum OrderRequest {
         /// The gateway derives the absolute limit price; do not pass an absolute price here.
         lmt_offset: Price,
         trail_amt: Price,
+        /// Optional initial stop trigger (tag 6117); 0 = not set.
+        trail_stop_price: Price,
     },
     /// Trailing stop by percentage (tag 6268). Trail percent is in basis points (1% = 100).
     SubmitTrailingStopPct {
@@ -601,6 +608,8 @@ pub enum OrderRequest {
         side: Side,
         qty: u32,
         trail_pct: u32, // basis points: 100 = 1%, 250 = 2.5%
+        /// Optional initial stop trigger (tag 6117); 0 = not set.
+        trail_stop_price: Price,
     },
     SubmitTrailingStopPctEx {
         order_id: OrderId,
@@ -610,6 +619,8 @@ pub enum OrderRequest {
         trail_pct: u32,
         tif: u8,
         attrs: OrderAttrs,
+        /// Optional initial stop trigger (tag 6117); 0 = not set.
+        trail_stop_price: Price,
     },
     SubmitMoc {
         order_id: OrderId,
@@ -971,9 +982,7 @@ impl OrderRequest {
             | Self::SubmitMarket { .. } | Self::SubmitMoc { .. }
             | Self::SubmitMtl { .. } | Self::SubmitMktPrt { .. }
             | Self::SubmitSnapMkt { .. } | Self::SubmitSnapMid { .. }
-            | Self::SubmitSnapPri { .. } | Self::SubmitMtlAuc { .. }
-            | Self::SubmitTrailingStopPct { .. }
-            | Self::SubmitTrailingStopPctEx { .. } => {}
+            | Self::SubmitSnapPri { .. } | Self::SubmitMtlAuc { .. } => {}
             Self::Modify { price, .. } => s(price),
             Self::SubmitLimit { price, .. }
             | Self::SubmitLimitGtc { price, .. }
@@ -994,8 +1003,10 @@ impl OrderRequest {
             Self::SubmitStopLimit { price, stop_price, .. }
             | Self::SubmitStopLimitGtc { price, stop_price, .. }
             | Self::SubmitLit { price, stop_price, .. } => { s(price); s(stop_price); }
-            Self::SubmitTrailingStop { trail_amt, .. } => s(trail_amt),
-            Self::SubmitTrailingStopLimit { lmt_offset, trail_amt, .. } => { s(lmt_offset); s(trail_amt); }
+            Self::SubmitTrailingStop { trail_amt, trail_stop_price, .. } => { s(trail_amt); s(trail_stop_price); }
+            Self::SubmitTrailingStopLimit { lmt_offset, trail_amt, trail_stop_price, .. } => { s(lmt_offset); s(trail_amt); s(trail_stop_price); }
+            Self::SubmitTrailingStopPct { trail_stop_price, .. }
+            | Self::SubmitTrailingStopPctEx { trail_stop_price, .. } => s(trail_stop_price),
             Self::SubmitMidPrice { price_cap, .. } => s(price_cap),
             Self::SubmitRel { offset, .. }
             | Self::SubmitPegMkt { offset, .. }
@@ -1017,16 +1028,16 @@ impl OrderRequest {
             }
             Self::SubmitEx { kind, .. } => match kind {
                 OrderKind::Market | OrderKind::Moc | OrderKind::Mtl | OrderKind::MktPrt
-                | OrderKind::SnapMkt | OrderKind::SnapMid | OrderKind::SnapPri
-                | OrderKind::TrailPct { .. } => {}
+                | OrderKind::SnapMkt | OrderKind::SnapMid | OrderKind::SnapPri => {}
+                OrderKind::TrailPct { trail_stop_price, .. } => s(trail_stop_price),
                 OrderKind::Limit { price } | OrderKind::Loc { price } => s(price),
                 OrderKind::Stop { stop_price }
                 | OrderKind::Mit { stop_price }
                 | OrderKind::StpPrt { stop_price } => s(stop_price),
                 OrderKind::StopLimit { price, stop_price }
                 | OrderKind::Lit { price, stop_price } => { s(price); s(stop_price); }
-                OrderKind::TrailingStop { trail_amt } => s(trail_amt),
-                OrderKind::TrailingStopLimit { lmt_offset, trail_amt } => { s(lmt_offset); s(trail_amt); }
+                OrderKind::TrailingStop { trail_amt, trail_stop_price } => { s(trail_amt); s(trail_stop_price); }
+                OrderKind::TrailingStopLimit { lmt_offset, trail_amt, trail_stop_price } => { s(lmt_offset); s(trail_amt); s(trail_stop_price); }
                 OrderKind::MidPrice { price_cap } => s(price_cap),
                 OrderKind::PegMkt { offset } | OrderKind::PegMid { offset }
                 | OrderKind::Rel { offset } => s(offset),
@@ -1826,6 +1837,7 @@ mod tests {
         // trail_pct is basis points, not a price — must never be snapped.
         let mut req = OrderRequest::SubmitTrailingStopPct {
             order_id: 1, instrument: 0, side: Side::Sell, qty: 1, trail_pct: 137,
+            trail_stop_price: 0,
         };
         req.snap_prices(TICK_CENT);
         match req {

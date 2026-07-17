@@ -319,6 +319,46 @@ fn place_order_limit() {
 }
 
 #[test]
+fn place_order_trailing_stop_carries_initial_trigger() {
+    // ibx#225 Part B / ib-agent#173: a plain amount trailing stop can carry an
+    // initial stop trigger (trailStopPrice); it must reach the request.
+    let (client, rx, shared) = test_client();
+    shared.market.set_instrument_count(1);
+    let order = Order {
+        action: "SELL".into(), total_quantity: 1.0, order_type: "TRAIL".into(),
+        aux_price: 0.50,             // trail amount
+        trail_stop_price: 10.00,     // initial stop trigger
+        ..Default::default()
+    };
+    client.place_order(1, &spy(), &order).unwrap();
+    match rx.try_recv().unwrap() {
+        ControlCommand::Order(OrderRequest::SubmitTrailingStop { trail_amt, trail_stop_price, .. }) => {
+            assert_eq!(trail_amt, (0.50 * PRICE_SCALE_F) as i64);
+            assert_eq!(trail_stop_price, (10.00 * PRICE_SCALE_F) as i64);
+        }
+        cmd => panic!("expected SubmitTrailingStop, got {:?}", cmd),
+    }
+}
+
+#[test]
+fn place_order_trailing_stop_without_trigger_is_unset() {
+    // Default (f64::MAX) must encode as 0 (not set), so the tag is omitted.
+    let (client, rx, shared) = test_client();
+    shared.market.set_instrument_count(1);
+    let order = Order {
+        action: "SELL".into(), total_quantity: 1.0, order_type: "TRAIL".into(),
+        aux_price: 0.50, ..Default::default()
+    };
+    client.place_order(1, &spy(), &order).unwrap();
+    match rx.try_recv().unwrap() {
+        ControlCommand::Order(OrderRequest::SubmitTrailingStop { trail_stop_price, .. }) => {
+            assert_eq!(trail_stop_price, 0);
+        }
+        cmd => panic!("expected SubmitTrailingStop, got {:?}", cmd),
+    }
+}
+
+#[test]
 fn place_order_adjustable_trail_carries_trailing_amount_and_unit() {
     // ibx#225 / ib-agent#167: a base STP that converts to a TRAIL must carry
     // the trailing amount and unit through to the SubmitAdjustableStop request.
@@ -476,7 +516,7 @@ fn place_order_trailing_amount_with_oca_uses_submit_ex() {
     let cmd = rx.try_recv().unwrap();
     match cmd {
         ControlCommand::Order(OrderRequest::SubmitEx { kind, tif, attrs, .. }) => {
-            assert!(matches!(kind, crate::types::OrderKind::TrailingStop { trail_amt }
+            assert!(matches!(kind, crate::types::OrderKind::TrailingStop { trail_amt, .. }
                 if trail_amt == (2.0 * PRICE_SCALE_F) as i64));
             assert_eq!(tif, b'1');
             assert_eq!(attrs.oca_group_str, "exit_9");

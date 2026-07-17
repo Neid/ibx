@@ -1522,6 +1522,8 @@ impl ClientCore {
                 else { OrderRequest::SubmitStopLimit { order_id, instrument, side, qty, price, stop_price: stop } }
             }
             "TRAIL" => {
+                // Optional initial stop trigger (tag 6117); default f64::MAX = unset.
+                let trail_stop = if order.trail_stop_price == f64::MAX { 0 } else { (order.trail_stop_price * PRICE_SCALE_F) as i64 };
                 if order.trailing_percent > 0.0 {
                     let pct = (order.trailing_percent * 100.0) as u32;
                     if extended {
@@ -1529,14 +1531,15 @@ impl ClientCore {
                             order_id, instrument, side, qty, trail_pct: pct,
                             tif: order.tif_byte(),
                             attrs: order.attrs(),
+                            trail_stop_price: trail_stop,
                         }
                     } else {
-                        OrderRequest::SubmitTrailingStopPct { order_id, instrument, side, qty, trail_pct: pct }
+                        OrderRequest::SubmitTrailingStopPct { order_id, instrument, side, qty, trail_pct: pct, trail_stop_price: trail_stop }
                     }
                 } else {
                     let trail = (order.aux_price * PRICE_SCALE_F) as i64;
-                    if extended { ex(OrderKind::TrailingStop { trail_amt: trail }) }
-                    else { OrderRequest::SubmitTrailingStop { order_id, instrument, side, qty, trail_amt: trail } }
+                    if extended { ex(OrderKind::TrailingStop { trail_amt: trail, trail_stop_price: trail_stop }) }
+                    else { OrderRequest::SubmitTrailingStop { order_id, instrument, side, qty, trail_amt: trail, trail_stop_price: trail_stop } }
                 }
             }
             "TRAIL LIMIT" => {
@@ -1550,8 +1553,9 @@ impl ClientCore {
                 };
                 let lmt_offset = (offset_f * PRICE_SCALE_F) as i64;
                 let trail = (order.aux_price * PRICE_SCALE_F) as i64;
-                if extended { ex(OrderKind::TrailingStopLimit { lmt_offset, trail_amt: trail }) }
-                else { OrderRequest::SubmitTrailingStopLimit { order_id, instrument, side, qty, lmt_offset, trail_amt: trail } }
+                let trail_stop = if order.trail_stop_price == f64::MAX { 0 } else { (order.trail_stop_price * PRICE_SCALE_F) as i64 };
+                if extended { ex(OrderKind::TrailingStopLimit { lmt_offset, trail_amt: trail, trail_stop_price: trail_stop }) }
+                else { OrderRequest::SubmitTrailingStopLimit { order_id, instrument, side, qty, lmt_offset, trail_amt: trail, trail_stop_price: trail_stop } }
             }
             "MOC" => {
                 if extended { ex(OrderKind::Moc) }

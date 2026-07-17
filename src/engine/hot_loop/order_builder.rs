@@ -350,7 +350,7 @@ pub(crate) fn drain_and_send_orders(
                     (204, "0"),
                 ])
             }
-            OrderRequest::SubmitTrailingStop { order_id, instrument, side, qty, trail_amt } => {
+            OrderRequest::SubmitTrailingStop { order_id, instrument, side, qty, trail_amt, trail_stop_price } => {
                 context.insert_order(crate::types::Order::new(
                     order_id, instrument, side, qty, 0, b'P', b'0', 0,
                 ));
@@ -359,6 +359,7 @@ pub(crate) fn drain_and_send_orders(
                 let side_str = fix_side(side);
                 let qty_str = format_uint(qty as u64);
                 let trail_str = format_price(trail_amt);
+                let trail_stop_str = format_price(trail_stop_price);
                 let symbol = context.market.symbol(instrument).to_string();
                 let (sec_type_str, destination) = context.market.order_routing(instrument);
                 let now = chrono_free_timestamp();
@@ -366,7 +367,7 @@ pub(crate) fn drain_and_send_orders(
                 // the trail amount in both 99 (StopPx) and 211 (PegOffset),
                 // and requires 18=a (ExecInst = TrailingStop). Without 18,
                 // the gateway rejects with "Invalid value in field # 18".
-                conn.send_fix(&[
+                let mut fields: Vec<(u32, &str)> = vec![
                     (fix::TAG_MSG_TYPE, fix::MSG_NEW_ORDER),
                     (fix::TAG_SENDING_TIME, &now),
                     (11, &clord_str),
@@ -386,9 +387,13 @@ pub(crate) fn drain_and_send_orders(
                     (6210, &destination),
                     (15, "USD"),
                     (204, "0"),
-                ])
+                ];
+                // Optional initial stop trigger (tag 6117), only when set
+                // (ib-agent#173).
+                if trail_stop_price > 0 { fields.push((6117, &trail_stop_str)); }
+                conn.send_fix(&fields)
             }
-            OrderRequest::SubmitTrailingStopLimit { order_id, instrument, side, qty, lmt_offset, trail_amt } => {
+            OrderRequest::SubmitTrailingStopLimit { order_id, instrument, side, qty, lmt_offset, trail_amt, trail_stop_price } => {
                 context.insert_order(crate::types::Order::new(
                     order_id, instrument, side, qty, lmt_offset, b'P', b'0', 0,
                 ));
@@ -398,6 +403,7 @@ pub(crate) fn drain_and_send_orders(
                 let qty_str = format_uint(qty as u64);
                 let offset_str = format_price(lmt_offset);
                 let trail_str = format_price(trail_amt);
+                let trail_stop_str = format_price(trail_stop_price);
                 let symbol = context.market.symbol(instrument).to_string();
                 let (sec_type_str, destination) = context.market.order_routing(instrument);
                 let now = chrono_free_timestamp();
@@ -406,7 +412,7 @@ pub(crate) fn drain_and_send_orders(
                 // 6370 + the activation reference), does NOT carry tag 18, and
                 // carries the trail amount in both 99 and 211. The 6370
                 // LimitPriceOffset is the limit-vs-trail offset.
-                conn.send_fix(&[
+                let mut fields: Vec<(u32, &str)> = vec![
                     (fix::TAG_MSG_TYPE, fix::MSG_NEW_ORDER),
                     (fix::TAG_SENDING_TIME, &now),
                     (11, &clord_str),
@@ -426,9 +432,11 @@ pub(crate) fn drain_and_send_orders(
                     (6210, &destination),
                     (15, "USD"),
                     (204, "0"),
-                ])
+                ];
+                if trail_stop_price > 0 { fields.push((6117, &trail_stop_str)); }
+                conn.send_fix(&fields)
             }
-            OrderRequest::SubmitTrailingStopPct { order_id, instrument, side, qty, trail_pct } => {
+            OrderRequest::SubmitTrailingStopPct { order_id, instrument, side, qty, trail_pct, trail_stop_price } => {
                 context.insert_order(crate::types::Order::new(
                     order_id, instrument, side, qty, 0, b'P', b'0', 0,
                 ));
@@ -442,10 +450,11 @@ pub(crate) fn drain_and_send_orders(
                 // points and 18=a (ExecInst=TrailingStop). Without 99/211/18 the
                 // gateway rejects with "Invalid value in field # 18".
                 let pct_decimal = format!("{:.2}", trail_pct as f64 / 100.0);
+                let trail_stop_str = format_price(trail_stop_price);
                 let symbol = context.market.symbol(instrument).to_string();
                 let (sec_type_str, destination) = context.market.order_routing(instrument);
                 let now = chrono_free_timestamp();
-                conn.send_fix(&[
+                let mut fields: Vec<(u32, &str)> = vec![
                     (fix::TAG_MSG_TYPE, fix::MSG_NEW_ORDER),
                     (fix::TAG_SENDING_TIME, &now),
                     (11, &clord_str),
@@ -466,11 +475,13 @@ pub(crate) fn drain_and_send_orders(
                     (6210, &destination),
                     (15, "USD"),
                     (204, "0"),
-                ])
+                ];
+                if trail_stop_price > 0 { fields.push((6117, &trail_stop_str)); }
+                conn.send_fix(&fields)
             }
-            OrderRequest::SubmitTrailingStopPctEx { order_id, instrument, side, qty, trail_pct, tif, attrs } => {
+            OrderRequest::SubmitTrailingStopPctEx { order_id, instrument, side, qty, trail_pct, tif, attrs, trail_stop_price } => {
                 send_order_ex(conn, context, account_id, order_id, instrument, side, qty,
-                    crate::types::OrderKind::TrailPct { trail_pct }, tif, &attrs)
+                    crate::types::OrderKind::TrailPct { trail_pct, trail_stop_price }, tif, &attrs)
             }
             OrderRequest::SubmitMoc { order_id, instrument, side, qty } => {
                 context.insert_order(crate::types::Order::new(
@@ -1666,7 +1677,7 @@ fn send_order_ex(
             fields.push((44, format_price(price).to_string()));
             fields.push((99, format_price(stop_price).to_string()));
         }
-        K::TrailingStop { trail_amt } => {
+        K::TrailingStop { trail_amt, trail_stop_price } => {
             // Per ib-agent#136 capture: amount-based trailing stop carries
             // the trail amount in both 99 and 211 and requires 18=a.
             let t = format_price(trail_amt).to_string();
@@ -1674,9 +1685,11 @@ fn send_order_ex(
             fields.push((99, t.clone()));
             fields.push((211, t));
             fields.push((18, "a".to_string()));
+            // Optional initial stop trigger (tag 6117), only when set (ib-agent#173).
+            if trail_stop_price > 0 { fields.push((6117, format_price(trail_stop_price).to_string())); }
             has_base_exec_inst = true;
         }
-        K::TrailingStopLimit { lmt_offset, trail_amt } => {
+        K::TrailingStopLimit { lmt_offset, trail_amt, trail_stop_price } => {
             // Per ib-agent#136 capture: TRAIL LIMIT uses OrdType=TSL, no
             // tag 44, no tag 18; trail amount in both 99 and 211; 6370 is
             // the limit-vs-trail offset.
@@ -1685,8 +1698,9 @@ fn send_order_ex(
             fields.push((99, t.clone()));
             fields.push((6370, format_price(lmt_offset).to_string()));
             fields.push((211, t));
+            if trail_stop_price > 0 { fields.push((6117, format_price(trail_stop_price).to_string())); }
         }
-        K::TrailPct { trail_pct } => {
+        K::TrailPct { trail_pct, trail_stop_price } => {
             // Per ib-agent#156 capture: percent-trail mirrors 99/211 as the
             // percent in decimal form (1.00 for 1%), alongside 6268 in
             // basis points and 18=a.
@@ -1696,6 +1710,7 @@ fn send_order_ex(
             fields.push((211, pct_decimal));
             fields.push((18, "a".to_string()));
             fields.push((6268, trail_pct.to_string()));
+            if trail_stop_price > 0 { fields.push((6117, format_price(trail_stop_price).to_string())); }
             has_base_exec_inst = true;
         }
         K::Moc => fields.push((40, "5".to_string())),
