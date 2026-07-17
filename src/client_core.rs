@@ -1002,14 +1002,19 @@ impl ClientCore {
                 continue;
             }
 
+            // moneyTradedSinceMidnight (wire 6822) is signed net cash: SELL
+            // positive, BUY negative (ib-agent#163). An intraday-only position
+            // has no seed row, so synthesize the opening trade's net cash:
+            // -qty*avgCost (cash paid to open a long, received to open a short).
             let money_traded = match seed {
                 Some(s) => s.money_traded,
-                None => qty_now as f64 * avg_cost as f64 / PRICE_SCALE_F,
+                None => -(qty_now as f64 * avg_cost as f64 / PRICE_SCALE_F),
             };
 
             let mv_now = qty_now as f64 * price_now as f64 / PRICE_SCALE_F;
             let mv_midnight = qty_midnight as f64 * prev_close as f64 / PRICE_SCALE_F;
-            total_daily += mv_now - mv_midnight - money_traded;
+            // Daily P&L = value change since midnight plus today's net cash.
+            total_daily += mv_now - mv_midnight + money_traded;
 
             if avg_cost != 0 {
                 total_unrealized += qty_now as f64 * (price_now - avg_cost) as f64 / PRICE_SCALE_F;
@@ -1083,14 +1088,17 @@ impl ClientCore {
                 continue;
             }
 
+            // moneyTradedSinceMidnight (wire 6822) is signed net cash: SELL
+            // positive, BUY negative (ib-agent#163). Synthesize the opening
+            // trade's net cash for an intraday-only position (no seed row).
             let money_traded = match seed {
                 Some(s) => s.money_traded,
-                None => qty_now as f64 * avg_cost as f64 / PRICE_SCALE_F,
+                None => -(qty_now as f64 * avg_cost as f64 / PRICE_SCALE_F),
             };
 
             let mv_now = qty_now as f64 * price_now as f64 / PRICE_SCALE_F;
             let mv_midnight = qty_midnight as f64 * prev_close as f64 / PRICE_SCALE_F;
-            let daily = mv_now - mv_midnight - money_traded;
+            let daily = mv_now - mv_midnight + money_traded;
             let unrealized = if avg_cost != 0 {
                 qty_now as f64 * (price_now - avg_cost) as f64 / PRICE_SCALE_F
             } else { 0.0 };
@@ -1693,6 +1701,33 @@ mod tests {
         assert!((update.daily_pnl - 50.0).abs() < 1e-6, "daily={}", update.daily_pnl);
         // unrealized = 10 × (735 - 700) = 350
         assert!((update.unrealized_pnl - 350.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn poll_pnl_seeded_position_traded_intraday_uses_signed_net_cash() {
+        // ibx#221 / ib-agent#163: a position held at midnight AND traded intraday
+        // carries a non-zero moneyTradedSinceMidnight (6822), signed SELL+/BUY-.
+        // The daily formula must ADD it. Sold 3 of 10 at $110 (avg $100): the
+        // seed carries +330 net cash (sell proceeds) and +30 realized.
+        let core = ClientCore::new();
+        let shared = SharedState::new();
+        core.subscribe_pnl(31);
+
+        // Now holding 7 (was 10 at midnight), avg $100, last $110, prev close $100.
+        seed_pnl_position(&core, &shared, 1, 0, 7, 100.00, 110.00, 100.00);
+        shared.portfolio.set_midnight_seeds(vec![MidnightSeed {
+            con_id: 1,
+            qty_midnight: 10,
+            money_traded: 330.0,   // +330 = sold 3 @ $110 (wire sign, SELL positive)
+            realized_pnl: 30.0,
+        }]);
+
+        let update = core.poll_pnl(&shared).expect("callback must fire");
+        // daily = 7×110 - 10×100 + 330 = 100 (70 remaining unrealized + 30 realized)
+        assert!((update.daily_pnl - 100.0).abs() < 1e-6, "daily={}", update.daily_pnl);
+        // unrealized = 7 × (110 - 100) = 70
+        assert!((update.unrealized_pnl - 70.0).abs() < 1e-6, "unreal={}", update.unrealized_pnl);
+        assert!((update.realized_pnl - 30.0).abs() < 1e-6, "real={}", update.realized_pnl);
     }
 
     #[test]

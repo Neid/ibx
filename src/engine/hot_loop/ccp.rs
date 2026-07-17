@@ -1704,6 +1704,8 @@ fn handle_pnl_response(msg: &[u8], shared: &SharedState) {
         } else if let Some(v) = part.strip_prefix("6064=") {
             qty_midnight = v.parse::<f64>().unwrap_or(0.0) as i64;
         } else if let Some(v) = part.strip_prefix("6822=") {
+            // moneyTradedSinceMidnight: signed net cash, SELL positive / BUY
+            // negative. Stored with the wire sign; poll_pnl adds it (ib-agent#163).
             money_traded = v.parse().unwrap_or(0.0);
         } else if let Some(v) = part.strip_prefix("6099=") {
             realized_pnl = v.parse().unwrap_or(0.0);
