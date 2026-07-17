@@ -1476,6 +1476,16 @@ impl CcpState {
             let fix_sec_type = match sec_type {
                 "STK" => "CS", "FUT" => "FUT", "OPT" => "OPT", "IND" => "IND", other => other,
             };
+            // Identifier lookup (ISIN/CUSIP): SecurityIDSource is the standard FIX
+            // code, 1 = CUSIP, 4 = ISIN (ib-agent#174). When a known one is set the
+            // lookup rides the identifier and drops the symbol/secType/filters.
+            let sec_id_source = match filters.sec_id_type.to_uppercase().as_str() {
+                "ISIN" => "4",
+                "CUSIP" => "1",
+                _ => "",
+            };
+            let identifier_lookup = !filters.sec_id.is_empty() && !sec_id_source.is_empty();
+
             let strike_str = if filters.strike > 0.0 { format!("{}", filters.strike) } else { String::new() };
             // PutOrCall: Call = 1, Put = 0 (ib-agent#171).
             let right_code = match filters.right.to_uppercase().as_str() {
@@ -1493,35 +1503,43 @@ impl CcpState {
                 (320, &req_id_str),
                 (321, "2"),
             ];
-            if !filters.local_symbol.is_empty() {
-                fields.push((6035, &filters.local_symbol));
+            if identifier_lookup {
+                // Identifier lookup: the identifier and its source replace the
+                // symbol/secType/filters; exchange and currency still ride
+                // (ib-agent#174).
+                fields.push((22, sec_id_source));
+                fields.push((48, &filters.sec_id));
             } else {
-                fields.push((55, symbol));
-            }
-            if !filters.trading_class.is_empty() {
-                fields.push((6058, &filters.trading_class));
-            }
-            fields.push((167, fix_sec_type));
-            if !filters.last_trade_date_or_contract_month.is_empty() {
-                fields.push((200, &filters.last_trade_date_or_contract_month));
-            }
-            if !right_code.is_empty() {
-                fields.push((201, right_code));
-            }
-            if !strike_str.is_empty() {
-                fields.push((202, &strike_str));
-            }
-            if !filters.multiplier.is_empty() {
-                fields.push((231, &filters.multiplier));
+                if !filters.local_symbol.is_empty() {
+                    fields.push((6035, &filters.local_symbol));
+                } else {
+                    fields.push((55, symbol));
+                }
+                if !filters.trading_class.is_empty() {
+                    fields.push((6058, &filters.trading_class));
+                }
+                fields.push((167, fix_sec_type));
+                if !filters.last_trade_date_or_contract_month.is_empty() {
+                    fields.push((200, &filters.last_trade_date_or_contract_month));
+                }
+                if !right_code.is_empty() {
+                    fields.push((201, right_code));
+                }
+                if !strike_str.is_empty() {
+                    fields.push((202, &strike_str));
+                }
+                if !filters.multiplier.is_empty() {
+                    fields.push((231, &filters.multiplier));
+                }
             }
             fields.push((100, fix_exchange));
-            if !filters.primary_exchange.is_empty() {
+            if !identifier_lookup && !filters.primary_exchange.is_empty() {
                 fields.push((207, &filters.primary_exchange));
             }
             fields.push((15, currency));
             fields.push((6088, "Socket"));
             let _ = conn.send_fix(&fields);
-            log::info!("Sent secdef-by-symbol: req_id={} symbol={} sec_type={}", req_id, symbol, sec_type);
+            log::info!("Sent secdef lookup: req_id={} symbol={} sec_type={} identifier={}", req_id, symbol, sec_type, identifier_lookup);
             hb.last_ccp_sent = Instant::now();
         } else {
             // See send_secdef_request: sweep converts this to a visible error.

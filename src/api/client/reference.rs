@@ -64,6 +64,8 @@ impl EClient {
                 right: contract.right.clone(),
                 multiplier: contract.multiplier.clone(),
                 trading_class: contract.trading_class.clone(),
+                sec_id: contract.sec_id.clone(),
+                sec_id_type: contract.sec_id_type.clone(),
             },
         })
     }

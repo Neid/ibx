@@ -1318,6 +1318,26 @@ fn req_contract_details_forwards_filter_fields() {
 }
 
 #[test]
+fn req_contract_details_forwards_identifier_lookup() {
+    // ibx#229 / ib-agent#174: an identifier lookup (ISIN) must carry secId and
+    // secIdType through to the fetch command.
+    let (client, rx, _shared) = test_client();
+    let contract = Contract {
+        con_id: 0, sec_type: "STK".into(), exchange: "SMART".into(), currency: "USD".into(),
+        sec_id: "US0378331005".into(), sec_id_type: "ISIN".into(),
+        ..Default::default()
+    };
+    client.req_contract_details(11, &contract).unwrap();
+    match rx.try_recv().unwrap() {
+        ControlCommand::FetchContractDetails { filters, .. } => {
+            assert_eq!(filters.sec_id, "US0378331005");
+            assert_eq!(filters.sec_id_type, "ISIN");
+        }
+        cmd => panic!("expected FetchContractDetails, got {:?}", cmd),
+    }
+}
+
+#[test]
 fn req_matching_symbols_sends_fetch() {
     let (client, rx, _shared) = test_client();
     client.req_matching_symbols(8, "AAPL").unwrap();

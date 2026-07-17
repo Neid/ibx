@@ -1268,6 +1268,10 @@ pub struct SecDefFilters {
     pub right: String,
     pub multiplier: String,
     pub trading_class: String,
+    /// Identifier lookup (e.g. ISIN): raw identifier and its type. When set, the
+    /// lookup rides the identifier instead of the symbol (ib-agent#174).
+    pub sec_id: String,
+    pub sec_id_type: String,
 }
 
 /// Commands sent from the control plane to the hot loop via SPSC channel.
