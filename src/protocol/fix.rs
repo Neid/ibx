@@ -410,9 +410,80 @@ pub fn fix_read<R: Read>(reader: &mut R) -> io::Result<Vec<u8>> {
     }
 }
 
+/// Read one complete FIX message, tolerating transient read timeouts.
+///
+/// Identical to [`fix_read`] on the happy path, but a `WouldBlock`/`TimedOut`
+/// read (a poll-timeout expiry on a slow, high-latency gateway) is retried
+/// until `deadline` instead of being treated as fatal. The reader's socket
+/// should carry a short read timeout so the poll stays responsive (ibx#237).
+pub fn fix_read_deadline<R: Read>(reader: &mut R, deadline: std::time::Instant) -> io::Result<Vec<u8>> {
+    let mut buf = Vec::with_capacity(4096);
+    let mut tmp = [0u8; 4096];
+    loop {
+        match reader.read(&mut tmp) {
+            Ok(0) => return Err(io::Error::new(
+                io::ErrorKind::ConnectionReset,
+                "socket closed while reading FIX message",
+            )),
+            Ok(n) => {
+                buf.extend_from_slice(&tmp[..n]);
+                if let Some(idx) = buf.windows(4).position(|w| w == b"\x0110=") {
+                    if let Some(end) = buf[idx + 4..].iter().position(|&b| b == SOH) {
+                        let total = idx + 4 + end + 1;
+                        return Ok(buf[..total].to_vec());
+                    }
+                }
+            }
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock
+                || e.kind() == io::ErrorKind::TimedOut =>
+            {
+                if std::time::Instant::now() >= deadline {
+                    return Err(io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        "timed out reading FIX message",
+                    ));
+                }
+                // Poll timeout with budget left: keep waiting.
+            }
+            Err(e) => return Err(e),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // A reader that returns WouldBlock a fixed number of times before yielding
+    // its bytes — models a slow socket with a short read timeout (ibx#237).
+    struct SlowReader { blocks_left: u32, data: std::io::Cursor<Vec<u8>> }
+    impl Read for SlowReader {
+        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            if self.blocks_left > 0 {
+                self.blocks_left -= 1;
+                return Err(io::Error::new(io::ErrorKind::WouldBlock, "would block"));
+            }
+            self.data.read(buf)
+        }
+    }
+
+    #[test]
+    fn fix_read_deadline_retries_wouldblock_then_reads() {
+        let msg = fix_build(&[(35, "A"), (108, "30")], 1);
+        let mut reader = SlowReader { blocks_left: 3, data: std::io::Cursor::new(msg.clone()) };
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let got = fix_read_deadline(&mut reader, deadline).unwrap();
+        assert_eq!(got, msg);
+    }
+
+    #[test]
+    fn fix_read_deadline_times_out_past_deadline() {
+        let mut reader = SlowReader { blocks_left: u32::MAX, data: std::io::Cursor::new(Vec::new()) };
+        // Deadline already passed: the first WouldBlock must surface as TimedOut.
+        let deadline = std::time::Instant::now() - std::time::Duration::from_secs(1);
+        let err = fix_read_deadline(&mut reader, deadline).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::TimedOut);
+    }
 
     #[test]
     fn checksum_abc() {

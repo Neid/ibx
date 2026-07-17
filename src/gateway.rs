@@ -21,7 +21,7 @@ use std::sync::Arc;
 use crate::bridge::{Event, SharedState};
 use crate::engine::hot_loop::HotLoop;
 use crate::protocol::connection::Connection;
-use crate::protocol::fix::{self, fix_build, fix_parse, fix_read, SOH};
+use crate::protocol::fix::{self, fix_build, fix_parse, fix_read_deadline, SOH};
 use crate::protocol::fixcomp;
 use crate::protocol::ns;
 use crate::types::ControlCommand;
@@ -785,9 +785,13 @@ fn reconnect_ccp_attempt(auth: &ReconnectAuth, token_hash: &str, host: &str, dep
     tls.write_all(&logon_msg)?;
     tls.flush()?;
 
-    tls.get_ref().set_read_timeout(Some(Duration::from_secs_f64(TIMEOUT_FIX_LOGON)))?;
+    // Short poll timeout + overall deadline so a slow response segment from a
+    // high-latency gateway is retried, not treated as a fatal logon failure
+    // (ibx#237, same tolerance as the farm-logon path).
+    tls.get_ref().set_read_timeout(Some(Duration::from_millis(FARM_LOGON_POLL_MS)))?;
+    let fix_deadline = std::time::Instant::now() + Duration::from_secs_f64(TIMEOUT_FARM_LOGON);
     for _ in 0..5 {
-        let response = fix_read(&mut tls)?;
+        let response = fix_read_deadline(&mut tls, fix_deadline)?;
         let fields = fix_parse(&response);
         let msg_type = fields.get(&35).map(|s| s.as_str()).unwrap_or("");
         match msg_type {
@@ -1169,8 +1173,11 @@ impl Gateway {
         tls.write_all(&logon_msg)?;
         tls.flush()?;
 
-        // Read FIX messages until we get the logon ACK (35=A) with session info
-        tls.get_ref().set_read_timeout(Some(Duration::from_secs_f64(TIMEOUT_FIX_LOGON)))?;
+        // Read FIX messages until we get the logon ACK (35=A) with session info.
+        // Short poll timeout + overall deadline so a slow ACK segment from a
+        // high-latency gateway is retried, not fatal (ibx#237).
+        tls.get_ref().set_read_timeout(Some(Duration::from_millis(FARM_LOGON_POLL_MS)))?;
+        let ack_deadline = std::time::Instant::now() + Duration::from_secs_f64(TIMEOUT_FARM_LOGON);
         let mut account_id = String::new();
         let mut heartbeat_interval = CCP_HEARTBEAT;
         let mut server_session_id = String::new();
@@ -1189,7 +1196,7 @@ impl Gateway {
         let mut secdef_route  = String::new();    // tag 8008
 
         for _ in 0..5 {
-            let raw_response = fix_read(&mut tls)?;
+            let raw_response = fix_read_deadline(&mut tls, ack_deadline)?;
             // The auth-logon ACK arrives as `8=FIXCOMP` with a DEFLATE-
             // compressed inner body containing the per-account routing tags
             // (6145/6171/8008) and other init data. Inflate before parsing.
