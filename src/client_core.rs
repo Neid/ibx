@@ -978,6 +978,7 @@ impl ClientCore {
         let mut total_daily: f64 = 0.0;
         let mut total_unrealized: f64 = 0.0;
         let mut total_realized: f64 = 0.0;
+        let mut priced = 0usize;
 
         for con_id in con_ids {
             let seed = seeds.get(&con_id);
@@ -1013,6 +1014,19 @@ impl ClientCore {
             if avg_cost != 0 {
                 total_unrealized += qty_now as f64 * (price_now - avg_cost) as f64 / PRICE_SCALE_F;
             }
+            priced += 1;
+        }
+
+        // No position carried a live quote (a req_pnl-only client never populates
+        // con_id_to_instrument, so every position above hits `continue`). Fall back
+        // to the gateway's account-level P&L, which the gateway pushes independently
+        // of any market-data subscription. Without this the quote-derived totals stay
+        // [0,0,0] and no callback ever fires (ibx#239).
+        if priced == 0 {
+            let acct = shared.portfolio.account();
+            total_daily = acct.daily_pnl as f64 / PRICE_SCALE_F;
+            total_unrealized = acct.unrealized_pnl as f64 / PRICE_SCALE_F;
+            total_realized = acct.realized_pnl as f64 / PRICE_SCALE_F;
         }
 
         let pnl = [
@@ -1690,6 +1704,64 @@ mod tests {
         assert!(core.poll_pnl(&shared).is_some());
         // Same inputs → no callback.
         assert!(core.poll_pnl(&shared).is_none());
+    }
+
+    #[test]
+    fn poll_pnl_falls_back_to_account_level_without_market_data() {
+        // #239: a req_pnl-only client never subscribes to market data, so no
+        // position has a live quote (con_id_to_instrument is empty and every
+        // position hits `continue`). poll_pnl must then emit the gateway's
+        // account-level P&L instead of returning None forever.
+        let core = ClientCore::new();
+        let shared = SharedState::new();
+        core.subscribe_pnl(21);
+
+        // Open position, but NO instrument mapping and NO quote pushed.
+        shared.portfolio.set_position_info(PositionInfo {
+            con_id: 756733,
+            position: 10,
+            avg_cost: (700.00 * PRICE_SCALE_F) as i64,
+            symbol: "SPY".into(),
+            sec_type: "STK".into(),
+            currency: "USD".into(),
+            multiplier: String::new(),
+        });
+
+        // Gateway-pushed account-level P&L (from the DailyPnL/UnrealizedPnL/
+        // RealizedPnL account-value keys).
+        let mut acct = AccountState::default();
+        acct.daily_pnl = (12.50 * PRICE_SCALE_F) as i64;
+        acct.unrealized_pnl = (35.00 * PRICE_SCALE_F) as i64;
+        acct.realized_pnl = (4.00 * PRICE_SCALE_F) as i64;
+        shared.portfolio.set_account(&acct);
+
+        let update = core.poll_pnl(&shared).expect("callback must fire from account-level P&L");
+        assert_eq!(update.req_id, 21);
+        assert!((update.daily_pnl - 12.50).abs() < 1e-6, "daily={}", update.daily_pnl);
+        assert!((update.unrealized_pnl - 35.00).abs() < 1e-6, "unreal={}", update.unrealized_pnl);
+        assert!((update.realized_pnl - 4.00).abs() < 1e-6, "real={}", update.realized_pnl);
+    }
+
+    #[test]
+    fn poll_pnl_prefers_quotes_over_account_level_when_priced() {
+        // When market data IS subscribed, the per-position quote synthesis wins;
+        // the account-level fallback must not override it.
+        let core = ClientCore::new();
+        let shared = SharedState::new();
+        core.subscribe_pnl(22);
+
+        // Priced position: 1 share, avg 100, last 101 → daily/unrealized = 1.00.
+        seed_pnl_position(&core, &shared, 1, 0, 1, 100.0, 101.0, 0.0);
+
+        // Divergent account-level values that must be ignored while priced.
+        let mut acct = AccountState::default();
+        acct.daily_pnl = (999.0 * PRICE_SCALE_F) as i64;
+        acct.unrealized_pnl = (999.0 * PRICE_SCALE_F) as i64;
+        shared.portfolio.set_account(&acct);
+
+        let update = core.poll_pnl(&shared).expect("callback must fire");
+        assert!((update.daily_pnl - 1.0).abs() < 1e-6, "daily={}", update.daily_pnl);
+        assert!((update.unrealized_pnl - 1.0).abs() < 1e-6, "unreal={}", update.unrealized_pnl);
     }
 
     // ── poll_pnl_single regression tests (#168) ──
