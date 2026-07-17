@@ -1246,6 +1246,19 @@ pub struct CompletedOrder {
     pub timestamp_ns: u64,
 }
 
+/// Optional request-side filters for a by-symbol contract-details lookup.
+/// Empty/zero fields are omitted from the request (ib-agent#171, ibx#229).
+#[derive(Debug, Clone, Default)]
+pub struct SecDefFilters {
+    pub primary_exchange: String,
+    pub local_symbol: String,
+    pub last_trade_date_or_contract_month: String,
+    pub strike: f64,
+    pub right: String,
+    pub multiplier: String,
+    pub trading_class: String,
+}
+
 /// Commands sent from the control plane to the hot loop via SPSC channel.
 #[derive(Debug, Clone)]
 pub enum ControlCommand {
@@ -1313,6 +1326,7 @@ pub enum ControlCommand {
         sec_type: String,
         exchange: String,
         currency: String,
+        filters: SecDefFilters,
     },
     /// Cancel a head timestamp request.
     CancelHeadTimestamp { req_id: u32 },

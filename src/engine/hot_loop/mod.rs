@@ -482,11 +482,11 @@ impl HotLoop {
                         self.hmds.send_head_timestamp_request(req_id, con_id, &what_to_show, use_rth, &mut self.hmds_conn, &mut self.hb, &self.shared);
                     }
                 }
-                ControlCommand::FetchContractDetails { req_id, con_id, symbol, sec_type, exchange, currency } => {
+                ControlCommand::FetchContractDetails { req_id, con_id, symbol, sec_type, exchange, currency, filters } => {
                     if con_id > 0 {
                         self.ccp.send_secdef_request(req_id, con_id, &mut self.ccp_conn, &mut self.hb);
                     } else {
-                        self.ccp.send_secdef_request_by_symbol(req_id, &symbol, &sec_type, &exchange, &currency, &mut self.ccp_conn, &mut self.hb);
+                        self.ccp.send_secdef_request_by_symbol(req_id, &symbol, &sec_type, &exchange, &currency, &filters, &mut self.ccp_conn, &mut self.hb);
                     }
                 }
                 ControlCommand::CancelHeadTimestamp { req_id } => {

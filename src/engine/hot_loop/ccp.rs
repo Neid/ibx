@@ -1468,7 +1468,7 @@ impl CcpState {
         self.pending_secdef.push((req_id, true, Instant::now() + SECDEF_TIMEOUT));
     }
 
-    pub(crate) fn send_secdef_request_by_symbol(&mut self, req_id: u32, symbol: &str, sec_type: &str, exchange: &str, currency: &str, ccp_conn: &mut Option<Connection>, hb: &mut HeartbeatState) {
+    pub(crate) fn send_secdef_request_by_symbol(&mut self, req_id: u32, symbol: &str, sec_type: &str, exchange: &str, currency: &str, filters: &crate::types::SecDefFilters, ccp_conn: &mut Option<Connection>, hb: &mut HeartbeatState) {
         if let Some(conn) = ccp_conn.as_mut() {
             let req_id_str = req_id.to_string();
             let ts = chrono_free_timestamp();
@@ -1476,17 +1476,51 @@ impl CcpState {
             let fix_sec_type = match sec_type {
                 "STK" => "CS", "FUT" => "FUT", "OPT" => "OPT", "IND" => "IND", other => other,
             };
-            let _ = conn.send_fix(&[
+            let strike_str = if filters.strike > 0.0 { format!("{}", filters.strike) } else { String::new() };
+            // PutOrCall: Call = 1, Put = 0 (ib-agent#171).
+            let right_code = match filters.right.to_uppercase().as_str() {
+                "C" | "CALL" => "1",
+                "P" | "PUT" => "0",
+                _ => "",
+            };
+            // Exchange rides tag 100; primaryExchange (when set) rides tag 207 —
+            // the two were previously conflated onto 207. localSymbol replaces the
+            // plain symbol; the derivative/disambiguation filters are added only
+            // when set. Captured in ib-agent#171 (ibx#229).
+            let mut fields: Vec<(u32, &str)> = vec![
                 (fix::TAG_MSG_TYPE, "c"),
                 (fix::TAG_SENDING_TIME, &ts),
                 (320, &req_id_str),
                 (321, "2"),
-                (55, symbol),
-                (167, fix_sec_type),
-                (207, fix_exchange),
-                (15, currency),
-                (6088, "Socket"),
-            ]);
+            ];
+            if !filters.local_symbol.is_empty() {
+                fields.push((6035, &filters.local_symbol));
+            } else {
+                fields.push((55, symbol));
+            }
+            if !filters.trading_class.is_empty() {
+                fields.push((6058, &filters.trading_class));
+            }
+            fields.push((167, fix_sec_type));
+            if !filters.last_trade_date_or_contract_month.is_empty() {
+                fields.push((200, &filters.last_trade_date_or_contract_month));
+            }
+            if !right_code.is_empty() {
+                fields.push((201, right_code));
+            }
+            if !strike_str.is_empty() {
+                fields.push((202, &strike_str));
+            }
+            if !filters.multiplier.is_empty() {
+                fields.push((231, &filters.multiplier));
+            }
+            fields.push((100, fix_exchange));
+            if !filters.primary_exchange.is_empty() {
+                fields.push((207, &filters.primary_exchange));
+            }
+            fields.push((15, currency));
+            fields.push((6088, "Socket"));
+            let _ = conn.send_fix(&fields);
             log::info!("Sent secdef-by-symbol: req_id={} symbol={} sec_type={}", req_id, symbol, sec_type);
             hb.last_ccp_sent = Instant::now();
         } else {

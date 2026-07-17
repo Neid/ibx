@@ -1243,6 +1243,41 @@ fn req_contract_details_sends_fetch() {
 }
 
 #[test]
+fn req_contract_details_forwards_filter_fields() {
+    // ibx#229 / ib-agent#171: a by-symbol lookup must carry the disambiguation
+    // filters (primary exchange, local symbol, expiry/strike/right, multiplier,
+    // trading class) instead of dropping them.
+    let (client, rx, _shared) = test_client();
+    let contract = Contract {
+        con_id: 0, symbol: "AAPL".into(), sec_type: "OPT".into(),
+        exchange: "SMART".into(), currency: "USD".into(),
+        primary_exchange: "NASDAQ".into(),
+        local_symbol: "AAPL  260808C00250000".into(),
+        last_trade_date_or_contract_month: "202608".into(),
+        strike: 250.0,
+        right: "C".into(),
+        multiplier: "100".into(),
+        trading_class: "AAPL".into(),
+        ..Default::default()
+    };
+    client.req_contract_details(9, &contract).unwrap();
+    match rx.try_recv().unwrap() {
+        ControlCommand::FetchContractDetails { req_id, con_id, filters, .. } => {
+            assert_eq!(req_id, 9);
+            assert_eq!(con_id, 0);
+            assert_eq!(filters.primary_exchange, "NASDAQ");
+            assert_eq!(filters.local_symbol, "AAPL  260808C00250000");
+            assert_eq!(filters.last_trade_date_or_contract_month, "202608");
+            assert_eq!(filters.strike, 250.0);
+            assert_eq!(filters.right, "C");
+            assert_eq!(filters.multiplier, "100");
+            assert_eq!(filters.trading_class, "AAPL");
+        }
+        cmd => panic!("expected FetchContractDetails, got {:?}", cmd),
+    }
+}
+
+#[test]
 fn req_matching_symbols_sends_fetch() {
     let (client, rx, _shared) = test_client();
     client.req_matching_symbols(8, "AAPL").unwrap();

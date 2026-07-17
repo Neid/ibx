@@ -56,6 +56,15 @@ impl EClient {
             sec_type: contract.sec_type.clone(),
             exchange: contract.exchange.clone(),
             currency: contract.currency.clone(),
+            filters: crate::types::SecDefFilters {
+                primary_exchange: contract.primary_exchange.clone(),
+                local_symbol: contract.local_symbol.clone(),
+                last_trade_date_or_contract_month: contract.last_trade_date_or_contract_month.clone(),
+                strike: contract.strike,
+                right: contract.right.clone(),
+                multiplier: contract.multiplier.clone(),
+                trading_class: contract.trading_class.clone(),
+            },
         })
     }
 
