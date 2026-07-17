@@ -1931,10 +1931,19 @@ pub(crate) fn handle_position_update(
         .and_then(|s| s.parse::<f64>().ok())
         .map(|v| v as i64)
         .unwrap_or(0);
-    let avg_cost: Price = parsed.get(&6065)
+    // Tag map verified against the updatePortfolio callback (ib-agent#172):
+    // 6101 = averageCost, 6065 = marketPrice (per share), 6067 = marketValue,
+    // 6100 = unrealizedPNL, 6099 = realizedPNL. Earlier code read 6065 as the
+    // average cost, which is actually the market price.
+    let price_tag = |tag: u32| parsed.get(&tag)
         .and_then(|s| s.parse::<f64>().ok())
         .map(|v| (v * PRICE_SCALE as f64) as Price)
         .unwrap_or(0);
+    let avg_cost: Price = price_tag(6101);
+    let market_price: Price = price_tag(6065);
+    let market_value: Price = price_tag(6067);
+    let unrealized_pnl: Price = price_tag(6100);
+    let realized_pnl: Price = price_tag(6099);
     // Symbol arrives space-padded; trim trailing whitespace.
     let symbol = parsed.get(&6068).map(|s| s.trim_end().to_string()).unwrap_or_default();
     let sec_type = parsed.get(&167).cloned().unwrap_or_default();
@@ -1945,7 +1954,9 @@ pub(crate) fn handle_position_update(
     shared.portfolio.set_position_info(PositionInfo {
         con_id, position, avg_cost,
         symbol, sec_type, currency, multiplier,
+        ..Default::default()
     });
+    shared.portfolio.set_position_marks(con_id, market_price, market_value, unrealized_pnl, realized_pnl);
 
     if let Some(instrument) = context.market.instrument_by_con_id(con_id) {
         let current = context.position(instrument);
@@ -2173,6 +2184,53 @@ mod tests {
         ccp.handle_exec_report(&routed, &mut context, &shared, &None, "");
         assert_eq!(context.order(42).unwrap().status,
             crate::types::OrderStatus::Submitted);
+    }
+
+    // ibx#238 / ib-agent#172: in the UP portfolio snapshot the average cost is
+    // tag 6101 and 6065 is the market price. The handler previously read 6065 as
+    // the average cost. Verify the mapping and that all marks are stored.
+    #[test]
+    fn position_update_maps_marks_and_avg_cost_from_correct_tags() {
+        let mut context = Context::new();
+        let shared = SharedState::new();
+        let mut m = std::collections::HashMap::new();
+        m.insert(6008u32, "756733".to_string());   // conId
+        m.insert(6064u32, "10".to_string());        // position
+        m.insert(6101u32, "100.50".to_string());    // averageCost
+        m.insert(6065u32, "110.25".to_string());    // marketPrice
+        m.insert(6067u32, "1102.50".to_string());   // marketValue
+        m.insert(6100u32, "97.50".to_string());     // unrealizedPNL
+        m.insert(6099u32, "5.00".to_string());      // realizedPNL
+        handle_position_update(&m, &mut context, &shared, &None);
+
+        let pi = shared.portfolio.position_info(756733).expect("position stored");
+        assert_eq!(pi.position, 10);
+        assert_eq!(pi.avg_cost, (100.50 * PRICE_SCALE as f64) as Price);
+        assert_eq!(pi.market_price, (110.25 * PRICE_SCALE as f64) as Price);
+        assert_eq!(pi.market_value, (1102.50 * PRICE_SCALE as f64) as Price);
+        assert_eq!(pi.unrealized_pnl, (97.50 * PRICE_SCALE as f64) as Price);
+        assert_eq!(pi.realized_pnl, (5.00 * PRICE_SCALE as f64) as Price);
+    }
+
+    // The lean position feed carries no marks; it must not zero the marks the
+    // portfolio snapshot set (ibx#238).
+    #[test]
+    fn lean_position_feed_does_not_clobber_marks() {
+        let shared = SharedState::new();
+        shared.portfolio.set_position_info(PositionInfo {
+            con_id: 1, position: 10, avg_cost: 100 * PRICE_SCALE, ..Default::default()
+        });
+        shared.portfolio.set_position_marks(1, 110 * PRICE_SCALE, 1100 * PRICE_SCALE, 100 * PRICE_SCALE, 5 * PRICE_SCALE);
+        // Lean feed updates position + avg_cost only.
+        shared.portfolio.set_position_info(PositionInfo {
+            con_id: 1, position: 12, avg_cost: 101 * PRICE_SCALE, ..Default::default()
+        });
+        let pi = shared.portfolio.position_info(1).unwrap();
+        assert_eq!(pi.position, 12);
+        assert_eq!(pi.avg_cost, 101 * PRICE_SCALE);
+        assert_eq!(pi.market_price, 110 * PRICE_SCALE, "marks survive the lean feed");
+        assert_eq!(pi.market_value, 1100 * PRICE_SCALE);
+        assert_eq!(pi.unrealized_pnl, 100 * PRICE_SCALE);
     }
 
     // ibx#220: the TIF decoder must be the exact inverse of the outbound

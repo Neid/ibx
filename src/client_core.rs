@@ -235,6 +235,10 @@ pub struct PortfolioUpdateEntry {
     pub con_id: i64,
     pub position: f64,
     pub avg_cost: f64,
+    pub market_price: f64,
+    pub market_value: f64,
+    pub unrealized_pnl: f64,
+    pub realized_pnl: f64,
 }
 
 /// True when `status` names an IB order state that is still working on the broker.
@@ -1197,21 +1201,31 @@ impl ClientCore {
         let mut prev_guard = self.last_portfolio.lock().unwrap();
         let is_first = prev_guard.is_none();
 
+        let to_entry = |pi: &PositionInfo| PortfolioUpdateEntry {
+            con_id: pi.con_id,
+            position: pi.position as f64,
+            avg_cost: pi.avg_cost as f64 / PRICE_SCALE_F,
+            market_price: pi.market_price as f64 / PRICE_SCALE_F,
+            market_value: pi.market_value as f64 / PRICE_SCALE_F,
+            unrealized_pnl: pi.unrealized_pnl as f64 / PRICE_SCALE_F,
+            realized_pnl: pi.realized_pnl as f64 / PRICE_SCALE_F,
+        };
+
         let changed = if is_first {
-            current.iter().map(|pi| PortfolioUpdateEntry {
-                con_id: pi.con_id,
-                position: pi.position as f64,
-                avg_cost: pi.avg_cost as f64 / PRICE_SCALE_F,
-            }).collect()
+            current.iter().map(&to_entry).collect()
         } else {
             let prev = prev_guard.as_ref().unwrap();
+            // Marks are part of the row: a mark move (each account-updates
+            // snapshot) is a genuine update, so compare them too (ibx#238).
             current.iter().filter(|pi| {
-                !prev.iter().any(|pp| pp.con_id == pi.con_id && pp.position == pi.position && pp.avg_cost == pi.avg_cost)
-            }).map(|pi| PortfolioUpdateEntry {
-                con_id: pi.con_id,
-                position: pi.position as f64,
-                avg_cost: pi.avg_cost as f64 / PRICE_SCALE_F,
-            }).collect()
+                !prev.iter().any(|pp| pp.con_id == pi.con_id
+                    && pp.position == pi.position
+                    && pp.avg_cost == pi.avg_cost
+                    && pp.market_price == pi.market_price
+                    && pp.market_value == pi.market_value
+                    && pp.unrealized_pnl == pi.unrealized_pnl
+                    && pp.realized_pnl == pi.realized_pnl)
+            }).map(&to_entry).collect()
         };
 
         *prev_guard = Some(current);
@@ -1679,6 +1693,7 @@ mod tests {
             sec_type: "STK".into(),
             currency: "USD".into(),
             multiplier: String::new(),
+            ..Default::default()
         });
         let mut q = Quote::default();
         q.last = (last_dollars * PRICE_SCALE_F) as i64;
@@ -1792,6 +1807,7 @@ mod tests {
             sec_type: "STK".into(),
             currency: "USD".into(),
             multiplier: String::new(),
+            ..Default::default()
         });
 
         // Gateway-pushed account-level P&L (from the DailyPnL/UnrealizedPnL/

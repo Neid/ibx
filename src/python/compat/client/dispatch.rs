@@ -569,7 +569,8 @@ impl EClient {
                 });
                 let c_py = pyo3::Py::new(py, c).unwrap().into_any();
                 call_wrapper!(self.wrapper, py, "update_portfolio",
-                    (&c_py, entry.position, 0.0_f64, 0.0_f64, entry.avg_cost, 0.0_f64, 0.0_f64, account_name.as_str()));
+                    (&c_py, entry.position, entry.market_price, entry.market_value,
+                     entry.avg_cost, entry.unrealized_pnl, entry.realized_pnl, account_name.as_str()));
             }
 
             if batch.delivered {

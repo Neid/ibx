@@ -1463,6 +1463,12 @@ pub struct PositionInfo {
     pub sec_type: String,
     pub currency: String,
     pub multiplier: String,
+    // Per-position marks from the account-updates snapshot (ib-agent#172).
+    // Set only by the portfolio-value message, not the lean position feed.
+    pub market_price: Price,     // per-share mark * PRICE_SCALE
+    pub market_value: Price,     // position mark * PRICE_SCALE
+    pub unrealized_pnl: Price,   // * PRICE_SCALE
+    pub realized_pnl: Price,     // * PRICE_SCALE
 }
 
 /// Per-position midnight seed from 6040=143 P&L subscription.

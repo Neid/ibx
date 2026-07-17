@@ -718,9 +718,23 @@ impl PortfolioState {
                 if !info.sec_type.is_empty() { existing.sec_type = info.sec_type; }
                 if !info.currency.is_empty() { existing.currency = info.currency; }
                 if !info.multiplier.is_empty() { existing.multiplier = info.multiplier; }
+                // Marks are owned by set_position_marks; leave them untouched so
+                // the lean position feed can't zero them (ib-agent#172).
             }
             None => { map.insert(info.con_id, info); }
         }
+    }
+
+    /// Update the per-position marks (from the account-updates portfolio message).
+    /// Kept separate from set_position_info so the lean position feed, which has
+    /// no marks, does not overwrite them (ib-agent#172).
+    #[doc(hidden)] pub fn set_position_marks(&self, con_id: i64, market_price: Price, market_value: Price, unrealized_pnl: Price, realized_pnl: Price) {
+        let mut map = self.position_infos.lock().unwrap();
+        let entry = map.entry(con_id).or_insert_with(|| PositionInfo { con_id, ..Default::default() });
+        entry.market_price = market_price;
+        entry.market_value = market_value;
+        entry.unrealized_pnl = unrealized_pnl;
+        entry.realized_pnl = realized_pnl;
     }
 
     #[doc(hidden)] pub fn set_position(&self, id: InstrumentId, pos: i64) {
