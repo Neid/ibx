@@ -493,9 +493,15 @@ fn wrap_xyz_fix(xyz_payload: &[u8]) -> Vec<u8> {
 /// Maximum size for a farm auth message (prevents unbounded allocation).
 const MAX_FARM_MSG_SIZE: usize = 65536;
 
-/// Read one framed message from a farm stream.
-fn recv_8eq1(stream: &mut TcpStream) -> io::Result<Vec<u8>> {
-    let mut buf = Vec::with_capacity(4096);
+/// Read one framed `8=1` message from a farm stream.
+///
+/// `carry` holds bytes across calls: a read can return more than one message's
+/// worth of data, and a high-latency regional gateway can coalesce the last
+/// auth response and the farm logon ACK that follows it into a single read.
+/// This returns exactly the framed message and leaves any surplus bytes in
+/// `carry` so the caller can hand them to the next reader. Discarding that tail
+/// dropped the logon ACK and stalled the exchange (ibx#237).
+fn recv_8eq1(stream: &mut TcpStream, carry: &mut Vec<u8>) -> io::Result<Vec<u8>> {
     let mut tmp = [0u8; 4096];
     // Tolerate transient WouldBlock/TimedOut (os error 35 on macOS) from the
     // short poll timeout until an overall deadline; a slow segment from a
@@ -503,6 +509,12 @@ fn recv_8eq1(stream: &mut TcpStream) -> io::Result<Vec<u8>> {
     let deadline = std::time::Instant::now()
         + std::time::Duration::from_secs_f64(TIMEOUT_FARM_LOGON);
     loop {
+        // A prior call may already have buffered a full message.
+        if let Some(total) = try_frame_8eq1(carry)? {
+            let msg = carry[..total].to_vec();
+            carry.drain(..total);
+            return Ok(msg);
+        }
         let n = match stream.read(&mut tmp) {
             Ok(n) => n,
             Err(e) if e.kind() == io::ErrorKind::WouldBlock
@@ -524,32 +536,42 @@ fn recv_8eq1(stream: &mut TcpStream) -> io::Result<Vec<u8>> {
                 "farm connection closed during auth",
             ));
         }
-        buf.extend_from_slice(&tmp[..n]);
-        // Look for complete 8=1 message: starts with "8=1\x01" and has a body
-        if buf.starts_with(b"8=1\x01") {
-            // Parse body length from 9=NNNN
-            if let Some(nine_pos) = buf.windows(2).position(|w| w == b"9=") {
-                let val_start = nine_pos + 2;
-                if let Some(soh_pos) = buf[val_start..].iter().position(|&b| b == 0x01) {
-                    let body_len: usize = std::str::from_utf8(&buf[val_start..val_start + soh_pos])
-                        .ok()
-                        .and_then(|s| s.parse().ok())
-                        .unwrap_or(0);
-                    if body_len > MAX_FARM_MSG_SIZE {
-                        return Err(io::Error::new(
-                            io::ErrorKind::InvalidData,
-                            format!("farm message body too large: {} bytes", body_len),
-                        ));
-                    }
-                    let header_end = val_start + soh_pos + 1;
-                    let total = header_end + body_len;
-                    if buf.len() >= total {
-                        return Ok(buf[..total].to_vec());
-                    }
-                }
-            }
-        }
+        carry.extend_from_slice(&tmp[..n]);
     }
+}
+
+/// Locate one complete `8=1`-framed message at the front of `buf`.
+///
+/// Returns the message's total byte length when a full message is present,
+/// `None` when more bytes are needed, or an error when the advertised body
+/// length is implausibly large.
+fn try_frame_8eq1(buf: &[u8]) -> io::Result<Option<usize>> {
+    // Needs "8=1\x01" and a body length "9=NNNN\x01".
+    if !buf.starts_with(b"8=1\x01") {
+        return Ok(None);
+    }
+    let Some(nine_pos) = buf.windows(2).position(|w| w == b"9=") else {
+        return Ok(None);
+    };
+    let val_start = nine_pos + 2;
+    let Some(soh_off) = buf[val_start..].iter().position(|&b| b == 0x01) else {
+        return Ok(None);
+    };
+    let body_len: usize = std::str::from_utf8(&buf[val_start..val_start + soh_off])
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
+    if body_len > MAX_FARM_MSG_SIZE {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("farm message body too large: {} bytes", body_len),
+        ));
+    }
+    let total = val_start + soh_off + 1 + body_len;
+    if buf.len() < total {
+        return Ok(None);
+    }
+    Ok(Some(total))
 }
 
 /// Extract binary payload from a framed message.
@@ -827,7 +849,11 @@ pub enum SoftTokenOutcome {
     Unknown,
 }
 
-pub fn do_soft_token(stream: &mut TcpStream, session_token: &BigUint) -> io::Result<SoftTokenOutcome> {
+pub fn do_soft_token(
+    stream: &mut TcpStream,
+    session_token: &BigUint,
+    carry: &mut Vec<u8>,
+) -> io::Result<SoftTokenOutcome> {
     use sha1::{Digest, Sha1};
 
     // State 1: Send empty init (FIX-framed for farm)
@@ -835,7 +861,7 @@ pub fn do_soft_token(stream: &mut TcpStream, session_token: &BigUint) -> io::Res
     stream.write_all(&wrap_xyz_fix(&msg1))?;
 
     // State 2: Receive challenge (FIX-framed)
-    let recv2 = recv_8eq1(stream)?;
+    let recv2 = recv_8eq1(stream, carry)?;
     let xyz2 = extract_xyz(&recv2);
     let (_, _, state2, fields2) = xyz::xyz_parse_response(xyz2)
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "SOFT_TOKEN: invalid XYZ state 2"))?;
@@ -878,7 +904,7 @@ pub fn do_soft_token(stream: &mut TcpStream, session_token: &BigUint) -> io::Res
     stream.write_all(&wrap_xyz_fix(&msg3))?;
 
     // State 4: Receive result (FIX-framed)
-    let recv4 = recv_8eq1(stream)?;
+    let recv4 = recv_8eq1(stream, carry)?;
     let xyz4 = extract_xyz(&recv4);
     let (_, _, _, fields4) = xyz::xyz_parse_response(xyz4)
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "SOFT_TOKEN: invalid XYZ state 4"))?;
@@ -906,7 +932,12 @@ pub fn do_soft_token(stream: &mut TcpStream, session_token: &BigUint) -> io::Res
 /// SRP-6 authentication for farm connections using FIX framing (8=1).
 /// Called as fallback when `do_soft_token` returns `SoftTokenOutcome::Unknown`.
 /// Same SRP math as `do_srp`, different wire framing.
-pub fn do_srp_farm(stream: &mut TcpStream, username: &str, password: &str) -> io::Result<()> {
+pub fn do_srp_farm(
+    stream: &mut TcpStream,
+    username: &str,
+    password: &str,
+    carry: &mut Vec<u8>,
+) -> io::Result<()> {
     let n = srp::srp_n();
     let g = BigUint::from(srp::SRP_G);
 
@@ -915,7 +946,7 @@ pub fn do_srp_farm(stream: &mut TcpStream, username: &str, password: &str) -> io
     stream.write_all(&wrap_xyz_fix(&msg1))?;
 
     // State 2: Receive AUTH_PARAMS (FIX-framed)
-    let recv2 = recv_8eq1(stream)?;
+    let recv2 = recv_8eq1(stream, carry)?;
     let xyz2 = extract_xyz(&recv2);
     let (_, _, state2, fields2) = xyz::xyz_parse_response(xyz2)
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "Farm SRP: invalid state 2"))?;
@@ -953,7 +984,7 @@ pub fn do_srp_farm(stream: &mut TcpStream, username: &str, password: &str) -> io
     stream.write_all(&wrap_xyz_fix(&msg3))?;
 
     // State 4: Receive salt + B (FIX-framed)
-    let recv4 = recv_8eq1(stream)?;
+    let recv4 = recv_8eq1(stream, carry)?;
     let xyz4 = extract_xyz(&recv4);
     let (_, _, state4, fields4) = xyz::xyz_parse_response(xyz4)
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "Farm SRP: invalid state 4"))?;
@@ -1004,7 +1035,7 @@ pub fn do_srp_farm(stream: &mut TcpStream, username: &str, password: &str) -> io
     stream.write_all(&wrap_xyz_fix(&msg5))?;
 
     // State 6: Receive AUTH_RESULT (FIX-framed)
-    let recv6 = recv_8eq1(stream)?;
+    let recv6 = recv_8eq1(stream, carry)?;
     let xyz6 = extract_xyz(&recv6);
     let (_, _, state6, fields6) = xyz::xyz_parse_response(xyz6)
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "Farm SRP: invalid state 6"))?;
@@ -1062,6 +1093,87 @@ mod tests {
         assert!(!parts[0].is_empty());
         // Millis part: always 4 hex chars (format {:04x}, range 0..999)
         assert_eq!(parts[1].len(), 4, "Millis part must be zero-padded to 4 hex chars");
+    }
+
+    // ── recv_8eq1 framing / coalesced tail (ibx#237) ────────────────────────
+
+    /// Build a framed `8=1` message with the given inner payload.
+    fn framed_8eq1(payload: &[u8]) -> Vec<u8> {
+        let body = {
+            let mut b = b"35=X\x01".to_vec();
+            b.extend_from_slice(payload);
+            b
+        };
+        let mut msg = format!("8=1\x019={:04}\x01", body.len()).into_bytes();
+        msg.extend_from_slice(&body);
+        msg
+    }
+
+    #[test]
+    fn try_frame_8eq1_partial_and_complete() {
+        let msg = framed_8eq1(b"hello");
+        // One byte short → not framed yet.
+        assert_eq!(try_frame_8eq1(&msg[..msg.len() - 1]).unwrap(), None);
+        // Exact message → framed at its own length.
+        assert_eq!(try_frame_8eq1(&msg).unwrap(), Some(msg.len()));
+        // Extra trailing bytes → framed length still stops at the message.
+        let mut with_tail = msg.clone();
+        with_tail.extend_from_slice(b"trailing-bytes");
+        assert_eq!(try_frame_8eq1(&with_tail).unwrap(), Some(msg.len()));
+    }
+
+    #[test]
+    fn try_frame_8eq1_rejects_oversized_body() {
+        let hdr = format!("8=1\x019={}\x01", MAX_FARM_MSG_SIZE + 1).into_bytes();
+        assert!(try_frame_8eq1(&hdr).is_err());
+    }
+
+    /// The exact ibx#237 regression: a gateway coalesces the final auth
+    /// response and the farm logon ACK that follows it into one TCP read.
+    /// `recv_8eq1` must return only the framed `8=1` message and preserve the
+    /// trailing ACK bytes in the carry buffer, not discard them.
+    #[test]
+    fn recv_8eq1_preserves_coalesced_tail() {
+        use std::io::Write;
+        use std::net::TcpListener;
+
+        let auth_msg = framed_8eq1(b"PASSED");
+        // Stand-in for the farm logon ACK the gateway pipelines right after.
+        let ack_tail = b"8=FIX.4.1\x019=0005\x0135=A\x0110=000\x01".to_vec();
+
+        let mut wire = auth_msg.clone();
+        wire.extend_from_slice(&ack_tail);
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut s, _) = listener.accept().unwrap();
+            // Single write: the two messages arrive coalesced in one read.
+            s.write_all(&wire).unwrap();
+            // Hold the socket open so the client is not tricked by a close.
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        });
+
+        let mut client = TcpStream::connect(addr).unwrap();
+        client
+            .set_read_timeout(Some(std::time::Duration::from_millis(FARM_LOGON_POLL_MS)))
+            .unwrap();
+
+        let mut carry = Vec::new();
+        let got = recv_8eq1(&mut client, &mut carry).unwrap();
+
+        assert_eq!(got, auth_msg, "framed message must stop at the 8=1 boundary");
+        assert_eq!(
+            carry, ack_tail,
+            "coalesced farm logon ACK bytes must survive in the carry buffer"
+        );
+
+        // A second call returns the buffered ACK without touching the socket
+        // (it is not a valid 8=1 frame, so this would block on read if the tail
+        // had been lost — proving the bytes are actually retained).
+        assert_eq!(try_frame_8eq1(&carry).unwrap(), None);
+
+        server.join().unwrap();
     }
 
     // ── get_hw_info ─────────────────────────────────────────────────────

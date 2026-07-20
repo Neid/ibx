@@ -313,12 +313,18 @@ pub fn farm_logon_exchange(
                 //             must drop this socket and retry from scratch with a
                 //             fresh soft-token (NOT SRP — captured behavior).
                 if decrypted.windows(5).any(|w| w == b"35=S\x01") {
-                    match do_soft_token(stream, session_token)? {
+                    // Pass the farm read buffer as the auth carry buffer: the
+                    // auth exchange reads on the same socket, and a high-latency
+                    // gateway can coalesce its final response with the farm logon
+                    // ACK. Threading `buf` through keeps those trailing ACK bytes
+                    // so the loop below re-frames them instead of stalling on a
+                    // read for bytes already consumed (ibx#237).
+                    match do_soft_token(stream, session_token, &mut buf)? {
                         session::SoftTokenOutcome::Passed => {}
                         session::SoftTokenOutcome::Unknown => {
                             log::warn!("Soft token rejected — falling back to SRP farm auth");
                             stream.set_read_timeout(Some(Duration::from_millis(FARM_LOGON_POLL_MS)))?;
-                            session::do_srp_farm(stream, username, password)?;
+                            session::do_srp_farm(stream, username, password, &mut buf)?;
                         }
                     }
                 }
