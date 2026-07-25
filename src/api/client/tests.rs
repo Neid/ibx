@@ -2638,3 +2638,71 @@ fn token_type_default_is_empty() {
     let (client, _rx, _shared) = test_client();
     assert_eq!(client.token_type(), "");
 }
+
+// ═══════════════════════════════════════════════════════════════════
+//  Connection loss (ibx#242)
+// ═══════════════════════════════════════════════════════════════════
+
+#[test]
+fn engine_connection_loss_fires_connection_closed_once() {
+    let (client, _rx, shared) = test_client();
+    let mut w = RecordingWrapper::default();
+
+    // Nothing to report while the engine is running.
+    client.process_msgs(&mut w);
+    assert!(client.is_connected());
+    assert!(w.events.is_empty(), "no callbacks before the connection is lost");
+
+    // Engine signals the end of the session.
+    shared.set_connection_lost();
+    client.process_msgs(&mut w);
+
+    assert_eq!(w.events, vec!["connection_closed"]);
+    assert!(!client.is_connected(), "is_connected must turn false");
+
+    // Polling again must not repeat it.
+    client.process_msgs(&mut w);
+    assert_eq!(w.events, vec!["connection_closed"]);
+}
+
+#[test]
+fn connection_loss_raises_no_error_callback() {
+    // The reference client fires connection_closed with no error code on a
+    // lost socket; the connectivity codes are server-pushed, never local.
+    let (client, _rx, shared) = test_client();
+    let mut w = RecordingWrapper::default();
+
+    shared.set_connection_lost();
+    client.process_msgs(&mut w);
+
+    assert!(
+        !w.events.iter().any(|e| e.starts_with("error:")),
+        "no error callback expected, got: {:?}", w.events,
+    );
+}
+
+#[test]
+fn explicit_disconnect_fires_connection_closed() {
+    let (client, _rx, _shared) = test_client();
+    let mut w = RecordingWrapper::default();
+
+    client.disconnect();
+    client.process_msgs(&mut w);
+
+    assert_eq!(w.events, vec!["connection_closed"]);
+    assert!(!client.is_connected());
+}
+
+#[test]
+fn queued_data_is_dispatched_before_connection_closed() {
+    // A caller that stops polling on connection_closed must still have seen
+    // whatever the engine had already queued.
+    let (client, _rx, shared) = test_client();
+    let mut w = RecordingWrapper::default();
+
+    shared.reference.push_contract_details_end(7);
+    shared.set_connection_lost();
+    client.process_msgs(&mut w);
+
+    assert_eq!(w.events, vec!["contract_details_end:7", "connection_closed"]);
+}

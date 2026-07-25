@@ -275,6 +275,7 @@ impl HotLoop {
 
     pub fn run_with_panic_recovery(mut self) {
         let event_tx = self.event_tx.clone();
+        let shared = self.shared.clone();
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             self.run();
         }));
@@ -285,6 +286,7 @@ impl HotLoop {
                 .or_else(|| payload.downcast_ref::<&'static str>().copied())
                 .unwrap_or("<non-string panic payload>");
             log::error!("Engine hot loop panicked, emitting Disconnected: {}", msg);
+            shared.set_connection_lost();
             emit(&event_tx, Event::Disconnected);
         }
     }
@@ -635,6 +637,7 @@ impl HotLoop {
                         self.ccp.send_news_unsubscribe(instrument, &mut self.ccp_conn, &mut self.hb);
                     }
                     self.running = false;
+                    self.shared.set_connection_lost();
                     emit(&self.event_tx, Event::Disconnected);
                 }
             }
@@ -644,6 +647,7 @@ impl HotLoop {
         if sender_dropped && self.running {
             log::warn!("Control channel disconnected — shutting down hot loop");
             self.running = false;
+            self.shared.set_connection_lost();
             emit(&self.event_tx, Event::Disconnected);
         }
     }
@@ -909,6 +913,7 @@ impl HotLoop {
                 // sooner than the gateway would (ibx#218).
                 if self.farm_reconnect_attempt == 3 {
                     log::error!("Farm auto-reconnect failed 3 times — notifying (retries continue)");
+                    self.shared.set_connection_lost();
                     emit(&self.event_tx, Event::Disconnected);
                 }
             }
@@ -965,6 +970,7 @@ impl HotLoop {
                 // See the farm path: notify once, keep retrying (ibx#218).
                 if self.ccp_reconnect_attempt == 3 {
                     log::error!("CCP auto-reconnect failed 3 times — notifying (retries continue)");
+                    self.shared.set_connection_lost();
                     emit(&self.event_tx, Event::Disconnected);
                 }
             }
@@ -1212,6 +1218,20 @@ pub(crate) fn emit(event_tx: &Option<Sender<Event>>, event: Event) {
     if let Some(tx) = event_tx {
         let _ = tx.try_send(event);
     }
+}
+
+/// Clone a payload for the event channel, but only when one is attached.
+///
+/// Use this wherever the payload is a deep copy (bar batches, contract
+/// definitions): the value goes to `SharedState` by move and the clone is paid
+/// for only when someone is listening. With no channel — the default for the
+/// Rust client — nothing is copied at all (ibx#242).
+///
+/// Clone first, push second, emit last, so the event never becomes visible
+/// before the same data is readable from `SharedState`.
+#[inline]
+pub(crate) fn clone_for_event<T: Clone>(event_tx: &Option<Sender<Event>>, value: &T) -> Option<T> {
+    event_tx.as_ref().map(|_| value.clone())
 }
 
 /// Backoff schedule for HMDS reconnect attempts (ibx#187, ib-agent#153).
@@ -1561,6 +1581,45 @@ mod tests {
         // Should emit Disconnected event.
         let events: Vec<Event> = event_rx.try_iter().collect();
         assert!(events.iter().any(|e| matches!(e, Event::Disconnected)));
+    }
+
+    #[test]
+    fn shutdown_sets_connection_lost_flag_without_event_channel() {
+        // ibx#242: the flag path must work with no event channel attached,
+        // which is the default for the Rust client.
+        let shared = Arc::new(SharedState::new());
+        let (tx, rx) = crossbeam_channel::bounded(1);
+        let mut engine = HotLoop::new(shared.clone(), None, None);
+        engine.set_control_rx(rx);
+        engine.running = true;
+        tx.send(ControlCommand::Shutdown).unwrap();
+        engine.poll_once();
+
+        assert!(shared.take_connection_lost(), "shutdown must signal connection lost");
+        assert!(!shared.take_connection_lost(), "flag must clear after being read");
+    }
+
+    #[test]
+    fn channel_disconnect_sets_connection_lost_flag() {
+        let shared = Arc::new(SharedState::new());
+        let (tx, rx) = crossbeam_channel::bounded(1);
+        let mut engine = HotLoop::new(shared.clone(), None, None);
+        engine.set_control_rx(rx);
+        engine.running = true;
+        drop(tx);
+        engine.poll_once();
+
+        assert!(shared.take_connection_lost());
+    }
+
+    #[test]
+    fn clone_for_event_skips_the_copy_when_no_channel() {
+        // ibx#242: with no listener the deep copy must not happen at all.
+        let payload = vec![1u8, 2, 3];
+        assert!(clone_for_event(&None, &payload).is_none());
+
+        let (tx, _rx) = crossbeam_channel::bounded::<Event>(1);
+        assert_eq!(clone_for_event(&Some(tx), &payload), Some(payload));
     }
 
     #[test]

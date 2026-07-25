@@ -45,12 +45,12 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 
-use crossbeam_channel::Sender;
+use crossbeam_channel::{Receiver, Sender};
 
 use crate::api::types::{
     Contract as ApiContract, Order as ApiOrder, TagValue as ApiTagValue,
 };
-use crate::bridge::SharedState;
+use crate::bridge::{Event, SharedState};
 use crate::client_core::ClientCore;
 use crate::gateway::{Gateway, GatewayConfig};
 use crate::types::*;
@@ -105,12 +105,24 @@ pub struct EClientConfig {
 /// The thread is **joined** on [`disconnect()`] and on [`Drop`].
 /// Dropping an `EClient` without calling `disconnect()` first is safe:
 /// the `Drop` impl sends `Shutdown` and joins the thread.
+///
+/// # Losing the connection
+///
+/// When the engine stops — connection lost, reconnect exhausted, or the hot
+/// loop panicked — the next [`process_msgs()`](EClient::process_msgs) call
+/// fires [`connection_closed`](crate::api::wrapper::Wrapper::connection_closed) once and
+/// [`is_connected()`](EClient::is_connected) turns false. No error callback is
+/// raised for this: the connectivity error codes are pushed by the server, not
+/// synthesized locally (ibx#242).
 pub struct EClient {
     pub(crate) shared: Arc<SharedState>,
     pub(crate) control_tx: Sender<ControlCommand>,
     pub(crate) thread: Mutex<Option<thread::JoinHandle<()>>>,
     pub account_id: String,
     pub(crate) connected: AtomicBool,
+    /// True once `connection_closed` has been delivered, so it fires at most
+    /// once per session.
+    pub(crate) close_notified: AtomicBool,
     pub(crate) next_order_id: AtomicU64,
     pub(crate) core: ClientCore,
     pub(crate) session_token_bytes: Vec<u8>,
@@ -130,6 +142,38 @@ impl Drop for EClient {
 impl EClient {
     /// Connect to IB and start the engine.
     pub fn connect(config: &EClientConfig) -> Result<Self, Box<dyn std::error::Error>> {
+        Self::connect_inner(config, None)
+    }
+
+    /// Connect to IB and start the engine with an [`Event`] channel attached.
+    ///
+    /// Returns the client plus a receiver carrying every [`Event`] the engine
+    /// produces. This is a second, optional delivery path that runs alongside
+    /// [`process_msgs()`](EClient::process_msgs) — it does not replace it, and
+    /// nothing is removed from the wrapper callbacks when it is in use.
+    ///
+    /// The channel is bounded by `capacity`; the engine never blocks on it, so
+    /// a consumer that falls behind loses events rather than slowing the hot
+    /// loop. Drain it from a thread that is not the one calling
+    /// `process_msgs()`, or keep `capacity` generous.
+    ///
+    /// Attaching a channel makes the engine build events it would otherwise
+    /// skip, which for bar batches and contract definitions means one deep copy
+    /// each. Use [`connect()`](EClient::connect) when you only need the wrapper
+    /// callbacks (ibx#242).
+    pub fn connect_with_events(
+        config: &EClientConfig,
+        capacity: usize,
+    ) -> Result<(Self, Receiver<Event>), Box<dyn std::error::Error>> {
+        let (event_tx, event_rx) = crossbeam_channel::bounded(capacity.max(1));
+        let client = Self::connect_inner(config, Some(event_tx))?;
+        Ok((client, event_rx))
+    }
+
+    fn connect_inner(
+        config: &EClientConfig,
+        event_tx: Option<Sender<Event>>,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
         let gw_config = GatewayConfig {
             username: config.username.clone(),
             password: zeroize::Zeroizing::new(config.password.clone()),
@@ -151,7 +195,7 @@ impl EClient {
         gw.populate_init_data(&shared);
 
         let (hot_loop, control_tx) = gw.into_hot_loop_with_farms(
-            shared.clone(), None, farm_conn, ccp_conn, hmds_conn, config.core_id,
+            shared.clone(), event_tx, farm_conn, ccp_conn, hmds_conn, config.core_id,
         );
 
         let handle = thread::Builder::new()
@@ -169,6 +213,7 @@ impl EClient {
             thread: Mutex::new(Some(handle)),
             account_id,
             connected: AtomicBool::new(true),
+            close_notified: AtomicBool::new(false),
             next_order_id: AtomicU64::new(start_id),
             core: ClientCore::new(),
             session_token_bytes,
@@ -194,6 +239,7 @@ impl EClient {
             thread: Mutex::new(Some(handle)),
             account_id,
             connected: AtomicBool::new(true),
+            close_notified: AtomicBool::new(false),
             next_order_id: AtomicU64::new(start_id),
             core: ClientCore::new(),
             session_token_bytes: Vec::new(),
@@ -234,6 +280,8 @@ impl EClient {
 
     // ── Connection ──
 
+    /// False after [`disconnect()`](EClient::disconnect), and after a
+    /// `process_msgs()` call that observed the engine stopping (ibx#242).
     pub fn is_connected(&self) -> bool {
         self.connected.load(Ordering::Relaxed)
     }

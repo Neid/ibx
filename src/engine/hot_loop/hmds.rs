@@ -9,7 +9,7 @@ use crate::protocol::tick_decoder;
 use crate::types::{InstrumentId, TbtType, PRICE_SCALE, MAX_INSTRUMENTS};
 use crossbeam_channel::Sender;
 
-use super::{HeartbeatState, emit, find_body_after_tag, extract_raw_tag};
+use super::{HeartbeatState, emit, clone_for_event, find_body_after_tag, extract_raw_tag};
 
 /// Idle bound for an in-flight historical query: if no bar segment, error,
 /// or completion arrives for this long, the request is failed with error 162
@@ -210,8 +210,13 @@ impl HmdsState {
                                 "HMDS W matched: req_id={} query_id={:?} eoq={} bars={}",
                                 req_id, resp.query_id, is_complete, resp.bars.len()
                             );
-                            shared.reference.push_historical_data(req_id, resp.clone());
-                            emit(event_tx, Event::HistoricalData { req_id, data: resp });
+                            // Clone only when someone is listening on the event
+                            // channel — a bar batch is a deep copy (ibx#242).
+                            let for_event = clone_for_event(event_tx, &resp);
+                            shared.reference.push_historical_data(req_id, resp);
+                            if let Some(data) = for_event {
+                                emit(event_tx, Event::HistoricalData { req_id, data });
+                            }
                             if is_complete && !self.keep_up_to_date_reqs.contains(&req_id) {
                                 self.pending_historical.remove(pos);
                             }
@@ -228,8 +233,11 @@ impl HmdsState {
                     else if let Some(resp) = crate::control::historical::parse_head_timestamp_response(xml_tag) {
                         if let Some(pos) = self.pending_head_ts.iter().position(|_| true) {
                             let (_, req_id) = self.pending_head_ts.remove(pos);
-                            shared.reference.push_head_timestamp(req_id, resp.clone());
-                            emit(event_tx, Event::HeadTimestamp { req_id, data: resp });
+                            let for_event = clone_for_event(event_tx, &resp);
+                            shared.reference.push_head_timestamp(req_id, resp);
+                            if let Some(data) = for_event {
+                                emit(event_tx, Event::HeadTimestamp { req_id, data });
+                            }
                         }
                     }
                     else if let Some(entries) = crate::control::histogram::parse_histogram_response(xml_tag) {

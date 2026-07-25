@@ -767,6 +767,12 @@ pub struct SharedState {
     /// (0 = never measured). Sampled from the test-request/echo cycle —
     /// see `HotLoop` liveness and `ControlCommand::Ping` (ibx#158).
     ccp_rtt_ns: AtomicU64,
+    /// Set by the hot loop when the session is over (connection lost, engine
+    /// stopped, or reconnect exhausted). Read-and-clear by the client so the
+    /// `connection_closed` callback can fire without an event channel
+    /// (ibx#242). The `Event::Disconnected` channel path is optional; this
+    /// flag is always populated.
+    connection_lost: AtomicBool,
     /// Notifier for waking consumers (e.g. Python event loop) when data arrives.
     notify_mutex: Mutex<bool>,
     notify_condvar: Condvar,
@@ -780,9 +786,25 @@ impl SharedState {
             reference: ReferenceState::new(),
             portfolio: PortfolioState::new(),
             ccp_rtt_ns: AtomicU64::new(0),
+            connection_lost: AtomicBool::new(false),
             notify_mutex: Mutex::new(false),
             notify_condvar: Condvar::new(),
         }
+    }
+
+    /// Signal that the session is over. Hot-loop side (ibx#242).
+    #[doc(hidden)]
+    #[inline]
+    pub fn set_connection_lost(&self) {
+        self.connection_lost.store(true, Ordering::Release);
+        self.notify();
+    }
+
+    /// Read and clear the connection-lost flag. Returns `true` at most once per
+    /// signal, so the caller can fire `connection_closed` exactly once.
+    #[inline]
+    pub fn take_connection_lost(&self) -> bool {
+        self.connection_lost.swap(false, Ordering::AcqRel)
     }
 
     /// Record an auth-connection RTT sample (ibx#158). Hot-loop side.

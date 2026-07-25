@@ -14,7 +14,7 @@ use crate::types::{
 };
 use crossbeam_channel::Sender;
 
-use super::{HeartbeatState, emit, parse_price_tag, decode_tif};
+use super::{HeartbeatState, emit, clone_for_event, parse_price_tag, decode_tif};
 
 /// Bound for an in-flight contract-details request (secdef reply or
 /// per-exchange fan-out). Refreshed on fan-out activity; on expiry the
@@ -483,8 +483,11 @@ impl CcpState {
                             });
                             self.try_release_scanner_enrichments(def.con_id as i64, shared);
                         }
-                        shared.reference.push_contract_details(api_req_id, def.clone());
-                        emit(event_tx, Event::ContractDetails { req_id: api_req_id, details: def });
+                        let for_event = clone_for_event(event_tx, &def);
+                        shared.reference.push_contract_details(api_req_id, def);
+                        if let Some(details) = for_event {
+                            emit(event_tx, Event::ContractDetails { req_id: api_req_id, details });
+                        }
                         self.pending_fanout[idx].received += 1;
                         self.pending_fanout[idx].deadline = Instant::now() + SECDEF_TIMEOUT;
                         if self.pending_fanout[idx].received >= self.pending_fanout[idx].fanout_req_ids.len() {
@@ -562,8 +565,11 @@ impl CcpState {
                         if join_key.is_empty() {
                             // No join key — emit immediately without schedule data.
                             if !is_internal {
-                                shared.reference.push_contract_details(req_id, def.clone());
-                                emit(event_tx, Event::ContractDetails { req_id, details: def });
+                                let for_event = clone_for_event(event_tx, &def);
+                                shared.reference.push_contract_details(req_id, def);
+                                if let Some(details) = for_event {
+                                    emit(event_tx, Event::ContractDetails { req_id, details });
+                                }
                                 if is_last {
                                     shared.reference.push_contract_details_end(req_id);
                                     emit(event_tx, Event::ContractDetailsEnd(req_id));
@@ -1313,11 +1319,11 @@ impl CcpState {
             }
         });
         for p in emit_now {
-            shared.reference.push_contract_details(p.api_req_id, p.def.clone());
-            emit(event_tx, Event::ContractDetails {
-                req_id: p.api_req_id,
-                details: p.def,
-            });
+            let for_event = clone_for_event(event_tx, &p.def);
+            shared.reference.push_contract_details(p.api_req_id, p.def);
+            if let Some(details) = for_event {
+                emit(event_tx, Event::ContractDetails { req_id: p.api_req_id, details });
+            }
             if p.is_last {
                 shared.reference.push_contract_details_end(p.api_req_id);
                 emit(event_tx, Event::ContractDetailsEnd(p.api_req_id));
@@ -1355,11 +1361,11 @@ impl CcpState {
                 crate::control::contracts::format_sessions_string(&sched.liquid_hours)
             );
         }
-        shared.reference.push_contract_details(pair.api_req_id, pair.def.clone());
-        emit(event_tx, Event::ContractDetails {
-            req_id: pair.api_req_id,
-            details: pair.def,
-        });
+        let for_event = clone_for_event(event_tx, &pair.def);
+        shared.reference.push_contract_details(pair.api_req_id, pair.def);
+        if let Some(details) = for_event {
+            emit(event_tx, Event::ContractDetails { req_id: pair.api_req_id, details });
+        }
         if pair.is_last {
             shared.reference.push_contract_details_end(pair.api_req_id);
             emit(event_tx, Event::ContractDetailsEnd(pair.api_req_id));

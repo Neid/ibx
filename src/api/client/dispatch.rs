@@ -19,6 +19,28 @@ impl EClient {
         self.dispatch_orders(wrapper);
         self.dispatch_quotes(wrapper);
         self.dispatch_data(wrapper);
+        self.dispatch_connection(wrapper);
+    }
+
+    // ── Connection Dispatch ──
+
+    /// Surface the end of the session: `connection_closed`, once, with no error
+    /// callback. Covers both an engine-side loss and an explicit
+    /// [`disconnect()`](EClient::disconnect) (ibx#242).
+    ///
+    /// Queued data is dispatched before this fires, so a caller that stops
+    /// polling on `connection_closed` still sees everything the engine had
+    /// already produced.
+    fn dispatch_connection(&self, wrapper: &mut impl Wrapper) {
+        use std::sync::atomic::Ordering;
+        if self.shared.take_connection_lost() {
+            self.connected.store(false, Ordering::Release);
+        }
+        if !self.connected.load(Ordering::Acquire)
+            && !self.close_notified.swap(true, Ordering::AcqRel)
+        {
+            wrapper.connection_closed();
+        }
     }
 
     // ── Order / Fill Dispatch ──
