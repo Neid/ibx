@@ -3919,6 +3919,23 @@ impl ClientCore {
         }
     }
 
+    /// Count a tracked order as finished before its last report is given to
+    /// the caller (ibx#544): a modify made from the callback of that report,
+    /// or by another thread woken by it, is then answered 104 as the
+    /// reference does, not checked against an order that is no longer
+    /// working. The tracking itself is updated after the callbacks, which
+    /// still read it.
+    pub fn finish_before_report(&self, order_id: OrderId, status: &str, remaining: f64) {
+        let last = match status {
+            "Cancelled" => true,
+            "Filled" => remaining == 0.0,
+            _ => false,
+        };
+        if last && self.open_orders.lock().unwrap().contains_key(&order_id) {
+            self.finished_orders.lock().unwrap().insert(order_id);
+        }
+    }
+
     /// Update a tracked order after a fill. Removes the order if fully filled.
     pub fn update_order_fill(&self, order_id: OrderId, status: &str, filled: f64, remaining: f64) {
         let mut orders = self.open_orders.lock().unwrap();
@@ -7293,6 +7310,78 @@ mod tests {
             panic!("a REL with a price cap takes the extended path");
         };
         assert!(matches!(kind, OrderKind::Rel { price, offset } if price == 250 * crate::types::PRICE_SCALE && offset == crate::types::PRICE_SCALE / 100), "{kind:?}");
+    }
+
+    // ibx#544: a modify made from the callback of the last report (or by a
+    // thread it wakes) found the order still tracked: a change of order type
+    // got 329. The reference answers 104 (paper run of 09/10/2026, regular
+    // hours). The order counts as finished before the callbacks, and stays
+    // tracked for them.
+    #[test]
+    fn an_order_is_finished_before_its_last_report_is_given() {
+        let core = ClientCore::new();
+        let shared = SharedState::new();
+        let mut stp = lmt(0.0);
+        stp.order_type = "STP".into();
+        for (id, status, remaining) in [(7, "Filled", 0.0), (8, "Cancelled", 100.0)] {
+            core.track_order(id, ApiContract::default(), lmt(100.0), 0);
+            core.update_order_status(id, "Submitted", 0.0, 100.0);
+            core.finish_before_report(id, "Submitted", 100.0);
+            core.finish_before_report(id, "Filled", 40.0);
+            assert!(core.refusal_for_order_id(id, &stp, &shared).is_none(), "working or partly filled: a modify");
+            core.finish_before_report(id, status, remaining);
+            assert_eq!(core.tracked_order_type(id).as_deref(), Some("LMT"), "still tracked for its callbacks");
+            assert_eq!(core.refusal_for_order_id(id, &stp, &shared),
+                Some((104, "Cannot modify a filled order.".to_string())));
+        }
+        // An order this client does not track is not made finished.
+        core.finish_before_report(9, "Filled", 0.0);
+        assert!(!core.finished_orders.lock().unwrap().contains(&9));
+    }
+
+    // ibx#548 (paper 11/10/2026): an order refused by a check that follows
+    // the look at its id has used the id: placed again, 103, where it got
+    // the first refusal again (439 for an unknown algorithm). An order
+    // refused by a check made before (321, 391) has not: placed again, it
+    // is a new order.
+    #[test]
+    fn an_order_refused_after_the_id_check_has_used_its_id() {
+        let core = ClientCore::new();
+        let shared = SharedState::new();
+        shared.reference.cache_time_zone_id(265598, "US/Eastern");
+        let checks = |id: OrderId, order: &ApiOrder| core.order_read_checks(id, 265598, "SMART", order, &shared, "DU1").1.map(|r| r.0);
+        // A zone that is not the contract's: 343, after the id check.
+        let machine = crate::gateway::machine_time_zone();
+        let other = if machine == "Asia/Tokyo" { "Europe/Paris" } else { "Asia/Tokyo" };
+        let late = ApiOrder { tif: "GTD".into(), good_till_date: format!("20261230 16:00:00 {other}"), ..lmt(100.0) };
+        assert_eq!(checks(7, &late), Some(343));
+        assert_eq!(checks(7, &late), Some(103), "the id is used");
+        assert_eq!(checks(7, &lmt(100.0)), Some(103));
+        assert_eq!(checks(8, &lmt(100.0)), None, "the next id is free");
+        // What cannot be read, and a rule of the order: before the id check.
+        let unread = ApiOrder { tif: "GTD".into(), good_till_date: "not a date".into(), ..lmt(100.0) };
+        assert_eq!(checks(9, &unread), Some(391));
+        assert_eq!(checks(9, &unread), Some(391));
+        let side = ApiOrder { action: "FOO".into(), ..lmt(100.0) };
+        assert_eq!(checks(9, &side), Some(321));
+        let customer = ApiOrder { customer_account: "X123".into(), ..lmt(100.0) };
+        assert_eq!(checks(9, &customer), Some(145));
+        assert_eq!(checks(9, &lmt(100.0)), None, "the id was not used");
+        // A price that is not a number: after the id check.
+        assert_eq!(checks(10, &lmt(f64::NAN)), Some(110));
+        assert_eq!(checks(10, &lmt(100.0)), Some(103));
+
+        // ibx#594: a goodAfterTime that cannot be read is left out; a zone
+        // that is not the contract's is refused with 337.
+        let after = |s: &str| ApiOrder { good_after_time: s.into(), ..lmt(100.0) };
+        for unread in ["not a date", "20261230 99:99:99", "20261230", "2026-12-30 10:00:00", "20261230 10:00:00 Nowhere/Zone"] {
+            assert_eq!(checks(11, &after(unread)), None, "{unread}");
+            assert_eq!(after(unread).attrs().good_after, 0, "{unread}: no start time is sent");
+        }
+        assert_eq!(checks(11, &after(&format!("20261230 10:00:00 {other}"))), Some(337));
+        assert_eq!(checks(12, &after("20261230 10:00:00 US/Eastern")), None);
+        assert_ne!(after("20261230 10:00:00 US/Eastern").attrs().good_after, 0);
+        assert_eq!(checks(13, &after("10:00:00")), Some(337), "a time alone: not done by ibx");
     }
 
     // ibx#463: a filled order was forgotten, so place_order with its id sent

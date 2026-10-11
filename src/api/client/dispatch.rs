@@ -111,6 +111,9 @@ impl EClient {
             // A combo's report shows the combo or the leg (ibx#470).
             let mut c = c;
             ClientCore::apply_combo_exec(&fill_exec, &mut c, &mut exec);
+            // Finished before its callbacks: a modify made from them gets
+            // 104 (ibx#544).
+            self.core.finish_before_report(fill.order_id, status, remaining_f);
             // The execution first, then openOrder and orderStatus, as the
             // reference (captured 30/09/2026 on a stock and a combo fill).
             // A live execution has no request: reqId -1 (ibx#474).
@@ -282,6 +285,9 @@ impl EClient {
             avg_fill_price: update.avg_fill_price as f64 / PRICE_SCALE_F,
             perm_id: update.perm_id, parent_id: update.parent_id, last_fill_price, client_id, why_held,
         };
+        // Finished before its callbacks: a modify made from them gets 104
+        // (ibx#544).
+        self.core.finish_before_report(update.order_id, status, remaining_f);
         self.repeat_order_report(wrapper, update.order_id, &report);
         self.core.remember_report(update.order_id, report);
         self.core.update_order_status(update.order_id, status, filled_f, remaining_f);

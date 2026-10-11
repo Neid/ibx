@@ -147,6 +147,9 @@ impl EClient {
             avg_fill_price: update.avg_fill_price as f64 / PRICE_SCALE_F,
             perm_id: update.perm_id, parent_id: update.parent_id, last_fill_price, client_id, why_held,
         };
+        // Finished before its callbacks: a modify made from them, or by a
+        // thread they wake, gets 104 (ibx#544).
+        self.core.finish_before_report(update.order_id, status, remaining);
         self.repeat_order_report(py, update.order_id, &report)?;
         self.core.remember_report(update.order_id, report);
         // Track open orders
@@ -296,6 +299,9 @@ impl EClient {
             // report that came first is sent after exec_details.
             let early_report = self.core.push_execution(-1, api_contract, api_exec, fill_exec.time_secs);
 
+            // Finished before its callbacks: a modify made from them, or by a
+            // thread they wake, gets 104 (ibx#544).
+            self.core.finish_before_report(fill.order_id, status, remaining);
             let exec_py = Py::new(py, exec_obj)?.into_any();
             // A live execution has no request: reqId -1 (ibx#474).
             call_wrapper!(self.wrapper, py, "exec_details", (-1i64, &c_py, &exec_py));
