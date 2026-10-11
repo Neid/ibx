@@ -1457,6 +1457,20 @@ impl Order {
         };
         Ok(Py::new(py, tier)?.into_any().into())
     }
+    /// The official library's `order.softDollarTier = SoftDollarTier(...)`
+    /// (ibx#506): any object with its three values, read by their official
+    /// names; a missing one reads as empty.
+    #[setter(softDollarTier)]
+    fn set_soft_dollar_tier(&mut self, v: &Bound<'_, PyAny>) -> PyResult<()> {
+        let text = |official: &str, plain: &str| -> String {
+            v.getattr(official).or_else(|_| v.getattr(plain)).ok()
+                .and_then(|a| a.extract::<String>().ok()).unwrap_or_default()
+        };
+        self.soft_dollar_tier_name = text("name", "name");
+        self.soft_dollar_tier_val = text("val", "val");
+        self.soft_dollar_tier_display_name = text("displayName", "display_name");
+        Ok(())
+    }
     #[getter(startingPrice)]
     fn get_starting_price_alias(&self) -> f64 { self.starting_price }
     #[setter(startingPrice)]
