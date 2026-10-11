@@ -186,6 +186,12 @@ impl EClient {
     /// loop. Drain it from a thread that is not the one calling
     /// `process_msgs()`, or keep `capacity` generous.
     ///
+    /// The errors the client answers itself (a failed snapshot, smart
+    /// components that waited, positions not ready) are made by
+    /// `process_msgs()` and reach the channel then; a refused market data
+    /// subscription also comes from the engine at once, by instrument
+    /// (`Event::MarketDataError`, ibx#575).
+    ///
     /// Attaching a channel makes the engine build events it would otherwise
     /// skip, which means one copy of each answer (bar batches, contract
     /// definitions, option chains, scanner rows and the others, ibx#498). Use [`connect()`](EClient::connect) when you only need the wrapper

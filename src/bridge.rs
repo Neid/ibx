@@ -431,9 +431,17 @@ pub enum Event {
     /// An error or a notice, as the wrapper's `error` gets it (ibx#498):
     /// `req_id` is the request id, the order id (as in `OrderUpdate`) for
     /// an order, and -1 for a link status message. The errors the client
-    /// answers itself (a refused market data request, a lookup answered
-    /// from kept data) are given when the client gives them to its wrapper.
+    /// answers itself (a refused market data request, a failed snapshot,
+    /// a lookup answered from kept data) are given when the client gives
+    /// them to its wrapper, so they need its `process_msgs`; a refused
+    /// market data subscription also comes at once as `MarketDataError`.
     Error { req_id: i64, code: i64, message: String },
+    /// A market data subscription the server refused or moved to delayed
+    /// data, by instrument as in `Tick`, with the code and text the client
+    /// reports for it (ibx#575). Given by the engine: it does not need the
+    /// client to process its messages. The client gives the same refusal
+    /// as `Error` with the request id when it does.
+    MarketDataError { instrument: InstrumentId, code: i64, message: String },
     /// Option chain parameters (ibx#498): every row of a request at once;
     /// the request has no other answer, this is also its end.
     OptionChains { req_id: ReqId, chains: Vec<crate::control::optparams::OptionChain> },
@@ -762,7 +770,15 @@ impl MarketDataState {
     }
 
     #[doc(hidden)] pub fn push_md_reject(&self, reject: MdReject) {
+        // The refusal as the engine knows it, by instrument: a program
+        // that reads only the event channel gets it without the client
+        // (ibx#575). Built only when a channel is attached.
+        let event = self.error_tap.copy(&reject).and_then(|reject| {
+            let (code, message, _) = crate::client_core::ClientCore::md_reject_error(&reject);
+            (code != 0).then(|| Event::MarketDataError { instrument: reject.instrument(), code, message })
+        });
         self.md_rejects.lock().unwrap().push(reject);
+        self.error_tap.emit(event);
     }
 
     pub fn drain_md_rejects(&self) -> Vec<MdReject> {
@@ -2758,6 +2774,38 @@ mod tests {
         assert_eq!(events, [
             "open 11 SPY", "completed 11 Cancelled", "update 1 1.5", "ticks 2 TRADES true true", "scanner 3", "computation 4 2",
         ]);
+    }
+
+    /// A refused market data subscription goes to the channel by
+    /// instrument when the engine writes it, with the code and text the
+    /// client reports; the changes of a frozen contract are not errors
+    /// and give nothing (ibx#575).
+    #[test]
+    fn a_refused_market_data_subscription_goes_to_the_event_channel() {
+        let shared = SharedState::new();
+        let not_subscribed = |instrument| MdReject::NotSubscribed {
+            instrument, delayed_available: false, needs_api_subscription: false, description: String::new(), kept_params: None,
+        };
+        shared.market.push_md_reject(not_subscribed(1));
+        let (tx, rx) = crossbeam_channel::unbounded();
+        shared.attach_event_channel(&tx);
+
+        shared.market.push_md_reject(not_subscribed(2));
+        shared.market.push_md_reject(MdReject::Delayed { instrument: 3 });
+        shared.market.push_md_reject(MdReject::NoSecurityDefinition { instrument: 4 });
+        shared.market.push_md_reject(MdReject::Frozen { instrument: 5, frozen: 6 });
+        shared.market.push_md_reject(MdReject::Live { instrument: 6, live: 5 });
+
+        let events: Vec<(InstrumentId, i64)> = rx.try_iter().map(|e| match e {
+            Event::MarketDataError { instrument, code, message } => {
+                assert!(!message.is_empty());
+                (instrument, code)
+            }
+            other => panic!("not expected: {other:?}"),
+        }).collect();
+        assert_eq!(events, [(2, 354), (3, 10167), (4, 200)]);
+        // The queue keeps every entry for the client.
+        assert_eq!(shared.market.drain_md_rejects().len(), 6);
     }
 
     /// An error the client answers itself has no queue: it goes to the
