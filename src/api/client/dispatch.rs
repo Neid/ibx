@@ -190,21 +190,27 @@ impl EClient {
 
         // Order updates → open_order + order_status for every report of a
         // known order; a cancel gives order_status only (ibx#473).
-        let mut reported = std::collections::HashMap::new();
-        for update in self.shared.orders.drain_order_updates() {
-            self.report_order_update(wrapper, &update);
-            reported.insert(update.order_id, update);
-        }
-
+        //
         // A server reject (201) and a cancel (202) after the status of
         // their report, as the reference writes them; a reject then gives
         // the order and its status once more (ibx#486; every four-leg
         // recording of 26/09 to 02/10/2026). The 201 of an order the
         // redirect precaution discarded (Cancelled) does not.
-        for (order_id, code, msg) in self.shared.orders.drain_order_notices() {
-            wrapper.error(self.shared.orders.api_order_id(order_id), code, &msg, "");
-            if let Some(update) = reported.get(&order_id).filter(|u| code == 201 && u.status != OrderStatus::Cancelled) {
-                self.report_order_update(wrapper, update);
+        //
+        // Statuses and notices in the order they were written (ibx#532).
+        let mut reported = std::collections::HashMap::new();
+        for report in self.shared.orders.drain_order_reports() {
+            match report {
+                crate::bridge::OrderReport::Update(update) => {
+                    self.report_order_update(wrapper, &update);
+                    reported.insert(update.order_id, update);
+                }
+                crate::bridge::OrderReport::Notice(order_id, code, msg) => {
+                    wrapper.error(self.shared.orders.api_order_id(order_id), code, &msg, "");
+                    if let Some(update) = reported.get(&order_id).filter(|u| code == 201 && u.status != OrderStatus::Cancelled) {
+                        self.report_order_update(wrapper, update);
+                    }
+                }
             }
         }
 

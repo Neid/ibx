@@ -964,6 +964,15 @@ impl MarketDataState {
     }
 }
 
+/// An order status, or a notice given after a status (201, 202, 161), as
+/// [`drain_order_reports`](OrderState::drain_order_reports) gives them.
+#[derive(Debug, Clone)]
+pub enum OrderReport {
+    Update(OrderUpdate),
+    /// Order id, code and text.
+    Notice(i64, i64, String),
+}
+
 /// Fills, order status updates, cancel rejects, what-if responses, and order cache.
 pub struct OrderState {
     /// Fills with what the report says about each execution.
@@ -973,14 +982,19 @@ pub struct OrderState {
     /// Executions of orders the engine does not track, for the execution
     /// store only: no live fill callback without a known order (ibx#314).
     untracked_executions: Mutex<Vec<(api::Contract, api::Execution, FillExec)>>,
-    order_updates: Mutex<Vec<OrderUpdate>>,
+    /// With the place of each among the statuses and the notices
+    /// (`order_report_seq`).
+    order_updates: Mutex<Vec<(u64, OrderUpdate)>>,
+    /// Counts the statuses and the notices as they are written, so that
+    /// the client gives them in that order (ibx#532).
+    order_report_seq: AtomicU64,
     cancel_rejects: Mutex<Vec<CancelReject>>,
     /// Errors raised before sending: (request or order id as the API gives
     /// it, -1 for none; code; message) (ibx#349, ibx#285).
     order_errors: Mutex<Vec<(i64, i64, String)>>,
     /// Notices of a server report given after the status of that report:
     /// the reject 201 and the cancel 202 (ibx#486).
-    order_notices: Mutex<Vec<(i64, i64, String)>>,
+    order_notices: Mutex<Vec<(u64, (i64, i64, String))>>,
     error_tap: ErrorTap,
     what_if_responses: Mutex<Vec<WhatIfResponse>>,
     completed_orders: Mutex<Vec<CompletedOrder>>,
@@ -1019,6 +1033,7 @@ impl OrderState {
             commission_reports: Mutex::new(Vec::with_capacity(64)),
             untracked_executions: Mutex::new(Vec::new()),
             order_updates: Mutex::new(Vec::with_capacity(64)),
+            order_report_seq: AtomicU64::new(0),
             cancel_rejects: Mutex::new(Vec::with_capacity(16)),
             order_errors: Mutex::new(Vec::new()),
             order_notices: Mutex::new(Vec::new()),
@@ -1137,7 +1152,38 @@ impl OrderState {
     }
 
     pub fn drain_order_updates(&self) -> Vec<OrderUpdate> {
-        self.order_updates.lock().unwrap().drain(..).collect()
+        self.order_updates.lock().unwrap().drain(..).map(|(_, update)| update).collect()
+    }
+
+    /// The order statuses and the notices that follow a status (201, 202,
+    /// 161), in the order they were written (ibx#532). The two were read
+    /// one queue after the other: a notice written while the statuses were
+    /// being given came out before the status written just before it (a
+    /// 202 before its Cancelled, paper 11/10/2026), and the statuses of
+    /// several orders came before all their notices.
+    ///
+    /// The notices are taken first: every status written before one of
+    /// them is then in its queue.
+    pub fn drain_order_reports(&self) -> Vec<OrderReport> {
+        let notices: Vec<_> = self.order_notices.lock().unwrap().drain(..).collect();
+        let updates: Vec<_> = self.order_updates.lock().unwrap().drain(..).collect();
+        let mut out = Vec::with_capacity(notices.len() + updates.len());
+        let (mut notices, mut updates) = (notices.into_iter().peekable(), updates.into_iter().peekable());
+        loop {
+            let notice_next = match (notices.peek(), updates.peek()) {
+                (Some((n, _)), Some((u, _))) => n < u,
+                (Some(_), None) => true,
+                (None, Some(_)) => false,
+                (None, None) => break,
+            };
+            if notice_next {
+                let (_, (order_id, code, message)) = notices.next().unwrap();
+                out.push(OrderReport::Notice(order_id, code, message));
+            } else {
+                out.push(OrderReport::Update(updates.next().unwrap().1));
+            }
+        }
+        out
     }
 
     pub fn drain_cancel_rejects(&self) -> Vec<CancelReject> {
@@ -1151,7 +1197,7 @@ impl OrderState {
 
     /// The notices to give after the order statuses (ibx#486).
     pub fn drain_order_notices(&self) -> Vec<(i64, i64, String)> {
-        self.order_notices.lock().unwrap().drain(..).collect()
+        self.order_notices.lock().unwrap().drain(..).map(|(_, notice)| notice).collect()
     }
 
     pub fn drain_what_if_responses(&self) -> Vec<WhatIfResponse> {
@@ -1233,7 +1279,8 @@ impl OrderState {
     }
 
     #[doc(hidden)] pub fn push_order_update(&self, update: OrderUpdate) {
-        self.order_updates.lock().unwrap().push(update);
+        let mut updates = self.order_updates.lock().unwrap();
+        updates.push((self.order_report_seq.fetch_add(1, Ordering::Relaxed), update));
     }
 
     #[doc(hidden)] pub fn push_cancel_reject(&self, reject: CancelReject) {
@@ -1252,7 +1299,10 @@ impl OrderState {
     #[doc(hidden)] pub fn push_order_notice(&self, order_id: i64, code: i64, message: String) {
         if self.error_tap.defer(ErrorQueue::OrderNotice, order_id, code, &message) { return; }
         let event = self.error_tap.event(order_id, code, &message);
-        self.order_notices.lock().unwrap().push((order_id, code, message));
+        {
+            let mut notices = self.order_notices.lock().unwrap();
+            notices.push((self.order_report_seq.fetch_add(1, Ordering::Relaxed), (order_id, code, message)));
+        }
         self.error_tap.send(event);
     }
 
@@ -2860,6 +2910,32 @@ mod tests {
         assert_eq!(fills.len(), 2);
         // Second drain should be empty
         assert!(ss.orders.drain_fills().is_empty());
+    }
+
+    #[test]
+    fn statuses_and_notices_come_out_in_the_order_written() {
+        let ss = SharedState::new();
+        let update = |order_id| OrderUpdate {
+            order_id, instrument: 0, status: OrderStatus::Cancelled, filled_qty_fixed: 0, remaining_qty_fixed: 0,
+            avg_fill_price: 0, perm_id: 0, parent_id: 0, timestamp_ns: 0,
+        };
+        ss.orders.push_order_update(update(1));
+        ss.orders.push_order_notice(1, 202, "a".into());
+        ss.orders.push_order_update(update(2));
+        ss.orders.push_order_notice(2, 202, "b".into());
+        ss.orders.push_order_notice(2, 161, "c".into());
+        ss.orders.push_order_update(update(3));
+        let got: Vec<String> = ss.orders.drain_order_reports().into_iter().map(|r| match r {
+            OrderReport::Update(u) => format!("status {}", u.order_id),
+            OrderReport::Notice(id, code, _) => format!("{code} {id}"),
+        }).collect();
+        assert_eq!(got, ["status 1", "202 1", "status 2", "202 2", "161 2", "status 3"]);
+        assert!(ss.orders.drain_order_reports().is_empty());
+        // Each queue alone still drains.
+        ss.orders.push_order_update(update(4));
+        ss.orders.push_order_notice(4, 202, "d".into());
+        assert_eq!(ss.orders.drain_order_updates().len(), 1);
+        assert_eq!(ss.orders.drain_order_notices().len(), 1);
     }
 
     #[test]

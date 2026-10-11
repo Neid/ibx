@@ -370,20 +370,24 @@ impl EClient {
             call_wrapper!(self.wrapper, py, "error", (shared.orders.api_order_id(order_id), code, msg.as_str(), ""));
         }
 
-        // Drain order updates -> orderStatus
+        // Order updates -> orderStatus. A server reject (201) and a cancel
+        // (202) after the status of their report, as the reference writes
+        // them; a reject then gives the order and its status once more
+        // (ibx#486). Statuses and notices in the order they were written
+        // (ibx#532).
         let mut reported = std::collections::HashMap::new();
-        for update in shared.orders.drain_order_updates() {
-            self.report_order_update(py, shared, &update)?;
-            reported.insert(update.order_id, update);
-        }
-
-        // A server reject (201) and a cancel (202) after the status of
-        // their report, as the reference writes them; a reject then gives
-        // the order and its status once more (ibx#486).
-        for (order_id, code, msg) in shared.orders.drain_order_notices() {
-            call_wrapper!(self.wrapper, py, "error", (shared.orders.api_order_id(order_id), code, msg.as_str(), ""));
-            if let Some(update) = reported.get(&order_id).filter(|u| code == 201 && u.status != OrderStatus::Cancelled) {
-                self.report_order_update(py, shared, update)?;
+        for report in shared.orders.drain_order_reports() {
+            match report {
+                crate::bridge::OrderReport::Update(update) => {
+                    self.report_order_update(py, shared, &update)?;
+                    reported.insert(update.order_id, update);
+                }
+                crate::bridge::OrderReport::Notice(order_id, code, msg) => {
+                    call_wrapper!(self.wrapper, py, "error", (shared.orders.api_order_id(order_id), code, msg.as_str(), ""));
+                    if let Some(update) = reported.get(&order_id).filter(|u| code == 201 && u.status != OrderStatus::Cancelled) {
+                        self.report_order_update(py, shared, update)?;
+                    }
+                }
             }
         }
 
