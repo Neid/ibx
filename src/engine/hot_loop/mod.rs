@@ -4454,6 +4454,10 @@ mod tests {
         let (mut engine, mut server, tx) = scanner_engine(&shared);
         load_scanner_params(&mut engine, &mut server, "<ScanParameterResponse/>");
         engine.pace_requests();
+        // The test's own clock: no real wait (ibx#567).
+        let start = Instant::now();
+        let ms = std::time::Duration::from_millis;
+        engine.set_pace_clock(start);
         for req_id in [1, 2, 3] {
             tx.send(scanner_cmd(req_id, 7, "TOP_PERC_GAIN")).unwrap();
         }
@@ -4467,15 +4471,18 @@ mod tests {
         engine.poll_control_commands();
         assert_eq!(engine.cmd_queue.len(), 3, "the others wait for the next step");
 
-        std::thread::sleep(std::time::Duration::from_millis(105));
+        engine.set_pace_clock(start + ms(99));
+        engine.poll_control_commands();
+        assert_eq!(engine.cmd_queue.len(), 3, "not before the step");
+        engine.set_pace_clock(start + ms(105));
         engine.poll_control_commands();
         assert_eq!(engine.cmd_queue.len(), 2, "one more in the second step");
-        std::thread::sleep(std::time::Duration::from_millis(100));
+        engine.set_pace_clock(start + ms(205));
         engine.poll_control_commands();
         assert!(engine.cmd_queue.is_empty(), "the third, and the command behind it that is not a request");
 
         // At rest again: a request alone is taken at once.
-        std::thread::sleep(std::time::Duration::from_millis(5));
+        engine.set_pace_clock(start + ms(210));
         engine.poll_control_commands();
         tx.send(scanner_cmd(5, 7, "TOP_PERC_GAIN")).unwrap();
         engine.poll_control_commands();
@@ -4576,32 +4583,36 @@ mod tests {
         let tx = ControlSender::new(raw_tx, None, Some(clock.clone()));
         // This thread is the engine's.
         clock.set_running(true);
+        // The steps go by the test's own clock: no real wait for them
+        // (ibx#567).
+        let start = Instant::now();
+        let ms = Duration::from_millis;
+        engine.set_pace_clock(start);
         tx.send(scanner_cmd(1, 7, "TOP_PERC_GAIN")).unwrap();
         tx.send(scanner_cmd(2, 7, "TOP_PERC_GAIN")).unwrap();
-        let started = Instant::now();
         let client = {
             let shared = shared.clone();
             std::thread::spawn(move || {
                 shared.orders.push_order_error(9, 321, "refused".into());
                 shared.command_clock().take_turn();
-                started.elapsed()
             })
         };
+        // The client's two commands reach the queue.
         std::thread::sleep(Duration::from_millis(20));
         engine.poll_control_commands();
         assert_eq!(engine.cmd_queue.len(), 3, "the second request, the error, the turn");
         assert!(shared.orders.drain_order_errors().is_empty(), "the error waits for its turn");
-        std::thread::sleep(Duration::from_millis(100));
+        engine.set_pace_clock(start + ms(100));
         engine.poll_control_commands();
         assert!(shared.orders.drain_order_errors().is_empty());
-        std::thread::sleep(Duration::from_millis(100));
+        engine.set_pace_clock(start + ms(200));
         engine.poll_control_commands();
         assert_eq!(shared.orders.drain_order_errors(), [(9, 321, "refused".to_string())]);
+        std::thread::sleep(Duration::from_millis(5));
         assert!(!client.is_finished(), "the turn of the call has not come");
-        std::thread::sleep(Duration::from_millis(100));
+        engine.set_pace_clock(start + ms(300));
         engine.poll_control_commands();
-        let waited = client.join().unwrap();
-        assert!(waited >= Duration::from_millis(300), "{waited:?}");
+        client.join().unwrap();
         assert!(engine.cmd_queue.is_empty());
         clock.set_running(false);
 
@@ -4613,7 +4624,7 @@ mod tests {
 
         // ibx#565: a ticket tells when the turn has come, without a wait;
         // the commands of one call count once.
-        std::thread::sleep(Duration::from_millis(5));
+        engine.set_pace_clock(start + ms(305));
         engine.poll_control_commands();
         clock.set_running(true);
         tx.send(scanner_cmd(3, 7, "TOP_PERC_GAIN")).unwrap();
@@ -4630,7 +4641,7 @@ mod tests {
         assert!(late.elapsed() < Duration::from_millis(50));
         engine.poll_control_commands();
         assert!(ticket.try_recv().is_err(), "the request before it was taken; its turn is the next step");
-        std::thread::sleep(Duration::from_millis(105));
+        engine.set_pace_clock(start + ms(410));
         engine.poll_control_commands();
         assert!(ticket.try_recv().is_ok());
         assert_eq!(shared.orders.drain_order_errors(), [(11, 321, "refused".to_string())], "with its turn, not a step later");
