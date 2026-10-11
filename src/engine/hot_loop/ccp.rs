@@ -85,6 +85,25 @@ pub(crate) fn fix_utc_to_unix_secs(s: &str) -> Option<i64> {
     Some(days * 86400 + hh * 3600 + mm * 60 + ss)
 }
 
+/// A quantity as the reference writes it in an order message: the whole
+/// part in groups of three digits ("5,000,000" for 5000000, paper
+/// 11/10/2026; "1" and "100" unchanged in every recording).
+fn grouped_quantity(quantity: &str) -> String {
+    let (whole, rest) = quantity.split_at(quantity.find('.').unwrap_or(quantity.len()));
+    if whole.len() < 4 || !whole.bytes().all(|b| b.is_ascii_digit()) {
+        return quantity.to_string();
+    }
+    let mut out = String::with_capacity(quantity.len() + whole.len() / 3);
+    for (i, digit) in whole.chars().enumerate() {
+        if i > 0 && (whole.len() - i) % 3 == 0 {
+            out.push(',');
+        }
+        out.push(digit);
+    }
+    out.push_str(rest);
+    out
+}
+
 /// Text of warning 399 for an order message (ibx#465): "Order Message:
 /// {action} {quantity} {symbol} {exchange}
 /// {text}", three lines (the API
@@ -114,7 +133,7 @@ fn order_message_399(
             _ => "SELL",
         },
     };
-    let quantity = parsed.get(&38).cloned().unwrap_or_default();
+    let quantity = grouped_quantity(parsed.get(&38).map_or("", |q| q.as_str()));
     if let Some(c) = combo {
         return format!("Order Message:
 {} {} {} Combo
