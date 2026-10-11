@@ -114,6 +114,9 @@ pub struct HotLoop {
     farm_reconnect_attempt: u32,
     pending_ccp_reconnect: Option<Receiver<io::Result<CcpReconnect>>>,
     ccp_reconnect_attempt: u32,
+    /// The server refused the login of a reconnect: no further attempt
+    /// (ibx#496).
+    ccp_login_refused: bool,
     /// HMDS reconnect state (ibx#187). Drives a background reconnect loop with
     /// exponential backoff when the historical-data farm is down — initial
     /// connect failed, or a future runtime disconnect detector trips it.
@@ -193,6 +196,7 @@ impl HotLoop {
             farm_reconnect_attempt: 0,
             pending_ccp_reconnect: None,
             ccp_reconnect_attempt: 0,
+            ccp_login_refused: false,
             pending_hmds_reconnect: None,
             hmds_reconnect_attempt: 0,
             hmds_next_attempt_at: None,
@@ -2671,7 +2675,7 @@ impl HotLoop {
 
     /// See `maybe_spawn_farm_reconnect`.
     fn maybe_spawn_ccp_reconnect(&mut self) {
-        if !self.ccp.disconnected || self.pending_ccp_reconnect.is_some() {
+        if !self.ccp.disconnected || self.pending_ccp_reconnect.is_some() || self.ccp_login_refused {
             return;
         }
         match self.ccp_next_attempt_at {
@@ -2815,6 +2819,21 @@ impl HotLoop {
                 self.ccp_reconnect_attempt = 0;
                 self.ccp_next_attempt_at = None;
                 self.pending_ccp_reconnect = None;
+            }
+            Ok(Err(e)) if crate::auth::session::login_error(&e).is_some_and(|l| !l.kind.is_retryable()) => {
+                // The server refused the login itself (lockout, password
+                // rejected, address not authorized, ...). The reference
+                // ends its session there and asks the user; it goes on
+                // only for site down, site not ready and link errors.
+                // Trying again every few seconds could lock the user out
+                // (ibx#496).
+                log::error!("CCP auto-reconnect refused by the server, session ended: {}", e);
+                self.pending_ccp_reconnect = None;
+                self.ccp_next_attempt_at = None;
+                self.ccp_login_refused = true;
+                self.running = false;
+                self.shared.set_connection_lost();
+                emit(&self.event_tx, Event::Disconnected);
             }
             Ok(Err(e)) => {
                 log::error!("CCP auto-reconnect failed (attempt {}): {}", self.ccp_reconnect_attempt, e);
@@ -4751,6 +4770,53 @@ mod tests {
         engine.poll_control_commands();
         assert!(shared.reference.drain_scanner_params().is_empty());
         assert_eq!(plain_messages_sent(&mut server).len(), 1, "asked again");
+    }
+
+    // ibx#496: a login the server refuses during a reconnect ends the
+    // session, as the reference does: no further attempt, the clients see
+    // the connection closed once. Site down, site not ready and a link
+    // error are tried again.
+    #[test]
+    fn a_reconnect_refused_by_the_server_ends_the_session() {
+        use crate::auth::session::{LoginError, LoginErrorKind};
+        let outcome = |error: io::Error| {
+            let shared = Arc::new(SharedState::new());
+            let (event_tx, event_rx) = crossbeam_channel::unbounded();
+            let mut engine = HotLoop::new(shared.clone(), Some(event_tx), None);
+            engine.running = true;
+            engine.ccp.disconnected = true;
+            engine.ccp_reconnect_attempt = 1;
+            let (tx, rx) = crossbeam_channel::bounded(1);
+            tx.send(Err(error)).unwrap();
+            engine.pending_ccp_reconnect = Some(rx);
+            engine.poll_ccp_reconnect();
+            assert!(engine.pending_ccp_reconnect.is_none());
+            // The next pass plans an attempt only when the session goes on.
+            engine.maybe_spawn_ccp_reconnect();
+            let closed = matches!(event_rx.try_recv(), Ok(Event::Disconnected));
+            (engine.running, engine.ccp_next_attempt_at.is_some(), shared.take_connection_lost(), closed)
+        };
+        let refused = |kind, code: i64, text: &str| -> io::Error {
+            LoginError { kind, code: Some(code), text: text.into() }.into()
+        };
+        for error in [
+            refused(LoginErrorKind::LockedOut, 1, "lockedout"),
+            refused(LoginErrorKind::PasswordRejected, 23, "pwd"),
+            refused(LoginErrorKind::BadCredentials, 1, "bad"),
+            refused(LoginErrorKind::IpNotAuthorized, 1, "IP address 1.2.3.4"),
+            refused(LoginErrorKind::Other, 99, "other"),
+        ] {
+            let text = error.to_string();
+            assert_eq!(outcome(error), (false, false, true, true), "{text}");
+        }
+        for error in [
+            refused(LoginErrorKind::SiteDown, 4, "site down"),
+            refused(LoginErrorKind::SiteNotReady, 5, "site not ready"),
+            io::Error::new(io::ErrorKind::ConnectionReset, "link"),
+        ] {
+            let text = error.to_string();
+            assert_eq!(outcome(error), (true, true, false, false), "{text}");
+        }
     }
 
     // ibx#552: a parameters request that waits counts among the scanner
