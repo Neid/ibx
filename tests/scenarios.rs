@@ -929,7 +929,12 @@ fn mixed_all_data_types_single_process() {
     });
 
     // Scanner params
-    shared.reference.push_scanner_params("<xml/>".into());
+    // A text the client can rebuild (one that cannot gets no answer, ibx#596).
+    shared.reference.push_scanner_params(concat!(
+        "<ScanParameterResponse><InstrumentList><Instrument><name>I</name></Instrument></InstrumentList>",
+        "<LocationTree><Location><locationCode>L</locationCode></Location></LocationTree>",
+        "<ScanTypeList><ScanType><scanCode>S0</scanCode></ScanType></ScanTypeList>",
+        "<FilterList varName=\"filterList\"/><SidecarScannerDefaults/></ScanParameterResponse>").into());
 
     let mut w = RecordingWrapper::default();
     client.process_msgs(&mut w);

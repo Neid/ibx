@@ -256,7 +256,9 @@ pub(crate) fn scanner_session(shared: &SharedState) -> crate::control::scanner_p
 
 /// The scanner parameters that wait for the client, each as the
 /// reference hands it to a client of this session (ibx#571). A text the
-/// rebuild refuses is given as the server sent it.
+/// rebuild refuses gets no answer, as the reference gives none when its
+/// own rebuild fails (ibx#596, decision of 11/10/2026; the reference's
+/// code run on such texts on 11/10/2026, #582).
 ///
 /// The rebuild takes over 10 ms on a real document: this runs where the
 /// client delivers its callbacks, never on the engine thread. The same
@@ -283,8 +285,7 @@ pub(crate) fn drain_scanner_parameters(shared: &SharedState) -> Vec<String> {
                 last = Some((server_xml, out.len() - 1));
             }
             None => {
-                log::warn!("Scanner parameters ({} bytes) cannot be rebuilt as the reference does: given as the server sent them", server_xml.len());
-                out.push(server_xml);
+                log::warn!("Scanner parameters ({} bytes) cannot be rebuilt as the reference does: no answer, as the reference", server_xml.len());
                 last = None;
             }
         }

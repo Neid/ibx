@@ -3554,10 +3554,15 @@ fn an_error_answered_by_the_client_goes_to_the_event_channel() {
 #[test]
 fn process_msgs_dispatches_scanner_params() {
     let (client, _rx, shared) = test_client();
-    shared.reference.push_scanner_params("<scanner>XML</scanner>".into());
+    shared.reference.push_scanner_params(scanner_parameters_with_vendors());
     let mut w = RecordingWrapper::default();
     client.process_msgs(&mut w);
     assert!(w.events.iter().any(|e| e == "scanner_parameters"));
+    // A text that cannot be rebuilt: no answer, as the reference (ibx#596).
+    shared.reference.push_scanner_params("<scanner>XML</scanner>".into());
+    let mut w = RecordingWrapper::default();
+    client.process_msgs(&mut w);
+    assert!(!w.events.iter().any(|e| e == "scanner_parameters"));
 }
 
 /// Keeps the scanner parameters a client is given.
@@ -3610,7 +3615,7 @@ fn scanner_session_is_made_of_the_logon_features_and_the_news_providers() {
 
 // ibx#571: the client gets the scanner parameters as the reference
 // hands them out, for what its session has; a text that cannot be
-// rebuilt is given as the server sent it.
+// rebuilt gets no answer, as the reference (ibx#596).
 #[test]
 fn process_msgs_rebuilds_the_scanner_params_for_the_session() {
     let (client, _rx, shared) = test_client();
@@ -3628,7 +3633,7 @@ fn process_msgs_rebuilds_the_scanner_params_for_the_session() {
     client.process_msgs(&mut w);
     let session = crate::control::scanner_params::Session::new("V1", ["V2"]);
     let rebuilt = crate::control::scanner_params::for_client(&server, &session).expect("refused");
-    assert_eq!(w.0, [rebuilt.as_str(), rebuilt.as_str(), "<scanner>XML</scanner>", rebuilt.as_str()]);
+    assert_eq!(w.0, [rebuilt.as_str(), rebuilt.as_str(), rebuilt.as_str()]);
     assert!(rebuilt.starts_with("<?xml version=\"1.0\" encoding=\"UTF-8\"?>
 <ScanParameterResponse>
 	<InstrumentList varName=\"instrumentList\">
