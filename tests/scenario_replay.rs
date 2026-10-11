@@ -283,12 +283,18 @@ fn keep_up_to_date_bars_and_first_updates() {
 // The later rounds of updates, the cancels and the refusals: the
 // reference gives the requests that share one live bar stream (9530 1
 // hour, 9531 1 min, 9533 2 hours, all TRADES) in the order 9530, 9533,
-// 9531; ibx in request order. The rule of the reference's order is not
-// read yet.
+// 9531, the order they joined the stream: 9533's query was built after
+// the stream's number had come for 9530, 9531 still waited for its own
+// (ibx#512). Replayed with each contract lookup answered at its recorded
+// point: a query is built when its own lookup is answered, which decides
+// that order. The recording ends before the answer to the last cancel,
+// which the reference gives as for the cancel before it: left out on
+// both sides.
 #[test]
-#[ignore = "ibx#512: the order of the updates of keepUpToDate requests that share a live bar stream"]
 fn keep_up_to_date_update_order() {
-    check("20261002/b1_429_keep_up_to_date", Options::default());
+    let o = check("20261002/b1_429_keep_up_to_date", Options::default().lookups_at_their_point()
+        .keep(|l| !l.starts_with("error|9536|366|")));
+    assert!(o.theirs.iter().any(|(_, l)| l.starts_with("error|9535|366|")));
 }
 
 // Bars with formatDate 1 and 2, head timestamps (02/10/2026, ibx#431); the

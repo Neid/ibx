@@ -106,6 +106,8 @@ pub(crate) struct HmdsState {
     pub(crate) bar_requests: Vec<BarRequestInfo>,
     /// keepUpToDate requests and their bar series (ibx#429).
     pub(crate) live_bars: Vec<LiveBars>,
+    /// Last place given to a keepUpToDate request on its stream (ibx#512).
+    pub(crate) live_joins: u64,
     /// The last 5-second bar of each farm and ticker id: a keepUpToDate
     /// request whose history ends after it takes it then (ibx#429).
     pub(crate) router_bars: Vec<(super::pool::FarmId, u32, u32, crate::types::RealTimeBar)>,
@@ -346,6 +348,12 @@ pub(crate) struct LiveBars {
     pub(crate) history_done: bool,
     /// Zone of the reply, for the dates of bars of a day or longer.
     pub(crate) reply_zone: String,
+    /// What names the 5-second stream the request shares: the contract,
+    /// the data and the regular-hours choice (ibx#512).
+    pub(crate) stream: (i64, crate::control::historical::BarDataType, bool),
+    /// Its place among the requests of its stream, 0 while it has none
+    /// (ibx#512): the updates of a 5-second bar are given in this order.
+    pub(crate) joined: u64,
 }
 
 /// Most real-time bar requests when the logon gives no limit, as the
@@ -497,6 +505,7 @@ impl HmdsState {
             head_ts_cache: std::collections::HashMap::new(),
             bar_requests: Vec::new(),
             live_bars: Vec::new(),
+            live_joins: 0,
             router_bars: Vec::new(),
             rtbar_subs: Vec::new(),
             max_real_time_requests: DEFAULT_MAX_REAL_TIME_REQUESTS,
@@ -824,6 +833,12 @@ impl HmdsState {
                                 live.ticker_id = Some(ticker_id);
                                 live.min_tick = min_tick;
                                 live.farm = farm;
+                                // Its place on the stream, unless it took
+                                // one when its query was built (ibx#512).
+                                if live.joined == 0 {
+                                    self.live_joins += 1;
+                                    live.joined = self.live_joins;
+                                }
                                 matched = true;
                             }
                         }
@@ -1183,10 +1198,12 @@ impl HmdsState {
                     bar.timestamp = timestamp;
                     self.router_bars.retain(|(f, t, _, _)| !(*f == farm && *t == ticker_id));
                     self.router_bars.push((farm, ticker_id, timestamp, bar));
-                    let reqs: Vec<ReqId> = self.live_bars.iter()
+                    // In the order the requests joined the stream (ibx#512).
+                    let mut reqs: Vec<(u64, ReqId)> = self.live_bars.iter()
                         .filter(|l| l.farm == farm && l.ticker_id == Some(ticker_id) && l.history_done)
-                        .map(|l| l.req_id).collect();
-                    for req_id in reqs {
+                        .map(|l| (l.joined, l.req_id)).collect();
+                    reqs.sort_unstable();
+                    for (_, req_id) in reqs {
                         self.update_live_bar(req_id, timestamp, &bar, shared);
                     }
                 }
@@ -1528,6 +1545,24 @@ impl HmdsState {
             if keep_up_to_date {
                 self.keep_up_to_date_reqs.insert(req_id);
                 self.live_bars.retain(|l| l.req_id != req_id);
+                // The reference keeps the requests of one 5-second stream
+                // in the order they joined it, and gives each bar's updates
+                // in that order. A request joins when its query is built if
+                // the stream is already there, else when the stream's
+                // number comes for its own query: a later request can so
+                // pass an earlier one that still waits for its number
+                // (ibx#512; recording of 02/10/2026, requests of 1 hour,
+                // 1 min and 2 hours updated in the order first, third,
+                // second).
+                let stream = (con_id, leg_type, use_rth);
+                let running = self.live_bars.iter()
+                    .any(|l| l.farm == farm && l.ticker_id.is_some() && l.stream == stream);
+                let joined = if running {
+                    self.live_joins += 1;
+                    self.live_joins
+                } else {
+                    0
+                };
                 self.live_bars.push(LiveBars {
                     req_id,
                     window_id: query_id.clone(),
@@ -1541,6 +1576,8 @@ impl HmdsState {
                     sessions: Vec::new(),
                     history_done: false,
                     reply_zone: String::new(),
+                    stream,
+                    joined,
                 });
             }
             self.pending_historical.push((query_id, req_id));
@@ -3377,6 +3414,9 @@ pub(crate) mod tests {
             req_id, window_id: window_id.to_string(), query_id: format!("{window_id};;AAPL@SMART {label};;1;;true;;0;;I"),
             farm: super::super::pool::PRIMARY_HMDS, ticker_id: None, min_tick: 0.01, bar_size, trades,
             series: Vec::new(), sessions: Vec::new(), history_done: false, reply_zone: String::new(),
+            stream: (265598, if trades { crate::control::historical::BarDataType::Trades }
+                else { crate::control::historical::BarDataType::Midpoint }, true),
+            joined: 0,
         });
     }
 

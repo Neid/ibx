@@ -302,6 +302,9 @@ pub struct Options {
     /// Pace the requests and send the market data in passes, by the times
     /// of the recording (ibx#563).
     pub paced: bool,
+    /// Answer a lookup at the recorded point of its reply, not at once
+    /// (see [`Options::lookups_at_their_point`]).
+    pub lookups_at_their_point: bool,
     /// Other market data farms of the recording played on the farm link
     /// (see [`Options::farms`]).
     pub farms: Vec<&'static str>,
@@ -323,6 +326,7 @@ impl Default for Options {
             skip_frame: |_| false,
             replies: Vec::new(),
             paced: false,
+            lookups_at_their_point: false,
             farms: Vec::new(),
             hmds_farms: Vec::new(),
         }
@@ -336,6 +340,16 @@ impl Options {
     /// the times.
     pub fn paced(mut self) -> Self {
         self.paced = true;
+        self
+    }
+
+    /// Answer a lookup ibx writes as the reference did at the recorded
+    /// point of the reference's reply, for a scenario where what follows
+    /// depends on when the contract became known (ibx#512: the order of
+    /// the requests on a shared 5-second stream). By default a lookup is
+    /// answered at once.
+    pub fn lookups_at_their_point(mut self) -> Self {
+        self.lookups_at_their_point = true;
         self
     }
 
@@ -823,6 +837,16 @@ impl Run<'_> {
                 .filter_map(|r| r.get(320)).find(|id| !self.ids.lookup_used.contains(id));
             let reply_to = |id: &str| self.recs.iter().chain(&self.opts.replies)
                 .find(|r| r.leg == "fix_in" && r.conn == "CCP" && r.get(320).as_deref() == Some(id)).cloned();
+            // The reply still to come in the records: sent at its point.
+            if self.opts.lookups_at_their_point
+                && let Some(id) = same.as_deref()
+                && self.recs[self.at.min(self.recs.len())..].iter()
+                    .any(|r| r.leg == "fix_in" && r.conn == "CCP" && r.get(320).as_deref() == Some(id))
+            {
+                self.ids.lookup_used.insert(id.to_string());
+                self.ids.lookup.insert(id.to_string(), our_id);
+                continue;
+            }
             let reply = match same.as_deref().and_then(reply_to) {
                 Some(d) => {
                     self.ids.lookup_used.insert(same.unwrap());
