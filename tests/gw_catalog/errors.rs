@@ -23,6 +23,13 @@ const CLIENT_CODES: &[(i64, &str)] = &[
     (551, "the API client's refusal of a verify and auth request made without the intent to verify (ibx#516)"),
 ];
 
+/// Texts seen on the reference under a code whose text in the table is
+/// another one.
+const OBSERVED_TEXTS: &[(i64, &str, &str)] = &[
+    (391, "%s: The date, time, or time-zone entered is invalid.",
+        "a goodTillDate that cannot be read (ibx#548, paper 11/10/2026)"),
+];
+
 /// One place where ibx raises an error.
 #[derive(Debug, Clone)]
 struct Raise {
@@ -368,6 +375,9 @@ fn differences(raises: &[Raise], codes: &BTreeMap<i64, catalog::ErrorCode>) -> V
         if ibx.chars().all(|c| c == '\u{1}') || gw.texts().is_empty() {
             continue;
         }
+        if OBSERVED_TEXTS.iter().any(|(code, t, _)| *code == r.code && matches_template(t, &ibx, true)) {
+            continue;
+        }
         if !gw.texts().iter().any(|t| matches_template(t, &ibx, true)) {
             problems.push(format!("{}: {} {:?} is not the gateway's text {:?}", r.at, r.code, text, gw.texts()));
         }
@@ -418,7 +428,7 @@ fn the_error_check_finds_each_kind_of_difference() {
     let ok = [
         raise(201, "Order rejected - reason:%s"),
         raise(10147, "OrderId %s that needs to be cancelled is not found."),
-        raise(321, "Error validating request.-'bH' : cause - Invalid trigger method"),
+        raise(321, "Error validating request.-'v' : cause - Invalid trigger method"),
         raise(104, "Cannot modify a filled order."),
     ];
     assert_eq!(differences(&ok, &codes), Vec::<String>::new());
@@ -428,7 +438,7 @@ fn the_error_check_finds_each_kind_of_difference() {
     assert!(text[0].contains("is not the gateway's text"), "{text:?}");
     let wrapped = differences(&[raise(146, "Invalid trigger method")], &codes);
     assert!(wrapped[0].contains("as the cause of 321"), "{wrapped:?}");
-    let own = differences(&[raise(321, "Error validating request.-'bH' : cause - Duplicate order id")], &codes);
+    let own = differences(&[raise(321, "Error validating request.-'v' : cause - Duplicate order id")], &codes);
     assert!(own[0].contains("itself"), "{own:?}");
 }
 

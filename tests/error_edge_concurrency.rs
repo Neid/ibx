@@ -78,7 +78,7 @@ fn place_order_invalid_action_is_refused_by_callback() {
     client.place_order(1, &spy(), &order).unwrap();
     assert!(rx.try_recv().is_err(), "nothing sent");
     let errors = shared.orders.drain_order_errors();
-    assert_eq!(errors, [(1, 321, "Error validating request.-'bH' : cause - Invalid side field was entered".to_string())]);
+    assert_eq!(errors, [(1, 321, "Error validating request.-'v' : cause - Invalid side field was entered".to_string())]);
 }
 
 #[test]
@@ -92,7 +92,7 @@ fn place_order_empty_action_is_refused_by_callback() {
     client.place_order(1, &spy(), &order).unwrap();
     assert!(rx.try_recv().is_err(), "nothing sent");
     let errors = shared.orders.drain_order_errors();
-    assert_eq!(errors, [(1, 321, "Error validating request.-'bH' : cause - Invalid side field was entered".to_string())]);
+    assert_eq!(errors, [(1, 321, "Error validating request.-'v' : cause - Invalid side field was entered".to_string())]);
 }
 
 #[test]

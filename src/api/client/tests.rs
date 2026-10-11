@@ -909,7 +909,7 @@ fn place_order_unknown_trigger_method_is_refused() {
     let mut w = RecordingWrapper::default();
     client.process_msgs(&mut w);
     for id in 3..=6 {
-        let want = format!("error:{id}:321:Error validating request.-'bH' : cause - Invalid trigger method");
+        let want = format!("error:{id}:321:Error validating request.-'v' : cause - Invalid trigger method");
         assert!(w.events.contains(&want), "{:?}", w.events);
     }
     for trigger_method in [0, 1, 2, 3, 4, 7, 8] {
@@ -1336,7 +1336,7 @@ fn place_order_trail_mit_trail_lit_peg_best_rpi_and_passv_rel() {
         client.place_order(id, &spy(), &no_trigger).unwrap();
         assert!(rx.try_iter().all(|c| !matches!(c, ControlCommand::Order(_))), "nothing sent");
         assert_eq!(shared.orders.drain_order_errors(),
-            [(id, 321, "Error validating request.-'bH' : cause - Please enter a stop price".to_string())]);
+            [(id, 321, "Error validating request.-'v' : cause - Please enter a stop price".to_string())]);
     }
     client.place_order(15, &spy(), &Order { trail_stop_price: f64::MAX, ..order("TRAIL MIT") }).unwrap();
     assert!(rx.try_iter().any(|c| matches!(c, ControlCommand::Order(OrderRequest::SubmitEx {
@@ -1346,10 +1346,12 @@ fn place_order_trail_mit_trail_lit_peg_best_rpi_and_passv_rel() {
     assert!(client.place_order(11, &spy(), &Order { aux_price: 0.0, ..order("TRAIL LIT") }).is_err());
 }
 
-// ibx#467: a goodAfterTime that is not a date and time is refused with 337
-// and the reference's text; nothing is sent. A good one is sent.
+// ibx#594 (paper 11/10/2026): a goodAfterTime that cannot be read is left
+// out and the order is sent without a start time, as the reference sends
+// it; a time alone, which the reference reads and ibx does not, is
+// refused with 337 and the reference's text. A good one is sent.
 #[test]
-fn place_order_bad_good_after_time_is_refused() {
+fn place_order_unreadable_good_after_time_is_left_out() {
     let (client, rx, shared) = test_client();
     shared.market.set_instrument_count(1);
     let order = |gat: &str| Order {
@@ -1358,15 +1360,21 @@ fn place_order_bad_good_after_time_is_refused() {
     };
     for (id, bad) in [(4, "tomorrow"), (5, "20261230"), (6, "20261230 25:00:00 US/Eastern"), (7, "20261230 09:30:00 Nowhere/Zone")] {
         client.place_order(id, &spy(), &order(bad)).unwrap();
+        let sent: Vec<ControlCommand> = rx.try_iter().filter(|c| matches!(c, ControlCommand::Order(_))).collect();
+        match sent.as_slice() {
+            [ControlCommand::Order(OrderRequest::SubmitLimit { .. })] => {}
+            [ControlCommand::Order(OrderRequest::SubmitLimitEx { attrs, .. })] => assert_eq!(attrs.good_after, 0, "{bad}"),
+            other => panic!("{bad}: one plain order expected, got {other:?}"),
+        }
     }
-    assert!(rx.try_iter().all(|c| !matches!(c, ControlCommand::Order(_))), "nothing sent");
+    client.place_order(9, &spy(), &order("09:30:00")).unwrap();
+    assert!(rx.try_iter().all(|c| !matches!(c, ControlCommand::Order(_))), "a time alone: nothing sent");
     let mut w = RecordingWrapper::default();
     client.process_msgs(&mut w);
-    for id in 4..=7 {
-        assert!(w.events.iter().any(|e| e.starts_with(&format!(
-            "error:{id}:337:Start Time: The date, time, or time-zone entered is invalid.\nThe correct format is yyyymmdd hh:mm:ss xx/xxxx\n"))),
-            "{id}: {:?}", w.events);
-    }
+    assert!(!w.events.iter().any(|e| (4..=7).any(|id| e.starts_with(&format!("error:{id}:")))), "{:?}", w.events);
+    assert!(w.events.iter().any(|e| e.starts_with(
+        "error:9:337:Start Time: The date, time, or time-zone entered is invalid.\nThe correct format is yyyymmdd hh:mm:ss xx/xxxx\n")),
+        "{:?}", w.events);
 
     client.place_order(8, &spy(), &order("20261230 09:30:00 US/Eastern")).unwrap();
     match rx.try_recv().unwrap() {
@@ -1375,9 +1383,11 @@ fn place_order_bad_good_after_time_is_refused() {
     }
 }
 
-// ibx#335 (ib-agent#192 F6): a goodTillDate that does not parse, or whose
-// zone is not UTC, this machine's zone or the contract's zone, is refused
-// with 343; nothing is sent, the order does not go out without its expiry.
+// ibx#335 (ib-agent#192 F6): a goodTillDate whose zone is not UTC, this
+// machine's zone or the contract's zone is refused with 343; one that
+// does not parse, or whose zone does not exist, with 391 (ibx#548, paper
+// 11/10/2026). Nothing is sent, the order does not go out without its
+// expiry.
 #[test]
 fn place_order_bad_good_till_date_is_refused() {
     let (client, rx, shared) = test_client();
@@ -1407,8 +1417,9 @@ fn place_order_bad_good_till_date_is_refused() {
     let mut w = RecordingWrapper::default();
     client.process_msgs(&mut w);
     for (id, _) in &refused {
+        let code = if *id < 6 { 391 } else { 343 };
         assert!(w.events.iter().any(|e| e.starts_with(&format!(
-            "error:{id}:343:End Time: The date, time, or time-zone entered is invalid.\n"))),
+            "error:{id}:{code}:End Time: The date, time, or time-zone entered is invalid.\n"))),
             "{id}: {:?}", w.events);
     }
 
@@ -1437,7 +1448,7 @@ fn place_order_trailing_stop_limit_without_stop_price_is_refused() {
     assert!(rx.try_iter().all(|c| !matches!(c, ControlCommand::Order(_))), "nothing sent");
     let mut w = RecordingWrapper::default();
     client.process_msgs(&mut w);
-    assert!(w.events.iter().any(|e| e == "error:3:321:Error validating request.-'bH' : cause - Please enter a stop price"), "{:?}", w.events);
+    assert!(w.events.iter().any(|e| e == "error:3:321:Error validating request.-'v' : cause - Please enter a stop price"), "{:?}", w.events);
 }
 
 #[test]
@@ -1951,7 +1962,7 @@ fn place_order_invalid_action_is_refused_with_321() {
     assert!(rx.try_recv().is_err(), "nothing sent");
     let mut w = RecordingWrapper::default();
     client.process_msgs(&mut w);
-    assert!(w.events.contains(&"error:1:321:Error validating request.-'bH' : cause - Invalid side field was entered".to_string()),
+    assert!(w.events.contains(&"error:1:321:Error validating request.-'v' : cause - Invalid side field was entered".to_string()),
         "{:?}", w.events);
 }
 
@@ -2030,7 +2041,7 @@ fn stop_types_with_unset_aux_price_get_the_reference_refusal() {
     shared.market.set_instrument_count(1);
     let cases = [
         ("STP", "Please enter a stop price"), ("STP LMT", "Please enter a stop price"),
-        ("STP PRT", "Please enter a stop price"), ("MIT", "Invalid Trigger Price"), ("LIT", "Invalid Trigger Price"),
+        ("STP PRT", "Please enter a stop price"), ("MIT", "Please enter a stop price"), ("LIT", "Please enter a stop price"),
     ];
     for (i, (order_type, cause)) in cases.iter().enumerate() {
         let order = Order {
@@ -2042,7 +2053,7 @@ fn stop_types_with_unset_aux_price_get_the_reference_refusal() {
         assert!(rx.try_iter().all(|c| !matches!(c, ControlCommand::Order(_))), "{order_type}: nothing sent");
         let mut w = RecordingWrapper::default();
         client.process_msgs(&mut w);
-        let want = format!("error:{}:321:Error validating request.-'bH' : cause - {}", i + 1, cause);
+        let want = format!("error:{}:321:Error validating request.-'v' : cause - {}", i + 1, cause);
         assert!(w.events.contains(&want), "{order_type}: {:?}", w.events);
     }
 }
@@ -7228,7 +7239,7 @@ fn requests_of_a_contract_with_no_exchange_are_refused() {
     client.process_msgs(&mut w);
     let errors: Vec<&String> = w.events.iter().filter(|e| e.starts_with("error:")).collect();
     assert_eq!(errors, [
-        "error:1:321:Error validating request.-'bH' : cause - Missing order exchange",
+        "error:1:321:Error validating request.-'v' : cause - Missing order exchange.",
         "error:2:321:Error validating request.-'bQ' : cause - Please enter exchange",
         "error:3:321:Error validating request.-'bM' : cause - Please enter exchange",
         "error:4:321:Error validating request.-'bN' : cause - Please enter exchange",

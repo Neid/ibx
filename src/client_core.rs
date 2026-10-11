@@ -5141,7 +5141,7 @@ impl ClientCore {
             return Ok(None);
         }
         let read_error = |cause: &str| (320, format!("Error reading request:{}", cause));
-        let refuse = |cause: &str| (321, format!("Error validating request.-'bH' : cause - {}", cause));
+        let refuse = |cause: &str| (321, format!("Error validating request.-'v' : cause - {}", cause));
         let legs = &contract.combo_legs;
         let prices = &order.order_combo_legs;
         if !prices.is_empty() && prices.len() != legs.len() {
@@ -5309,6 +5309,19 @@ impl ClientCore {
             .or_else(|| Self::exchange_refusal(exchange))
             .or_else(|| Self::order_rule_refusal(order, account_pending))
             .or_else(|| Self::fractional_quantity_refusal(order))
+            .or_else(|| Self::good_till_date_unreadable(order))
+    }
+
+    /// A goodTillDate that cannot be read, or whose zone does not exist:
+    /// error 391 with the text of the invalid date, among the checks made
+    /// before the order id is looked at (ibx#548, paper 11/10/2026: "not a
+    /// date" and "20261230 16:00:00 Nowhere/Zone" give 391, and the same
+    /// id placed again is a new order). A zone that exists and is not the
+    /// contract's is refused later, with 343
+    /// ([`Self::good_till_date_refusal`]).
+    fn good_till_date_unreadable(order: &ApiOrder) -> Option<(i64, String)> {
+        crate::config::parse_ib_expiry_zoned(&order.good_till_date).is_err()
+            .then(|| (391, INVALID_DATE_TIME.replace("%s", "End Time")))
     }
 
     /// Whether the account of an order is one whose application is not
@@ -5371,7 +5384,7 @@ impl ClientCore {
     /// order with no exchange.
     fn exchange_refusal(exchange: &str) -> Option<(i64, String)> {
         exchange.is_empty()
-            .then(|| (321, "Error validating request.-'bH' : cause - Missing order exchange".to_string()))
+            .then(|| (321, "Error validating request.-'v' : cause - Missing order exchange.".to_string()))
     }
 
     /// The refusals of the reference's reading of the order, in its order
@@ -5464,9 +5477,11 @@ impl ClientCore {
     }
 
     /// A goodTillDate the reference refuses before sending, with error 343
-    /// (ibx#335; ib-agent#192 F6): it is not a date and time, or its zone is
-    /// not UTC, the zone of this machine, or exactly the zone of the
-    /// contract's trading hours (`contract_zone`). The order is not sent,
+    /// (ibx#335; ib-agent#192 F6; paper 11/10/2026 for Asia/Tokyo on a US
+    /// stock): its zone is not UTC, the zone of this machine, or exactly
+    /// the zone of the contract's trading hours (`contract_zone`). One
+    /// that cannot be read is refused earlier, with 391
+    /// ([`Self::good_till_date_unreadable`]). The order is not sent,
     /// rather than sent with no expiry. The contract's zone is known once
     /// its details were received; until then any zone that resolves is
     /// taken.
@@ -5481,14 +5496,32 @@ impl ClientCore {
         if accepted { None } else { Some((343, INVALID_DATE_TIME.replace("%s", "End Time"))) }
     }
 
-    /// A goodAfterTime that is not a date and time: error 337 with the
-    /// reference's text, whose label for this field is "Start Time"
-    /// (ibx#467). ibx needs the date; the reference also takes a time alone
-    /// (today assumed).
+    /// A goodAfterTime the reference cannot read is left out, and the
+    /// order goes without a start time (ibx#594, paper 11/10/2026:
+    /// "not a date", "20261230 99:99:99", a date alone, "2026-12-30
+    /// 10:00:00" and a zone that does not exist are all accepted, and
+    /// the order message has no start time). The reference also takes a
+    /// time alone, for today; ibx needs the date and refuses that form
+    /// with 337, rather than send the order with no start time.
     fn good_after_time_refusal(order: &ApiOrder) -> Option<(i64, String)> {
-        match crate::config::parse_ib_expiry(&order.good_after_time) {
-            Ok(None) | Ok(Some(crate::config::IbExpiry::Instant(_))) => None,
-            _ => Some((337, INVALID_DATE_TIME.replace("%s", "Start Time"))),
+        let text = order.good_after_time.trim().as_bytes();
+        let time_alone = text.len() >= 5 && text[2] == b':' && text[..2].iter().all(u8::is_ascii_digit);
+        time_alone.then(|| (337, INVALID_DATE_TIME.replace("%s", "Start Time")))
+    }
+
+    /// A goodAfterTime in a zone that exists and is not UTC, the zone of
+    /// this machine or the zone of the contract's trading hours: error 337
+    /// with the label "Start Time" (ibx#594, paper 11/10/2026: Asia/Tokyo
+    /// on a US stock; US/Eastern is sent). Until the contract's zone is
+    /// known any zone is taken, as for the goodTillDate.
+    pub fn good_after_time_zone_refusal(order: &ApiOrder, contract_zone: Option<&str>) -> Option<(i64, String)> {
+        match crate::config::parse_ib_expiry_zoned(&order.good_after_time) {
+            Ok(Some((crate::config::IbExpiry::Instant(_), Some(zone))))
+                if zone != "UTC" && contract_zone.is_some_and(|c| c != zone) && crate::gateway::machine_time_zone() != zone =>
+            {
+                Some((337, INVALID_DATE_TIME.replace("%s", "Start Time")))
+            }
+            _ => None,
         }
     }
 
@@ -5514,7 +5547,7 @@ impl ClientCore {
     /// (`jextend.bH.S()` stops at the first). The text after "cause - " is
     /// the rule's; for the TRAIL LIMIT rule only its end is known.
     fn order_rule_refusal(order: &ApiOrder, account_pending: bool) -> Option<(i64, String)> {
-        let refuse = |cause: &str| Some((321, format!("Error validating request.-'bH' : cause - {}", cause)));
+        let refuse = |cause: &str| Some((321, format!("Error validating request.-'v' : cause - {}", cause)));
         let order_type = order.order_type.to_uppercase();
         // An action the reference does not know reads as side 0, refused
         // first (`jextend.bH.S()@1311`, ibx#485).
@@ -5532,7 +5565,9 @@ impl ClientCore {
         // and of a TRAIL LIT (ibx#469, captured 07/10/2026 by amount and
         // by percent; a TRAIL MIT without one is sent).
         let stop_type = matches!(order_type.as_str(), "STP" | "STP LMT" | "STP PRT");
-        if (stop_type && order.aux_price == f64::MAX)
+        // A MIT or a LIT without its trigger price gets the same text
+        // (paper 11/10/2026, ibx#548).
+        if ((stop_type || matches!(order_type.as_str(), "MIT" | "LIT")) && order.aux_price == f64::MAX)
             || (matches!(order_type.as_str(), "TRAIL LIMIT" | "TRAIL LIT")
                 && (order.trail_stop_price == f64::MAX || order.trail_stop_price == 0.0))
         {
@@ -5773,14 +5808,27 @@ impl ClientCore {
         let account_pending = Self::order_account_pending(order, &shared.reference, account);
         // The algo check's warnings come before its refusal (ibx#263).
         let mut algo_warnings = Vec::new();
+        // The reference checks the order as it reads it, then looks at
+        // the order id, then checks what needs the contract. An order
+        // refused by one of these last checks has used its id (ibx#548,
+        // paper 11/10/2026: after 439, 343 or 110 the same id placed again
+        // gets 103, and its cancel 10147; after 321, 391 or 145 it is a
+        // new order).
         let refusal = Self::refusal_before_sending_for(order, exchange, account_pending)
-            .or_else(|| Self::algo_definition_refusal(order, exchange, &shared.reference, &mut algo_warnings))
             .or_else(|| Self::account_config_refusal(order, shared.reference.account_features().as_deref(), account))
-            .or_else(|| Self::good_till_date_refusal(order, contract_zone.as_deref()))
-            .or_else(|| Self::condition_time_zone_refusal(order, contract_zone.as_deref()))
-            .or_else(|| Self::price_refusal(order))
             .or_else(|| Self::order_id_refusal(order_id))
-            .or_else(|| self.refusal_for_order_id(order_id, order, shared));
+            .or_else(|| self.refusal_for_order_id(order_id, order, shared))
+            .or_else(|| {
+                let later = Self::algo_definition_refusal(order, exchange, &shared.reference, &mut algo_warnings)
+                    .or_else(|| Self::good_till_date_refusal(order, contract_zone.as_deref()))
+                    .or_else(|| Self::good_after_time_zone_refusal(order, contract_zone.as_deref()))
+                    .or_else(|| Self::condition_time_zone_refusal(order, contract_zone.as_deref()))
+                    .or_else(|| Self::price_refusal(order));
+                if later.is_some() && !order.what_if && !self.is_order_tracked(order_id) {
+                    self.note_order_id(order_id);
+                }
+                later
+            });
         notices.extend(algo_warnings);
         (notices, refusal)
     }
@@ -7102,6 +7150,12 @@ mod tests {
         assert_eq!(refused("20260930 16:00:00 US/Central", Some("US/Central")), None);
         assert_eq!(refused("20260930 16:00:00 America/Chicago", None), None);
         assert_eq!(refused("20260930 16:00:00 Nowhere/Zone", None), Some(343));
+        // What cannot be read is refused before, with 391 (ibx#548).
+        let unreadable = |s: &str| ClientCore::refusal_before_sending(&gtd(s), "SMART").map(|(code, _)| code);
+        assert_eq!(unreadable("not a date"), Some(391));
+        assert_eq!(unreadable("20260930 16:00:00 Nowhere/Zone"), Some(391));
+        assert_eq!(unreadable("20260930 16:00:00 Asia/Tokyo"), None);
+        assert_eq!(unreadable(""), None);
         let machine = crate::gateway::machine_time_zone();
         assert_eq!(refused(&format!("20260930 16:00:00 {machine}"), Some("US/Eastern")), None);
     }
@@ -7134,7 +7188,7 @@ mod tests {
     // reading errors as 320 (only the last one), the order rules as 321.
     #[test]
     fn number_rules_of_the_reference_are_refused() {
-        let rule = |cause: &str| Some((321, format!("Error validating request.-'bH' : cause - {}", cause)));
+        let rule = |cause: &str| Some((321, format!("Error validating request.-'v' : cause - {}", cause)));
         let read = |cause: &str| Some((320, format!("Error reading request:{}", cause)));
         for qty in [-1.0, 1_000_000_000.0, f64::INFINITY] {
             assert_eq!(ClientCore::refusal_before_sending(&ApiOrder { total_quantity: qty, ..lmt(100.0) }, "SMART"),
@@ -7164,15 +7218,17 @@ mod tests {
     // a number; a set price passes.
     #[test]
     fn stop_and_trigger_prices_follow_the_reference() {
-        let rule = |cause: &str| Some((321, format!("Error validating request.-'bH' : cause - {}", cause)));
+        let rule = |cause: &str| Some((321, format!("Error validating request.-'v' : cause - {}", cause)));
         let typed = |t: &str, aux: f64| ApiOrder { order_type: t.into(), aux_price: aux, ..lmt(100.0) };
         for t in ["STP", "STP LMT", "STP PRT"] {
             assert_eq!(ClientCore::refusal_before_sending(&typed(t, f64::MAX), "SMART"), rule("Please enter a stop price"), "{t}");
             assert_eq!(ClientCore::refusal_before_sending(&typed(t, f64::NAN), "SMART"), rule("Invalid Stop Price"), "{t}");
             assert_eq!(ClientCore::refusal_before_sending(&typed(t, 90.0), "SMART"), None, "{t}");
         }
+        // A MIT without its trigger price gets the text of the stop
+        // price (ibx#548, paper 11/10/2026).
         for t in ["MIT", "LIT"] {
-            assert_eq!(ClientCore::refusal_before_sending(&typed(t, f64::MAX), "SMART"), rule("Invalid Trigger Price"), "{t}");
+            assert_eq!(ClientCore::refusal_before_sending(&typed(t, f64::MAX), "SMART"), rule("Please enter a stop price"), "{t}");
             assert_eq!(ClientCore::refusal_before_sending(&typed(t, f64::INFINITY), "SMART"), rule("Invalid Trigger Price"), "{t}");
             assert_eq!(ClientCore::refusal_before_sending(&typed(t, 90.0), "SMART"), None, "{t}");
         }
@@ -7186,7 +7242,7 @@ mod tests {
     // (`jextend.bH.S()@437-455`), nothing sent.
     #[test]
     fn an_order_with_no_exchange_is_refused() {
-        let text = "Error validating request.-'bH' : cause - Missing order exchange".to_string();
+        let text = "Error validating request.-'v' : cause - Missing order exchange.".to_string();
         assert_eq!(ClientCore::refusal_before_sending(&lmt(100.0), ""), Some((321, text.clone())));
         let unknown_side = ApiOrder { action: "X".into(), ..lmt(100.0) };
         assert_eq!(ClientCore::refusal_before_sending(&unknown_side, ""), Some((321, text)));

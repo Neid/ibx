@@ -63,14 +63,35 @@ fn order(order_type: &str) -> Order {
 
 // ── The reading of the order: 320 with the rule text, or the date codes ──
 
+// A date that cannot be read is refused with the table's text under the
+// code 391 (ibx#548, paper 11/10/2026: "not a date"); 343 is the code of a
+// zone that is not the contract's.
 #[test]
 fn good_till_date_not_a_date() {
-    refused("343 bH.q@2674", &aapl(), &Order { tif: "GTD".into(), good_till_date: "next week".into(), ..order("LMT") });
+    let mut engine = Engine::start();
+    let order = Order { tif: "GTD".into(), good_till_date: "next week".into(), ..order("LMT") };
+    engine.client.place_order(REFUSED, &aapl(), &order).unwrap();
+    let rule = local_rule("343 bH.q@2674");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let mut errors = Vec::new();
+    while errors.is_empty() && std::time::Instant::now() < deadline {
+        errors.extend(engine.errors().into_iter().filter(|e| e.0 == REFUSED));
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+    assert!(errors.iter().any(|(_, code, text)| *code == 391 && matches_template(&rule.text, text, false)), "{errors:?}");
 }
 
+// A start time that cannot be read is left out by a current client's
+// reference, and the order is sent (ibx#594, paper 11/10/2026); ibx
+// refuses with the table's text only a time alone, which it cannot do.
 #[test]
 fn good_after_time_not_a_date() {
-    refused("337 bH.q@2497", &aapl(), &Order { good_after_time: "after lunch".into(), ..order("LMT") });
+    refused("337 bH.q@2497", &aapl(), &Order { good_after_time: "15:30:00".into(), ..order("LMT") });
+    let mut engine = Engine::start();
+    engine.client.place_order(REFUSED, &aapl(), &Order { good_after_time: "after lunch".into(), ..order("LMT") }).unwrap();
+    let frames = engine.orders(1);
+    assert_eq!(field(&frames[0], 6121), Some("7"), "the order is sent");
+    assert!(engine.errors().iter().all(|e| e.0 != REFUSED));
 }
 
 #[test]
@@ -353,9 +374,15 @@ fn stop_order_with_a_stop_price_not_a_number() {
     refused("403 bH.S@6696", &aapl(), &Order { action: "SELL".into(), aux_price: f64::NAN, ..order("STP") });
 }
 
+// A MIT or a LIT without its trigger price gets the text of the missing
+// stop price (ibx#548, paper 11/10/2026); one that is not a number gets
+// the table's text of the trigger price.
 #[test]
 fn touched_order_without_a_trigger_price() {
-    refused("361 bH.S@6766", &aapl(), &Order { aux_price: f64::MAX, ..order("MIT") });
+    refused("321 bH.S@1750", &aapl(), &Order { aux_price: f64::MAX, ..order("MIT") });
+    refused("321 bH.S@1750", &aapl(), &Order { aux_price: f64::MAX, ..order("LIT") });
+    refused("361 bH.S@6766", &aapl(), &Order { aux_price: f64::INFINITY, ..order("MIT") });
+    refused("361 bH.S@6766", &aapl(), &Order { aux_price: f64::INFINITY, ..order("LIT") });
 }
 
 #[test]

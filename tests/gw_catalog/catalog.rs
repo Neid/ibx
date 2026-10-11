@@ -91,8 +91,21 @@ pub fn local_rules() -> Vec<LocalRule> {
         id: r["id"].clone(),
         code: r["code"].parse().unwrap(),
         api_code: r["api_code"].parse().unwrap(),
-        text: r["text"].replace("\\n", "\n"),
+        text: as_a_current_client_gets_it(&r["text"].replace("\\n", "\n")),
     }).collect()
+}
+
+/// The text of a rule as a client of the current official library gets
+/// it (ibx#548, paper 11/10/2026, sixteen rules run on the reference):
+/// the table names the handler of the older message form; the current
+/// one is named `v`, and its text for an order without an exchange ends
+/// with a period.
+fn as_a_current_client_gets_it(text: &str) -> String {
+    let text = text.replace("Error validating request.-'bH' :", "Error validating request.-'v' :");
+    match text.strip_suffix("cause - Missing order exchange") {
+        Some(_) => text + ".",
+        None => text,
+    }
 }
 
 pub fn local_rule(id: &str) -> LocalRule {

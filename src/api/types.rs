@@ -470,8 +470,8 @@ impl Order {
             min_qty: if self.min_qty == i32::MAX { 0 } else { self.min_qty.max(0) as u32 },
             hidden: self.hidden,
             outside_rth: self.outside_rth,
-            // A goodAfterTime that is not a date and time is refused before
-            // sending (ibx#467), so only an instant reaches here.
+            // A goodAfterTime that is not a date and time is left out, as
+            // the reference leaves it out (ibx#594).
             good_after: match crate::config::parse_ib_expiry(&self.good_after_time) {
                 Ok(Some(crate::config::IbExpiry::Instant(secs))) => secs,
                 _ => 0,

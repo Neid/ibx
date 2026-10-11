@@ -456,9 +456,9 @@ fn combo_refusals_before_sending() {
     };
     let lmt = combo_lmt("BUY", 1.0);
     let no_legs = ApiContract { combo_legs: Vec::new(), ..spy_qqq("QQQ,SPY") };
-    assert_eq!(place(&mut s, &no_legs, &lmt), ["error 7 321 Error validating request.-'bH' : cause - Security type 'BAG' requires combo leg details."]);
+    assert_eq!(place(&mut s, &no_legs, &lmt), ["error 7 321 Error validating request.-'v' : cause - Security type 'BAG' requires combo leg details."]);
     let chf = ApiContract { currency: "CHF".into(), ..spy_qqq("QQQ,SPY") };
-    assert_eq!(place(&mut s, &chf, &lmt), ["error 7 321 Error validating request.-'bH' : cause - Currency CHF isn't supported for smart combo."]);
+    assert_eq!(place(&mut s, &chf, &lmt), ["error 7 321 Error validating request.-'v' : cause - Currency CHF isn't supported for smart combo."]);
     let unknown = ApiOrder { smart_combo_routing_params: vec![TagValue { tag: "Foo".into(), value: "1".into() }], ..lmt.clone() };
     assert!(place(&mut s, &spy_qqq("QQQ,SPY"), &unknown)[0].starts_with("error 7 320 Error reading request:Invalid combo routing tag."));
     let three_prices = ApiOrder { order_combo_legs: vec![1.0, 2.0, 3.0], lmt_price: f64::MAX, ..lmt.clone() };
@@ -466,24 +466,24 @@ fn combo_refusals_before_sending() {
         ["error 7 320 Error reading request:Mismatch per-leg price number with combo leg specification."]);
     let priced_mkt = ApiOrder { order_type: "MKT".into(), order_combo_legs: vec![1.0, 2.0], ..lmt.clone() };
     assert_eq!(place(&mut s, &spy_qqq("QQQ,SPY"), &priced_mkt),
-        ["error 7 321 Error validating request.-'bH' : cause - The combo details for leg '0' are invalid. - Only LMT or REL+LMT order allows using per-leg prices."]);
+        ["error 7 321 Error validating request.-'v' : cause - The combo details for leg '0' are invalid. - Only LMT or REL+LMT order allows using per-leg prices."]);
     let one_price = ApiOrder { order_combo_legs: vec![1.0, f64::MAX], lmt_price: f64::MAX, ..lmt.clone() };
     assert_eq!(place(&mut s, &spy_qqq("QQQ,SPY"), &one_price),
-        ["error 7 321 Error validating request.-'bH' : cause - The combo details for leg '1' are invalid. - All leg prices are needed when specifying per-leg prices."]);
+        ["error 7 321 Error validating request.-'v' : cause - The combo details for leg '1' are invalid. - All leg prices are needed when specifying per-leg prices."]);
     let both = ApiOrder { order_combo_legs: vec![1.0, 2.0], ..lmt.clone() };
     assert_eq!(place(&mut s, &spy_qqq("QQQ,SPY"), &both),
-        ["error 7 321 Error validating request.-'bH' : cause - Can't specify combo price when using per-leg prices."]);
+        ["error 7 321 Error validating request.-'v' : cause - Can't specify combo price when using per-leg prices."]);
     let mut bad_leg = spy_qqq("QQQ,SPY");
     bad_leg.combo_legs[1].action = "HOLD".into();
     assert_eq!(place(&mut s, &bad_leg, &lmt),
-        ["error 7 321 Error validating request.-'bH' : cause - The combo details for leg '1' are invalid. -  conid, ratio, side: 320227571, 1, 0"]);
+        ["error 7 321 Error validating request.-'v' : cause - The combo details for leg '1' are invalid. -  conid, ratio, side: 320227571, 1, 0"]);
     let mut short_leg = spy_qqq("QQQ,SPY");
     short_leg.combo_legs[1].action = "SSHORT".into();
     assert_eq!(place(&mut s, &short_leg, &lmt),
-        ["error 7 321 Error validating request.-'bH' : cause - The combo details for leg '1' are invalid. - Not an institutional account, or an away clearing order"]);
+        ["error 7 321 Error validating request.-'v' : cause - The combo details for leg '1' are invalid. - Not an institutional account, or an away clearing order"]);
     let mut two_two = spy_qqq("QQQ,SPY");
     for l in two_two.combo_legs.iter_mut() { l.ratio = 2; }
-    assert_eq!(place(&mut s, &two_two, &lmt), ["error 7 321 Error validating request.-'bH' : cause - Invalid leg ratio."]);
+    assert_eq!(place(&mut s, &two_two, &lmt), ["error 7 321 Error validating request.-'v' : cause - Invalid leg ratio."]);
     s.assert_nothing_sent();
 }
 

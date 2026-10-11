@@ -97,9 +97,9 @@ def test_refusals_before_sending():
     c.place_order(9, combo([leg(SPY, "BUY"), leg(QQQ, "SELL")]), order(prices=[1.0, 2.0]))
     c._test_dispatch_once()
     assert w.errors == [
-        (7, 321, "Error validating request.-'bH' : cause - Security type 'BAG' requires combo leg details."),
-        (8, 321, "Error validating request.-'bH' : cause - Currency CHF isn't supported for smart combo."),
-        (9, 321, "Error validating request.-'bH' : cause - Can't specify combo price when using per-leg prices."),
+        (7, 321, "Error validating request.-'v' : cause - Security type 'BAG' requires combo leg details."),
+        (8, 321, "Error validating request.-'v' : cause - Currency CHF isn't supported for smart combo."),
+        (9, 321, "Error validating request.-'v' : cause - Can't specify combo price when using per-leg prices."),
     ]
     assert c._test_take_combo() is None
 
