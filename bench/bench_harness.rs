@@ -174,6 +174,30 @@ impl BenchSession {
         kept.max(self.shared.orders.reported_order_id(BENCH_CLIENT_ID)) + 1
     }
 
+    /// Wait for the cancel of an order to be confirmed (a reject ends it
+    /// too). False when the time runs out.
+    pub fn wait_cancelled(&self, order_id: i64, limit: Duration) -> bool {
+        let deadline = Instant::now() + limit;
+        while let Some(left) = deadline.checked_duration_since(Instant::now()) {
+            match self.event_rx.recv_timeout(left) {
+                Ok(Event::OrderUpdate(update)) if update.order_id == order_id
+                    && matches!(update.status, OrderStatus::Cancelled | OrderStatus::Rejected) => return true,
+                Ok(_) => continue,
+                Err(_) => break,
+            }
+        }
+        false
+    }
+
+    /// Cancel the orders of `ids` that may still work and wait for each
+    /// confirmation; the ids not confirmed are returned (ibx#570).
+    pub fn cancel_all(&self, ids: &[i64], limit_each: Duration) -> Vec<i64> {
+        ids.iter().copied().filter(|&id| {
+            self.send_order(OrderRequest::Cancel { order_id: id });
+            !self.wait_cancelled(id, limit_each)
+        }).collect()
+    }
+
     /// Keep the highest order id of this run for the next one.
     pub fn keep_order_id(&self, highest: i64) {
         if let Some(path) = ibx::order_ids::default_path() {
@@ -189,6 +213,13 @@ impl BenchSession {
             let _ = join.join();
         }
     }
+}
+
+/// The acknowledgement of an order is its first status: before the open
+/// the server gives `PreSubmitted` and may hold the routed status back
+/// (ibx#539).
+pub fn is_ack(status: OrderStatus) -> bool {
+    matches!(status, OrderStatus::PendingSubmit | OrderStatus::PreSubmitted | OrderStatus::Submitted)
 }
 
 // ─── Stats ───

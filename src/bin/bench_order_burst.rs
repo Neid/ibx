@@ -56,8 +56,13 @@ fn main() {
         burst_size,
     );
 
+    // Above the ids of the earlier runs: an id the server has seen is
+    // refused as a duplicate (ibx#570).
+    let first_order_id = session.first_order_id();
+    println!("  First order id: {}", first_order_id);
+    session.keep_order_id(first_order_id + burst_size as i64 - 1);
     for i in 0..burst_size {
-        let order_id = (i + 1) as i64;
+        let order_id = first_order_id + i as i64;
         let price = (100 + i as i64) * (PRICE_SCALE / 100); // $1.00, $1.01, ...
         submit_times.insert(order_id, Instant::now());
         session.send_order(OrderRequest::SubmitLimitGtc {
@@ -89,9 +94,10 @@ fn main() {
         }
         match session.event_rx.recv_timeout(Duration::from_secs(1)) {
             Ok(Event::OrderUpdate(update)) => {
-                if let Some(sub_time) = submit_times.get(&update.order_id) {
-                    if matches!(update.status, OrderStatus::Submitted | OrderStatus::PendingSubmit) {
-                        let ns = (Instant::now() - *sub_time).as_nanos() as u64;
+                // The first status of each order, once.
+                if is_ack(update.status) {
+                    if let Some(sub_time) = submit_times.remove(&update.order_id) {
+                        let ns = (Instant::now() - sub_time).as_nanos() as u64;
                         ack_stats.push(ns);
                         acked += 1;
                     }
@@ -117,27 +123,31 @@ fn main() {
         "[{:.3}s] Cancelling all orders...",
         start.elapsed().as_secs_f64(),
     );
-    for i in 0..burst_size {
-        let order_id = (i + 1) as i64;
+    // Every order placed, acknowledged or not: none is left working.
+    let mut working: std::collections::BTreeSet<OrderId> =
+        (0..burst_size).map(|i| first_order_id + i as i64).collect();
+    for &order_id in &working {
         session.send_order(OrderRequest::Cancel { order_id });
     }
 
     // Wait for cancels
-    let mut cancelled = 0u32;
-    let deadline = Instant::now() + Duration::from_secs(30);
-    loop {
-        if Instant::now() > deadline || cancelled >= acked {
-            break;
-        }
+    let placed = working.len();
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while !working.is_empty() && Instant::now() < deadline {
         match session.event_rx.recv_timeout(Duration::from_secs(1)) {
-            Ok(Event::OrderUpdate(update)) if update.status == OrderStatus::Cancelled => {
-                cancelled += 1;
+            Ok(Event::OrderUpdate(update))
+                if matches!(update.status, OrderStatus::Cancelled | OrderStatus::Rejected) =>
+            {
+                working.remove(&update.order_id);
             }
             Ok(_) => continue,
             Err(crossbeam_channel::RecvTimeoutError::Timeout) => continue,
             Err(_) => break,
         }
     }
+    let cancelled = placed - working.len();
+    // The ones not confirmed are cancelled once more, one by one.
+    let left = session.cancel_all(&working.iter().copied().collect::<Vec<_>>(), Duration::from_secs(10));
 
     // Report
     print_header("Results: Order Burst Throughput");
@@ -161,7 +171,12 @@ fn main() {
     );
     let ack_rate = acked as f64 / all_acked_dur.as_secs_f64();
     println!("  Ack throughput: {:.1} orders/sec", ack_rate);
-    println!("  Cancelled:      {}/{}", cancelled, acked);
+    println!("  Cancelled:      {}/{}", cancelled, placed);
+    println!("  Order ids:           {} to {}", first_order_id, first_order_id + burst_size as i64 - 1);
+    println!("  Orders left working: {} {:?}", left.len(), left);
 
     session.shutdown();
+    if !left.is_empty() {
+        std::process::exit(1);
+    }
 }
