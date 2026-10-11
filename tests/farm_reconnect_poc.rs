@@ -9,6 +9,15 @@ use std::time::{Duration, Instant};
 use ibx::bridge::SharedState;
 use ibx::gateway::{connect_farm, reconnect_ccp, reconnect_ccp_session, Gateway, GatewayConfig, ReconnectAuth};
 
+/// These tests log in the same paper user: one at a time, whatever the
+/// number of test threads (ibx#586). A test that failed leaves the lock
+/// poisoned; the next ones still run.
+static ONE_LOGIN: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn one_login() -> std::sync::MutexGuard<'static, ()> {
+    ONE_LOGIN.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 fn config() -> GatewayConfig {
     GatewayConfig {
         username: std::env::var("IB_USERNAME").expect("IB_USERNAME"),
@@ -25,6 +34,7 @@ fn config() -> GatewayConfig {
 #[test]
 #[ignore = "live: logs in to the paper account (IB_USERNAME / IB_PASSWORD)"]
 fn farm_reconnect_with_cached_credentials() {
+    let _one = one_login();
     let cfg = config();
 
     // Phase 1: Full auth
@@ -62,6 +72,7 @@ fn farm_reconnect_with_cached_credentials() {
 #[test]
 #[ignore = "live: logs in to the paper account (IB_USERNAME / IB_PASSWORD)"]
 fn hotloop_auto_reconnect_on_farm_disconnect() {
+    let _one = one_login();
     let cfg = config();
 
     let (gw, farm_conn, ccp_conn, hmds) =
@@ -105,6 +116,9 @@ fn hotloop_auto_reconnect_on_farm_disconnect() {
             // connection (ibx#287).
             hot_loop.poll_farm_for_test();
             hot_loop.poll_auth_for_test();
+            // The subscription leaves in a market data pass, which the
+            // command step sends when it is due (ibx#560, ibx#586).
+            hot_loop.poll_once();
             if hot_loop.market_for_test().min_tick(spy) > 0.0 { return true; }
             std::thread::sleep(Duration::from_millis(5));
         }
@@ -146,6 +160,7 @@ fn hotloop_auto_reconnect_on_farm_disconnect() {
 #[test]
 #[ignore = "live: logs in to the paper account (IB_USERNAME / IB_PASSWORD)"]
 fn ccp_reconnect_with_cached_credentials() {
+    let _one = one_login();
     let cfg = config();
 
     let t0 = Instant::now();
@@ -207,6 +222,7 @@ fn ccp_reconnect_with_cached_credentials() {
 #[ignore]
 fn auth_login_and_reconnect_without_key_exchange_live() {
     let _ = env_logger::try_init();
+    let _one = one_login();
     let cfg = config();
     let (gw, _farm_conn, ccp_conn, _hmds) = Gateway::connect(&cfg).expect("Initial connect failed");
     assert!(gw.account_id.starts_with("DU"), "refusing to run: the logged-in account is not a paper account (its id does not start with DU)");
@@ -258,6 +274,7 @@ fn auth_login_without_tls_live() {
     // SAFETY: an ignored test, run alone; nothing else reads the
     // environment at the same time.
     unsafe { std::env::set_var("IBX_USE_SSL", "false") };
+    let _one = one_login();
     let cfg = config();
     let (gw, _farm_conn, ccp_conn, _hmds) = Gateway::connect(&cfg).expect("login without TLS");
     assert!(gw.account_id.starts_with("DU"), "refusing to run: the logged-in account is not a paper account (its id does not start with DU)");
