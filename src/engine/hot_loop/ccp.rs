@@ -367,6 +367,12 @@ pub(crate) struct CcpState {
     pub(crate) ccp_sign_iv: std::sync::Mutex<Vec<u8>>,
     /// Secdef replies awaiting paired schedule reply (joined by tag 6256).
     pub(crate) pending_schedule_pair: Vec<PendingSchedulePair>,
+    /// Trading schedules received this session, by join key (ibx#527): a
+    /// row whose schedule is known does not wait and asks nothing. Each
+    /// with the UTC day it came: it is asked again on another day, since a
+    /// schedule lists a few days only (how long the reference keeps one
+    /// is not known).
+    pub(crate) schedules: std::collections::HashMap<String, (jiff::civil::Date, Option<crate::control::contracts::ContractSchedule>)>,
     /// Counter for internal schedule subscribe req IDs.
     pub(crate) next_schedule_sub_id: u32,
     /// Fan-out state for by-symbol lookups: the records wait for the
@@ -453,6 +459,10 @@ pub(crate) struct PendingScannerEnrichment {
     pub deadline: Instant,
 }
 
+fn utc_day() -> jiff::civil::Date {
+    jiff::Timestamp::now().to_zoned(jiff::tz::TimeZone::UTC).date()
+}
+
 /// A contract row waiting for its trading schedule. The lookup's
 /// contract_details_end follows once none of its rows waits.
 pub(crate) struct PendingSchedulePair {
@@ -460,6 +470,9 @@ pub(crate) struct PendingSchedulePair {
     pub join_key: String,
     pub def: crate::control::contracts::ContractDefinition,
     pub deadline: Instant,
+    /// Its schedule came (or its time ran out); it leaves once no earlier
+    /// row of its lookup waits (ibx#527).
+    pub ready: bool,
 }
 
 /// In-flight by-symbol fan-out: the per-exchange requests sent for the
@@ -746,6 +759,7 @@ impl CcpState {
             ccp_sign_key: Vec::new(),
             ccp_sign_iv: std::sync::Mutex::new(Vec::new()),
             pending_schedule_pair: Vec::new(),
+            schedules: std::collections::HashMap::new(),
             next_schedule_sub_id: 1,
             pending_fanout: Vec::new(),
             next_fanout_id: 1,
@@ -2514,22 +2528,41 @@ impl CcpState {
         if !self.pending_schedule_pair.iter().any(|p| now >= p.deadline) {
             return;
         }
-        let (expired, waiting): (Vec<_>, Vec<_>) = std::mem::take(&mut self.pending_schedule_pair)
-            .into_iter()
-            .partition(|p| now >= p.deadline);
-        self.pending_schedule_pair = waiting;
-        let mut req_ids: Vec<ReqId> = Vec::new();
-        for mut p in expired {
+        for p in self.pending_schedule_pair.iter_mut().filter(|p| !p.ready && now >= p.deadline) {
             log::warn!("Schedule pair timeout: api_req_id={} join_key={}", p.api_req_id, p.join_key);
             p.def.trading_hours = None;
             p.def.liquid_hours = None;
             p.def.time_zone_id = None;
-            if !req_ids.contains(&p.api_req_id) {
-                req_ids.push(p.api_req_id);
-            }
-            push_contract_row(shared, event_tx, p.api_req_id, p.def);
+            p.ready = true;
         }
-        for req_id in req_ids {
+        self.release_ready_rows(shared, event_tx);
+    }
+
+    /// Give the rows whose schedule came, those of one lookup in the order
+    /// of its records: a row leaves once no earlier row of its lookup
+    /// waits. The reference asks the schedules it lacks one at a time, in
+    /// record order, so its waiting rows come out in that order whatever
+    /// the order of the answers (ibx#527; recording of 02/10/2026, a bond
+    /// lookup by issuer of 41 rows). The end follows the last row.
+    fn release_ready_rows(&mut self, shared: &SharedState, event_tx: &Option<Sender<Event>>) {
+        let mut blocked: Vec<ReqId> = Vec::new();
+        let mut done: Vec<ReqId> = Vec::new();
+        let mut waiting = Vec::with_capacity(self.pending_schedule_pair.len());
+        for p in std::mem::take(&mut self.pending_schedule_pair) {
+            if p.ready && !blocked.contains(&p.api_req_id) {
+                if !done.contains(&p.api_req_id) {
+                    done.push(p.api_req_id);
+                }
+                push_contract_row(shared, event_tx, p.api_req_id, p.def);
+            } else {
+                if !blocked.contains(&p.api_req_id) {
+                    blocked.push(p.api_req_id);
+                }
+                waiting.push(p);
+            }
+        }
+        self.pending_schedule_pair = waiting;
+        for req_id in done {
             self.end_if_complete(req_id, shared, event_tx);
         }
     }
@@ -2548,29 +2581,22 @@ impl CcpState {
             Some(v) => v,
             None => return,
         };
-        if !self.pending_schedule_pair.iter().any(|p| p.join_key == join_key) {
+        let sched = crate::control::contracts::parse_schedule_response(msg);
+        let waited = self.pending_schedule_pair.iter().any(|p| !p.ready && p.join_key == join_key);
+        // Kept for the session: the next row with this key does not wait.
+        self.schedules.insert(join_key.clone(), (utc_day(), sched.clone()));
+        if !waited {
             return;
         }
-        let (ready, waiting): (Vec<_>, Vec<_>) = std::mem::take(&mut self.pending_schedule_pair)
-            .into_iter()
-            .partition(|p| p.join_key == join_key);
-        self.pending_schedule_pair = waiting;
-        let sched = crate::control::contracts::parse_schedule_response(msg);
-        let mut req_ids: Vec<ReqId> = Vec::new();
-        for mut pair in ready {
+        for pair in self.pending_schedule_pair.iter_mut().filter(|p| !p.ready && p.join_key == join_key) {
             if let Some(sched) = &sched {
                 // In the zone of the schedule, from its current day on, as
                 // the reference (ibx#436).
                 crate::control::contracts::apply_schedule(&mut pair.def, sched, jiff::Timestamp::now());
             }
-            if !req_ids.contains(&pair.api_req_id) {
-                req_ids.push(pair.api_req_id);
-            }
-            push_contract_row(shared, event_tx, pair.api_req_id, pair.def);
+            pair.ready = true;
         }
-        for req_id in req_ids {
-            self.end_if_complete(req_id, shared, event_tx);
-        }
+        self.release_ready_rows(shared, event_tx);
     }
 
     /// Send P&L subscribe: 6040=142 with 6529=PLR.{N}|1={account}|
@@ -3173,6 +3199,10 @@ impl CcpState {
     /// The rows of a lookup, in record order (ibx#435): each record gets its
     /// market rule ids, and waits for its trading schedule when it has a
     /// join key (one schedule request per key). The end follows the last row.
+    ///
+    /// As the reference (ibx#527): a record whose schedule was received
+    /// earlier in the session is given at once, before the records that
+    /// wait, and asks nothing; the waiting ones follow in record order.
     fn deliver_contract_rows(
         &mut self,
         req_id: ReqId,
@@ -3191,6 +3221,11 @@ impl CcpState {
             def.ev_api = ev_api;
             if def.join_key.is_empty() {
                 push_contract_row(shared, event_tx, req_id, def);
+            } else if let Some((_, known)) = self.schedules.get(&def.join_key).filter(|(day, _)| *day == utc_day()) {
+                if let Some(sched) = known {
+                    crate::control::contracts::apply_schedule(&mut def, sched, jiff::Timestamp::now());
+                }
+                push_contract_row(shared, event_tx, req_id, def);
             } else {
                 if !subscribed.contains(&def.join_key) {
                     self.send_schedule_subscribe(&def.join_key, ccp_conn, hb);
@@ -3201,6 +3236,7 @@ impl CcpState {
                     join_key: def.join_key.clone(),
                     def,
                     deadline,
+                    ready: false,
                 });
             }
         }
@@ -5700,6 +5736,62 @@ mod tests {
         }
         text.push_str("146=1|6038=Y|6019=1|6031=67|6026=1|6023=0|6027=0.25|6030=1|6344=1|");
         pipe_msg(&text)
+    }
+
+    // ibx#527 (recording of 02/10/2026, bond lookups by issuer; paper runs
+    // of 08/10/2026): the rows that wait for a schedule leave in record
+    // order, whatever the order of the schedule answers, and a row whose
+    // schedule came earlier in the session is given at once, before the
+    // rows that wait, with no new schedule request.
+    #[test]
+    fn waiting_rows_leave_in_record_order_and_a_known_schedule_does_not_wait() {
+        let (mut ccp, mut context, shared) = u186_test_state();
+        let (client, mut server) = socket_pair();
+        let mut conn = Some(Connection::new_mem(client));
+        let mut hb = HeartbeatState::new();
+        let records = |keys: &[&str]| {
+            let listings: Vec<String> = (0..keys.len())
+                .map(|i| future_listing(&(100 + i).to_string(), "ESZ6", "202612")).collect();
+            let mut defs = crate::control::contracts::parse_secdef_records(&future_reply("1", &listings)).unwrap();
+            assert_eq!(defs.len(), keys.len());
+            for (def, key) in defs.iter_mut().zip(keys) {
+                def.join_key = key.to_string();
+            }
+            defs
+        };
+        let schedule = |key: &str| pipe_msg(&format!("35=U|6040=107|6256={key}"));
+        let asked = |server: &mut _| ccp_messages_sent(server).iter().filter(|m| m.contains("6040=106")).count();
+        let ids = |shared: &SharedState| shared.reference.drain_contract_details().iter()
+            .map(|(req, d)| (*req, d.con_id)).collect::<Vec<_>>();
+
+        ccp.deliver_contract_rows(41, records(&["A", "B", "A", "C"]), &shared, &None, &mut conn, &mut hb);
+        assert_eq!(asked(&mut server), 3, "one request per key");
+        // The answers of the later rows first: nothing leaves before the first row.
+        ccp.process_ccp_message(&schedule("C"), &mut conn, &mut context, &shared, &None, &mut hb, "DU1");
+        ccp.process_ccp_message(&schedule("B"), &mut conn, &mut context, &shared, &None, &mut hb, "DU1");
+        assert!(ids(&shared).is_empty());
+        assert!(shared.reference.drain_contract_details_end().is_empty());
+        ccp.process_ccp_message(&schedule("A"), &mut conn, &mut context, &shared, &None, &mut hb, "DU1");
+        assert_eq!(ids(&shared), [(41, 100), (41, 101), (41, 102), (41, 103)]);
+        assert_eq!(shared.reference.drain_contract_details_end(), vec![41]);
+
+        // A second lookup: the rows of the known keys at once, the new key waits.
+        ccp.deliver_contract_rows(42, records(&["D", "A", "B"]), &shared, &None, &mut conn, &mut hb);
+        assert_eq!(asked(&mut server), 1, "the new key only");
+        assert_eq!(ids(&shared), [(42, 101), (42, 102)]);
+        assert!(shared.reference.drain_contract_details_end().is_empty());
+        ccp.process_ccp_message(&schedule("D"), &mut conn, &mut context, &shared, &None, &mut hb, "DU1");
+        assert_eq!(ids(&shared), [(42, 100)]);
+        assert_eq!(shared.reference.drain_contract_details_end(), vec![42]);
+        assert!(ccp.pending_schedule_pair.is_empty());
+
+        // A row out of time leaves without its schedule, and frees the rows behind it.
+        ccp.deliver_contract_rows(43, records(&["E", "A"]), &shared, &None, &mut conn, &mut hb);
+        assert_eq!(ids(&shared), [(43, 101)]);
+        ccp.pending_schedule_pair[0].deadline = Instant::now();
+        ccp.sweep_pending_schedule_pairs(&shared, &None);
+        assert_eq!(ids(&shared), [(43, 100)]);
+        assert_eq!(shared.reference.drain_contract_details_end(), vec![43]);
     }
 
     // Captured 02/10/2026 (b1_438_lookups): CONTFUT ES CME goes out as the
