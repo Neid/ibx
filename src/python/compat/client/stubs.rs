@@ -54,7 +54,9 @@ impl EClient {
             return Ok(());
         }
         let tx = self.tx()?;
-        let request = crate::types::ControlCommand::CalcOption { req_id, con_id: contract.con_id, kind, under_price };
+        let request = crate::types::ControlCommand::CalcOption {
+            req_id, con_id: contract.con_id, exchange: api.exchange.clone(), kind, under_price,
+        };
         super::send_cmd(py, &tx, crate::client_core::ClientCore::resolve_first(req_id, &api, request))?;
         Ok(())
     }

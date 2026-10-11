@@ -119,9 +119,15 @@ impl OptCalc {
     }
 
     /// A new calculation. Its definition and inputs are asked when not known.
+    ///
+    /// The definition is asked as the reference asks it (ibx#589, paper
+    /// 11/10/2026, first request of a session): by conId on the contract's
+    /// exchange. Asked with no exchange, the server gave a stock's
+    /// definition and none for an option, and every calculation ended
+    /// with error 200.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn start(
-        &mut self, req_id: ReqId, con_id: i64, kind: CalcKind, under_price: f64,
+        &mut self, req_id: ReqId, con_id: i64, exchange: &str, kind: CalcKind, under_price: f64,
         conn: &mut Option<Connection>, hb: &mut HeartbeatState, shared: &SharedState,
     ) {
         // The model starts with the first calculation; its clock with it.
@@ -134,15 +140,19 @@ impl OptCalc {
             self.terms.insert(con_id, Known::Asked(Instant::now()));
             if let Some(c) = conn.as_mut() {
                 let ts = chrono_free_timestamp();
-                let number_str = number.to_string();
+                let name = format!("{}{}", crate::control::contracts::SECDEF_MSG_NAME, number);
                 let con_id_str = con_id.to_string();
+                // No exchange given reads as the smart one.
+                let on = if exchange.is_empty() { "SMART" } else { exchange };
                 let _ = c.send_fix(&[
                     (fix::TAG_MSG_TYPE, "c"),
                     (fix::TAG_SENDING_TIME, &ts),
-                    (crate::control::contracts::TAG_SECURITY_REQ_ID, &number_str),
+                    (crate::control::contracts::TAG_SECURITY_REQ_ID, &name),
                     (crate::control::contracts::TAG_SECURITY_REQ_TYPE, "2"),
-                    (crate::control::contracts::TAG_IB_CON_ID, &con_id_str),
                     (crate::control::contracts::TAG_IB_SOURCE, "Socket"),
+                    (146, "1"),
+                    (crate::control::contracts::TAG_IB_CON_ID, &con_id_str),
+                    (6004, crate::control::contracts::exchange_to_fix(on)),
                 ]);
                 hb.last_ccp_sent = Instant::now();
             }

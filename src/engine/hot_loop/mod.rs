@@ -2112,8 +2112,8 @@ impl HotLoop {
                         }
                     }
                 }
-                ControlCommand::CalcOption { req_id, con_id, kind, under_price } => {
-                    self.ccp.optcalc.start(req_id, con_id, kind, under_price, &mut self.ccp_conn, &mut self.hb, &self.shared);
+                ControlCommand::CalcOption { req_id, con_id, exchange, kind, under_price } => {
+                    self.ccp.optcalc.start(req_id, con_id, &exchange, kind, under_price, &mut self.ccp_conn, &mut self.hb, &self.shared);
                 }
                 ControlCommand::CancelFundamentalData { req_id } => {
                     if let Some((id, xml)) = self.hmds.cancel_fundamental(req_id) {

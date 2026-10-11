@@ -2210,6 +2210,9 @@ pub enum ControlCommand {
     CalcOption {
         req_id: ReqId,
         con_id: i64,
+        /// The contract's exchange as the caller gave it: the definition
+        /// of an option is asked on it (ibx#589).
+        exchange: String,
         kind: crate::control::optcalc::CalcKind,
         under_price: f64,
     },

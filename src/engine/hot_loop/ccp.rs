@@ -5552,6 +5552,44 @@ mod tests {
         assert!(ccp_messages_sent(&mut server).is_empty(), "no second company lookup");
     }
 
+    // ibx#589 (paper 11/10/2026, market closed, first request of the
+    // session on both sides): the definition of the option of a
+    // calculation is asked by conId on the contract's exchange, as the
+    // reference asks it. Asked with no exchange, the server answered with
+    // no definition and the calculation ended with error 200.
+    #[test]
+    fn the_option_of_a_calculation_is_asked_on_its_exchange() {
+        let (mut ccp, _context, shared) = u186_test_state();
+        let (client, mut server) = socket_pair();
+        let mut conn = Some(Connection::new_mem(client));
+        let mut hb = HeartbeatState::new();
+        let kind = crate::control::optcalc::CalcKind::Price { volatility: 0.3 };
+        ccp.optcalc.start(9100, 692807782, "SMART", kind, 250.0, &mut conn, &mut hb, &shared);
+        ccp.optcalc.start(9101, 692807783, "CBOE", kind, 250.0, &mut conn, &mut hb, &shared);
+        // Known or asked already: nothing more is sent.
+        ccp.optcalc.start(9102, 692807782, "SMART", kind, 250.0, &mut conn, &mut hb, &shared);
+        let first = super::super::optcalc::OPTCALC_LOOKUP_FIRST_ID;
+        assert_eq!(ccp_messages_sent(&mut server), [
+            format!("35=c|320=SecDefReqMsgReqByConid{first}|321=2|6088=Socket|146=1|6008=692807782|6004=BEST"),
+            format!("35=c|320=SecDefReqMsgReqByConid{}|321=2|6088=Socket|146=1|6008=692807783|6004=CBOE", first + 1),
+        ]);
+        // The answer is read by the name of the request.
+        let reply = pipe_msg(&format!(
+            "35=d|43=N|320=SecDefReqMsgReqByConid{first}|322=*|323=4|55=AAPL|167=OPT|207=BEST|6008=692807782|15=USD|58=AAPL|\
+             6035=AAPL  261218C00250000|6058=AAPL|541=20261218|200=202612|201=1|202=250|231=100|146=1|6038=Y|6019=1|\
+             6031=32|6026=1|6023=0|6027=0.01|6030=1|6344=1|6008=692807782|6346=265598|310=STK"));
+        assert!(ccp.optcalc.secdef_reply(&format!("SecDefReqMsgReqByConid{first}"), &reply, &mut conn, &mut hb, &shared));
+        assert!(shared.orders.drain_order_errors().iter().all(|e| e.1 != 200), "the option is known: no error 200");
+    }
+
+    #[test]
+    fn a_quantity_of_an_order_message_is_grouped_by_thousands() {
+        for (given, shown) in [("1", "1"), ("100", "100"), ("999", "999"), ("1000", "1,000"), ("12345", "12,345"),
+            ("5000000", "5,000,000"), ("1234.5", "1,234.5"), ("0.5", "0.5"), ("", "")] {
+            assert_eq!(grouped_quantity(given), shown);
+        }
+    }
+
     #[test]
     fn records_sharing_a_join_key_ask_their_schedule_once() {
         let (mut ccp, mut context, shared) = u186_test_state();

@@ -168,7 +168,9 @@ impl EClient {
             self.shared.orders.push_order_error(req_id, code, text);
             return Ok(());
         }
-        let request = crate::types::ControlCommand::CalcOption { req_id, con_id: contract.con_id, kind, under_price };
+        let request = crate::types::ControlCommand::CalcOption {
+            req_id, con_id: contract.con_id, exchange: contract.exchange.clone(), kind, under_price,
+        };
         self.send(crate::client_core::ClientCore::resolve_first(req_id, contract, request))
     }
 
