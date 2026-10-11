@@ -1,0 +1,34 @@
+<ScanParameterResponse>
+	<FilterList>
+		<RangeFilter>
+			<id>bad type on min</id>
+			<access>superclass member</access>
+			<IntField varName="min" type="no.such.Class"><code>a</code></IntField>
+			<IntField varName="max"><code>b</code></IntField>
+			<skipValidation>true</skipValidation>
+			<default>dflt</default>
+			<Columns><Column colId="1"/></Columns>
+		</RangeFilter>
+		<RangeFilter>
+			<id>bad type on a superclass member</id>
+			<access>before</access>
+			<Columns type="no.such.Class"><Column colId="1"/></Columns>
+			<nscanOnly>after, same class level</nscanOnly>
+			<rawId>after, same class level</rawId>
+			<IntField varName="min"><code>a</code></IntField>
+			<default>subclass level</default>
+		</RangeFilter>
+		<RangeFilter type="no.such.Class"><id>flexible list item with an unknown type</id></RangeFilter>
+		<Whatever type="scanner.filter.VirtualFilter"><id>flexible list item typed by attribute</id></Whatever>
+	</FilterList>
+	<InstrumentList>
+		<Instrument type="scanner.ScanType"><displayName>item of another class</displayName><name>n</name></Instrument>
+		<Instrument type="no.such.Class"><name>unknown type on an item</name></Instrument>
+	</InstrumentList>
+	<LocationTree>
+		<Location varName=""><displayName>L1</displayName><locationCode>C1</locationCode>
+			<LocationTree><Location><displayName>L1.1</displayName><LocationTree/></Location></LocationTree>
+			<LocationTree varName="locationTree"><Location><displayName>by varName wins</displayName></Location></LocationTree>
+		</Location>
+	</LocationTree>
+</ScanParameterResponse>

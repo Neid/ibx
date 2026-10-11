@@ -1,0 +1,25 @@
+<AnyRootName>
+	<InstrumentList>
+		<Instrument m_type="ATTRTYPE" name="attr name" cloudScanNotSupported="TRUE" shortName="from attr">
+			<name>child wins</name>
+			<filters>
+			</filters>
+			<group>a &amp; b &lt; c &gt; 'q' "d" é€</group>
+			<secType><![CDATA[x<y & z]]> tail</secType>
+			<unknown>zzz</unknown>
+		</Instrument>
+		<Instrument type="attr named type" unknownAttr="1"><name/><cloudScanNotSupported>yes</cloudScanNotSupported><secType>a<!-- c -->b</secType><group>   </group><filters>line1
+line2	tab</filters><context> </context><featureCodes>
+</featureCodes></Instrument>
+		<Other><name>an item whatever its tag</name><type>T</type><type>second</type></Other>
+		<Instrument><name><b>nested</b></name><type>x<b>nested</b>y</type><group><b/>tail</group><cloudScanNotSupported>true</cloudScanNotSupported></Instrument>
+		<Instrument><name>null tag</name><null>abc</null><cloudScanNotSupported> true</cloudScanNotSupported></Instrument>
+	</InstrumentList>
+	<ScanTypeList>
+		<ScanType><displayName>bad ints</displayName><respSizeLimit>abc</respSizeLimit><snapshotSizeLimit>#</snapshotSizeLimit><supportsSorting>nope</supportsSorting></ScanType>
+		<ScanType><displayName>ints</displayName><respSizeLimit>+12</respSizeLimit><snapshotSizeLimit>-0</snapshotSizeLimit><supportsSorting>TRUE</supportsSorting></ScanType>
+		<ScanType><displayName>ints2</displayName><respSizeLimit> 5</respSizeLimit><snapshotSizeLimit>99999999999</snapshotSizeLimit><supportsSorting></supportsSorting></ScanType>
+		<ScanType respSizeLimit="7" snapshotSizeLimit=""><displayName>ints3</displayName><respSizeLimit></respSizeLimit></ScanType>
+		<ScanType/>
+	</ScanTypeList>
+</AnyRootName>

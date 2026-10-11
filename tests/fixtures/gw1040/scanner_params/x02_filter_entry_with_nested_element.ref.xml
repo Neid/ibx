@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ScanParameterResponse>
+	<SimilarProductsDefaults varName="similarProductsDefaults">
+		<SimilarProductsDefault>
+			<CompressedScans varName="compressedScans">
+				<CompressedScan>
+					<AdvancedFilter varName="filter">
+/>
+				<CompressedScan>
+					<name>second</name>
+				</CompressedScan>
+			</CompressedScans>
+		</SimilarProductsDefault>
+	</SimilarProductsDefaults>
+	<SidecarScannerDefaults varName="sidecarScannerDefaults">
+		<SidecarScannerTemplateList varName="scannerTemplateList">
+			<SidecarScannerTemplate>
+				<id>1</id>
+				<name>n</name>
+				<AdvancedFilter varName="filter">
+					<ok>1</ok>
+				<product>after, subclass level</product>
+				<predefined>false</predefined>
+				<sortReversed>false</sortReversed>
+				<leftChartDividerLocation>0</leftChartDividerLocation>
+				<rightChartDividerLocation>0</rightChartDividerLocation>
+			</SidecarScannerTemplate>
+			<SidecarScannerTemplate>
+				<AdvancedFilter varName="filter">
+>
+				<product>filter is the first child</product>
+				<predefined>false</predefined>
+				<sortReversed>false</sortReversed>
+				<leftChartDividerLocation>0</leftChartDividerLocation>
+				<rightChartDividerLocation>0</rightChartDividerLocation>
+			</SidecarScannerTemplate>
+			<SidecarScannerTemplate>
+				<AdvancedFilter varName="filter">
+>
+				<predefined>false</predefined>
+				<sortReversed>false</sortReversed>
+				<leftChartDividerLocation>0</leftChartDividerLocation>
+				<rightChartDividerLocation>0</rightChartDividerLocation>
+			</SidecarScannerTemplate>
+		</SidecarScannerTemplateList>
+	</SidecarScannerDefaults>
+</ScanParameterResponse>

@@ -1,0 +1,112 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ScanParameterResponse>
+	<InstrumentList varName="instrumentList">
+		<Instrument>
+			<name>child wins</name>
+			<type>ATTRTYPE</type>
+			<secType>x&lt;y &amp; z tail</secType>
+			<filters></filters>
+			<group>a &amp; b &lt; c &gt; &apos;q&apos; &quot;d&quot; é€</group>
+			<shortName>from attr</shortName>
+			<cloudScanNotSupported>true</cloudScanNotSupported>
+		</Instrument>
+		<Instrument>
+			<name></name>
+			<secType>a c b</secType>
+			<filters>line1&#10;line2	tab</filters>
+			<group>   </group>
+			<context> </context>
+			<cloudScanNotSupported>false</cloudScanNotSupported>
+			<featureCodes></featureCodes>
+		</Instrument>
+		<Instrument>
+			<name>an item whatever its tag</name>
+			<type>T</type>
+			<cloudScanNotSupported>false</cloudScanNotSupported>
+		</Instrument>
+		<Instrument>
+			<type>xy</type>
+			<group>tail</group>
+			<cloudScanNotSupported>true</cloudScanNotSupported>
+		</Instrument>
+		<Instrument>
+			<name>null tag</name>
+			<cloudScanNotSupported>false</cloudScanNotSupported>
+		</Instrument>
+	</InstrumentList>
+	<InstrumentList varName="fullInstrumentList">
+		<Instrument>
+			<name>child wins</name>
+			<type>ATTRTYPE</type>
+			<secType>x&lt;y &amp; z tail</secType>
+			<filters></filters>
+			<group>a &amp; b &lt; c &gt; &apos;q&apos; &quot;d&quot; é€</group>
+			<shortName>from attr</shortName>
+			<cloudScanNotSupported>true</cloudScanNotSupported>
+		</Instrument>
+		<Instrument>
+			<name></name>
+			<secType>a c b</secType>
+			<filters>line1&#10;line2	tab</filters>
+			<group>   </group>
+			<context> </context>
+			<cloudScanNotSupported>false</cloudScanNotSupported>
+			<featureCodes></featureCodes>
+		</Instrument>
+		<Instrument>
+			<name>an item whatever its tag</name>
+			<type>T</type>
+			<cloudScanNotSupported>false</cloudScanNotSupported>
+		</Instrument>
+		<Instrument>
+			<type>xy</type>
+			<group>tail</group>
+			<cloudScanNotSupported>true</cloudScanNotSupported>
+		</Instrument>
+		<Instrument>
+			<name>null tag</name>
+			<cloudScanNotSupported>false</cloudScanNotSupported>
+		</Instrument>
+	</InstrumentList>
+	<ScanTypeList varName="scanTypeList">
+		<ScanType>
+			<displayName>bad ints</displayName>
+			<absoluteColumns>false</absoluteColumns>
+			<supportsSorting>false</supportsSorting>
+			<respSizeLimit>2147483647</respSizeLimit>
+			<snapshotSizeLimit>2147483647</snapshotSizeLimit>
+			<searchDefault>false</searchDefault>
+		</ScanType>
+		<ScanType>
+			<displayName>ints</displayName>
+			<absoluteColumns>false</absoluteColumns>
+			<supportsSorting>true</supportsSorting>
+			<respSizeLimit>12</respSizeLimit>
+			<snapshotSizeLimit>0</snapshotSizeLimit>
+			<searchDefault>false</searchDefault>
+		</ScanType>
+		<ScanType>
+			<displayName>ints2</displayName>
+			<absoluteColumns>false</absoluteColumns>
+			<supportsSorting>false</supportsSorting>
+			<respSizeLimit>2147483647</respSizeLimit>
+			<snapshotSizeLimit>2147483647</snapshotSizeLimit>
+			<searchDefault>false</searchDefault>
+		</ScanType>
+		<ScanType>
+			<displayName>ints3</displayName>
+			<absoluteColumns>false</absoluteColumns>
+			<supportsSorting>true</supportsSorting>
+			<respSizeLimit>2147483647</respSizeLimit>
+			<snapshotSizeLimit>2147483647</snapshotSizeLimit>
+			<searchDefault>false</searchDefault>
+		</ScanType>
+		<ScanType>
+			<absoluteColumns>false</absoluteColumns>
+			<supportsSorting>true</supportsSorting>
+			<respSizeLimit>2147483647</respSizeLimit>
+			<snapshotSizeLimit>2147483647</snapshotSizeLimit>
+			<searchDefault>false</searchDefault>
+		</ScanType>
+	</ScanTypeList>
+</ScanParameterResponse>

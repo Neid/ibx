@@ -1,0 +1,6 @@
+<ScanParameterResponse><SidecarScannerDefaults><SidecarScannerTemplateList>
+<SidecarScannerTemplate id="1"><name>n</name><AdvancedFilter><ok>1</ok><a><b/></a><c>1</c></AdvancedFilter><product>after, subclass level</product></SidecarScannerTemplate>
+<SidecarScannerTemplate><AdvancedFilter><a><b/></a></AdvancedFilter><product>filter is the first child</product></SidecarScannerTemplate>
+<SidecarScannerTemplate><AdvancedFilter><a><b/></a></AdvancedFilter></SidecarScannerTemplate>
+</SidecarScannerTemplateList></SidecarScannerDefaults>
+<SimilarProductsDefaults><SimilarProductsDefault><CompressedScans><CompressedScan><AdvancedFilter><null>x</null></AdvancedFilter></CompressedScan><CompressedScan><name>second</name></CompressedScan></CompressedScans></SimilarProductsDefault></SimilarProductsDefaults></ScanParameterResponse>

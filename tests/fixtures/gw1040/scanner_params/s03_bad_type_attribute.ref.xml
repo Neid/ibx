@@ -1,0 +1,124 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ScanParameterResponse>
+	<InstrumentList varName="instrumentList">
+		<ScanType>
+			<displayName>item of another class</displayName>
+			<absoluteColumns>false</absoluteColumns>
+			<supportsSorting>true</supportsSorting>
+			<respSizeLimit>2147483647</respSizeLimit>
+			<snapshotSizeLimit>2147483647</snapshotSizeLimit>
+			<searchDefault>false</searchDefault>
+		</ScanType>
+		<Instrument>
+			<name>unknown type on an item</name>
+			<cloudScanNotSupported>false</cloudScanNotSupported>
+		</Instrument>
+	</InstrumentList>
+	<InstrumentList varName="fullInstrumentList">
+		<ScanType>
+			<displayName>item of another class</displayName>
+			<absoluteColumns>false</absoluteColumns>
+			<supportsSorting>true</supportsSorting>
+			<respSizeLimit>2147483647</respSizeLimit>
+			<snapshotSizeLimit>2147483647</snapshotSizeLimit>
+			<searchDefault>false</searchDefault>
+		</ScanType>
+		<Instrument>
+			<name>unknown type on an item</name>
+			<cloudScanNotSupported>false</cloudScanNotSupported>
+		</Instrument>
+	</InstrumentList>
+	<LocationTree varName="locationTree">
+		<Location>
+			<displayName>L1</displayName>
+			<locationCode>C1</locationCode>
+			<LocationTree varName="locationTree">
+				<Location>
+					<displayName>by varName wins</displayName>
+				</Location>
+			</LocationTree>
+		</Location>
+	</LocationTree>
+	<FilterList varName="filterList">
+		<RangeFilter>
+			<id>bad type on min</id>
+			<category>General</category>
+			<access>superclass member</access>
+			<Columns varName="columns">
+				<Column>
+					<colId>1</colId>
+					<display>false</display>
+					<displayType>DATA</displayType>
+				</Column>
+			</Columns>
+			<skipValidation>false</skipValidation>
+		</RangeFilter>
+		<RangeFilter>
+			<id>bad type on a superclass member</id>
+			<category>General</category>
+			<access>before</access>
+			<AbstractField type="scanner.filter.IntField" varName="min">
+				<code>a</code>
+				<varName>min</varName>
+				<dontAllowClearAll>false</dontAllowClearAll>
+				<acceptNegatives>false</acceptNegatives>
+				<dontAllowNegative>false</dontAllowNegative>
+				<skipNotEditableField>false</skipNotEditableField>
+				<maxValue>2147483647</maxValue>
+				<minValue>-2147483648</minValue>
+			</AbstractField>
+			<skipValidation>false</skipValidation>
+			<default>subclass level</default>
+		</RangeFilter>
+		<RangeFilter>
+			<id>flexible list item with an unknown type</id>
+			<category>General</category>
+			<skipValidation>false</skipValidation>
+		</RangeFilter>
+		<VirtualFilter>
+			<id>flexible list item typed by attribute</id>
+			<category>General</category>
+		</VirtualFilter>
+	</FilterList>
+	<FilterList varName="uiFilters">
+		<RangeFilter>
+			<id>bad type on min</id>
+			<category>General</category>
+			<access>superclass member</access>
+			<Columns varName="columns">
+				<Column>
+					<colId>1</colId>
+					<display>false</display>
+					<displayType>DATA</displayType>
+				</Column>
+			</Columns>
+			<skipValidation>false</skipValidation>
+		</RangeFilter>
+		<RangeFilter>
+			<id>bad type on a superclass member</id>
+			<category>General</category>
+			<access>before</access>
+			<AbstractField type="scanner.filter.IntField" varName="min">
+				<code>a</code>
+				<varName>min</varName>
+				<dontAllowClearAll>false</dontAllowClearAll>
+				<acceptNegatives>false</acceptNegatives>
+				<dontAllowNegative>false</dontAllowNegative>
+				<skipNotEditableField>false</skipNotEditableField>
+				<maxValue>2147483647</maxValue>
+				<minValue>-2147483648</minValue>
+			</AbstractField>
+			<skipValidation>false</skipValidation>
+			<default>subclass level</default>
+		</RangeFilter>
+		<RangeFilter>
+			<id>flexible list item with an unknown type</id>
+			<category>General</category>
+			<skipValidation>false</skipValidation>
+		</RangeFilter>
+		<VirtualFilter>
+			<id>flexible list item typed by attribute</id>
+			<category>General</category>
+		</VirtualFilter>
+	</FilterList>
+</ScanParameterResponse>

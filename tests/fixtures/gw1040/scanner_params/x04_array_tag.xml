@@ -1,0 +1,1 @@
+<ScanParameterResponse><FilterList><RangeFilter><id>a</id><Array varName="min" type="java.lang.String"><String>x</String></Array><IntField varName="max"><code>m</code></IntField></RangeFilter></FilterList></ScanParameterResponse>

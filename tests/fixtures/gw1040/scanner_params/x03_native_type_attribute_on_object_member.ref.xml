@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ScanParameterResponse>
+	<FilterList varName="filterList">
+		<RangeFilter>
+			<id>a</id>
+			<category>General</category>
+			<AbstractField type="scanner.filter.IntField" varName="max">
+				<code>m</code>
+				<varName>max</varName>
+				<dontAllowClearAll>false</dontAllowClearAll>
+				<acceptNegatives>false</acceptNegatives>
+				<dontAllowNegative>false</dontAllowNegative>
+				<skipNotEditableField>false</skipNotEditableField>
+				<maxValue>2147483647</maxValue>
+				<minValue>-2147483648</minValue>
+			</AbstractField>
+			<skipValidation>false</skipValidation>
+		</RangeFilter>
+	</FilterList>
+	<FilterList varName="uiFilters">
+		<RangeFilter>
+			<id>a</id>
+			<category>General</category>
+			<AbstractField type="scanner.filter.IntField" varName="max">
+				<code>m</code>
+				<varName>max</varName>
+				<dontAllowClearAll>false</dontAllowClearAll>
+				<acceptNegatives>false</acceptNegatives>
+				<dontAllowNegative>false</dontAllowNegative>
+				<skipNotEditableField>false</skipNotEditableField>
+				<maxValue>2147483647</maxValue>
+				<minValue>-2147483648</minValue>
+			</AbstractField>
+			<skipValidation>false</skipValidation>
+		</RangeFilter>
+	</FilterList>
+</ScanParameterResponse>

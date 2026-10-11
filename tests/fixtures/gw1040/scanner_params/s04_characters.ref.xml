@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ScanParameterResponse>
+	<InstrumentList varName="instrumentList">
+		<Instrument>
+			<name>tab	crlf&#10;end</name>
+			<type></type>
+			<secType></secType>
+			<filters></filters>
+			<group>  </group>
+			<shortName>😀 中</shortName>
+			<context>a&apos;b&quot;c</context>
+			<cloudScanNotSupported>false</cloudScanNotSupported>
+		</Instrument>
+		<Instrument>
+			<name>attr with &#10; break and &lt;</name>
+			<type>  </type>
+			<secType></secType>
+			<filters></filters>
+			<group>x</group>
+			<cloudScanNotSupported>false</cloudScanNotSupported>
+		</Instrument>
+		<Instrument>
+			<name> lead and trail </name>
+			<type>a&#10;b</type>
+			<cloudScanNotSupported>true</cloudScanNotSupported>
+		</Instrument>
+	</InstrumentList>
+	<InstrumentList varName="fullInstrumentList">
+		<Instrument>
+			<name>tab	crlf&#10;end</name>
+			<type></type>
+			<secType></secType>
+			<filters></filters>
+			<group>  </group>
+			<shortName>😀 中</shortName>
+			<context>a&apos;b&quot;c</context>
+			<cloudScanNotSupported>false</cloudScanNotSupported>
+		</Instrument>
+		<Instrument>
+			<name>attr with &#10; break and &lt;</name>
+			<type>  </type>
+			<secType></secType>
+			<filters></filters>
+			<group>x</group>
+			<cloudScanNotSupported>false</cloudScanNotSupported>
+		</Instrument>
+		<Instrument>
+			<name> lead and trail </name>
+			<type>a&#10;b</type>
+			<cloudScanNotSupported>true</cloudScanNotSupported>
+		</Instrument>
+	</InstrumentList>
+</ScanParameterResponse>

@@ -1,0 +1,92 @@
+<ScanParameterResponse>
+	<LocationTree/>
+	<InstrumentList varName="fullInstrumentList"><Instrument><name>only in full</name></Instrument></InstrumentList>
+	<InstrumentList><Instrument><name>plain one</name></Instrument></InstrumentList>
+	<InstrumentList><Instrument><name>second plain one, not used</name></Instrument></InstrumentList>
+	<FilterList varName="uiFilters">
+		<SimpleFilter><id>UI1</id><StringField><code>c1</code></StringField></SimpleFilter>
+	</FilterList>
+	<FilterList>
+		<RangeFilter fuzzy="true">
+			<id>R1</id>
+			<DoubleField varName="min"><code>a</code><precision>3</precision><fraction>true</fraction></DoubleField>
+			<IntField varName="max"><code>b</code><maxValue>10</maxValue></IntField>
+			<Columns sortColId="12" direction="up">
+				<Column colId="1" name="n1" displayType="BAR"/>
+				<Column colId="2" name="n2" displayType="NOPE"/>
+				<Column colId="3" name="n3"><displayType>LINE</displayType></Column>
+				<ColumnSetRef colId="4" name="n4"/>
+				<Column type="ColumnSetRef" colId="5" name="n5"/>
+				<Unknown colId="6"/>
+			</Columns>
+		</RangeFilter>
+		<RangeFilter>
+			<id>R2</id>
+			<AbstractField type="scanner.filter.DateField" varName="min"><code>d</code></AbstractField>
+			<AbstractField type="scanner.filter.NoSuchField" varName="max"><code>e</code></AbstractField>
+			<access>after the bad type</access>
+		</RangeFilter>
+		<RangeFilter>
+			<id>R3</id>
+			<DoubleField><code>no varName: neither min nor max</code></DoubleField>
+			<Columns varName="columns"/>
+		</RangeFilter>
+		<SimpleFilter>
+			<id>S1</id>
+			<ComboField>
+				<code>cc</code>
+				<ComboValues>
+					<ComboValue><code>v1</code><displayName>V 1</displayName><default>true</default></ComboValue>
+					<ComboValue/>
+				</ComboValues>
+			</ComboField>
+		</SimpleFilter>
+		<SimpleFilter type="scanner.filter.RangeFilter"><id>typed</id><IntField varName="min"><code>t</code></IntField></SimpleFilter>
+		<VirtualFilter><id>V1</id></VirtualFilter>
+		<NotAFilter><id>skipped</id></NotAFilter>
+		<TripleComboFilter>
+			<id>T1</id>
+			<TripleComboField>
+				<code>tc</code>
+				<TripleValues><Sector name="s1"><Industry name="i1"><Category name="c1"/></Industry></Sector></TripleValues>
+			</TripleComboField>
+		</TripleComboFilter>
+		<TripleComboFilter>
+			<id>T2</id>
+			<TripleComboField>
+				<TripleValues><Sector name="s1"/></TripleValues>
+				<code>after</code>
+			</TripleComboField>
+		</TripleComboFilter>
+	</FilterList>
+	<SimilarProductsDefaults>
+		<SimilarProductsDefault>
+			<CompressedScans>
+				<CompressedScan>
+					<name>n</name>
+					<AdvancedFilter>
+						<industryLike>SAME|SAME</industryLike>
+						<a minTwsBuild="12" maxTwsBuild="34">x &amp; y &lt; 'z'</a>
+						<b minTwsBuild="bad" maxTwsBuild="">   </b>
+						<c/>
+						<a>duplicate name</a>
+					</AdvancedFilter>
+				</CompressedScan>
+				<CompressedScan><name>empty filter</name><AdvancedFilter/></CompressedScan>
+				<CompressedScan><name>by varName</name><AdvancedFilter varName="other"><x>1</x></AdvancedFilter><AdvancedFilter varName="filter"><y>2</y></AdvancedFilter></CompressedScan>
+			</CompressedScans>
+		</SimilarProductsDefault>
+	</SimilarProductsDefaults>
+	<SidecarScannerDefaults>
+		<SidecarScannerTemplateList>
+			<SidecarScannerTemplate id="5" predefined="true">
+				<name>tpl</name>
+				<ArString varName="regions"><String>US</String><String></String><String>a &amp; b</String><Other>EU</Other></ArString>
+				<ArString varName="exchanges"/>
+				<Columns varName="columns"/>
+				<Column varName="barPlotColumn" colId="9"/>
+			</SidecarScannerTemplate>
+			<SidecarScannerTemplate id="x"/>
+		</SidecarScannerTemplateList>
+	</SidecarScannerDefaults>
+</ScanParameterResponse>

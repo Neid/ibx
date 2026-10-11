@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- a comment before the root -->
+<ScanParameterResponse>
+	<InstrumentList>
+		<Instrument><name>tab&#9;cr&#13;lf&#10;end</name><type>&#13;</type><secType>&#9;</secType><filters>&#10;</filters><group>&#32;&#32;</group><shortName>😀 中</shortName><context>a&apos;b&quot;c</context></Instrument>
+		<Instrument name="attr with &#10; break and &lt;" m_type="  " secType="&#9;" filters=""><group>x</group></Instrument>
+		<Instrument><name> lead and trail </name><type>a
+b</type><cloudScanNotSupported>True</cloudScanNotSupported></Instrument>
+	</InstrumentList>
+</ScanParameterResponse>

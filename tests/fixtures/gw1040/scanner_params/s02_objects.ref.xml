@@ -1,0 +1,195 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ScanParameterResponse>
+	<InstrumentList varName="instrumentList">
+		<Instrument>
+			<name>plain one</name>
+			<cloudScanNotSupported>false</cloudScanNotSupported>
+		</Instrument>
+	</InstrumentList>
+	<InstrumentList varName="fullInstrumentList">
+		<Instrument>
+			<name>only in full</name>
+			<cloudScanNotSupported>false</cloudScanNotSupported>
+		</Instrument>
+	</InstrumentList>
+	<LocationTree varName="locationTree"/>
+	<FilterList varName="filterList">
+		<RangeFilter>
+			<id>R1</id>
+			<category>General</category>
+			<Columns varName="columns">
+				<Column>
+					<colId>1</colId>
+					<name>n1</name>
+					<display>false</display>
+					<displayType>BAR</displayType>
+				</Column>
+				<Column>
+					<colId>2</colId>
+					<name>n2</name>
+					<display>false</display>
+					<displayType>DATA</displayType>
+				</Column>
+				<Column>
+					<colId>3</colId>
+					<name>n3</name>
+					<display>false</display>
+					<displayType>LINE</displayType>
+				</Column>
+				<ColumnSetRef>
+					<colId>4</colId>
+					<name>n4</name>
+					<display>false</display>
+					<displayType>DATA</displayType>
+				</ColumnSetRef>
+				<ColumnSetRef>
+					<colId>5</colId>
+					<name>n5</name>
+					<display>false</display>
+					<displayType>DATA</displayType>
+				</ColumnSetRef>
+			</Columns>
+			<AbstractField type="scanner.filter.DoubleField" varName="min">
+				<code>a</code>
+				<varName>min</varName>
+				<dontAllowClearAll>false</dontAllowClearAll>
+				<acceptNegatives>false</acceptNegatives>
+				<dontAllowNegative>false</dontAllowNegative>
+				<skipNotEditableField>false</skipNotEditableField>
+				<precision>3</precision>
+				<fraction>true</fraction>
+			</AbstractField>
+			<AbstractField type="scanner.filter.IntField" varName="max">
+				<code>b</code>
+				<varName>max</varName>
+				<dontAllowClearAll>false</dontAllowClearAll>
+				<acceptNegatives>false</acceptNegatives>
+				<dontAllowNegative>false</dontAllowNegative>
+				<skipNotEditableField>false</skipNotEditableField>
+				<maxValue>10</maxValue>
+				<minValue>-2147483648</minValue>
+			</AbstractField>
+			<skipValidation>false</skipValidation>
+		</RangeFilter>
+		<RangeFilter>
+			<id>R2</id>
+			<category>General</category>
+			<access>after the bad type</access>
+			<AbstractField type="scanner.filter.DateField" varName="min">
+				<code>d</code>
+				<varName>min</varName>
+				<dontAllowClearAll>false</dontAllowClearAll>
+			</AbstractField>
+			<skipValidation>false</skipValidation>
+		</RangeFilter>
+		<RangeFilter>
+			<id>R3</id>
+			<category>General</category>
+			<Columns varName="columns"/>
+			<skipValidation>false</skipValidation>
+		</RangeFilter>
+		<SimpleFilter>
+			<id>S1</id>
+			<category>General</category>
+		</SimpleFilter>
+		<RangeFilter>
+			<id>typed</id>
+			<category>General</category>
+			<AbstractField type="scanner.filter.IntField" varName="min">
+				<code>t</code>
+				<varName>min</varName>
+				<dontAllowClearAll>false</dontAllowClearAll>
+				<acceptNegatives>false</acceptNegatives>
+				<dontAllowNegative>false</dontAllowNegative>
+				<skipNotEditableField>false</skipNotEditableField>
+				<maxValue>2147483647</maxValue>
+				<minValue>-2147483648</minValue>
+			</AbstractField>
+			<skipValidation>false</skipValidation>
+		</RangeFilter>
+		<VirtualFilter>
+			<id>V1</id>
+			<category>General</category>
+		</VirtualFilter>
+		<TripleComboFilter>
+			<id>T1</id>
+			<category>General</category>
+			<TripleComboField varName="triField">
+				<code>tc</code>
+				<dontAllowClearAll>false</dontAllowClearAll>
+			</TripleComboField>
+		</TripleComboFilter>
+		<TripleComboFilter>
+			<id>T2</id>
+			<category>General</category>
+			<TripleComboField varName="triField">
+				<code>after</code>
+				<dontAllowClearAll>false</dontAllowClearAll>
+			</TripleComboField>
+		</TripleComboFilter>
+	</FilterList>
+	<SimilarProductsDefaults varName="similarProductsDefaults">
+		<SimilarProductsDefault>
+			<CompressedScans varName="compressedScans">
+				<CompressedScan>
+					<name>n</name>
+					<AdvancedFilter varName="filter">
+						<industryLike>SAME|SAME</industryLike>
+						<a minTwsBuild="12" maxTwsBuild="34">x &amp; y &lt; &apos;z&apos;</a>
+						<b>   </b>
+						<c></c>
+						<a>duplicate name</a>
+					</AdvancedFilter>
+				</CompressedScan>
+				<CompressedScan>
+					<name>empty filter</name>
+					<AdvancedFilter varName="filter">
+					</AdvancedFilter>
+				</CompressedScan>
+				<CompressedScan>
+					<name>by varName</name>
+					<AdvancedFilter varName="filter">
+						<y>2</y>
+					</AdvancedFilter>
+				</CompressedScan>
+			</CompressedScans>
+		</SimilarProductsDefault>
+	</SimilarProductsDefaults>
+	<SidecarScannerDefaults varName="sidecarScannerDefaults">
+		<SidecarScannerTemplateList varName="scannerTemplateList">
+			<SidecarScannerTemplate>
+				<id>5</id>
+				<name>tpl</name>
+				<ArString varName="regions">
+					<String>US</String>
+					<String></String>
+					<String>a &amp; b</String>
+					<String>EU</String>
+				</ArString>
+				<ArString varName="exchanges"/>
+				<Columns varName="columns"/>
+				<predefined>true</predefined>
+				<sortReversed>false</sortReversed>
+				<Column varName="barPlotColumn">
+					<colId>9</colId>
+					<display>false</display>
+					<displayType>DATA</displayType>
+				</Column>
+				<leftChartDividerLocation>0</leftChartDividerLocation>
+				<rightChartDividerLocation>0</rightChartDividerLocation>
+			</SidecarScannerTemplate>
+			<SidecarScannerTemplate>
+				<predefined>false</predefined>
+				<sortReversed>false</sortReversed>
+				<leftChartDividerLocation>0</leftChartDividerLocation>
+				<rightChartDividerLocation>0</rightChartDividerLocation>
+			</SidecarScannerTemplate>
+		</SidecarScannerTemplateList>
+	</SidecarScannerDefaults>
+	<FilterList varName="uiFilters">
+		<SimpleFilter>
+			<id>UI1</id>
+			<category>General</category>
+		</SimpleFilter>
+	</FilterList>
+</ScanParameterResponse>

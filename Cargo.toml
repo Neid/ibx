@@ -78,6 +78,9 @@ jiff = "0.2.28"
 # Scenario files of the replay tests (test-support only)
 serde_json = { version = "1", optional = true }
 
+# Reading the scanner parameters into their object model (ibx#571)
+roxmltree = "0.21"
+
 # The engine's wait on its sockets (ibx#530)
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

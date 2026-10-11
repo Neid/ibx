@@ -12,4 +12,5 @@ pub mod optcalc;
 pub mod optparams;
 pub mod regsnapshot;
 pub mod scanner;
+pub mod scanner_params;
 pub mod snapshot;
