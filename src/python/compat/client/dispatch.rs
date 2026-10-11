@@ -801,8 +801,10 @@ impl EClient {
             call_wrapper!(self.wrapper, py, "mkt_depth_exchanges", (list.as_any(),));
         }
 
-        // Drain scanner params -> scannerParameters
-        let scanner_params = shared.reference.drain_scanner_params();
+        // Drain scanner params -> scannerParameters, rebuilt here as the
+        // reference hands them to a client (ibx#571); the rebuild is long
+        // enough to let other Python threads run.
+        let scanner_params = py.detach(|| crate::client_core::drain_scanner_parameters(shared));
         for xml in scanner_params {
             call_wrapper!(self.wrapper, py, "scanner_parameters", (xml.as_str(),));
         }

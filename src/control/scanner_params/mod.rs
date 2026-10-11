@@ -9,17 +9,26 @@
 //! one element can feed several members.
 //!
 //! [`parse`] reads the server text into a [`Model`], [`write`] writes a
-//! model, [`rebuild`] does both. The model stays open to the crate so
-//! that items can be removed or edited between the two.
+//! model, [`rebuild`] does both. Between the two the reference removes,
+//! replaces and adds items, in part by what the session has:
+//! [`for_client`] gives the text a client of that [`Session`] receives.
 //!
-//! `tables.rs` holds the classes of the model and is generated; the
-//! rules of reading are in `reader.rs`, those of writing in `writer.rs`.
+//! `tables.rs` holds the classes of the model and `session_tables.rs`
+//! what the steps between reading and writing compare against; both are
+//! generated. The rules of reading are in `reader.rs`, those of writing
+//! in `writer.rs`, the steps between the two in `session.rs`.
 
 mod reader;
+mod session;
+mod session_tables;
+#[cfg(test)]
+mod session_tests;
 mod tables;
 #[cfg(test)]
 mod tests;
 mod writer;
+
+pub use session::Session;
 
 use tables::{CLASSES, ENUMS};
 
@@ -36,7 +45,7 @@ struct Class {
     /// has its own form.
     chain: &'static [ClassId],
     kind: Kind,
-    /// Whether an object of the class can be made.
+    /// Whether the reader can make an object of the class.
     make: bool,
     /// An abstract class as a member type: the tag of the element names
     /// the class to make, in the same package.
@@ -92,6 +101,14 @@ enum Ty {
     Obj(ClassId),
     /// A class outside the model, known by its tag only.
     Foreign(&'static str),
+}
+
+/// A member by the class level that declares it and its position among
+/// the members of that level (generated).
+#[derive(Clone, Copy)]
+struct Slot {
+    level: ClassId,
+    at: u16,
 }
 
 /// Value of a member in a fresh object.
@@ -186,21 +203,17 @@ pub(crate) struct Node {
     pub(crate) entries: Vec<Entry>,
 }
 
-// The accessors serve the stage that edits the model before it is
-// written (ibx#571); until it lands only the tests call some of them.
-#[allow(dead_code)]
 impl Node {
-    /// A fresh object of the class with this full name, its members at
-    /// their defaults; `None` when the model cannot make one.
-    pub(crate) fn new(class_name: &str) -> Option<Node> {
-        Node::of(class_named(class_name)?)
+    /// A fresh object of a class, its members at their defaults; `None`
+    /// when the reader cannot make one.
+    fn of(class: ClassId) -> Option<Node> {
+        CLASSES[class as usize].make.then(|| Node::fresh(class))
     }
 
-    fn of(class: ClassId) -> Option<Node> {
+    /// A fresh object of a class, also of one that only the steps
+    /// between reading and writing make.
+    fn fresh(class: ClassId) -> Node {
         let c = &CLASSES[class as usize];
-        if !c.make {
-            return None;
-        }
         let mut members = Vec::with_capacity(c.chain.iter().map(|&l| CLASSES[l as usize].members.len()).sum());
         for &level in c.chain {
             members.extend(CLASSES[level as usize].members.iter().map(|m| fresh(m.def, m.ty)));
@@ -209,7 +222,7 @@ impl Node {
             let ty = member_at(c, slot as usize).map_or(Ty::Str, |m| m.ty);
             members[slot as usize] = fresh(def, ty);
         }
-        Some(Node { class, members, items: Vec::new(), entries: Vec::new() })
+        Node { class, members, items: Vec::new(), entries: Vec::new() }
     }
 
     fn class(&self) -> ClassId {
@@ -224,6 +237,17 @@ impl Node {
     /// Tag of the object as an item of a list.
     pub(crate) fn tag(&self) -> &'static str {
         simple_name(self.class_name())
+    }
+}
+
+/// Members by their element name, for the tests: the steps between
+/// reading and writing name a member by the class level that declares it.
+#[cfg(test)]
+impl Node {
+    /// A fresh object of the class with this full name; `None` when the
+    /// reader cannot make one.
+    pub(crate) fn new(class_name: &str) -> Option<Node> {
+        Node::of(class_named(class_name)?)
     }
 
     /// Positions in `members` of the members with this element name.
@@ -336,4 +360,19 @@ pub(crate) fn write(model: &Model) -> Option<String> {
 /// when the reference would refuse the text (ibx#571).
 pub fn rebuild(server_xml: &str) -> Option<String> {
     write(&parse(server_xml)?)
+}
+
+/// The scanner parameters as the reference hands them to a client of
+/// this session: the server text read into the model, the items that
+/// are not for a client or that the session does not have removed, the
+/// model written out. `None` when the reference would refuse the text,
+/// or when its answer depends on something the model does not have
+/// (ibx#571).
+///
+/// It takes over 10 ms on the document of a real session: not for the
+/// engine thread.
+pub fn for_client(server_xml: &str, session: &Session) -> Option<String> {
+    let mut model = parse(server_xml)?;
+    session::apply(&mut model.root, session).ok()?;
+    write(&model)
 }

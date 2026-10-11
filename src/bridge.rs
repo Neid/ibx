@@ -454,7 +454,9 @@ pub enum Event {
     CompletedOrder(CompletedOrder),
     /// An order as the client reports it open, after each of its reports.
     OpenOrder { order_id: OrderId, info: RichOrderInfo },
-    /// Scanner parameters, as XML.
+    /// Scanner parameters, as XML. This is the server's text as it came:
+    /// the clients rebuild it for their callback the way the reference
+    /// does, the channel does not (ibx#571).
     ScannerParameters(String),
     /// Rows of a scanner subscription.
     ScannerData { req_id: ReqId, result: ScannerResult },
@@ -1316,6 +1318,9 @@ pub struct ReferenceState {
     exchange_maps_at: Mutex<HashMap<ExchangeMapKey, u64>>,
     /// Gateway-local init data (populated during connection, read-only after).
     news_providers: Mutex<Vec<crate::types::NewsProvider>>,
+    /// The feature list of the last logon reply that had one, as it came
+    /// (ibx#571): the scanner parameters of a client depend on its names.
+    logon_features: Mutex<String>,
     /// Subscribed API news source codes of the logon, in logon order
     /// (ibx#460): the provider check and the all-subscribed form of the
     /// historical news request use them.
@@ -1416,6 +1421,7 @@ impl ReferenceState {
             instrument_exchange_maps: Mutex::new(HashMap::new()),
             exchange_maps_at: Mutex::new(HashMap::new()),
             news_providers: Mutex::new(Vec::new()),
+            logon_features: Mutex::new(String::new()),
             news_sources: Mutex::new(Vec::new()),
             news_sources_unsubscribed: Mutex::new(Vec::new()),
             soft_dollar_tiers: Mutex::new(Vec::new()),
@@ -2001,6 +2007,22 @@ impl ReferenceState {
         self.island_to_nasdaq.store(features.island_to_nasdaq, Ordering::Relaxed);
         self.bond_api.store(features.bond_api, Ordering::Relaxed);
         self.ev_api.store(features.ev_api, Ordering::Relaxed);
+    }
+
+    /// The feature list of the logon, as it came: a comma list, empty
+    /// until a logon reply had one (ibx#571).
+    pub fn logon_features(&self) -> String {
+        self.logon_features.lock().unwrap().clone()
+    }
+
+    /// Keep the feature list of a logon reply (ibx#571). The same list
+    /// again, as on a new logon of the same session, copies nothing.
+    #[doc(hidden)] pub fn set_logon_features(&self, features: &str) {
+        let mut kept = self.logon_features.lock().unwrap();
+        if *kept != features {
+            kept.clear();
+            kept.push_str(features);
+        }
     }
 
     /// The contract details features of the logon (ibx#436): BONDAPI and

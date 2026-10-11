@@ -574,8 +574,9 @@ impl EClient {
             wrapper.security_definition_option_parameter_end(req_id);
         }
 
-        // Scanner params
-        for xml in self.shared.reference.drain_scanner_params() {
+        // Scanner params, rebuilt here as the reference hands them to a
+        // client (ibx#571).
+        for xml in crate::client_core::drain_scanner_parameters(&self.shared) {
             wrapper.scanner_parameters(&xml);
         }
 

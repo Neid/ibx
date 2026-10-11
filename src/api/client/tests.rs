@@ -3549,6 +3549,98 @@ fn process_msgs_dispatches_scanner_params() {
     assert!(w.events.iter().any(|e| e == "scanner_parameters"));
 }
 
+/// Keeps the scanner parameters a client is given.
+#[derive(Default)]
+struct ScannerParameters(Vec<String>);
+
+impl Wrapper for ScannerParameters {
+    fn scanner_parameters(&mut self, xml: &str) {
+        self.0.push(xml.to_string());
+    }
+}
+
+/// A small document the rebuild accepts: three scan types, two of a
+/// vendor each.
+fn scanner_parameters_with_vendors() -> String {
+    let scan = |code: &str, vendor: &str| format!("<ScanType><scanCode>{code}</scanCode>{vendor}</ScanType>");
+    format!(
+        "<ScanParameterResponse><InstrumentList><Instrument><name>I</name></Instrument></InstrumentList>         <LocationTree><Location><locationCode>L</locationCode></Location></LocationTree>         <ScanTypeList>{}{}{}{}</ScanTypeList><FilterList varName=\"filterList\"/><SidecarScannerDefaults/></ScanParameterResponse>",
+        scan("S0", ""),
+        scan("S1", "<vendor>V1</vendor>"),
+        scan("S2", "<vendor>V2</vendor>"),
+        scan("S3", "<vendor>V3</vendor>"),
+    )
+}
+
+// ibx#571: the session of the scanner parameters is made of the names
+// of the logon feature list and of the news provider codes.
+#[test]
+fn scanner_session_is_made_of_the_logon_features_and_the_news_providers() {
+    use crate::control::scanner_params::Session;
+    let (_client, _rx, shared) = test_client();
+    assert_eq!(crate::client_core::scanner_session(&shared), Session::default());
+    shared.reference.set_logon_features("SECDEFTA,V1:2:x,,MOODY");
+    shared.reference.set_news_providers(vec![
+        NewsProvider { code: "V2".into(), name: "Two".into() },
+        NewsProvider { code: "BRFG".into(), name: "Briefing".into() },
+    ]);
+    let session = crate::client_core::scanner_session(&shared);
+    assert_eq!(session, Session::new("SECDEFTA,V1,MOODY", ["V2", "BRFG"]));
+    for name in ["SECDEFTA", "V1", "MOODY", "V2", "BRFG"] {
+        assert!(session.has(name), "{name}");
+    }
+    assert!(!session.has("V1:2:x") && !session.has("Two") && !session.no_research());
+    // The switch is a feature of the logon, not a news provider.
+    shared.reference.set_news_providers(vec![NewsProvider { code: "NORSRCH".into(), name: String::new() }]);
+    assert!(!crate::client_core::scanner_session(&shared).no_research());
+    shared.reference.set_logon_features("SECDEFTA,NORSRCH");
+    assert!(crate::client_core::scanner_session(&shared).no_research());
+}
+
+// ibx#571: the client gets the scanner parameters as the reference
+// hands them out, for what its session has; a text that cannot be
+// rebuilt is given as the server sent it.
+#[test]
+fn process_msgs_rebuilds_the_scanner_params_for_the_session() {
+    let (client, _rx, shared) = test_client();
+    shared.reference.set_logon_features("SECDEFTA,V1:2");
+    shared.reference.set_news_providers(vec![NewsProvider { code: "V2".into(), name: "Two".into() }]);
+    let server = scanner_parameters_with_vendors();
+    let (tx, events) = crossbeam_channel::unbounded();
+    shared.attach_event_channel(&tx);
+    shared.reference.push_scanner_params(server.clone());
+    shared.reference.push_scanner_params(server.clone());
+    shared.reference.push_scanner_params("<scanner>XML</scanner>".into());
+    shared.reference.push_scanner_params(server.clone());
+
+    let mut w = ScannerParameters::default();
+    client.process_msgs(&mut w);
+    let session = crate::control::scanner_params::Session::new("V1", ["V2"]);
+    let rebuilt = crate::control::scanner_params::for_client(&server, &session).expect("refused");
+    assert_eq!(w.0, [rebuilt.as_str(), rebuilt.as_str(), "<scanner>XML</scanner>", rebuilt.as_str()]);
+    assert!(rebuilt.starts_with("<?xml version=\"1.0\" encoding=\"UTF-8\"?>
+<ScanParameterResponse>
+	<InstrumentList varName=\"instrumentList\">
+"));
+    let codes: Vec<&str> = rebuilt.lines().filter_map(|l| l.trim().strip_prefix("<scanCode>")?.strip_suffix("</scanCode>")).collect();
+    assert_eq!(codes, ["S0", "S1", "S2"]);
+
+    // The event channel carries the server's text.
+    let on_channel: Vec<String> = events
+        .try_iter()
+        .filter_map(|e| match e {
+            crate::bridge::Event::ScannerParameters(xml) => Some(xml),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(on_channel, [server.as_str(), server.as_str(), "<scanner>XML</scanner>", server.as_str()]);
+
+    // Nothing waits any more.
+    let mut w = ScannerParameters::default();
+    client.process_msgs(&mut w);
+    assert!(w.0.is_empty());
+}
+
 #[test]
 fn process_msgs_dispatches_scanner_data() {
     let (client, _rx, shared) = test_client();

@@ -247,6 +247,51 @@ pub(crate) fn news_tick(generic_tick_list: &str) -> NewsTick {
     NewsTick::None
 }
 
+/// What the session decides in the scanner parameters (ibx#571): the
+/// names of the logon feature list and the codes of the news providers.
+pub(crate) fn scanner_session(shared: &SharedState) -> crate::control::scanner_params::Session {
+    let providers = shared.reference.news_providers();
+    crate::control::scanner_params::Session::new(&shared.reference.logon_features(), providers.iter().map(|p| p.code.as_str()))
+}
+
+/// The scanner parameters that wait for the client, each as the
+/// reference hands it to a client of this session (ibx#571). A text the
+/// rebuild refuses is given as the server sent it.
+///
+/// The rebuild takes over 10 ms on a real document: this runs where the
+/// client delivers its callbacks, never on the engine thread. The same
+/// text several times over (one per waiting request) is rebuilt once.
+pub(crate) fn drain_scanner_parameters(shared: &SharedState) -> Vec<String> {
+    let waiting = shared.reference.drain_scanner_params();
+    if waiting.is_empty() {
+        return waiting;
+    }
+    let session = scanner_session(shared);
+    // The last server text rebuilt, and where its result is in `out`.
+    let mut last: Option<(String, usize)> = None;
+    let mut out: Vec<String> = Vec::with_capacity(waiting.len());
+    for server_xml in waiting {
+        if let Some((same, at)) = &last {
+            if *same == server_xml {
+                out.push(out[*at].clone());
+                continue;
+            }
+        }
+        match crate::control::scanner_params::for_client(&server_xml, &session) {
+            Some(rebuilt) => {
+                out.push(rebuilt);
+                last = Some((server_xml, out.len() - 1));
+            }
+            None => {
+                log::warn!("Scanner parameters ({} bytes) cannot be rebuilt as the reference does: given as the server sent them", server_xml.len());
+                out.push(server_xml);
+                last = None;
+            }
+        }
+    }
+    out
+}
+
 /// Security types the reference calls derivatives: no news for them.
 const NEWS_DERIVATIVES: [&str; 9] = ["FUT", "OPT", "FOP", "WAR", "IOPT", "CFD", "FWD", "SLB", "ICS"];
 

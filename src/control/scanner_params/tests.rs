@@ -9,7 +9,7 @@ use super::tables::{CLASSES, ENUMS, ROOT};
 use super::*;
 
 /// A fixture by name; the large ones are stored compressed.
-fn fixture(name: &str) -> String {
+pub(super) fn fixture(name: &str) -> String {
     let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/gw1040/scanner_params");
     if let Ok(text) = std::fs::read_to_string(dir.join(name)) {
         return text;
@@ -21,7 +21,7 @@ fn fixture(name: &str) -> String {
 }
 
 /// Compare two long texts without printing them whole.
-fn assert_same(got: &str, want: &str, what: &str) {
+pub(super) fn assert_same(got: &str, want: &str, what: &str) {
     if got == want {
         return;
     }

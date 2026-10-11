@@ -2748,6 +2748,9 @@ pub(crate) fn apply_logon_values(logon: &LogonValues, shared: &SharedState) {
     shared.reference.set_pending_accounts(logon.pending_accounts.clone().unwrap_or_default());
     if let Some(features) = &logon.features {
         shared.reference.set_api_features(crate::control::logon::ApiFeatures::parse(features));
+        // The whole list too: the scanner parameters of a client depend
+        // on the names in it (ibx#571).
+        shared.reference.set_logon_features(features);
     }
 }
 
@@ -3231,6 +3234,23 @@ mod tests {
         assert!(shared.reference.account_pending("DUXXXXXX1"));
         apply_logon_values(&LogonValues::read(&captured_logon_tags(), 0, 0), &shared);
         assert!(!shared.reference.account_pending("DUXXXXXX1"));
+    }
+
+    // ibx#571: the feature list of a logon reply is kept whole, for the
+    // scanner parameters of a client; a reply without list leaves it.
+    #[test]
+    fn logon_reply_keeps_its_feature_list() {
+        let shared = SharedState::new();
+        assert_eq!(shared.reference.logon_features(), "");
+        apply_logon_values(&LogonValues::read(&captured_logon_tags(), 0, 0), &shared);
+        assert_eq!(shared.reference.logon_features(), "1DAYSORDER,APIELOG,SCALEUSLOT,SECDEFTA");
+        let mut reply = LogonValues::read(&captured_logon_tags(), 0, 0);
+        reply.features = None;
+        apply_logon_values(&reply, &shared);
+        assert_eq!(shared.reference.logon_features(), "1DAYSORDER,APIELOG,SCALEUSLOT,SECDEFTA");
+        reply.features = Some("MOODY:1,NORSRCH".into());
+        apply_logon_values(&reply, &shared);
+        assert_eq!(shared.reference.logon_features(), "MOODY:1,NORSRCH");
     }
 
     // ibx#517: the notices of connect_only (26/09/2026) and of session_start

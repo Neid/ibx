@@ -44,7 +44,7 @@ pub(super) static CLASSES: &[Class] = &[
         m("minTwsBuild", S, D::Null),
         m("yield", S, D::Null),
         m("displayType", Ty::Enum(0), D::Enum("DATA")),
-        m("sortList", Ty::Obj(78), D::Null),
+        m("sortList", Ty::Obj(79), D::Null),
     ] },
     /* 5 */ Class { name: "scanner.ColumnSet", chain: &[5], kind: Kind::Plain, make: true, abs: false, over: &[], members: &[
         m("name", S, D::Null),
@@ -130,16 +130,16 @@ pub(super) static CLASSES: &[Class] = &[
         m("locationTree", Ty::Obj(23), D::Null),
         m("scanTypeList", Ty::Obj(28), D::Null),
         m("settingList", Ty::Obj(34), D::Null),
-        m("filterList", Ty::Obj(56), D::Null),
-        m("scannerLayoutList", Ty::Obj(75), D::Null),
+        m("filterList", Ty::Obj(57), D::Null),
+        m("scannerLayoutList", Ty::Obj(76), D::Null),
         m("instrumentGroupList", Ty::Obj(20), D::Null),
-        m("similarProductsDefaults", Ty::Obj(84), D::Null),
+        m("similarProductsDefaults", Ty::Obj(85), D::Null),
         m("mainScreenDefaultTickers", Ty::Obj(41), D::Null),
         m("columnSets", Ty::Obj(7), D::Null),
         m("sidecarScannerDefaults", Ty::Obj(35), D::Null),
         m("advancedScannerDefaults", Ty::Obj(3), D::Null),
         m("twsUiConfig", Ty::Obj(36), D::Null),
-        m("uiFilters", Ty::Obj(56), D::Null),
+        m("uiFilters", Ty::Obj(57), D::Null),
     ] },
     /* 27 */ Class { name: "scanner.ScanType", chain: &[30, 27], kind: Kind::Plain, make: true, abs: false, over: &[], members: &[
         m("reuters", S, D::Null),
@@ -184,7 +184,7 @@ pub(super) static CLASSES: &[Class] = &[
     /* 34 */ Class { name: "scanner.SettingList", chain: &[34], kind: Kind::Flex(&[9]), make: true, abs: false, over: &[], members: &[] },
     /* 35 */ Class { name: "scanner.SidecarScannerDefaults", chain: &[35], kind: Kind::Plain, make: true, abs: false, over: &[], members: &[
         m("defaultSortsList", Ty::Obj(12), D::Null),
-        m("scannerTemplateList", Ty::Obj(80), D::Null),
+        m("scannerTemplateList", Ty::Obj(81), D::Null),
         m("scannerProductTypeList", Ty::Obj(32), D::Null),
         m("fieldsConfigurationList", Ty::Obj(14), D::Null),
     ] },
@@ -234,7 +234,7 @@ pub(super) static CLASSES: &[Class] = &[
         m("volatilityUnits", S, D::Null),
         m("displayName", S, D::Null),
         m("displayHint", S, D::Null),
-        m("weightSliders", Ty::Obj(72), D::Null),
+        m("weightSliders", Ty::Obj(73), D::Null),
         m("config", Ty::Obj(10), D::Null),
         m("minTwsBuild", S, D::Null),
         m("rawId", S, D::Null),
@@ -260,8 +260,8 @@ pub(super) static CLASSES: &[Class] = &[
         m("tooltip", S, D::Null),
     ] },
     /* 48 */ Class { name: "scanner.filter.ComboField", chain: &[42, 48], kind: Kind::Plain, make: true, abs: false, over: &[], members: &[
-        m("values", Ty::Obj(50), D::Null),
-        m("defaultValues", Ty::Obj(50), D::Null),
+        m("values", Ty::Obj(51), D::Null),
+        m("defaultValues", Ty::Obj(51), D::Null),
         m("linkGroup", S, D::Null),
         m("master", B, D::Bool(false)),
         m("narrowField", B, D::Bool(false)),
@@ -272,7 +272,10 @@ pub(super) static CLASSES: &[Class] = &[
         m("ShowBoth", Ty::Obj(47), D::Null),
         m("IgnoreMissing", Ty::Obj(47), D::Null),
     ] },
-    /* 49 */ Class { name: "scanner.filter.ComboValue", chain: &[49], kind: Kind::Plain, make: true, abs: false, over: &[], members: &[
+    /* 49 */ Class { name: "scanner.filter.ComboField$ConvertedComboField", chain: &[42, 48, 49], kind: Kind::Plain, make: false, abs: false, over: &[(21, D::Opaque)], members: &[
+        m("field", Ty::Obj(42), D::Null),
+    ] },
+    /* 50 */ Class { name: "scanner.filter.ComboValue", chain: &[50], kind: Kind::Plain, make: true, abs: false, over: &[], members: &[
         m("code", S, D::Null),
         m("vendor", S, D::Null),
         m("displayName", S, D::Null),
@@ -284,64 +287,64 @@ pub(super) static CLASSES: &[Class] = &[
         m("config", Ty::Obj(10), D::Null),
         m("checkbox", S, D::Null),
     ] },
-    /* 50 */ Class { name: "scanner.filter.ComboValues", chain: &[50], kind: Kind::List(Items::Class(49)), make: true, abs: false, over: &[], members: &[] },
-    /* 51 */ Class { name: "scanner.filter.ConidField", chain: &[42, 51], kind: Kind::Plain, make: true, abs: false, over: &[], members: &[] },
-    /* 52 */ Class { name: "scanner.filter.DateField", chain: &[42, 64, 52], kind: Kind::Plain, make: true, abs: false, over: &[], members: &[] },
-    /* 53 */ Class { name: "scanner.filter.DoubleField", chain: &[42, 44, 53], kind: Kind::Plain, make: true, abs: false, over: &[], members: &[
+    /* 51 */ Class { name: "scanner.filter.ComboValues", chain: &[51], kind: Kind::List(Items::Class(50)), make: true, abs: false, over: &[], members: &[] },
+    /* 52 */ Class { name: "scanner.filter.ConidField", chain: &[42, 52], kind: Kind::Plain, make: true, abs: false, over: &[], members: &[] },
+    /* 53 */ Class { name: "scanner.filter.DateField", chain: &[42, 65, 53], kind: Kind::Plain, make: true, abs: false, over: &[], members: &[] },
+    /* 54 */ Class { name: "scanner.filter.DoubleField", chain: &[42, 44, 54], kind: Kind::Plain, make: true, abs: false, over: &[], members: &[
         m("volatilityUnitsListener", Ty::Foreign("PropertyChangeListener"), D::Null),
         m("precision", I, D::Int(-1)),
         m("fraction", B, D::Bool(false)),
     ] },
-    /* 54 */ Class { name: "scanner.filter.FilterComponent", chain: &[54], kind: Kind::Plain, make: true, abs: false, over: &[], members: &[
+    /* 55 */ Class { name: "scanner.filter.FilterComponent", chain: &[55], kind: Kind::Plain, make: true, abs: false, over: &[], members: &[
         m("code", S, D::Null),
-        m("comboValue", Ty::Obj(49), D::Null),
+        m("comboValue", Ty::Obj(50), D::Null),
     ] },
-    /* 55 */ Class { name: "scanner.filter.FilterComponents", chain: &[55], kind: Kind::List(Items::Class(54)), make: true, abs: false, over: &[], members: &[] },
-    /* 56 */ Class { name: "scanner.filter.FilterList", chain: &[56], kind: Kind::Flex(&[59, 62, 68, 70]), make: true, abs: false, over: &[], members: &[] },
-    /* 57 */ Class { name: "scanner.filter.IntField", chain: &[42, 44, 57], kind: Kind::Plain, make: true, abs: false, over: &[], members: &[
+    /* 56 */ Class { name: "scanner.filter.FilterComponents", chain: &[56], kind: Kind::List(Items::Class(55)), make: true, abs: false, over: &[], members: &[] },
+    /* 57 */ Class { name: "scanner.filter.FilterList", chain: &[57], kind: Kind::Flex(&[60, 63, 69, 71]), make: true, abs: false, over: &[], members: &[] },
+    /* 58 */ Class { name: "scanner.filter.IntField", chain: &[42, 44, 58], kind: Kind::Plain, make: true, abs: false, over: &[], members: &[
         m("maxValue", I, D::Int(i32::MAX)),
         m("minValue", I, D::Int(i32::MIN)),
     ] },
-    /* 58 */ Class { name: "scanner.filter.PatternListField", chain: &[42, 58], kind: Kind::Plain, make: false, abs: false, over: &[], members: &[
+    /* 59 */ Class { name: "scanner.filter.PatternListField", chain: &[42, 59], kind: Kind::Plain, make: false, abs: false, over: &[], members: &[
         m("separator", S, D::Null),
         m("ignoreCase", B, D::Bool(false)),
     ] },
-    /* 59 */ Class { name: "scanner.filter.RangeFilter", chain: &[43, 59], kind: Kind::Plain, make: true, abs: false, over: &[], members: &[
+    /* 60 */ Class { name: "scanner.filter.RangeFilter", chain: &[43, 60], kind: Kind::Plain, make: true, abs: false, over: &[], members: &[
         m("min", Ty::Obj(42), D::Null),
         m("max", Ty::Obj(42), D::Null),
         m("skipValidation", B, D::Bool(false)),
         m("default", S, D::Null),
     ] },
-    /* 60 */ Class { name: "scanner.filter.SelectionField", chain: &[42, 64, 60], kind: Kind::Plain, make: true, abs: false, over: &[], members: &[
+    /* 61 */ Class { name: "scanner.filter.SelectionField", chain: &[42, 65, 61], kind: Kind::Plain, make: true, abs: false, over: &[], members: &[
         m("contracts", S, D::Null),
     ] },
-    /* 61 */ Class { name: "scanner.filter.SeparatorField", chain: &[42, 61], kind: Kind::Plain, make: true, abs: false, over: &[], members: &[] },
-    /* 62 */ Class { name: "scanner.filter.SimpleFilter", chain: &[43, 62], kind: Kind::Plain, make: true, abs: false, over: &[], members: &[
+    /* 62 */ Class { name: "scanner.filter.SeparatorField", chain: &[42, 62], kind: Kind::Plain, make: true, abs: false, over: &[], members: &[] },
+    /* 63 */ Class { name: "scanner.filter.SimpleFilter", chain: &[43, 63], kind: Kind::Plain, make: true, abs: false, over: &[], members: &[
         m("field", Ty::Obj(42), D::Null),
     ] },
-    /* 63 */ Class { name: "scanner.filter.SliderField", chain: &[42, 63], kind: Kind::Plain, make: true, abs: false, over: &[], members: &[
+    /* 64 */ Class { name: "scanner.filter.SliderField", chain: &[42, 64], kind: Kind::Plain, make: true, abs: false, over: &[], members: &[
         m("maxValue", I, D::Int(i32::MAX)),
         m("minValue", I, D::Int(i32::MIN)),
         m("default", I, D::Int(i32::MIN)),
         m("displayType", S, D::Null),
     ] },
-    /* 64 */ Class { name: "scanner.filter.StringField", chain: &[42, 64], kind: Kind::Plain, make: true, abs: false, over: &[], members: &[] },
-    /* 65 */ Class { name: "scanner.filter.StringListField", chain: &[42, 58, 65], kind: Kind::Plain, make: true, abs: false, over: &[], members: &[] },
-    /* 66 */ Class { name: "scanner.filter.SubstrListField", chain: &[42, 58, 66], kind: Kind::Plain, make: true, abs: false, over: &[], members: &[] },
-    /* 67 */ Class { name: "scanner.filter.TripleComboField", chain: &[42, 67], kind: Kind::Plain, make: true, abs: false, over: &[], members: &[
-        m("tripleMap", Ty::Obj(69), D::Null),
+    /* 65 */ Class { name: "scanner.filter.StringField", chain: &[42, 65], kind: Kind::Plain, make: true, abs: false, over: &[], members: &[] },
+    /* 66 */ Class { name: "scanner.filter.StringListField", chain: &[42, 59, 66], kind: Kind::Plain, make: true, abs: false, over: &[], members: &[] },
+    /* 67 */ Class { name: "scanner.filter.SubstrListField", chain: &[42, 59, 67], kind: Kind::Plain, make: true, abs: false, over: &[], members: &[] },
+    /* 68 */ Class { name: "scanner.filter.TripleComboField", chain: &[42, 68], kind: Kind::Plain, make: true, abs: false, over: &[], members: &[
+        m("tripleMap", Ty::Obj(70), D::Null),
         m("separator", S, D::Null),
     ] },
-    /* 68 */ Class { name: "scanner.filter.TripleComboFilter", chain: &[43, 68], kind: Kind::Plain, make: true, abs: false, over: &[], members: &[
-        m("triField", Ty::Obj(67), D::Null),
+    /* 69 */ Class { name: "scanner.filter.TripleComboFilter", chain: &[43, 69], kind: Kind::Plain, make: true, abs: false, over: &[], members: &[
+        m("triField", Ty::Obj(68), D::Null),
     ] },
-    /* 69 */ Class { name: "scanner.filter.TripleValues", chain: &[], kind: Kind::Silent, make: true, abs: false, over: &[], members: &[] },
-    /* 70 */ Class { name: "scanner.filter.VirtualFilter", chain: &[43, 70], kind: Kind::Plain, make: true, abs: false, over: &[], members: &[
+    /* 70 */ Class { name: "scanner.filter.TripleValues", chain: &[], kind: Kind::Silent, make: true, abs: false, over: &[], members: &[] },
+    /* 71 */ Class { name: "scanner.filter.VirtualFilter", chain: &[43, 71], kind: Kind::Plain, make: true, abs: false, over: &[], members: &[
         m("displayName", S, D::Null),
         m("linkGroup", S, D::Null),
-        m("filters", Ty::Obj(55), D::Null),
+        m("filters", Ty::Obj(56), D::Null),
     ] },
-    /* 71 */ Class { name: "scanner.filter.WeightSliderConfiguration", chain: &[71], kind: Kind::Plain, make: true, abs: false, over: &[], members: &[
+    /* 72 */ Class { name: "scanner.filter.WeightSliderConfiguration", chain: &[72], kind: Kind::Plain, make: true, abs: false, over: &[], members: &[
         m("title", S, D::Null),
         m("position", S, D::Null),
         m("displayType", S, D::Str("Weight")),
@@ -351,32 +354,32 @@ pub(super) static CLASSES: &[Class] = &[
         m("rebalanceValue", I, D::Int(100)),
         m("minRestrictedValue", I, D::Int(-1)),
     ] },
-    /* 72 */ Class { name: "scanner.filter.WeightSliderConfigurations", chain: &[72], kind: Kind::List(Items::Class(71)), make: true, abs: false, over: &[], members: &[] },
-    /* 73 */ Class { name: "scanner.layout.LayoutComponent", chain: &[73], kind: Kind::Plain, make: true, abs: false, over: &[], members: &[
-        m("parameter", Ty::Obj(76), D::Null),
+    /* 73 */ Class { name: "scanner.filter.WeightSliderConfigurations", chain: &[73], kind: Kind::List(Items::Class(72)), make: true, abs: false, over: &[], members: &[] },
+    /* 74 */ Class { name: "scanner.layout.LayoutComponent", chain: &[74], kind: Kind::Plain, make: true, abs: false, over: &[], members: &[
+        m("parameter", Ty::Obj(77), D::Null),
         m("filters", S, D::Null),
         m("title", S, D::Null),
     ] },
-    /* 74 */ Class { name: "scanner.layout.ScannerLayout", chain: &[74], kind: Kind::Plain, make: true, abs: false, over: &[], members: &[
+    /* 75 */ Class { name: "scanner.layout.ScannerLayout", chain: &[75], kind: Kind::Plain, make: true, abs: false, over: &[], members: &[
         m("instrument", S, D::Null),
-        m("header", Ty::Obj(73), D::Null),
-        m("column1", Ty::Obj(73), D::Null),
-        m("column2", Ty::Obj(73), D::Null),
-        m("column3", Ty::Obj(73), D::Null),
-        m("column4", Ty::Obj(73), D::Null),
-        m("specialFilters", Ty::Obj(56), D::Null),
+        m("header", Ty::Obj(74), D::Null),
+        m("column1", Ty::Obj(74), D::Null),
+        m("column2", Ty::Obj(74), D::Null),
+        m("column3", Ty::Obj(74), D::Null),
+        m("column4", Ty::Obj(74), D::Null),
+        m("specialFilters", Ty::Obj(57), D::Null),
     ] },
-    /* 75 */ Class { name: "scanner.layout.ScannerLayoutList", chain: &[75], kind: Kind::List(Items::Class(74)), make: true, abs: false, over: &[], members: &[] },
-    /* 76 */ Class { name: "scanner.layout.ScannerParameter", chain: &[76], kind: Kind::Plain, make: true, abs: false, over: &[], members: &[
+    /* 76 */ Class { name: "scanner.layout.ScannerLayoutList", chain: &[76], kind: Kind::List(Items::Class(75)), make: true, abs: false, over: &[], members: &[] },
+    /* 77 */ Class { name: "scanner.layout.ScannerParameter", chain: &[77], kind: Kind::Plain, make: true, abs: false, over: &[], members: &[
         m("name", S, D::Null),
     ] },
-    /* 77 */ Class { name: "scanner.sidecar.vehicle.ScannerSort", chain: &[77], kind: Kind::Plain, make: true, abs: false, over: &[], members: &[
+    /* 78 */ Class { name: "scanner.sidecar.vehicle.ScannerSort", chain: &[78], kind: Kind::Plain, make: true, abs: false, over: &[], members: &[
         m("colId", I, D::Int(0)),
         m("direction", S, D::Null),
         m("scanCode", S, D::Null),
     ] },
-    /* 78 */ Class { name: "scanner.sidecar.vehicle.ScannerSortList", chain: &[78], kind: Kind::List(Items::Class(77)), make: true, abs: false, over: &[], members: &[] },
-    /* 79 */ Class { name: "scanner.sidecar.vehicle.SidecarScannerTemplate", chain: &[0, 79], kind: Kind::Plain, make: true, abs: false, over: &[], members: &[
+    /* 79 */ Class { name: "scanner.sidecar.vehicle.ScannerSortList", chain: &[79], kind: Kind::List(Items::Class(78)), make: true, abs: false, over: &[], members: &[] },
+    /* 80 */ Class { name: "scanner.sidecar.vehicle.SidecarScannerTemplate", chain: &[0, 80], kind: Kind::Plain, make: true, abs: false, over: &[], members: &[
         m("product", S, D::Null),
         m("vendor", S, D::Null),
         m("regions", Ty::Obj(1), D::Null),
@@ -389,17 +392,17 @@ pub(super) static CLASSES: &[Class] = &[
         m("leftChartDividerLocation", I, D::Int(0)),
         m("rightChartDividerLocation", I, D::Int(0)),
     ] },
-    /* 80 */ Class { name: "scanner.sidecar.vehicle.SidecarScannerTemplateList", chain: &[80], kind: Kind::List(Items::Class(79)), make: true, abs: false, over: &[], members: &[] },
-    /* 81 */ Class { name: "scanner.similarproducts.CompressedScan", chain: &[30, 81], kind: Kind::Plain, make: true, abs: false, over: &[], members: &[
+    /* 81 */ Class { name: "scanner.sidecar.vehicle.SidecarScannerTemplateList", chain: &[81], kind: Kind::List(Items::Class(80)), make: true, abs: false, over: &[], members: &[] },
+    /* 82 */ Class { name: "scanner.similarproducts.CompressedScan", chain: &[30, 82], kind: Kind::Plain, make: true, abs: false, over: &[], members: &[
         m("reuters", S, D::Null),
         m("name", S, D::Null),
         m("scanCode", S, D::Null),
         m("filter", Ty::Obj(2), D::Null),
     ] },
-    /* 82 */ Class { name: "scanner.similarproducts.CompressedScans", chain: &[29, 82], kind: Kind::List(Items::Class(81)), make: true, abs: false, over: &[], members: &[] },
-    /* 83 */ Class { name: "scanner.similarproducts.SimilarProductsDefault", chain: &[30, 83], kind: Kind::Plain, make: true, abs: false, over: &[], members: &[
+    /* 83 */ Class { name: "scanner.similarproducts.CompressedScans", chain: &[29, 83], kind: Kind::List(Items::Class(82)), make: true, abs: false, over: &[], members: &[] },
+    /* 84 */ Class { name: "scanner.similarproducts.SimilarProductsDefault", chain: &[30, 84], kind: Kind::Plain, make: true, abs: false, over: &[], members: &[
         m("instrumentType", S, D::Null),
-        m("compressedScans", Ty::Obj(82), D::Null),
+        m("compressedScans", Ty::Obj(83), D::Null),
     ] },
-    /* 84 */ Class { name: "scanner.similarproducts.SimilarProductsDefaults", chain: &[29, 84], kind: Kind::List(Items::Class(83)), make: true, abs: false, over: &[], members: &[] },
+    /* 85 */ Class { name: "scanner.similarproducts.SimilarProductsDefaults", chain: &[29, 85], kind: Kind::List(Items::Class(84)), make: true, abs: false, over: &[], members: &[] },
 ];
