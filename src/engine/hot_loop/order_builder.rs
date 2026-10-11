@@ -1847,6 +1847,11 @@ fn api_cancel(context: &mut Context, shared: &Arc<SharedState>, order_id: OrderI
 /// is unknown (10147), or finished or already pending cancel (10148, with
 /// the state; "cannot" as in every captured 10148, where the message table
 /// of the JAR says "can not", ibx#485). `None` when the cancel goes out.
+///
+/// A cancelled order and an order the server refused are known for the
+/// time the reference keeps them (ibx#551, paper 11/10/2026, market
+/// closed): 10148 "state: Cancelled" for both at 3 s and 8 s after their
+/// end, 10147 at 12 s and 19 s.
 fn cancel_refusal(context: &Context, order_id: crate::types::OrderId) -> Option<(i64, String)> {
     let not_found = || Some((
         10147,
@@ -1861,6 +1866,12 @@ fn cancel_refusal(context: &Context, order_id: crate::types::OrderId) -> Option<
         Some(o) if o.status == OrderStatus::PendingCancel => OrderStatus::PendingCancel,
         Some(_) => return None,
         None => match context.finished_status(order_id) {
+            Some(OrderStatus::Cancelled | OrderStatus::Rejected) => {
+                if !context.ended_is_kept(order_id, Instant::now()) {
+                    return not_found();
+                }
+                OrderStatus::Cancelled
+            }
             Some(status) => status,
             None => return not_found(),
         },
@@ -4728,6 +4739,33 @@ mod tests {
             "OrderId 5 that needs to be cancelled cannot be cancelled, state: PendingCancel.".to_string())]);
     }
 
+    // ibx#551, paper 11/10/2026 (market closed): the cancel of an order
+    // that was cancelled, or that the server refused, is answered 10148
+    // "state: Cancelled" while the reference keeps the order (seen at 3 s
+    // and 8 s), and 10147 once it dropped it (seen at 12 s and 19 s).
+    #[test]
+    fn cancel_of_an_ended_order_finds_it_for_ten_seconds() {
+        for status in [OrderStatus::Cancelled, OrderStatus::Rejected] {
+            let (sent, errors) = cancel_of(|ctx| {
+                ctx.insert_order(order(5, 0, OrderStatus::Submitted));
+                ctx.finish_order(5, status);
+            });
+            assert_eq!(sent, 0);
+            assert_eq!(errors, [(5, 10148,
+                "OrderId 5 that needs to be cancelled cannot be cancelled, state: Cancelled.".to_string())], "{status:?}");
+
+            let (sent, errors) = cancel_of(|ctx| {
+                ctx.insert_order(order(5, 0, OrderStatus::Submitted));
+                ctx.finish_order(5, status);
+                // Its time is over.
+                let kept = ctx.ended_orders(Instant::now());
+                ctx.keep_ended(5, kept[0].server_id, kept[0].entry.clone(), Some(Instant::now()));
+            });
+            assert_eq!(sent, 0);
+            assert_eq!(errors, [(5, 10147, "OrderId 5 that needs to be cancelled is not found.".to_string())], "{status:?}");
+        }
+    }
+
     #[test]
     fn cancel_of_a_finished_order_gives_its_state() {
         let (sent, errors) = cancel_of(|ctx| {
@@ -5098,15 +5136,18 @@ mod tests {
     }
 
     // ibx#549, paper 10/10/2026: an order the server refused is answered
-    // for in its 10 s too; that global cancel takes it out.
+    // for in its 10 s too. A global cancel does not take it out (ibx#551,
+    // paper 11/10/2026: 161 at 3 s and again at 6 s after the refusal).
     #[test]
-    fn global_cancel_answers_161_once_for_a_refused_order() {
+    fn global_cancel_answers_161_for_a_refused_order_while_it_is_kept() {
         let (notices, mut context) = global_cancel_notices(|ctx| {
             ctx.insert_order(Order::new(81, 0, Side::Buy, 1, 100, b'2', b'0', 0));
             ctx.finish_order(81, OrderStatus::Rejected);
         });
         assert_eq!(notices, [(81, 161)]);
-        assert!(context.ended_orders(Instant::now()).is_empty());
+        let kept = context.ended_orders(Instant::now());
+        assert_eq!(kept.len(), 1, "still there for the next global cancel");
+        assert!(context.ended_orders(kept[0].until.unwrap()).is_empty());
     }
 
     // An ended order of another client gives nothing to this one.

@@ -76,8 +76,9 @@ pub(crate) struct BookEntry {
 ///   global cancel ended it;
 /// - an order the server refused (201) stays as long (paper 10/10/2026:
 ///   161 at 9 s, none at 14 and 16 s, and its cancel at 19 s finds no
-///   order); the global cancel that answers for it takes it out
-///   (`ay.a(pe, bs, bE, boolean)@91`, read from the code, not seen);
+///   order); a global cancel that answers for it does not take it out
+///   (paper 11/10/2026: 161 at 3 s and again at 6 s, none at 12 s;
+///   ibx#551);
 /// - an order that was never sent (refused before the send, or held and
 ///   cancelled) gets no report, so nothing takes it out: 161 at every
 ///   global cancel of the session (paper 09/10/2026, three runs).
@@ -89,8 +90,6 @@ pub(crate) struct EndedOrder {
     pub entry: BookEntry,
     /// When the reference takes it out of its book; None for never.
     pub until: Option<Instant>,
-    /// Taken out by the first global cancel that answers for it.
-    pub once: bool,
 }
 
 /// How long the reference keeps a cancelled order in its book.
@@ -1521,7 +1520,6 @@ impl Context {
         }
         if let Some(entry) = kept {
             self.keep_ended(order_id, self.server_id(order_id), entry, Some(Instant::now() + CANCELLED_ORDER_KEPT));
-            if let Some(e) = self.ended.last_mut() { e.once = status == OrderStatus::Rejected; }
         }
         if self.finished_orders.insert(order_id, status).is_none() {
             self.finished_order_ids.push_back(order_id);
@@ -1552,18 +1550,22 @@ impl Context {
             entry.seq = self.next_book_seq;
             self.next_book_seq += 1;
         }
-        self.ended.push(EndedOrder { order_id, server_id, entry, until, once: false });
+        self.ended.push(EndedOrder { order_id, server_id, entry, until });
         self.book_peak = self.book_peak.max(self.open_orders.len() + self.ended.len());
     }
 
     /// The ended orders the reference's book holds at `now`, for a global
-    /// cancel; those whose time is over are dropped, and those this
-    /// global cancel takes out.
+    /// cancel; those whose time is over are dropped.
     pub(crate) fn ended_orders(&mut self, now: Instant) -> Vec<EndedOrder> {
         self.ended.retain(|e| e.until.is_none_or(|until| now < until));
-        let kept = self.ended.clone();
-        self.ended.retain(|e| !e.once);
-        kept
+        self.ended.clone()
+    }
+
+    /// True while the reference's book still holds this ended order
+    /// (ibx#551): its cancel is then answered with the order's state, and
+    /// finds no order afterwards.
+    pub(crate) fn ended_is_kept(&self, order_id: OrderId, now: Instant) -> bool {
+        self.ended.iter().any(|e| e.order_id == order_id && e.until.is_none_or(|until| now < until))
     }
 
     /// Remove an order and what is kept for it, without keeping a final
