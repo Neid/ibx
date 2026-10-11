@@ -30,6 +30,28 @@ pub(crate) fn drain_and_send_orders(
         Some(c) => c,
         None => return,
     };
+    // Several orders of one pass (a bracket, the orders one placeOrder
+    // transmits) leave in one write, as the reference writes them
+    // (ibx#548).
+    let together = orders.len() > 1;
+    if together {
+        conn.hold();
+    }
+    send_orders(conn, orders, context, account_id, hb, shared);
+    if together && let Some(conn) = ccp_conn.as_mut() && let Err(e) = conn.release() {
+        log::warn!("Orders of one pass not written: {}", e);
+    }
+}
+
+/// The orders of one pass, each checked and written in its turn.
+fn send_orders(
+    conn: &mut Connection,
+    orders: Vec<OrderRequest>,
+    context: &mut Context,
+    account_id: &str,
+    hb: &mut HeartbeatState,
+    shared: &Arc<SharedState>,
+) {
     for mut order_req in orders {
         let oid = order_req.order_id();
         // A what-if preview is the order as it would be placed, written by
@@ -2129,7 +2151,10 @@ fn send_new_order(
     out.push((6211, ""));
     out.push((6238, ""));
     in_reference_order(&mut out);
-    conn.send_fix(&out)
+    let result = conn.send_fix(&out);
+    // When each new order leaves, for a comparison of timings (ibx#548).
+    log::debug!("New order sent: order {}", order_id.as_deref().unwrap_or("-"));
+    result
 }
 
 /// Whether a new order of this frame's type writes the trigger method

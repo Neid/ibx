@@ -177,6 +177,9 @@ pub struct Connection {
     /// When set, a send never blocks the caller: what the socket does not
     /// take at once waits in `out` and goes out with `flush_queued`.
     queued_writes: bool,
+    /// While set, frames wait in `out` and leave together at `release`
+    /// (ibx#548).
+    held: bool,
     /// The first write error. The connection is unusable from then on: the
     /// owner drops it and reconnects; no frame is written again.
     write_error: Option<(io::ErrorKind, String)>,
@@ -212,6 +215,7 @@ impl Connection {
             out: VecDeque::new(),
             out_pos: 0,
             queued_writes: false,
+            held: false,
             write_error: None,
             nonblocking: false,
             bytes_in: 0,
@@ -510,6 +514,10 @@ impl Connection {
         if self.write_error.is_some() {
             return Err(self.failed());
         }
+        if self.held {
+            self.out.push_back(frame);
+            return Ok(());
+        }
         if !self.queued_writes {
             return self.stream.write_all(&frame).map_err(|e| self.record_write_error(e));
         }
@@ -519,6 +527,35 @@ impl Connection {
         } else {
             Ok(())
         }
+    }
+
+    /// Keep the frames sent from now on, until [`Self::release`] writes
+    /// them together. The reference writes the orders it sends together
+    /// (a bracket) in one write, and the server then answers for them as
+    /// one group; written one by one, a millisecond apart, the parent was
+    /// answered and set working before its children were read (ibx#548,
+    /// paper 11/10/2026: the same three messages, another order of the
+    /// status reports).
+    pub fn hold(&mut self) {
+        self.held = true;
+    }
+
+    /// Write the frames kept since [`Self::hold`], in one write.
+    pub fn release(&mut self) -> io::Result<()> {
+        if !std::mem::take(&mut self.held) {
+            return Ok(());
+        }
+        if self.queued_writes {
+            return self.flush_queued();
+        }
+        if self.write_error.is_some() {
+            return Err(self.failed());
+        }
+        let all: Vec<u8> = self.out.drain(..).flatten().collect();
+        if all.is_empty() {
+            return Ok(());
+        }
+        self.stream.write_all(&all).map_err(|e| self.record_write_error(e))
     }
 
     /// Write what the socket takes now of the waiting frames, in order,
@@ -1017,6 +1054,29 @@ mod tests {
         match &mut conn.stream {
             Stream::Mem(t) => t,
             _ => unreachable!("an in-memory connection"),
+        }
+    }
+
+    // ibx#548: frames sent while the connection is held leave together at
+    // the release, in one write, in both write modes; nothing is written
+    // before.
+    #[test]
+    fn held_frames_leave_in_one_write() {
+        for queued in [false, true] {
+            let (mut conn, mut server) = loopback();
+            conn.set_queued_writes(queued);
+            conn.hold();
+            for frame in [&b"one|"[..], b"two|", b"three|"] {
+                conn.send_raw(frame).unwrap();
+            }
+            assert!(read_available(&mut server, 64).is_empty(), "queued {queued}: nothing before the release");
+            conn.release().unwrap();
+            assert_eq!(read_available(&mut server, 64), b"one|two|three|", "queued {queued}");
+            assert!(!conn.has_queued_output());
+            // Not held any more: a frame leaves at once; a release with nothing kept is nothing.
+            conn.send_raw(b"four|").unwrap();
+            conn.release().unwrap();
+            assert_eq!(read_available(&mut server, 64), b"four|", "queued {queued}");
         }
     }
 
