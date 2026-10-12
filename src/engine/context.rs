@@ -291,6 +291,9 @@ pub struct Context {
     pub(crate) def_ready: Vec<crate::types::ControlCommand>,
     /// Listing exchange by conId, once its definition was read (#452).
     pub(crate) listing_exchanges: HashMap<i64, String>,
+    /// The terms of the options whose definition was read, for the option
+    /// model of their market data (ibx#502).
+    pub(crate) option_terms: HashMap<i64, crate::control::optcalc::OptionTerms>,
     /// Aggregate group by conId, once its definition was read (#445).
     pub(crate) agg_groups: HashMap<i64, i32>,
     /// SMART component exchanges by conId, once its definition was read
@@ -389,6 +392,7 @@ impl Context {
             round_lots: HashMap::new(),
             agg_groups: HashMap::new(),
             listing_exchanges: HashMap::new(),
+            option_terms: HashMap::new(),
             def_parked: Vec::new(),
             def_ready: Vec::new(),
             smart_components: HashMap::new(),

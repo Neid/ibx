@@ -31,6 +31,7 @@ use std::sync::atomic::Ordering;
 
 use crate::api::types::PRICE_SCALE_F;
 use crate::bridge::SharedState;
+use crate::control::optcalc::{market, OptionComputation};
 use crate::control::snapshot::PlainSnapshot;
 use crate::md_events::{field, MdEvent, MdStep};
 use crate::types::*;
@@ -613,9 +614,35 @@ impl ClientCore {
             }
         }
         if snapshots {
-            d.snapshot_timeouts(now.unwrap_or_else(std::time::Instant::now));
+            d.snapshot_timeouts(now.unwrap_or_else(std::time::Instant::now), &observers);
         }
     }
+}
+
+/// The API tick type of an option computation: delayed data has its own.
+fn option_tick_type(tick_type: i32, delayed: bool) -> i32 {
+    if delayed { market::delayed(tick_type) } else { tick_type }
+}
+
+/// The callback of an option computation.
+fn option_tick(c: &OptionComputation, delayed: bool) -> MdTick {
+    MdTick::Option(OptionComputation { tick_type: option_tick_type(c.tick_type, delayed), ..*c })
+}
+
+/// The option computations of an instrument's model as last given, the
+/// model's first (ibx#502).
+fn known_computations(core: &ClientCore, instrument: InstrumentId) -> Vec<OptionComputation> {
+    use crate::control::generic_values::GenTick;
+    let last = core.md_generic_last.lock().unwrap();
+    let Some(kept) = last.get(&instrument) else { return Vec::new() };
+    let mut out: Vec<OptionComputation> = kept.values()
+        .filter_map(|(code, t)| match t {
+            GenTick::Option(c) if *code == market::COMPUTATIONS => Some(*c),
+            _ => None,
+        })
+        .collect();
+    out.sort_by_key(|c| if c.tick_type == market::MODEL { 0 } else { c.tick_type });
+    out
 }
 
 /// One step of one request: its callbacks, the market data type before its
@@ -676,6 +703,21 @@ impl Drain<'_> {
     /// blocks that came before its cancel.
     fn generic(&mut self, g: &crate::bridge::GenericTicks, reqs: &[i64], retired: &[Retired]) {
         use crate::control::generic_values::{GenTick, RT_TRADE_VOLUME, RT_VOLUME};
+        if g.code == market::COMPUTATIONS {
+            return self.computations(g, reqs, retired);
+        }
+        if g.code == market::COMPUTATIONS_KEPT {
+            // Kept for the requests that join and the snapshots at their
+            // limit only (ibx#502).
+            let mut last = self.core.md_generic_last.lock().unwrap();
+            let kept = last.entry(g.instrument).or_default();
+            for t in &g.ticks {
+                if let GenTick::Option(c) = t {
+                    kept.insert(c.tick_type, (market::COMPUTATIONS, t.clone()));
+                }
+            }
+            return;
+        }
         let asked = |codes: &[i32]| {
             codes.contains(&g.code)
                 || (matches!(g.code, RT_VOLUME | RT_TRADE_VOLUME) && codes.iter().any(|c| matches!(*c, RT_VOLUME | RT_TRADE_VOLUME)))
@@ -687,6 +729,7 @@ impl Drain<'_> {
             for t in &g.ticks {
                 let tick_type = match t {
                     GenTick::Price(t, _) | GenTick::Size(t, _) | GenTick::Generic(t, _) | GenTick::Text(t, _) => *t,
+                    GenTick::Option(c) => c.tick_type,
                 };
                 kept.insert(tick_type, (g.code, t.clone()));
             }
@@ -708,6 +751,7 @@ impl Drain<'_> {
                     GenTick::Size(tick_type, value) => MdTick::Size { tick_type, value },
                     GenTick::Generic(tick_type, value) => MdTick::Generic { tick_type, value },
                     GenTick::Text(tick_type, value) => MdTick::Text { tick_type, value },
+                    GenTick::Option(c) => MdTick::Option(c),
                 };
                 self.out.push(MdOut::Tick(req_id, tick));
             }
@@ -749,9 +793,14 @@ impl Drain<'_> {
     }
 
     /// The known generic values of `instrument` that request `req_id`
-    /// asked, by tick type (ibx#495).
+    /// asked, by tick type (ibx#495), after its option computations
+    /// (ibx#502).
     fn known_generic(&mut self, req_id: i64, instrument: InstrumentId) {
         use crate::control::generic_values::{GenTick, RT_TRADE_VOLUME, RT_VOLUME};
+        let comps = known_computations(self.core, instrument);
+        if !comps.is_empty() {
+            self.emit_computations(req_id, &comps);
+        }
         let codes = self.core.md_generic.lock().unwrap().get(&req_id).map(|g| g.codes.clone()).unwrap_or_default();
         if codes.is_empty() {
             return;
@@ -768,8 +817,79 @@ impl Drain<'_> {
                 GenTick::Size(tick_type, value) => MdTick::Size { tick_type, value },
                 GenTick::Generic(tick_type, value) => MdTick::Generic { tick_type, value },
                 GenTick::Text(tick_type, value) => MdTick::Text { tick_type, value },
+                GenTick::Option(_) => continue,
             };
             self.out.push(MdOut::Tick(req_id, tick));
+        }
+    }
+
+    /// The option computations of an option's model (ibx#502) to the
+    /// requests of the instrument made before they came (a cancelled one:
+    /// those before its cancel). Kept for the requests that join and for
+    /// the snapshots that reach their time limit.
+    fn computations(&mut self, g: &crate::bridge::GenericTicks, reqs: &[i64], retired: &[Retired]) {
+        use crate::control::generic_values::GenTick;
+        let comps: Vec<OptionComputation> = g.ticks.iter()
+            .filter_map(|t| if let GenTick::Option(c) = t { Some(*c) } else { None })
+            .collect();
+        {
+            let mut last = self.core.md_generic_last.lock().unwrap();
+            let kept = last.entry(g.instrument).or_default();
+            for c in &comps {
+                kept.insert(c.tick_type, (g.code, GenTick::Option(*c)));
+            }
+        }
+        let live: Vec<i64> = reqs.iter().rev().copied()
+            .filter(|r| self.streams.get(r).is_none_or(|st| st.start <= g.at && !st.ended && !st.waiting_join))
+            .collect();
+        for req_id in live {
+            self.emit_computations(req_id, &comps);
+        }
+        for r in retired.iter().filter(|r| r.instrument == g.instrument && g.at < r.end && r.st.start <= g.at && !r.st.ended) {
+            for c in &comps {
+                self.out.push(MdOut::Tick(r.req_id, option_tick(c, r.st.delayed)));
+            }
+        }
+    }
+
+    /// Option computations for one request: a stream gets each; a plain
+    /// snapshot takes each tick type once, the model's at once and the
+    /// others once they have a volatility or a greek (`optionmodel.al`),
+    /// and ends when complete.
+    fn emit_computations(&mut self, req_id: i64, comps: &[OptionComputation]) {
+        let st = self.streams.entry(req_id).or_default();
+        if st.ended {
+            return;
+        }
+        let mark = self.out.len();
+        let delayed = st.delayed;
+        let mut complete = false;
+        match self.snaps.get_mut(&req_id) {
+            Some(snap) => {
+                for c in comps {
+                    if (c.tick_type == market::MODEL || market::valid(c)) && snap.take(option_tick_type(c.tick_type, delayed)) {
+                        self.out.push(MdOut::Tick(req_id, option_tick(c, delayed)));
+                    }
+                }
+                complete = snap.complete();
+            }
+            None => {
+                for c in comps {
+                    self.out.push(MdOut::Tick(req_id, option_tick(c, delayed)));
+                }
+            }
+        }
+        if self.out.len() > mark && !st.mdt_done {
+            st.mdt_done = true;
+            if let Some(mdt) = self.core.check_mdt_needed(req_id, true) {
+                self.out.insert(mark, MdOut::MarketDataType(req_id, mdt));
+            }
+        }
+        if complete {
+            st.ended = true;
+            self.out.push(MdOut::SnapshotEnd(req_id));
+            self.snaps.remove(&req_id);
+            self.core.snapshot_count.store(self.snaps.len(), Ordering::Release);
         }
     }
 
@@ -817,13 +937,25 @@ impl Drain<'_> {
         }
     }
 
-    /// The snapshots that reached their time limit end.
-    fn snapshot_timeouts(&mut self, now: std::time::Instant) {
+    /// The snapshots that reached their time limit end; an option's first
+    /// gets the computations it did not take yet, as its model has them
+    /// (the reference 10.51, 12/10/2026: a bid computation without
+    /// volatility at 11 s, then the end).
+    fn snapshot_timeouts(&mut self, now: std::time::Instant, observers: &HashMap<InstrumentId, Vec<i64>>) {
         let streams = &mut *self.streams;
         let out = &mut *self.out;
+        let core = self.core;
         self.snaps.retain(|&req_id, snap| {
             if !snap.timed_out(now) {
                 return true;
+            }
+            let delayed = streams.get(&req_id).is_some_and(|st| st.delayed);
+            if let Some((&instrument, _)) = observers.iter().find(|(_, reqs)| reqs.contains(&req_id)) {
+                for c in known_computations(core, instrument) {
+                    if snap.take(option_tick_type(c.tick_type, delayed)) {
+                        out.push(MdOut::Tick(req_id, option_tick(&c, delayed)));
+                    }
+                }
             }
             if let Some(st) = streams.get_mut(&req_id) {
                 st.ended = true;
@@ -848,6 +980,7 @@ mod tests {
             MdOut::Tick(r, MdTick::Text { tick_type, value }) => format!("string:{r}:{tick_type}:{value}"),
             MdOut::Tick(r, MdTick::Time { tick_type, secs }) => format!("string:{r}:{tick_type}:{secs}"),
             MdOut::Tick(r, MdTick::Generic { tick_type, value }) => format!("generic:{r}:{tick_type}:{value}"),
+            MdOut::Tick(r, MdTick::Option(c)) => format!("option:{r}:{}:{}:{}", c.tick_type, c.implied_vol, c.opt_price),
             MdOut::MarketDataType(r, t) => format!("mdt:{r}:{t}"),
             MdOut::SnapshotEnd(r) => format!("end:{r}"),
         }).collect()
@@ -917,6 +1050,67 @@ mod tests {
         want.push("mdt:2:1".into());
         want.extend(picture(2));
         assert_eq!(lines[..want.len()], want[..], "{lines:?}");
+    }
+
+    fn computation(tick_type: i32, iv: f64) -> OptionComputation {
+        OptionComputation {
+            req_id: 0, tick_type, tick_attrib: 0, implied_vol: iv, delta: crate::control::optcalc::NOT_COMPUTED,
+            opt_price: 14.949999809265137, pv_dividend: 0.2690576206220461, gamma: crate::control::optcalc::NOT_COMPUTED,
+            vega: crate::control::optcalc::NOT_COMPUTED, theta: crate::control::optcalc::NOT_COMPUTED, und_price: 339.585,
+        }
+    }
+
+    fn push_computations(shared: &SharedState, id: InstrumentId, comps: &[OptionComputation]) {
+        shared.market.push_generic_ticks(crate::bridge::GenericTicks {
+            at: shared.market.md_events.position(), instrument: id, code: market::COMPUTATIONS,
+            ticks: comps.iter().map(|c| crate::control::generic_values::GenTick::Option(*c)).collect(),
+        });
+    }
+
+    const NO: f64 = crate::control::optcalc::NOT_COMPUTED;
+
+    // ibx#502: a stream gets every computation of its option's model, after
+    // its market data type.
+    #[test]
+    fn an_option_stream_gets_its_computations() {
+        let (core, shared) = (ClientCore::new(), SharedState::new());
+        assert!(core.attach_md_request(&shared, 1, 5, false, "OPT", "SMART", None, false, false));
+        push_computations(&shared, 5, &[computation(13, 0.24), computation(10, NO)]);
+        assert_eq!(poll(&core, &shared), ["mdt:1:1", "option:1:13:0.24:14.949999809265137",
+            format!("option:1:10:{NO}:14.949999809265137").as_str()]);
+    }
+
+    // ibx#502 (the reference 10.51, 12/10/2026): a plain snapshot of an
+    // option takes each computation once it has a volatility or a greek
+    // (the model's at once) and ends once its quote and the four came; at
+    // its time limit it first gets those it did not take, as known.
+    #[test]
+    fn an_option_snapshot_ends_on_its_computations_or_at_its_limit() {
+        let (core, shared) = (ClientCore::new(), SharedState::new());
+        let q = Quote { bid: 100 * PRICE_SCALE, ask: 101 * PRICE_SCALE, last: 100 * PRICE_SCALE, close: 99 * PRICE_SCALE,
+            bid_size: QTY_SCALE, ask_size: QTY_SCALE, last_size: QTY_SCALE, ..Default::default() };
+        for req in [1, 2] {
+            let id = 4 + req as InstrumentId;
+            assert!(core.attach_md_request(&shared, req, id, true, "OPT", "SMART", None, false, false));
+            shared.market.push_test_message(id, &q, &TestMessage::default());
+        }
+        // Request 1: the four, valid: it ends.
+        push_computations(&shared, 5, &[computation(13, 0.24), computation(10, 0.23), computation(11, 0.25), computation(12, 0.24)]);
+        // Request 2: tick 10 has no volatility yet: not taken.
+        push_computations(&shared, 6, &[computation(13, 0.24), computation(10, NO), computation(11, 0.25), computation(12, 0.24)]);
+        let lines = poll(&core, &shared);
+        let options: Vec<&String> = lines.iter().filter(|l| l.starts_with("option:") || l.starts_with("end:")).collect();
+        assert_eq!(options, ["option:1:13:0.24:14.949999809265137", "option:1:10:0.23:14.949999809265137",
+            "option:1:11:0.25:14.949999809265137", "option:1:12:0.24:14.949999809265137", "end:1",
+            "option:2:13:0.24:14.949999809265137", "option:2:11:0.25:14.949999809265137", "option:2:12:0.24:14.949999809265137"],
+            "{lines:?}");
+        let mut out = Vec::new();
+        core.poll_market_data(&shared, Some(std::time::Instant::now() + crate::control::snapshot::TIMEOUT), &mut out);
+        assert_eq!(lines_of(&out), [format!("option:2:10:{NO}:14.949999809265137"), "end:2".to_string()]);
+    }
+
+    fn lines_of(out: &[MdOut]) -> Vec<String> {
+        lines(out)
     }
 
     // ibx#446: a slot the engine gives to another contract: the new

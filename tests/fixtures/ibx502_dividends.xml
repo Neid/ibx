@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="US-ASCII"?>
+<financialReferenceData>
+	<contract id="i265598">
+		<dividends policy="regular">
+			<minDate>20261009</minDate>
+			<maxDate>20290119</maxDate>
+			<div>
+				<date>20261109</date>
+				<exDate>20261109</exDate>
+				<curr>USD</curr>
+				<amt>0.27</amt>
+			</div>
+			<div>
+				<date>20270208</date>
+				<exDate>20270208</exDate>
+				<curr>USD</curr>
+				<amt>0.27</amt>
+			</div>
+			<div>
+				<date>20270510</date>
+				<exDate>20270510</exDate>
+				<curr>USD</curr>
+				<amt>0.28</amt>
+			</div>
+			<div>
+				<date>20270809</date>
+				<exDate>20270809</exDate>
+				<curr>USD</curr>
+				<amt>0.28</amt>
+			</div>
+			<div>
+				<date>20271108</date>
+				<exDate>20271108</exDate>
+				<curr>USD</curr>
+				<amt>0.28</amt>
+			</div>
+			<div>
+				<date>20280214</date>
+				<exDate>20280214</exDate>
+				<curr>USD</curr>
+				<amt>0.28</amt>
+			</div>
+			<div>
+				<date>20280508</date>
+				<exDate>20280508</exDate>
+				<curr>USD</curr>
+				<amt>0.28</amt>
+			</div>
+			<div>
+				<date>20280814</date>
+				<exDate>20280814</exDate>
+				<curr>USD</curr>
+				<amt>0.28</amt>
+			</div>
+			<div>
+				<date>20281113</date>
+				<exDate>20281113</exDate>
+				<curr>USD</curr>
+				<amt>0.28</amt>
+			</div>
+		</dividends>
+	</contract>
+</financialReferenceData>

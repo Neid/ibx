@@ -62,6 +62,8 @@ pub(crate) struct OptCalc {
     dividends: HashMap<i64, Known<Vec<inputs::Dividend>>>,
     xml_queries: HashMap<String, XmlTarget>,
     next_xml: u32,
+    /// A model clock that does not move (tests).
+    fixed_clock: Option<i64>,
 }
 
 impl Default for OptCalc {
@@ -77,6 +79,7 @@ impl Default for OptCalc {
             dividends: HashMap::new(),
             xml_queries: HashMap::new(),
             next_xml: 1,
+            fixed_clock: None,
         }
     }
 }
@@ -114,6 +117,9 @@ pub(crate) fn terms_of(def: &crate::control::contracts::ContractDefinition) -> O
 
 impl OptCalc {
     fn clock_ms(&mut self, now: i64) -> i64 {
+        if let Some(fixed) = self.fixed_clock {
+            return fixed;
+        }
         let clock = *self.clock.get_or_insert(inputs::ModelClock { start_ms: now });
         clock.at(now)
     }
@@ -312,6 +318,45 @@ impl OptCalc {
         // Calculations started while answering stay too.
         keep.append(&mut self.calcs);
         self.calcs = keep;
+    }
+
+    /// Ask the model inputs of an option that are not known or asked yet:
+    /// the rate curve of its currency and the dividends of its underlying,
+    /// as for a calculation; the model clock starts with the first use
+    /// (ibx#502: the reference asked both at its first option market data
+    /// request).
+    pub(crate) fn want_inputs(&mut self, terms: &OptionTerms, conn: &mut Option<Connection>, hb: &mut HeartbeatState) {
+        let _ = self.clock_ms(now_ms());
+        let now = Instant::now();
+        if !self.curves.contains_key(&terms.currency) {
+            self.curves.insert(terms.currency.clone(), Known::Asked(now));
+            self.send_xml_query(&terms.rate_query(), XmlTarget::Curve(terms.currency.clone()), conn, hb);
+        }
+        if let std::collections::hash_map::Entry::Vacant(e) = self.dividends.entry(terms.under_con_id) {
+            e.insert(Known::Asked(now));
+            self.send_xml_query(&terms.dividend_query(), XmlTarget::Dividends(terms.under_con_id), conn, hb);
+        }
+    }
+
+    /// `f` with the model inputs of an option at the model clock, None while
+    /// they are not known.
+    pub(crate) fn with_inputs<R>(&mut self, terms: &OptionTerms, f: impl FnOnce(Option<&optcalc::ModelInputs>) -> R) -> R {
+        let clock = self.clock_ms(now_ms());
+        match (self.curves.get(&terms.currency), self.dividends.get(&terms.under_con_id)) {
+            (Some(Known::Ready(curve)), Some(Known::Ready(divs))) => {
+                let inp = optcalc::ModelInputs { curve, dividends: divs, clock_ms: clock, local_zone: &self.local_zone };
+                f(Some(&inp))
+            }
+            _ => f(None),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_inputs_for_test(&mut self, currency: &str, curve: inputs::RateCurve, under_con_id: i64, divs: Vec<inputs::Dividend>, clock_ms: i64, local_zone: &str) {
+        self.curves.insert(currency.to_string(), Known::Ready(curve));
+        self.dividends.insert(under_con_id, Known::Ready(divs));
+        self.fixed_clock = Some(clock_ms);
+        self.local_zone = local_zone.to_string();
     }
 
     #[cfg(test)]

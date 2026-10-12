@@ -76,6 +76,12 @@ pub(crate) fn note_definition(context: &mut Context, con_id: i64, msg: &[u8]) {
         if let Some(description) = depth_description(def) {
             context.depth_descriptions.insert(con_id, description);
         }
+        // An option's terms, for the option model of its market data
+        // (ibx#502).
+        let terms = super::optcalc::terms_of(def);
+        if terms.is_option() || crate::control::optcalc::market::has_model(&terms.sec_type) {
+            context.option_terms.insert(con_id, terms);
+        }
     }
 }
 
@@ -559,6 +565,8 @@ pub(crate) struct FarmState {
     /// BBO exchange, permissions. The reference's record of the contract
     /// keeps them after its requests ended (ibx#444).
     pub(crate) con_params: std::collections::HashMap<i64, (f64, String, i64)>,
+    /// The option models of the options' market data (ibx#502).
+    pub(crate) optmd: super::optmd::OptMd,
 }
 
 impl FarmState {
@@ -594,6 +602,7 @@ impl FarmState {
             generic_records: std::collections::HashMap::new(),
             top_confirmed: Vec::new(),
             con_params: std::collections::HashMap::new(),
+            optmd: super::optmd::OptMd::default(),
         }
     }
 
@@ -781,7 +790,12 @@ impl FarmState {
         let mut block: Option<MdBlock> = None;
 
         // Phase 1: Apply all ticks to internal quotes before publishing.
+        // The option models read their underlying's prices (ibx#502).
+        let models = !self.optmd.is_empty();
         for tick in &ticks {
+            if models {
+                self.optmd.tick(self.rx_farm, tick);
+            }
             let route = context.market.route_farm_tag(self.rx_farm, tick.server_tag);
             if tick.first {
                 if let Some(b) = block.take() {
@@ -905,6 +919,16 @@ impl FarmState {
         if let Some(e) = self.status.iter_mut().find(|e| e.farm == rx_farm && e.farm_req == req_id) {
             e.tag = Some(server_tag);
             log::info!("Market data status ack: server_tag {} -> instrument {}", server_tag, e.instrument);
+            return;
+        }
+
+        // An option model entry's ack (ibx#502); the model's own pair of
+        // the option carries the option's ticks.
+        if let Some((instrument, code, under)) = self.optmd.ack(rx_farm, req_id, server_tag, min_tick) {
+            if !under && matches!(code, 442 | 443) {
+                let size_min_tick = parts.get(8).and_then(|v| v.parse::<f64>().ok());
+                context.market.register_farm_tag_sized(rx_farm, server_tag, instrument, min_tick, size_min_tick);
+            }
             return;
         }
 
@@ -1096,13 +1120,24 @@ impl FarmState {
                 Some(MARKET_DATA_STATUS)
             } else {
                 self.generic.iter().find(|e| e.farm == rx_farm && e.tag == Some(tag)).map(|e| e.code)
+                    .or_else(|| self.optmd.code_of(rx_farm, tag))
             }
         });
+        let now = Instant::now();
         for (tag, code, payload) in blocks {
             match code {
                 Some(626) => self.handle_exchange_map(tag, payload, sink, shared, hb),
                 Some(292) => self.handle_tick_news(tag, payload, shared, event_tx),
-                Some(MARKET_DATA_STATUS) => self.handle_md_status(tag, payload, sink, context, shared, hb),
+                Some(MARKET_DATA_STATUS) => {
+                    // The option model's status of its option (ibx#502).
+                    if !self.optmd.is_empty() {
+                        self.optmd.status(rx_farm, tag, payload);
+                    }
+                    self.handle_md_status(tag, payload, sink, context, shared, hb)
+                }
+                // The option model's values (ibx#502).
+                Some(code) if self.optmd.code_of(rx_farm, tag) == Some(code) =>
+                    self.optmd.block(rx_farm, tag, code, payload, now, &mut self.next_md_req_id),
                 Some(code) => self.handle_generic_block(tag, code, payload, context, shared),
                 None => log::warn!("Generic tick for server tag {} of no known request: dropped", tag),
             }
@@ -1281,6 +1316,8 @@ impl FarmState {
         let con_id: i64 = match parts[0].parse() { Ok(v) => v, Err(_) => return };
         let min_tick: f64 = parts[1].parse().unwrap_or(0.01);
         let server_tag: u32 = match parts[2].parse() { Ok(v) => v, Err(_) => return };
+        // An option model's underlying (ibx#502).
+        self.optmd.ticker_setup(self.rx_farm, con_id, server_tag, min_tick);
 
         // The slot of the contract's market data subscription: a contract
         // asked without a conId has a slot of its own, apart from the slot
@@ -1722,6 +1759,10 @@ impl FarmState {
         // acknowledgement of its code (ibx#441).
         self.exchange_map_subs.retain(|s| s.farm != farm);
         self.generic_farm_lost(farm);
+        // The option models on it stop; they start again with their top of
+        // book (ibx#502).
+        let cancels = self.optmd.farm_lost(farm);
+        self.optmd.outbox.extend(cancels);
         self.status_farm_lost(farm);
         let lost: Vec<MdEntry> = self.md_entries.iter().filter(|e| e.farm == farm).cloned().collect();
         self.md_entries.retain(|e| e.farm != farm);

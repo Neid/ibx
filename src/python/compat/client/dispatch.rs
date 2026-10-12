@@ -497,6 +497,13 @@ impl EClient {
                     }
                     MdTick::Generic { tick_type, value } =>
                         call_wrapper!(self.wrapper, py, "tick_generic", (req_id, tick_type, value)),
+                    MdTick::Option(c) => {
+                        let v = |x: f64| (x != f64::MAX).then_some(x);
+                        call_wrapper!(self.wrapper, py, "tick_option_computation", (
+                            req_id, c.tick_type, c.tick_attrib, v(c.implied_vol), v(c.delta), v(c.opt_price),
+                            v(c.pv_dividend), v(c.gamma), v(c.vega), v(c.theta), v(c.und_price),
+                        ));
+                    }
                 },
                 MdOut::MarketDataType(req_id, mdt) =>
                     call_wrapper!(self.wrapper, py, "market_data_type", (req_id, mdt)),

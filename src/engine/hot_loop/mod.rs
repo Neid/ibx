@@ -5,6 +5,9 @@ pub(crate) mod pool;
 pub mod order_builder;
 pub mod liveness;
 pub(crate) mod optcalc;
+pub(crate) mod optmd;
+#[cfg(test)]
+mod optmd_tests;
 pub(crate) mod optparams;
 
 use std::sync::Arc;
@@ -641,6 +644,10 @@ impl HotLoop {
             let msgs = self.farm.start_news(sub.instrument, sub.con_id, &sub.sec_type, &providers, id);
             self.send_md_messages(msgs);
         }
+        // The option model of an option (ibx#502).
+        if !news_contract {
+            self.start_option_model(sub, id);
+        }
         // The generic ticks of its requests, after its top of book
         // (ibx#450).
         let waiting: Vec<farm::GenericWaiting> = {
@@ -724,12 +731,16 @@ impl HotLoop {
     /// Cancel the top of book of an instrument on each farm it went to
     /// (#445).
     fn route_md_cancel(&mut self, instrument: InstrumentId) {
+        // The option model's cancels around the top of book's (ibx#502).
+        let (model_pre, model_post) = self.farm.optmd.stop(instrument);
         if self.md_pass.on {
             // In the order of the reference's cancels: the top of book,
             // the generic tick entries, the news entry, the market data
             // status entry (ibx#450, ibx#458, ibx#447).
+            self.send_md_messages(model_pre);
             let msgs = self.farm.unsubscribe_top(instrument);
             self.send_md_messages(msgs);
+            self.send_md_messages(model_post);
             let msgs = self.farm.stop_generic(instrument);
             self.send_md_messages(msgs);
             let msgs = self.farm.stop_news(instrument);
@@ -738,6 +749,7 @@ impl HotLoop {
             self.send_md_messages(msgs);
             return;
         }
+        self.send_farm_messages(model_pre);
         let now = Instant::now();
         for (id, msg) in self.farm.unsubscribe_top(instrument) {
             let fields: Vec<(u32, &str)> = msg.iter().map(|(t, v)| (*t, v.as_str())).collect();
@@ -750,6 +762,7 @@ impl HotLoop {
                 }
             }
         }
+        self.send_farm_messages(model_post);
         // Its generic tick entries, then its news entry, after its top of
         // book, as the reference's cancels (ibx#450, ibx#458).
         let msgs = self.farm.stop_generic(instrument);
@@ -759,6 +772,93 @@ impl HotLoop {
         // Its market data status entry last (ibx#447).
         let msgs = self.farm.stop_status(instrument);
         self.send_farm_messages(msgs);
+    }
+
+    /// Start the option model of an option request whose top of book went
+    /// out on `opt_farm` (ibx#502): real-time data only; once the option's
+    /// terms and its underlying's route are known.
+    fn start_option_model(&mut self, sub: &farm::MdSubscribe, opt_farm: pool::FarmId) {
+        if sub.mode_9887 != 0 || sub.con_id <= 0 || !crate::control::optcalc::market::has_model(&sub.sec_type)
+            || self.farm.optmd.has(sub.instrument)
+        {
+            return;
+        }
+        let now = Instant::now();
+        self.farm.optmd.starting.push(optmd::Starting {
+            instrument: sub.instrument, con_id: sub.con_id, snapshot: sub.snapshot, opt_farm,
+            deadline: now + optmd::OptMd::start_wait(),
+        });
+        self.service_option_starts(now);
+    }
+
+    /// Whether a farm can take a message now: the primary market data
+    /// farm when connected; a farm opened on demand keeps its messages
+    /// until it is.
+    fn md_farm_up(&self, id: pool::FarmId) -> bool {
+        id != PRIMARY_MD || (!self.farm.disconnected && self.farm_conn.is_some())
+    }
+
+    /// The option models waiting for their definitions (ibx#502): asked
+    /// when missing; started once known.
+    fn service_option_starts(&mut self, now: Instant) {
+        self.farm.optmd.sweep_starting(now);
+        for s in std::mem::take(&mut self.farm.optmd.starting) {
+            // The request ended meanwhile.
+            if !self.farm.has_md_subscription(s.instrument) {
+                continue;
+            }
+            let Some(terms) = self.context.option_terms.get(&s.con_id).cloned() else {
+                self.ask_definition(s.con_id, "SMART");
+                self.farm.optmd.starting.push(s);
+                continue;
+            };
+            if terms.under_con_id <= 0 {
+                log::warn!("Option model of con_id {}: no underlying in its definition, no option computations", s.con_id);
+                continue;
+            }
+            let under_type = if terms.under_sec_type.is_empty() { "STK".to_string() } else { terms.under_sec_type.clone() };
+            let under_sub = farm::MdSubscribe {
+                con_id: terms.under_con_id, symbol: String::new(), exchange: "SMART".into(), sec_type: under_type.clone(),
+                last_trade_date: String::new(), strike: 0.0, right: String::new(), multiplier: String::new(),
+                instrument: s.instrument, mode_9887: 0, snapshot: false,
+            };
+            if self.needs_agg_group(&under_sub) {
+                self.ask_definition(terms.under_con_id, "SMART");
+                self.farm.optmd.starting.push(s);
+                continue;
+            }
+            let Some(under_farm) = self.md_route(&under_sub) else {
+                log::warn!("Option model of con_id {}: no route for its underlying {}", s.con_id, terms.under_con_id);
+                continue;
+            };
+            if !self.md_farm_up(s.opt_farm) || !self.md_farm_up(under_farm) {
+                self.farm.optmd.starting.push(s);
+                continue;
+            }
+            let under_exchange = farm::routing_exchange("SMART", &under_type).to_string();
+            let f = &mut self.farm;
+            let msgs = f.optmd.launch(s.instrument, s.con_id, s.snapshot, terms.clone(), s.opt_farm, under_farm,
+                &under_exchange, &mut f.next_md_req_id);
+            self.send_md_messages(msgs);
+            self.ccp.optcalc.want_inputs(&terms, &mut self.ccp_conn, &mut self.hb);
+        }
+    }
+
+    /// The option models (ibx#502): the starts waiting, the messages made
+    /// while reading the farms, the passes that are due.
+    fn service_option_models(&mut self, now: Instant) {
+        if !self.farm.optmd.starting.is_empty() {
+            self.service_option_starts(now);
+        }
+        if !self.farm.optmd.outbox.is_empty() {
+            let msgs = std::mem::take(&mut self.farm.optmd.outbox);
+            self.send_md_messages(msgs);
+        }
+        if self.farm.optmd.is_empty() {
+            return;
+        }
+        let (optmd, optcalc, context, shared) = (&mut self.farm.optmd, &mut self.ccp.optcalc, &self.context, &self.shared);
+        optmd.passes(now, context, shared, |terms, f| optcalc.with_inputs(terms, |inp| f(inp)));
     }
 
     /// The frozen slots whose farm was lost (ibx#447): their requests go
@@ -1399,6 +1499,7 @@ impl HotLoop {
             self.clean_server_tags(now);
             self.flush_thawed();
             self.send_due_tbt_cancels(now);
+            self.service_option_models(now);
 
             // 1b'. Farms opened on demand (#445): read, then connect,
             //      heartbeat and close them by their rules.

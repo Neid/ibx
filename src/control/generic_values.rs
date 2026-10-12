@@ -29,6 +29,8 @@ pub enum GenTick {
     Size(i32, f64),
     Generic(i32, f64),
     Text(i32, String),
+    /// An option computation of an option's model (ibx#502).
+    Option(crate::control::optcalc::OptionComputation),
 }
 
 /// Request codes of the ticks ibx sends and decodes.

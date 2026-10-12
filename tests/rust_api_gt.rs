@@ -2904,6 +2904,72 @@ impl Wrapper for B2Wrapper {
         self.at(format!("open {order_id} {} {} {} {}", c.con_id, o.order_type, o.trail_stop_price, s.status));
     }
     fn contract_details(&mut self, req_id: i64, d: &ContractDetails) { self.details.push((req_id, d.contract.con_id)); }
+    fn tick_option_computation(
+        &mut self, req_id: i64, tt: i32, _: i32, iv: f64, delta: f64, price: f64, pv: f64, _: f64, _: f64, _: f64, und: f64,
+    ) {
+        let v = |x: f64| if x == f64::MAX { "-".to_string() } else { x.to_string() };
+        self.at(format!("option {req_id} {tt} {} {} {} {} {}", v(iv), v(delta), v(price), v(pv), v(und)));
+    }
+    fn tick_snapshot_end(&mut self, req_id: i64) { self.at(format!("end {req_id}")); }
+}
+
+/// ibx#502, in regular hours, on paper: an AAPL call of December 2026,
+/// strike 340, given by its full description, as the reference 10.51 gave
+/// it on 12/10/2026: a 12 s stream gets the option computations 13, then 10,
+/// 11, 12, and 10 to 12 again with a volatility; a plain snapshot gets the
+/// four and its end well before 11 s.
+/// Run with: cargo test --test rust_api_gt api_option_computations_live -- --ignored --nocapture
+#[test]
+#[ignore]
+fn api_option_computations_live() {
+    let _ = env_logger::try_init();
+    let config = match get_config() {
+        Some(c) => c,
+        None => panic!("IB_USERNAME / IB_PASSWORD not set: a live test fails without credentials"),
+    };
+    let client = EClient::connect(&config).expect("EClient::connect failed");
+    if !client.account_id.starts_with("DU") {
+        client.disconnect();
+        panic!("refusing to run: not a paper account");
+    }
+    let mut w = B2Wrapper::default();
+    let pump = |client: &EClient, w: &mut B2Wrapper, secs: u64| {
+        let t = Instant::now();
+        while t.elapsed() < Duration::from_secs(secs) {
+            client.process_msgs(w);
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    };
+    pump(&client, &mut w, 3);
+    w.events.clear();
+    w.start = Some(Instant::now());
+    let option = Contract {
+        symbol: "AAPL".into(), sec_type: "OPT".into(), exchange: "SMART".into(), currency: "USD".into(),
+        last_trade_date_or_contract_month: "20261218".into(), strike: 340.0, right: "C".into(), multiplier: "100".into(),
+        ..Default::default()
+    };
+    client.req_mkt_data(9801, &option, "", false, false).unwrap();
+    pump(&client, &mut w, 12);
+    client.cancel_mkt_data(9801).unwrap();
+    pump(&client, &mut w, 1);
+    let snap_at = w.start.map(|s| s.elapsed().as_millis()).unwrap_or(0);
+    client.req_mkt_data(9802, &option, "", true, false).unwrap();
+    pump(&client, &mut w, 13);
+    client.disconnect();
+    for (ms, e) in &w.events {
+        println!("  {ms:>6} ms  {e}");
+    }
+    let first = |prefix: &str| w.events.iter().position(|(_, e)| e.starts_with(prefix));
+    let (m, b) = (first("option 9801 13 "), first("option 9801 10 "));
+    assert!(m.is_some() && b.is_some() && m < b, "tick 13 first, then 10");
+    assert!(first("option 9801 11 ").is_some() && first("option 9801 12 ").is_some());
+    assert!(w.events.iter().any(|(_, e)| e.starts_with("option 9801 10 ") && !e.starts_with("option 9801 10 - ")),
+        "a bid computation with a volatility");
+    for tt in [10, 11, 12, 13] {
+        assert_eq!(w.events.iter().filter(|(_, e)| e.starts_with(&format!("option 9802 {tt} "))).count(), 1, "snapshot tick {tt} once");
+    }
+    let end = w.events.iter().find(|(_, e)| e == "end 9802").map(|(ms, _)| *ms).expect("snapshot end");
+    assert!(end - snap_at < 6_000, "the snapshot ends on its computations, not at 11 s ({} ms)", end - snap_at);
 }
 
 /// In regular hours, on paper, as the gateway in its captures of

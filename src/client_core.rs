@@ -132,6 +132,9 @@ pub enum MdTick {
     Time { tick_type: i32, secs: i64 },
     /// `tick_generic`: the halted state (49, 90).
     Generic { tick_type: i32, value: f64 },
+    /// `tick_option_computation` of an option's model (10 to 13, 80 to 83;
+    /// ibx#502); its request id is the request's.
+    Option(crate::control::optcalc::OptionComputation),
 }
 
 /// The text of a whole number, written in `buf` (no allocation).

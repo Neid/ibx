@@ -8,6 +8,7 @@
 //! the market inputs.
 
 pub mod inputs;
+pub mod market;
 pub mod model;
 
 pub use model::{Right, Style};

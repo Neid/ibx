@@ -375,6 +375,10 @@ impl EClient {
                     MdTick::Time { tick_type, secs } =>
                         wrapper.tick_string(req_id, tick_type, crate::client_core::epoch_text(secs, &mut text)),
                     MdTick::Generic { tick_type, value } => wrapper.tick_generic(req_id, tick_type, value),
+                    MdTick::Option(c) => wrapper.tick_option_computation(
+                        req_id, c.tick_type, c.tick_attrib, c.implied_vol, c.delta, c.opt_price,
+                        c.pv_dividend, c.gamma, c.vega, c.theta, c.und_price,
+                    ),
                 },
                 MdOut::MarketDataType(req_id, mdt) => wrapper.market_data_type(req_id, mdt),
                 MdOut::SnapshotEnd(req_id) => {
