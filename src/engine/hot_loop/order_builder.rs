@@ -237,6 +237,11 @@ fn send_orders(
                 Some(true) => continue,
                 None => {}
             }
+            // routeMarketableToBbo: discarded unless bypassed (ibx#608).
+            if route_bbo_precaution(&order_req, context, shared) {
+                continue;
+            }
+            drop_seek_off_smart(&mut order_req, context, shared);
         }
         // The contract's currency (tag 15), USD when unknown (ibx#466).
         let currency: String = order_req.instrument()
@@ -2289,6 +2294,10 @@ pub(crate) fn reference_rank(tag: u32) -> u16 {
         // Post-only and deactivate, before the price management flag as
         // in the reference's frames of 12/10/2026 (ibx#607).
         6605 | 6521 => 94,
+        // Seek price improvement, before the price management flag as in
+        // the reference's frames of 12/10/2026; route marketable to BBO
+        // with it (ibx#608).
+        6557 | 8265 => 94,
         // The price management flag, most often last of the attributes in
         // the reference's frames (captures of 28/09 and 01/10/2026).
         8339 => 95,
@@ -2647,6 +2656,8 @@ fn modify_fields(
     // Post-only, restated; deactivate never is: the replace sends the
     // order on (ibx#607, paper 12/10/2026).
     if attrs.post_only { f.push((6605, "1".to_string())); }
+    // Seek price improvement, restated (ibx#608, paper 12/10/2026).
+    if attrs.seek_price_improvement { f.push((6557, "1".to_string())); }
     // The price management flag, last of the attributes (ibx#492).
     if price_mgmt && !crate::engine::price_mgmt::excluded_kind(&kind) { f.push((8339, "1".to_string())); }
     // The algo block, restated as on the new order (`jclient.pe.d` writes
@@ -3297,6 +3308,55 @@ fn redirect_precaution(
     }
 }
 
+/// The reference's precaution for API orders with routeMarketableToBbo
+/// (ibx#608; code read on 10.51, the order checks of the confirmation;
+/// paper 12/10/2026, on LMT and MKT): with the setting "Bypass Route
+/// Marketable to BBO Warning" off (the default;
+/// `IBX_BYPASS_ROUTE_MARKETABLE_TO_BBO_WARNING`), warning 10353, then the
+/// order is discarded as by the redirect precaution: orderStatus Cancelled
+/// with nothing filled, then 201 "Order was discarded.". Nothing is sent.
+fn route_bbo_precaution(req: &OrderRequest, context: &mut Context, shared: &Arc<SharedState>) -> bool {
+    if context.bypass_route_bbo_warning { return false; }
+    let Some((_, Some(attrs))) = req.new_order_side() else { return false };
+    if !attrs.route_marketable_to_bbo { return false; }
+    let (Some(qty), Some(instrument)) = (req.new_order_qty(), req.instrument()) else { return false };
+    let oid = req.order_id();
+    log::warn!("Order {} discarded: route marketable to BBO (precaution)", oid);
+    shared.orders.push_order_error(oid, 10353, ROUTE_BBO_WARNING.to_string());
+    shared.orders.push_order_update(OrderUpdate {
+        order_id: oid,
+        instrument,
+        status: OrderStatus::Cancelled,
+        filled_qty_fixed: 0,
+        remaining_qty_fixed: qty,
+        avg_fill_price: 0,
+        perm_id: oid,
+        parent_id: attrs.parent_id,
+        timestamp_ns: context.now_ns(),
+    });
+    shared.orders.push_order_notice(oid, 201, "Order rejected - reason:Order was discarded.".into());
+    true
+}
+
+/// Seek price improvement is written only on an order routed to SMART
+/// (ibx#608, code read on 10.51: the attribute's own rule); elsewhere it is
+/// left out without a warning, and the order's openOrder shows it off.
+fn drop_seek_off_smart(req: &mut OrderRequest, context: &Context, shared: &Arc<SharedState>) {
+    let oid = req.order_id();
+    let instrument = req.instrument().or_else(|| context.order(oid).map(|o| o.instrument));
+    let Some(attrs) = crate::engine::outside_rth::flag_attrs(req) else { return };
+    if !attrs.seek_price_improvement { return; }
+    let Some(instrument) = instrument else { return };
+    if !matches!(context.market.exchange(instrument), "" | "SMART") {
+        attrs.seek_price_improvement = false;
+        shared.orders.note_dropped_flags(oid, crate::bridge::DROPPED_SEEK_PRICE_IMPROVEMENT);
+    }
+}
+
+/// Text of warning 10353 (paper 12/10/2026).
+pub(crate) const ROUTE_BBO_WARNING: &str = "Warning: Setting \"Route marketable orders to exchanges at BBO only\" \
+    order attribute can result in higher total cost of the trade after exchange fees and commissions.";
+
 /// The waiting requests go back ahead of the queue, in their order.
 fn release_rth_parked(context: &mut Context) {
     let parked = std::mem::take(&mut context.rth_parked);
@@ -3430,6 +3490,10 @@ fn push_extended_attrs(
     if attrs.ignore_open_auction { fields.push((6562, "1".to_string())); }
     if attrs.post_only { fields.push((6605, "1".to_string())); }
     if attrs.deactivate { fields.push((6521, "1".to_string())); }
+    // Seek price improvement, and route marketable to BBO where the
+    // precaution let it through (ibx#608, paper 12/10/2026).
+    if attrs.seek_price_improvement { fields.push((6557, "1".to_string())); }
+    if attrs.route_marketable_to_bbo { fields.push((8265, "1".to_string())); }
     if attrs.cash_qty > 0 {
         // Tag 152, the cash quantity attribute of the reference, written
         // with its price formatter (ibx#263; 5920 is only its column id).
@@ -5749,6 +5813,63 @@ mod tests {
         let mut ours_tags = tags_of(&ours);
         ours_tags.sort();
         assert_eq!(ours_tags, [6524, 6605]);
+    }
+
+    // ibx#608, the reference's frames of 12/10/2026 (AAPL, SMART): seek
+    // price improvement goes out as its attribute on LMT and MKT, only
+    // when on.
+    #[test]
+    fn seek_price_improvement_goes_out_when_on() {
+        use crate::types::OrderAttrs as A;
+        let reference = parse_frame("35=D|11=135481483.0|44=100.00|1=DU1|6122=c|8339=1|6557=1|6433=1|6121=57616|6119=198|38=1|40=2|55=AAPL|167=STK|231=1.00|54=1|59=0|100=BEST|6210=BEST|6008=265598|6088=Socket|15=USD|6211=|6238=");
+        assert_eq!(tag(&reference, 6557), Some("1"));
+        let on = wire_tags(lmt_with(100, A { seek_price_improvement: true, ..Default::default() }));
+        assert_eq!(tag(&on, 6557), Some("1"));
+        let mkt = wire_tags(OrderRequest::SubmitEx { order_id: 101, instrument: 0, side: Side::Buy, qty: 1,
+            kind: crate::types::OrderKind::Market, tif: b'0', attrs: A { seek_price_improvement: true, ..Default::default() } });
+        assert_eq!(tag(&mkt, 6557), Some("1"));
+        assert_eq!(tag(&wire_tags(lmt_with(102, A::default())), 6557), None);
+        // Restated on a replace, as the reference's replace of 12/10/2026.
+        let replace = replace_fields(481510639, Side::Buy, 1, crate::types::OrderKind::Limit { price: px(101.0) }, b'0',
+            A { seek_price_improvement: true, ..Default::default() });
+        assert_eq!(tag(&replace, 6557), Some("1"));
+        // Directed away from SMART: left out, and noted for the openOrder
+        // (the attribute's own rule, code read on 10.51).
+        let mut context = Context::new();
+        context.market.register(265598);
+        context.market.set_routing(0, "STK", "ISLAND");
+        let shared = Arc::new(SharedState::new());
+        let mut req = lmt_with(103, A { seek_price_improvement: true, ..Default::default() });
+        drop_seek_off_smart(&mut req, &context, &shared);
+        assert!(!req.new_order_side().unwrap().1.unwrap().seek_price_improvement);
+        assert_eq!(shared.orders.dropped_flags(103), crate::bridge::DROPPED_SEEK_PRICE_IMPROVEMENT);
+    }
+
+    // ibx#608, paper 12/10/2026: an order with routeMarketableToBbo gets
+    // 10353 and is discarded (Cancelled, 201 "Order was discarded."),
+    // nothing sent; with the precaution bypassed it goes out with its
+    // attribute.
+    #[test]
+    fn route_marketable_to_bbo_is_discarded_unless_bypassed() {
+        let attrs = crate::types::OrderAttrs { route_marketable_to_bbo: true, ..Default::default() };
+        let mut context = Context::new();
+        context.market.register(265598);
+        context.bypass_route_bbo_warning = false;
+        context.pending_orders.push(lmt_with(110, attrs.clone()));
+        let shared = Arc::new(SharedState::new());
+        let (conn, mut peer) = crate::test_support::Peer::pair();
+        let mut conn = Some(conn);
+        drain_and_send_orders(&mut conn, &mut context, "DU1", &mut HeartbeatState::new(), false, &shared);
+        assert!(peer.messages().is_empty(), "nothing sent");
+        assert_eq!(shared.orders.drain_order_errors(), [(110, 10353, ROUTE_BBO_WARNING.to_string())]);
+        assert!(ROUTE_BBO_WARNING.starts_with("Warning: Setting \"Route marketable orders to exchanges at BBO only\" order attribute can"));
+        let updates = shared.orders.drain_order_updates();
+        assert_eq!(updates.iter().map(|u| (u.order_id, u.status)).collect::<Vec<_>>(), [(110, OrderStatus::Cancelled)]);
+        assert_eq!(shared.orders.drain_order_notices().iter().map(|n| (n.0, n.1, n.2.as_str())).collect::<Vec<_>>(),
+            [(110, 201, "Order rejected - reason:Order was discarded.")]);
+
+        let sent = wire_tags_with(|ctx| ctx.bypass_route_bbo_warning = true, lmt_with(111, attrs));
+        assert_eq!(tag(&sent, 8265), Some("1"));
     }
 
     /// The captured frame's fields named in `tags`, in its order.

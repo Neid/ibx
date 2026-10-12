@@ -471,9 +471,10 @@ pub struct Order {
     pub reference_exchange_id: String,
     #[pyo3(get, set)]
     pub reference_price_type: i32,
-    /// None when unset, as the official API's.
+    /// None when unset, as the official API's; the value the caller set,
+    /// or the 0/1 of an echo (ibx#608).
     #[pyo3(get, set)]
-    pub route_marketable_to_bbo: Option<bool>,
+    pub route_marketable_to_bbo: Option<BoolOrInt>,
     #[pyo3(get, set)]
     pub rule80a: String,
     #[pyo3(get, set)]
@@ -498,9 +499,10 @@ pub struct Order {
     pub scale_subs_level_size: i32,
     #[pyo3(get, set)]
     pub scale_table: String,
-    /// None when unset, as the official API's.
+    /// None when unset, as the official API's; the value the caller set,
+    /// or the 0/1 of an echo (ibx#608).
     #[pyo3(get, set)]
-    pub seek_price_improvement: Option<bool>,
+    pub seek_price_improvement: Option<BoolOrInt>,
     #[pyo3(get, set)]
     pub settling_firm: String,
     #[pyo3(get, set)]
@@ -1373,9 +1375,9 @@ impl Order {
     #[setter(referencePriceType)]
     fn set_reference_price_type_alias(&mut self, v: i32) { self.reference_price_type = v; }
     #[getter(routeMarketableToBbo)]
-    fn get_route_marketable_to_bbo_alias(&self) -> Option<bool> { self.route_marketable_to_bbo }
+    fn get_route_marketable_to_bbo_alias(&self) -> Option<BoolOrInt> { self.route_marketable_to_bbo }
     #[setter(routeMarketableToBbo)]
-    fn set_route_marketable_to_bbo_alias(&mut self, v: Option<bool>) { self.route_marketable_to_bbo = v; }
+    fn set_route_marketable_to_bbo_alias(&mut self, v: Option<BoolOrInt>) { self.route_marketable_to_bbo = v; }
     #[getter(rule80A)]
     fn get_rule80a_alias(&self) -> String { self.rule80a.clone() }
     #[setter(rule80A)]
@@ -1425,9 +1427,9 @@ impl Order {
     #[setter(scaleTable)]
     fn set_scale_table_alias(&mut self, v: String) { self.scale_table = v; }
     #[getter(seekPriceImprovement)]
-    fn get_seek_price_improvement_alias(&self) -> Option<bool> { self.seek_price_improvement }
+    fn get_seek_price_improvement_alias(&self) -> Option<BoolOrInt> { self.seek_price_improvement }
     #[setter(seekPriceImprovement)]
-    fn set_seek_price_improvement_alias(&mut self, v: Option<bool>) { self.seek_price_improvement = v; }
+    fn set_seek_price_improvement_alias(&mut self, v: Option<BoolOrInt>) { self.seek_price_improvement = v; }
     #[getter(settlingFirm)]
     fn get_settling_firm_alias(&self) -> String { self.settling_firm.clone() }
     #[setter(settlingFirm)]
@@ -1843,8 +1845,8 @@ impl Order {
             order_misc_options,
             // None is the API's unset value (ibx#492).
             use_price_mgmt_algo: self.use_price_mgmt_algo.map_or(i32::MAX, i32::from),
-            route_marketable_to_bbo: self.route_marketable_to_bbo.unwrap_or(false),
-            seek_price_improvement: self.seek_price_improvement.unwrap_or(false),
+            route_marketable_to_bbo: self.route_marketable_to_bbo.is_some_and(BoolOrInt::is_on),
+            seek_price_improvement: self.seek_price_improvement.is_some_and(BoolOrInt::is_on),
             ..Default::default()
         }
     }
@@ -2015,8 +2017,10 @@ impl Order {
             order_combo_legs: list_or_none(py, legs)?,
             conditions: conditions_to_py(py, &o.conditions)?,
             use_price_mgmt_algo: (o.use_price_mgmt_algo != i32::MAX).then_some(o.use_price_mgmt_algo != 0),
-            route_marketable_to_bbo: o.route_marketable_to_bbo.then_some(true),
-            seek_price_improvement: o.seek_price_improvement.then_some(true),
+            // The reference's openOrder gives both, as 0 or 1 (ibx#608,
+            // paper 12/10/2026).
+            route_marketable_to_bbo: Some(BoolOrInt::Int(o.route_marketable_to_bbo as i64)),
+            seek_price_improvement: Some(BoolOrInt::Int(o.seek_price_improvement as i64)),
             hedge_max_size: i32::MAX,
         })
     }
@@ -2075,6 +2079,23 @@ impl Contract {
             combo_legs: pyo3::types::PyList::new(py, legs)?.into_any().unbind(),
             ..Default::default()
         })
+    }
+}
+
+/// A flag the caller sets as a bool and the reference's echo gives as the
+/// integer 0 or 1, as the official client's order keeps either (ibx#608).
+#[derive(Clone, Copy, Debug, PartialEq, FromPyObject, IntoPyObject, IntoPyObjectRef)]
+pub enum BoolOrInt {
+    Bool(bool),
+    Int(i64),
+}
+
+impl BoolOrInt {
+    pub fn is_on(self) -> bool {
+        match self {
+            BoolOrInt::Bool(b) => b,
+            BoolOrInt::Int(i) => i != 0,
+        }
     }
 }
 

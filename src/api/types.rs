@@ -518,6 +518,8 @@ impl Order {
             allow_pre_open: self.allow_pre_open,
             ignore_open_auction: self.ignore_open_auction,
             deactivate: self.deactivate,
+            route_marketable_to_bbo: self.route_marketable_to_bbo,
+            seek_price_improvement: self.seek_price_improvement,
             clearing_intent: self.clearing_intent.clone(),
             short_sale: ShortSale {
                 slot: self.short_sale_slot,
@@ -567,6 +569,9 @@ impl Order {
             || self.allow_pre_open
             || self.ignore_open_auction
             || self.deactivate
+            // The order attributes of ibx#608.
+            || self.route_marketable_to_bbo
+            || self.seek_price_improvement
             // The clearing intent and the short-sale instructions reach the
             // side check and the short-sale fields (ibx#417).
             || !self.clearing_intent.is_empty()

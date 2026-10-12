@@ -978,6 +978,7 @@ pub enum OrderReport {
 pub const DROPPED_ALLOW_PRE_OPEN: u8 = 1;
 pub const DROPPED_IGNORE_OPEN_AUCTION: u8 = 2;
 pub const DROPPED_DEACTIVATE: u8 = 4;
+pub const DROPPED_SEEK_PRICE_IMPROVEMENT: u8 = 8;
 
 pub struct OrderState {
     /// Fills with what the report says about each execution.

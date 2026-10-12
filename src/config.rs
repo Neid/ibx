@@ -58,6 +58,15 @@ pub fn bypass_redirect_order_warning() -> bool {
     bypass_setting(std::env::var("IBX_BYPASS_REDIRECT_ORDER_WARNING").ok().as_deref())
 }
 
+/// The reference's API precaution "Bypass Route Marketable to BBO
+/// Warning" (off by default): off, an API order with
+/// routeMarketableToBbo is discarded with 10353 (ibx#608, paper
+/// 12/10/2026). `IBX_BYPASS_ROUTE_MARKETABLE_TO_BBO_WARNING=true` (or `1`)
+/// turns the bypass on.
+pub fn bypass_route_marketable_to_bbo_warning() -> bool {
+    bypass_setting(std::env::var("IBX_BYPASS_ROUTE_MARKETABLE_TO_BBO_WARNING").ok().as_deref())
+}
+
 /// An API precaution bypass of a setting value: on only for `true` (any
 /// case) or `1`, off by default as the reference's.
 pub fn bypass_setting(value: Option<&str>) -> bool {

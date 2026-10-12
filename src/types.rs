@@ -528,6 +528,10 @@ pub struct OrderAttrs {
     pub allow_pre_open: bool,
     pub ignore_open_auction: bool,
     pub deactivate: bool,
+    /// The API routeMarketableToBbo and seekPriceImprovement, order
+    /// attributes sent only when on (ibx#608).
+    pub route_marketable_to_bbo: bool,
+    pub seek_price_improvement: bool,
     /// The API clearingIntent: empty, IB, Away or PTA (ibx#417). A
     /// clearing away from the broker lets a short-side order pass the
     /// reference's side check.

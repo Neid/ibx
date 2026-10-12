@@ -1722,6 +1722,10 @@ fn placed_contract(contract: &mut ApiContract, placed_exchange: &str) {
 /// shows them: those of an order of the session (ibx#519).
 pub fn preview_view(contract: &mut ApiContract, order: &mut ApiOrder, placed_exchange: &str, shared: &SharedState) {
     session_order_fields(order, &shared.reference.user_name(), false);
+    // A preview shows what-if type 1, whatever the caller gave (unset, 0
+    // or 1; the other types are refused), as the reference (ibx#608,
+    // paper 12/10/2026).
+    order.what_if_type = 1;
     placed_contract(contract, placed_exchange);
 }
 
@@ -3797,6 +3801,7 @@ impl ClientCore {
                 if flags & crate::bridge::DROPPED_ALLOW_PRE_OPEN != 0 { order.allow_pre_open = false; }
                 if flags & crate::bridge::DROPPED_IGNORE_OPEN_AUCTION != 0 { order.ignore_open_auction = false; }
                 if flags & crate::bridge::DROPPED_DEACTIVATE != 0 { order.deactivate = false; }
+                if flags & crate::bridge::DROPPED_SEEK_PRICE_IMPROVEMENT != 0 { order.seek_price_improvement = false; }
                 let modified = self.modified_orders.lock().unwrap().contains(&order_id);
                 session_order_fields(&mut order, &shared.reference.user_name(), modified);
                 (t.contract, order, t.last_fill_price, client_id)
@@ -3867,7 +3872,8 @@ impl ClientCore {
             self.rth_dropped.lock().unwrap().insert(order_id);
         }
         // The redirect precaution discards the order (ibx#486).
-        if matches!(code, 10311 | 10329) {
+        // So does the precaution of routeMarketableToBbo (ibx#608).
+        if matches!(code, 10311 | 10329 | 10353) {
             self.discarded.lock().unwrap().insert(order_id);
         }
         // Refused with 387, or 437, 496, 497 (ibx#607), before it was sent: the order is not an open
@@ -5659,6 +5665,18 @@ impl ClientCore {
         if order.what_if && !order.transmit {
             return Some((321, "Error validating request.-'v' : cause - What-If order should have transmit flag set to TRUE.".into()));
         }
+        // The what-if type, checked next (ibx#608, level 217; code read on
+        // 10.51, paper 12/10/2026): a type without what-if, then a type
+        // outside 0..=6, or above 1 (a preview) on an account without the
+        // other kinds (the paper account: 2 to 6 refused).
+        if order.what_if_type != i32::MAX {
+            if !order.what_if && order.what_if_type > 0 {
+                return refuse("What-If type specified but What-If flag is not set. Orders with whatIfType must have whatIf=true.");
+            }
+            if order.what_if_type < 0 || order.what_if_type > 6 || (order.what_if && order.what_if_type > 1) {
+                return refuse(&format!("What-If type {} is not supported for your account configuration.", order.what_if_type));
+            }
+        }
         // An account whose application is not approved (ibx#421,
         // `jextend.bH.S()@5127`, thrown with its own code 10136).
         if account_pending {
@@ -7360,6 +7378,42 @@ mod tests {
         // flags passes.
         assert_eq!(refusal(&ApiOrder { deactivate: true, ..lmt(100.0) }, "IBKRATS"), None);
         assert_eq!(refusal(&lmt(100.0), "IBKRATS"), None);
+    }
+
+    // ibx#608 (paper 12/10/2026): the what-if type: 0 or 1 on a what-if
+    // passes; 2 to 7 and -1 are refused on the paper account; a type
+    // without what-if is refused (its id not used: the cancel gave 10147).
+    #[test]
+    fn the_what_if_type_is_checked_as_the_order_is_read() {
+        let check = |what_if: bool, what_if_type: i32| {
+            let order = ApiOrder { what_if, what_if_type, ..lmt(100.0) };
+            ClientCore::refusal_before_sending_for(&order, "SMART", false)
+        };
+        for ok in [i32::MAX, 0, 1] {
+            assert_eq!(check(true, ok), None, "{ok}");
+        }
+        assert_eq!(check(false, i32::MAX), None);
+        for refused in [2, 3, 4, 5, 6, 7, -1] {
+            assert_eq!(check(true, refused), Some((321, format!(
+                "Error validating request.-'v' : cause - What-If type {refused} is not supported for your account configuration."))));
+        }
+        assert_eq!(check(false, 1), Some((321,
+            "Error validating request.-'v' : cause - What-If type specified but What-If flag is not set. Orders with whatIfType must have whatIf=true.".to_string())));
+        assert_eq!(check(false, 0), None);
+    }
+
+    // ibx#608: a preview shows what-if type 1, and the two flags reach the
+    // engine.
+    #[test]
+    fn a_preview_shows_what_if_type_1_and_the_flags_reach_the_engine() {
+        let shared = SharedState::new();
+        let (mut contract, mut order) = (ApiContract::default(), ApiOrder { what_if: true, ..lmt(100.0) });
+        preview_view(&mut contract, &mut order, "SMART", &shared);
+        assert_eq!(order.what_if_type, 1);
+        let flags = ApiOrder { route_marketable_to_bbo: true, seek_price_improvement: true, ..lmt(100.0) };
+        assert!(flags.has_extended_attrs());
+        let a = flags.attrs();
+        assert!(a.route_marketable_to_bbo && a.seek_price_improvement);
     }
 
     // ibx#607: the flags reach the engine and make the order an extended

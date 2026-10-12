@@ -30,6 +30,13 @@ const OBSERVED_TEXTS: &[(i64, &str, &str)] = &[
         "a goodTillDate that cannot be read (ibx#548, paper 11/10/2026)"),
 ];
 
+/// Codes of the reference 10.51 that the 10.40 table has not, with the
+/// text ibx raises, until the table is the 10.51 one (ibx#604).
+const NEWER_VERSION_CODES: &[(i64, &str, &str)] = &[
+    (10353, "Warning: Setting \"Route marketable orders to exchanges at BBO only\" order attribute can result in higher total cost of the trade after exchange fees and commissions.",
+        "10.51, routeMarketableToBbo (ibx#608, paper 12/10/2026)"),
+];
+
 /// One place where ibx raises an error.
 #[derive(Debug, Clone)]
 struct Raise {
@@ -362,6 +369,9 @@ fn differences(raises: &[Raise], codes: &BTreeMap<i64, catalog::ErrorCode>) -> V
     let mut problems = Vec::new();
     for r in raises {
         if CLIENT_CODES.iter().any(|(c, _)| *c == r.code) {
+            continue;
+        }
+        if NEWER_VERSION_CODES.iter().any(|(c, _, _)| *c == r.code) {
             continue;
         }
         let Some(gw) = codes.get(&r.code) else {

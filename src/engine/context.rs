@@ -236,6 +236,8 @@ pub struct Context {
     /// The API precaution "Bypass Redirect Order warning for Stock API
     /// Orders" (`IBX_BYPASS_REDIRECT_ORDER_WARNING`, off by default as the
     /// reference's, ibx#486).
+    /// The precaution bypass of routeMarketableToBbo (ibx#608).
+    pub(crate) bypass_route_bbo_warning: bool,
     pub(crate) bypass_redirect_warning: bool,
     /// Sequence of those lookups.
     pub(crate) next_order_lookup: u32,
@@ -364,6 +366,7 @@ impl Context {
             what_if_send: None,
             order_lookups: Vec::new(),
             bypass_redirect_warning: crate::config::bypass_redirect_order_warning(),
+            bypass_route_bbo_warning: crate::config::bypass_route_marketable_to_bbo_warning(),
             next_order_lookup: 0,
             short_sale_send: None,
             combos: Default::default(),
