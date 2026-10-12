@@ -104,7 +104,7 @@ impl EClient {
         if let Some((code, text)) = self.core.news_tick_refusal(&self.shared, generic_tick_list, contract.con_id, &contract.sec_type) {
             self.shared.orders.push_order_error(req_id, code, text);
             if !snapshot {
-                self.core.note_news_refused(&self.shared, req_id, contract.con_id);
+                self.core.note_news_refused(&self.shared, req_id, contract.con_id, std::time::Instant::now());
             }
             return Ok(());
         }

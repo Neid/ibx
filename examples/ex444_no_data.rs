@@ -2,7 +2,9 @@
 //!
 //! As the reference on 07/10/2026: a streaming request ended by a refused
 //! news tick (10094) gets 10197 5 s later, unless a request of its
-//! contract runs then; a request with data gets none.
+//! contract runs then; a request with data gets none. The 5 s count from
+//! the request; two refused requests of a contract within one pass get one
+//! (ibx#501).
 //!
 //! Env: IB_USERNAME, IB_PASSWORD; PROBE_FUT_MONTH (default 202612).
 use std::env;
@@ -76,6 +78,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     pump(&client, &mut w, 7);
     let _ = client.cancel_mkt_data(21);
     pump(&client, &mut w, 1);
+
+    // ibx#501: the 5 s count from the request; two refused requests of one
+    // contract in the same pass get one 10197, 0.2 s apart two.
+    step("5: MNQ mdoff,292 twice at once (30, 31) -> 10197 to 30 only, at 5.00 s", &mut w);
+    client.req_mkt_data(30, &mnq, "mdoff,292", false, false)?;
+    client.req_mkt_data(31, &mnq, "mdoff,292", false, false)?;
+    pump(&client, &mut w, 7);
+
+    step("6: MNQ mdoff,292 0.2 s apart (40, 41) -> 10197 to each", &mut w);
+    client.req_mkt_data(40, &mnq, "mdoff,292", false, false)?;
+    pump(&client, &mut w, 0);
+    std::thread::sleep(Duration::from_millis(200));
+    client.req_mkt_data(41, &mnq, "mdoff,292", false, false)?;
+    pump(&client, &mut w, 7);
     client.disconnect();
     Ok(())
 }

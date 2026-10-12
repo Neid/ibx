@@ -655,7 +655,7 @@ rule,SCANNER 2.10,"Updates, cadence, disconnects",no test
 rule,SCANNER 3,cancelScannerSubscription (message 23),no test
 error,0,Warning: Approaching max rate of %s messages per second (%s),no test
 error,100,Max rate of messages per second has been exceeded,no test
-error,101,Max number of tickers has been reached,tests/gw_catalog/errors.rs::every_error_ibx_raises_is_the_gateways ; src/api/client/tests.rs::past_the_ticker_limit_a_stream_gets_101_and_waits_for_a_line
+error,101,Max number of tickers has been reached,tests/gw_catalog/errors.rs::every_error_ibx_raises_is_the_gateways ; src/api/client/tests.rs::past_the_ticker_limit_a_stream_gets_101_and_ends ; src/engine/hot_loop/mod.rs::a_request_without_con_id_over_the_limit_gets_101_unless_it_joins
 error,102,Duplicate ticker id,tests/gw_catalog/errors.rs::every_error_ibx_raises_is_the_gateways ; src/client_core.rs::pnl_request_checks ; src/engine/hot_loop/hmds.rs::historical_ticks_duplicate_and_zone_refusals
 error,103,Duplicate order id,tests/gw_catalog/errors.rs::every_error_ibx_raises_is_the_gateways ; src/api/client/tests.rs::what_if_on_an_unanswered_order_id_is_a_duplicate ; src/client_core.rs::what_if_on_an_order_not_answered_yet_and_known_ids ; src/golden/orders.rs::what_if_previews
 error,104,Can't modify a filled order,tests/gw_catalog/errors.rs::every_error_ibx_raises_is_the_gateways ; src/client_core.rs::place_on_a_cancelled_order_id_is_refused ; src/engine/hot_loop/order_builder.rs::modify_of_an_order_the_engine_no_longer_holds_is_refused ; src/golden/orders.rs::premarket_order_types

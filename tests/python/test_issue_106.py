@@ -16,6 +16,22 @@ pytestmark = pytest.mark.skipif(
 )
 
 
+def front_quarter():
+    """The quarterly month (Mar, Jun, Sep, Dec) whose third Friday is not past."""
+    import datetime
+    today = datetime.date.today()
+    year, month = today.year, today.month
+    while True:
+        if month % 3 == 0:
+            first = datetime.date(year, month, 1)
+            third_friday = first + datetime.timedelta(days=(4 - first.weekday()) % 7 + 14)
+            if third_friday >= today:
+                return f"{year}{month:02d}"
+        month += 1
+        if month > 12:
+            year, month = year + 1, 1
+
+
 def make_es():
     """Front-month ES mini S&P 500 future."""
     c = Contract()
@@ -23,7 +39,7 @@ def make_es():
     c.sec_type = "FUT"
     c.exchange = "CME"
     c.currency = "USD"
-    c.last_trade_date_or_contract_month = "202606"
+    c.last_trade_date_or_contract_month = front_quarter()
     c.multiplier = "50"
     c.trading_class = "ES"
     return c

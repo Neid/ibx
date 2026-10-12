@@ -689,6 +689,10 @@ pub enum MdReject {
     /// A subscription given without a conId whose lookup found no single
     /// contract: error 200, the subscription is gone (ibx#278).
     NoSecurityDefinition { instrument: InstrumentId },
+    /// A stream given without a conId whose contract, once found, needs a
+    /// line while every API line was taken when it was asked: error 101,
+    /// nothing was sent (ibx#501).
+    MaxTickers { instrument: InstrumentId },
     /// A request with the news tick refused once its contract was known:
     /// error 10094 with this text, nothing was sent (ibx#458). `con_id`:
     /// its contract.
@@ -709,6 +713,7 @@ impl MdReject {
             MdReject::Delayed { instrument }
             | MdReject::NotSubscribed { instrument, .. }
             | MdReject::NoSecurityDefinition { instrument }
+            | MdReject::MaxTickers { instrument }
             | MdReject::NewsRefused { instrument, .. }
             | MdReject::Frozen { instrument, .. }
             | MdReject::Live { instrument, .. } => instrument,

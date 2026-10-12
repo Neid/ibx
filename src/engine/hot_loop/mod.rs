@@ -1332,6 +1332,21 @@ impl HotLoop {
             } else {
                 None
             };
+            let over_limit = match self.context.md_over_limit.iter().position(|&i| i == sub.instrument) {
+                Some(i) => { self.context.md_over_limit.swap_remove(i); true }
+                None => false,
+            };
+            // A contract that needs a line of its own, asked with every API
+            // line taken: 101 and nothing is sent, as the reference's line
+            // manager once the contract is known (observed 12/10/2026: a
+            // request by symbol joining a running contract gets none,
+            // ibx#501).
+            if over_limit && into.is_none() {
+                log::info!("Market data for {} {}: conId {} over the API ticker limit", sub.symbol, sub.sec_type, sub.con_id);
+                self.take_waiting_news(sub.instrument);
+                self.shared.market.push_md_reject(crate::bridge::MdReject::MaxTickers { instrument: sub.instrument });
+                continue;
+            }
             if let Some(into) = into {
                 let news = self.take_waiting_news(sub.instrument);
                 if let Some(text) = news.iter().find_map(|(_, refusal)| refusal.clone()) {
@@ -1943,7 +1958,7 @@ impl HotLoop {
                     self.farm.drop_snapshot(instrument);
                     self.try_reclaim_instrument(instrument);
                 }
-                ControlCommand::SubscribeBySymbol { symbol, sec_type, exchange, currency, filters, mode_9887, snapshot, reply_tx } => {
+                ControlCommand::SubscribeBySymbol { symbol, sec_type, exchange, currency, filters, mode_9887, snapshot, over_limit, reply_tx } => {
                     // The slot told to the call (ibx#565): those of
                     // requests with no conId are kept under 0, oldest
                     // first, the order of the requests.
@@ -1957,6 +1972,9 @@ impl HotLoop {
                         None => self.register_slot_or_reject(None, symbol.clone(), &sec_type, &exchange, &reply_tx),
                     };
                     if let Some(id) = slot {
+                        if over_limit && !snapshot {
+                            self.context.md_over_limit.push(id);
+                        }
                         let sub = farm::MdSubscribe {
                             con_id: 0, symbol, exchange, sec_type,
                             last_trade_date: filters.last_trade_date_or_contract_month.clone(),
@@ -1975,6 +1993,7 @@ impl HotLoop {
                     self.context.lot_ready.retain(|s| s.instrument != instrument);
                     self.context.md_lookups.retain(|(_, s, _)| s.instrument != instrument);
                     self.context.md_resolved.retain(|s| s.instrument != instrument);
+                    self.context.md_over_limit.retain(|&i| i != instrument);
                     // The frozen slot of a frozen contract (ibx#447): the
                     // frozen pair is cancelled first, then the real-time
                     // pair and the status entry, as the reference (captured
@@ -5275,7 +5294,7 @@ mod tests {
         let by_symbol = |symbol: &str, sec_type: &str, reply: crossbeam_channel::Sender<Result<InstrumentId, String>>| {
             ControlCommand::SubscribeBySymbol {
                 symbol: symbol.into(), sec_type: sec_type.into(), exchange: "SMART".into(), currency: "USD".into(),
-                filters: Default::default(), mode_9887: 0, snapshot: false, reply_tx: Some(reply),
+                filters: Default::default(), mode_9887: 0, snapshot: false, over_limit: false, reply_tx: Some(reply),
             }
         };
         let (r1, a1) = crossbeam_channel::bounded(1);
@@ -5318,6 +5337,65 @@ mod tests {
         engine.poll_once();
         assert_eq!(engine.context.market.con_id(mnq), None);
         assert_eq!(engine.context.market.con_id(qqq), Some(320227571));
+    }
+
+    // ibx#501 (observed 12/10/2026): a stream without a conId asked with
+    // every API line taken ends with 101 once its contract is found to need
+    // a line of its own, and nothing is sent for it; one whose contract is
+    // already streamed joins it.
+    #[test]
+    fn a_request_without_con_id_over_the_limit_gets_101_unless_it_joins() {
+        use crate::control::contracts::tests::pipe_msg;
+        let shared = Arc::new(SharedState::new());
+        let mut engine = HotLoop::new(shared.clone(), None, None);
+        let (c1, mut farm_side) = socket_pair();
+        let (c2, mut ccp_side) = socket_pair();
+        engine.farm_conn = Some(Connection::new_mem(c1));
+        engine.ccp_conn = Some(Connection::new_mem(c2));
+        let (tx, rx) = crossbeam_channel::bounded(8);
+        engine.set_control_rx(rx);
+        let by_symbol = |symbol: &str, over_limit: bool, reply: crossbeam_channel::Sender<Result<InstrumentId, String>>| {
+            ControlCommand::SubscribeBySymbol {
+                symbol: symbol.into(), sec_type: "STK".into(), exchange: "SMART".into(), currency: "USD".into(),
+                filters: Default::default(), mode_9887: 0, snapshot: false, over_limit, reply_tx: Some(reply),
+            }
+        };
+        let (r1, a1) = crossbeam_channel::bounded(1);
+        let (r2, a2) = crossbeam_channel::bounded(1);
+        let (r3, a3) = crossbeam_channel::bounded(1);
+        tx.send(by_symbol("QQQ", false, r1)).unwrap();
+        tx.send(by_symbol("SPY", true, r2)).unwrap();
+        engine.poll_once();
+        let (qqq, spy) = (a1.recv().unwrap().unwrap(), a2.recv().unwrap().unwrap());
+        let asked = plain_messages_sent(&mut ccp_side);
+        let ids: Vec<String> = asked.iter()
+            .map(|m| m.split('|').find_map(|p| p.strip_prefix("320=")).unwrap().to_string()).collect();
+        let reply = |id: &str, body: &str| pipe_msg(&format!("35=d|43=N|320={id}|322=*|323=4|{body}"));
+        let mut context = std::mem::replace(&mut engine.context, Context::new());
+        assert!(farm::md_contract_reply(&mut context, &shared, &ids[0], &reply(&ids[0], "55=QQQ|167=STK|207=BEST|6008=320227571|15=USD|")));
+        assert!(farm::md_contract_reply(&mut context, &shared, &ids[1], &reply(&ids[1], "55=SPY|167=STK|207=BEST|6008=756733|15=USD|")));
+        engine.context = context;
+        engine.send_md_resolved();
+        let sent = farm_messages_sent(&mut farm_side);
+        assert_eq!(sent.len(), 1, "{sent:?}");
+        assert!(sent[0].contains("6008=320227571|"), "{sent:?}");
+        assert_eq!(shared.market.drain_md_rejects(), [crate::bridge::MdReject::MaxTickers { instrument: spy }]);
+        assert!(engine.context.md_over_limit.is_empty());
+
+        // At the limit, a request on the running contract joins it.
+        tx.send(by_symbol("QQQ", true, r3)).unwrap();
+        engine.poll_once();
+        let again = a3.recv().unwrap().unwrap();
+        let asked = plain_messages_sent(&mut ccp_side);
+        let id: String = asked.last().unwrap().split('|').find_map(|p| p.strip_prefix("320=")).unwrap().to_string();
+        let mut context = std::mem::replace(&mut engine.context, Context::new());
+        assert!(farm::md_contract_reply(&mut context, &shared, &id, &reply(&id, "55=QQQ|167=STK|207=BEST|6008=320227571|15=USD|")));
+        engine.context = context;
+        engine.send_md_resolved();
+        assert!(farm_messages_sent(&mut farm_side).is_empty());
+        assert!(shared.market.drain_md_rejects().is_empty());
+        assert_eq!(shared.market.drain_md_merges().into_iter().map(|(f, i, _)| (f, i)).collect::<Vec<_>>(), [(again, qqq)]);
+        assert!(engine.context.md_over_limit.is_empty());
     }
 
     // ibx#455: the query names the type as the API does, asks for past
@@ -6083,7 +6161,7 @@ mod news_tests {
             let (reply, answer) = crossbeam_channel::bounded(1);
             tx.send(ControlCommand::SubscribeBySymbol {
                 symbol: symbol.into(), sec_type: "STK".into(), exchange: "SMART".into(), currency: "USD".into(),
-                filters: Default::default(), mode_9887: 0, snapshot: false, reply_tx: Some(reply),
+                filters: Default::default(), mode_9887: 0, snapshot: false, over_limit: false, reply_tx: Some(reply),
             }).unwrap();
             engine.poll_once();
             let id = answer.recv().unwrap().unwrap();
@@ -6213,7 +6291,7 @@ mod sharing_tests {
         let (reply, answer) = crossbeam_channel::bounded(1);
         tx.send(ControlCommand::SubscribeBySymbol {
             symbol: "AAPL".into(), sec_type: "STK".into(), exchange: "SMART".into(), currency: "USD".into(),
-            filters: Default::default(), mode_9887: 0, snapshot: false, reply_tx: Some(reply),
+            filters: Default::default(), mode_9887: 0, snapshot: false, over_limit: false, reply_tx: Some(reply),
         }).unwrap();
         engine.poll_once();
         let second = answer.recv().unwrap().unwrap();
@@ -6256,7 +6334,7 @@ mod sharing_tests {
             let (reply, answer) = crossbeam_channel::bounded(1);
             tx.send(ControlCommand::SubscribeBySymbol {
                 symbol: "AAPL".into(), sec_type: "STK".into(), exchange: "SMART".into(), currency: "USD".into(),
-                filters: Default::default(), mode_9887: 0, snapshot: false, reply_tx: Some(reply),
+                filters: Default::default(), mode_9887: 0, snapshot: false, over_limit: false, reply_tx: Some(reply),
             }).unwrap();
             engine.poll_once();
             let slot = answer.recv().unwrap().unwrap();

@@ -1196,14 +1196,14 @@ mod tests {
             }).collect()
         };
         let late = MD_NO_DATA_WAIT + std::time::Duration::from_secs(1);
-        core.note_news_refused(&shared, 1, 600);
+        core.note_news_refused(&shared, 1, 600, std::time::Instant::now());
         assert!(no_data(late).is_empty(), "a live session");
 
         shared.reference.set_paper_session(true);
         stream(&core, &shared, 2, 7);
         core.con_id_to_instrument.lock().unwrap().extend([(700, 7), (600, 6)]);
-        core.note_news_refused(&shared, 10, 700);
-        core.note_news_refused(&shared, 11, 600);
+        core.note_news_refused(&shared, 10, 700, std::time::Instant::now());
+        core.note_news_refused(&shared, 11, 600, std::time::Instant::now());
         assert!(no_data(std::time::Duration::from_secs(4)).is_empty(), "before the wait ends");
         assert_eq!(no_data(late), [11]);
         assert!(no_data(2 * late).is_empty(), "once; none for the running request");
@@ -1220,7 +1220,35 @@ mod tests {
         stream(&core, &shared, 4, 9);
         shared.market.push_md_resolved(9, 900);
         let _ = core.take_md_rejects(&shared);
-        core.note_news_refused(&shared, 12, 900);
+        core.note_news_refused(&shared, 12, 900, std::time::Instant::now());
         assert!(no_data(late).is_empty());
+    }
+
+    // ibx#501, captured 07/10/2026 (ib-agent#202): the 5 s count from the
+    // request, not from the refusal; two refused requests of one contract
+    // within a pass of the line manager get one 10197, 0.1 s apart two.
+    #[test]
+    fn the_10197_wait_counts_from_the_request_and_once_per_pass() {
+        let (core, shared) = (ClientCore::new(), SharedState::new());
+        shared.reference.set_paper_session(true);
+        let no_data = |at: std::time::Instant| -> Vec<i64> {
+            core.take_md_no_data(at).into_iter().map(|n| match n {
+                MdNotice::Error { req_id, code: 10197, .. } => req_id,
+                other => panic!("{other:?}"),
+            }).collect()
+        };
+        let ms = std::time::Duration::from_millis;
+        let t0 = std::time::Instant::now();
+        // Refused 130 ms after its request (contract looked up first).
+        core.note_news_refused(&shared, 1, 600, t0);
+        assert!(no_data(t0 + MD_NO_DATA_WAIT - ms(1)).is_empty());
+        assert_eq!(no_data(t0 + MD_NO_DATA_WAIT), [1]);
+
+        core.note_news_refused(&shared, 2, 700, t0);
+        core.note_news_refused(&shared, 3, 700, t0 + ms(2));
+        core.note_news_refused(&shared, 4, 700, t0 + ms(100));
+        // A request asked earlier but refused later goes first.
+        core.note_news_refused(&shared, 5, 800, t0 - ms(50));
+        assert_eq!(no_data(t0 + MD_NO_DATA_WAIT + ms(200)), [5, 2, 4]);
     }
 }

@@ -321,9 +321,6 @@ impl EClient {
                 let _ = self.control_tx.send(command);
             }
         }
-        // Requests that waited for a market data line (101) take the lines
-        // set free (ibx#444).
-        self.core.promote_waiting_md(&self.shared, &self.control_tx);
 
         // Regulatory snapshots that ended (ibx#446).
         let attrib = crate::api::types::TickAttrib::default();

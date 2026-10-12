@@ -2019,10 +2019,12 @@ pub enum ControlCommand {
     /// reference does, then subscribes with the conId found. The reply
     /// gives the instrument at once; a lookup that finds no single contract
     /// ends the subscription with error 200.
+    /// `over_limit`: every API line was taken when it was asked; a stream
+    /// that does not join a running contract ends with 101 (ibx#501).
     SubscribeBySymbol {
         symbol: String, sec_type: String, exchange: String, currency: String,
         filters: SecDefFilters,
-        mode_9887: i32, snapshot: bool,
+        mode_9887: i32, snapshot: bool, over_limit: bool,
         reply_tx: Option<crossbeam_channel::Sender<Result<InstrumentId, String>>>,
     },
     /// Unsubscribe from market data for an instrument.

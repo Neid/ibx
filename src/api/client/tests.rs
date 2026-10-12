@@ -7251,12 +7251,12 @@ fn a_contract_known_delayed_available_gives_10168_or_goes_delayed() {
 }
 
 // ibx#444 (`jclient.k_.a(boolean)`, `jextend.a4.a(jclient.record.dU)@136`):
-// with every API line taken, a stream on a new contract gets 101 and waits;
-// a snapshot and a stream joining a running contract take no line. When a
-// line is set free the waiting request is subscribed, with no second 101.
-// A waiting request is cancelled with nothing sent and no 300.
+// with every API line taken, a stream on a new contract gets 101; a
+// snapshot and a stream joining a running contract take no line. Observed
+// 12/10/2026 (ibx#501): the refused request ends (its cancel gets 300) and
+// is not served when a line is set free.
 #[test]
-fn past_the_ticker_limit_a_stream_gets_101_and_waits_for_a_line() {
+fn past_the_ticker_limit_a_stream_gets_101_and_ends() {
     let (client, rx, shared) = test_client();
     shared.reference.set_snapshot_rate_limit(1);
     let engine = line_engine(rx);
@@ -7271,18 +7271,19 @@ fn past_the_ticker_limit_a_stream_gets_101_and_waits_for_a_line() {
     assert_eq!(errors, [
         "error:2:101:Max number of tickers has been reached",
         "error:4:101:Max number of tickers has been reached",
-        "error:4:322:Error processing request.-'bQ' : cause - Duplicate ticker id",
+        "error:4:101:Max number of tickers has been reached",
     ]);
 
-    client.cancel_mkt_data(4).unwrap();
+    client.cancel_mkt_data(2).unwrap();
     client.cancel_mkt_data(1).unwrap();
     client.cancel_mkt_data(3).unwrap();
     let mut w = RecordingWrapper::default();
     client.process_msgs(&mut w);
-    assert!(!w.events.iter().any(|e| e.starts_with("error:")), "{:?}", w.events);
-    assert_eq!(client.core.md_lines_in_use(), 1);
+    let errors: Vec<&String> = w.events.iter().filter(|e| e.starts_with("error:")).collect();
+    assert_eq!(errors, ["error:2:300:Can't find EId with tickerId:2"]);
+    assert_eq!(client.core.md_lines_in_use(), 0);
     let seen = engine.join().unwrap();
-    assert_eq!(seen, ["subscribe:265598:0", "unsubscribe:10", "subscribe:756733:0"]);
+    assert_eq!(seen, ["subscribe:265598:0", "unsubscribe:10"]);
 }
 
 // ═══════════════════════════════════════════════════════════════════

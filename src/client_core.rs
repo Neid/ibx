@@ -1145,8 +1145,6 @@ pub enum MdCancel {
     /// of its news entry goes, when it had the news tick, and of its
     /// generic tick entries (ibx#450).
     Shared { instrument: InstrumentId, news: Option<String>, generic: Vec<i32> },
-    /// A request waiting for a market data line (101): nothing was sent.
-    Waiting,
 }
 
 impl MdCancel {
@@ -1164,25 +1162,8 @@ impl MdCancel {
                 }
                 out
             }
-            MdCancel::Waiting => Vec::new(),
         }
     }
-}
-
-/// A streaming market data request past the API ticker limit (101): it
-/// waits for a line, as the reference's subscriber stays on a record the
-/// line manager leaves unsubscribed (ibx#444).
-#[derive(Debug, Clone)]
-pub struct MdWaiting {
-    pub req_id: i64,
-    pub con_id: i64,
-    pub symbol: String,
-    pub exchange: String,
-    pub sec_type: String,
-    pub currency: String,
-    pub filters: crate::types::SecDefFilters,
-    pub generic_tick_list: String,
-    pub mode_9887: i32,
 }
 
 /// Error 101 of the reference (`jextend.d7.e`).
@@ -1199,6 +1180,8 @@ pub const MD_NOT_SUBSCRIBED: &str = "Requested market data is not subscribed. Ch
 /// contract runs then.
 pub const MD_NO_DATA: (i64, &str) = (10197, "No market data during competing live session");
 pub const MD_NO_DATA_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+/// One pass of the reference's quick market data timer (ibx#501).
+pub const MD_NO_DATA_PASS: std::time::Duration = std::time::Duration::from_millis(5);
 
 /// A callback for a market data request beside its ticks (ibx#444).
 #[derive(Debug, Clone, PartialEq)]
@@ -1245,9 +1228,6 @@ pub struct ClientCore {
     /// with the request code that gives them: a request that joins, and
     /// the requests it joins, get them again (ibx#495).
     pub(crate) md_generic_last: Mutex<HashMap<InstrumentId, std::collections::BTreeMap<i32, (i32, crate::control::generic_values::GenTick)>>>,
-    /// Streaming requests that got 101 and wait for a line, oldest first
-    /// (ibx#444).
-    pub md_waiting: Mutex<Vec<MdWaiting>>,
     /// Contracts the server refused with "delayed market data available"
     /// (354): the reference's record keeps "not subscribed, delayed
     /// available", so a new request gets 10168 or goes delayed at once
@@ -1274,6 +1254,10 @@ pub struct ClientCore {
     /// one (ibx#444).
     md_slot_con_ids: Mutex<HashMap<InstrumentId, i64>>,
     md_no_data_count: std::sync::atomic::AtomicUsize,
+    /// Streaming requests whose news tick is refused once the engine finds
+    /// their contract: when they were asked, the start of their 10197 wait
+    /// (ibx#501).
+    md_news_asked: Mutex<HashMap<i64, std::time::Instant>>,
     /// The client's market data modes from reqMarketDataType (ibx#444).
     pub md_modes: Mutex<crate::types::MarketDataModes>,
     /// The "Legal ones" text of the generic tick list refusal: computed
@@ -1802,7 +1786,6 @@ impl ClientCore {
             md_top_off: Mutex::new(HashSet::new()),
             md_generic: Mutex::new(HashMap::new()),
             md_generic_last: Mutex::new(HashMap::new()),
-            md_waiting: Mutex::new(Vec::new()),
             md_delayed_known: Mutex::new(HashSet::new()),
             md_frozen: Mutex::new(HashMap::new()),
             instrument_params: Mutex::new(HashMap::new()),
@@ -1811,6 +1794,7 @@ impl ClientCore {
             md_no_data: Mutex::new(Vec::new()),
             md_slot_con_ids: Mutex::new(HashMap::new()),
             md_no_data_count: std::sync::atomic::AtomicUsize::new(0),
+            md_news_asked: Mutex::new(HashMap::new()),
             md_modes: Mutex::new(Default::default()),
             generic_legal: Mutex::new(None),
             snapshot_reqs: Mutex::new(HashMap::new()),
@@ -1879,6 +1863,7 @@ impl ClientCore {
         self.md_no_data.lock().unwrap().clear();
         self.md_slot_con_ids.lock().unwrap().clear();
         self.md_no_data_count.store(0, Ordering::Release);
+        self.md_news_asked.lock().unwrap().clear();
         *self.md_modes.lock().unwrap() = Default::default();
         self.md_frozen.lock().unwrap().clear();
         self.snapshot_reqs.lock().unwrap().clear();
@@ -2088,8 +2073,12 @@ impl ClientCore {
                 });
             }
         };
+        let asked = std::time::Instant::now();
         let attach = |instrument: InstrumentId, had_data: bool| {
             if self.attach_md_request(shared, req_id, instrument, snapshot, sec_type, exchange, news_key.clone(), had_data, top_off) {
+                if !snapshot && news.as_ref().is_some_and(|(_, refusal)| refusal.is_some()) {
+                    self.md_news_asked.lock().unwrap().insert(req_id, asked);
+                }
                 send_news(instrument);
                 send_generic(instrument);
             }
@@ -2109,13 +2098,17 @@ impl ClientCore {
         // contract it finds is subscribed already, the request joins that
         // subscription (`take_md_rejects`).
         if con_id == 0 {
+            // The lines in use are counted now, when it is asked; the engine
+            // applies the limit once its contract is known, so a request
+            // that joins a running contract takes no line (ibx#501).
+            let over_limit = !snapshot && self.md_over_limit(shared);
             let by_symbol = |reply_tx| ControlCommand::SubscribeBySymbol {
                 symbol: symbol.to_string(),
                 sec_type: sec_type.to_string(),
                 exchange: exchange.to_string(),
                 currency: currency.to_string(),
                 filters: filters.clone(),
-                mode_9887, snapshot,
+                mode_9887, snapshot, over_limit,
                 reply_tx,
             };
             let (reply_tx, reply_rx) = crossbeam_channel::bounded(1);
@@ -2165,17 +2158,13 @@ impl ClientCore {
         let mode_9887 = if delayed_known { crate::types::MarketDataModes::entry_mode(false, true) } else { mode_9887 };
 
         // The API ticker limit: a stream that needs a contract no stream
-        // uses yet, with every line taken, gets 101 and waits for a line,
-        // as the reference's line manager (`jclient.k_.a(boolean)`, maxApi
-        // = the logon's API max tickers; error from
-        // `jextend.a4.a(jclient.record.dU)@136`). Snapshots take no line.
-        if !snapshot && self.md_lines_in_use() >= shared.reference.snapshot_rate_limit() as usize {
+        // uses yet, with every line taken, gets 101 and ends, as the
+        // reference's line manager (the limit is the logon's API max
+        // tickers). Snapshots take no line.
+        // Observed 12/10/2026 (ibx#501): the request is not served when
+        // lines are set free later, and a cancel of it gets 300.
+        if !snapshot && self.md_over_limit(shared) {
             shared.orders.push_order_error(req_id, MD_MAX_TICKERS.0, MD_MAX_TICKERS.1.to_string());
-            self.md_waiting.lock().unwrap().push(MdWaiting {
-                req_id, con_id, symbol: symbol.to_string(), exchange: exchange.to_string(),
-                sec_type: sec_type.to_string(), currency: currency.to_string(), filters: filters.clone(),
-                generic_tick_list: generic_tick_list.to_string(), mode_9887,
-            });
             return Ok(None);
         }
 
@@ -2223,35 +2212,17 @@ impl ClientCore {
         attached
     }
 
+    /// Every API market data line is taken (ibx#444, ibx#501).
+    fn md_over_limit(&self, shared: &SharedState) -> bool {
+        self.md_lines_in_use() >= shared.reference.snapshot_rate_limit() as usize
+    }
+
     /// The market data lines in use: the contracts with a streaming
     /// request (ibx#444).
     pub fn md_lines_in_use(&self) -> usize {
         let observers = self.instrument_to_req.lock().unwrap();
         let snaps = self.snapshot_reqs.lock().unwrap();
         observers.values().filter(|reqs| reqs.iter().any(|r| !snaps.contains_key(r))).count()
-    }
-
-    /// The requests waiting for a line (101) that a free line lets through,
-    /// oldest first, as the reference's line manager subscribes the
-    /// records it kept waiting once the count is under the limit
-    /// (ibx#444). They get no second 101.
-    pub fn promote_waiting_md(&self, shared: &SharedState, control_tx: &ControlSender) {
-        // Not an API request: not paced (ibx#555).
-        let _internal = crate::engine::park::not_a_request();
-        loop {
-            if self.md_waiting.lock().unwrap().is_empty()
-                || self.md_lines_in_use() >= shared.reference.snapshot_rate_limit() as usize
-            {
-                return;
-            }
-            let w = self.md_waiting.lock().unwrap().remove(0);
-            if let Err(e) = self.register_mkt_data(
-                shared, control_tx, w.req_id, w.con_id, &w.symbol, &w.exchange, &w.sec_type, &w.currency,
-                &w.filters, false, &w.generic_tick_list, w.mode_9887,
-            ) {
-                log::warn!("Market data request {} waiting for a line: {}", w.req_id, e);
-            }
-        }
     }
 
     /// Add a new market data request to the requests of an instrument
@@ -2304,15 +2275,24 @@ impl ClientCore {
         notices
     }
 
-    /// A streaming request ended with a refused news tick (10094): on a
-    /// paper session its contract (`con_id`) is looked at
-    /// `MD_NO_DATA_WAIT` later (`take_md_no_data`).
-    pub fn note_news_refused(&self, shared: &SharedState, req_id: i64, con_id: i64) {
+    /// A streaming request asked at `asked` ended with a refused news tick
+    /// (10094): on a paper session its contract (`con_id`) is looked at
+    /// `MD_NO_DATA_WAIT` after the request (`take_md_no_data`), as
+    /// captured (ib-agent#202). A second refused request of the contract
+    /// within one pass of the reference's line manager (5 ms) gets no
+    /// 10197: one subscribe-and-release of the contract goes with each
+    /// (captured 2 ms apart: one; 0.1 s apart: two, ibx#501).
+    pub fn note_news_refused(&self, shared: &SharedState, req_id: i64, con_id: i64, asked: std::time::Instant) {
         if !shared.reference.paper_session() {
             return;
         }
+        let due = asked + MD_NO_DATA_WAIT;
         let mut waits = self.md_no_data.lock().unwrap();
-        waits.push((req_id, std::time::Instant::now() + MD_NO_DATA_WAIT, con_id));
+        if waits.iter().any(|&(_, at, c)| c == con_id && at.max(due) - at.min(due) < MD_NO_DATA_PASS) {
+            return;
+        }
+        let at = waits.partition_point(|&(_, at, _)| at <= due);
+        waits.insert(at, (req_id, due, con_id));
         self.md_no_data_count.store(waits.len(), Ordering::Release);
     }
 
@@ -2571,13 +2551,6 @@ impl ClientCore {
     /// so the steps queued before still go to it (ibx#446); not for a
     /// request the server or a join refused.
     fn drop_mkt_data(&self, shared: &SharedState, req_id: i64, cancelled: bool) -> Option<MdCancel> {
-        {
-            let mut waiting = self.md_waiting.lock().unwrap();
-            if let Some(i) = waiting.iter().position(|w| w.req_id == req_id) {
-                waiting.remove(i);
-                return Some(MdCancel::Waiting);
-            }
-        }
         let instrument = self.req_to_instrument.lock().unwrap().remove(&req_id)?;
         let last = {
             let mut observers = self.instrument_to_req.lock().unwrap();
@@ -2600,6 +2573,7 @@ impl ClientCore {
         self.tick_req_params_sent.lock().unwrap().remove(&req_id);
         self.md_joins.lock().unwrap().retain(|(r, _)| *r != req_id);
         let news = self.md_news.lock().unwrap().remove(&req_id);
+        self.md_news_asked.lock().unwrap().remove(&req_id);
         let generic = self.md_generic.lock().unwrap().remove(&req_id).map(|g| g.codes).unwrap_or_default();
         self.md_top_off.lock().unwrap().remove(&req_id);
         self.end_snapshot(req_id);
@@ -2709,12 +2683,13 @@ impl ClientCore {
                 } else {
                     notices.push(MdNotice::Error { req_id, code, text: text.to_string() });
                     let streaming = !self.snapshot_reqs.lock().unwrap().contains_key(&req_id);
+                    let asked = self.md_news_asked.lock().unwrap().remove(&req_id);
                     commands.extend(self.drop_mkt_data(shared, req_id, false).map(MdCancel::commands).unwrap_or_default());
                     // A refused news tick: its contract is looked at later (10197).
                     if let crate::bridge::MdReject::NewsRefused { con_id, .. } = &reject
                         && streaming
                     {
-                        self.note_news_refused(shared, req_id, *con_id);
+                        self.note_news_refused(shared, req_id, *con_id, asked.unwrap_or_else(std::time::Instant::now));
                     }
                 }
             }
@@ -3424,7 +3399,6 @@ impl ClientCore {
     /// reference (the key is the request id only; ibx#444).
     pub fn duplicate_ticker_refusal(&self, req_id: i64) -> Option<(i64, String)> {
         (self.req_to_instrument.lock().unwrap().contains_key(&req_id)
-            || self.md_waiting.lock().unwrap().iter().any(|w| w.req_id == req_id)
             || self.tbt_reqs.lock().unwrap().contains_key(&req_id)
             || self.reg_snapshots.lock().unwrap().iter().any(|f| f.req_id == req_id))
             .then(|| (322, "Error processing request.-'bQ' : cause - Duplicate ticker id".to_string()))
@@ -3457,6 +3431,7 @@ impl ClientCore {
             }
             MdReject::NoSecurityDefinition { .. } =>
                 (200, crate::engine::hot_loop::ccp::NO_SECURITY_DEFINITION.into(), true),
+            MdReject::MaxTickers { .. } => (MD_MAX_TICKERS.0, MD_MAX_TICKERS.1.into(), true),
             MdReject::NewsRefused { text, .. } => (10094, text.clone(), true),
             // Not errors: `take_md_rejects` moves the requests (ibx#447).
             MdReject::Frozen { .. } | MdReject::Live { .. } => (0, String::new(), false),

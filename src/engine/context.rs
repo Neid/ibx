@@ -321,6 +321,9 @@ pub struct Context {
     pub(crate) md_lookups: Vec<(u32, crate::engine::hot_loop::farm::MdSubscribe, std::time::Instant)>,
     /// Subscriptions whose conId was resolved, to be sent.
     pub(crate) md_resolved: Vec<crate::engine::hot_loop::farm::MdSubscribe>,
+    /// Slots of those subscriptions asked with every API line taken
+    /// (ibx#501).
+    pub(crate) md_over_limit: Vec<InstrumentId>,
     pub(crate) next_md_lookup: u32,
     /// Final status of orders that left the engine filled, cancelled or
     /// rejected, for the reference's refusal of a later cancel (ibx#464).
@@ -405,6 +408,7 @@ impl Context {
             next_lot_lookup: 0,
             md_lookups: Vec::new(),
             md_resolved: Vec::new(),
+            md_over_limit: Vec::new(),
             next_md_lookup: 0,
             finished_orders: HashMap::new(),
             unsent: HashMap::new(),
