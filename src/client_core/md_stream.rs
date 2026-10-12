@@ -190,16 +190,20 @@ impl MdReader {
     }
 }
 
-/// The fields of a stream step, in the order the reference sends them.
-const STEP_ALL: [usize; 14] = [
+/// The fields of a stream step, in the order the reference sends them
+/// (the last trade's exchange between the quote's exchanges and the time:
+/// reference 10.51, paper 12/10/2026, regular hours; ibx#638).
+const STEP_ALL: [usize; 15] = [
     field::BID, field::ASK, field::LAST, field::BID_SIZE, field::ASK_SIZE, field::LAST_SIZE, field::VOLUME,
-    field::HIGH, field::LOW, field::CLOSE, field::OPEN, field::BID_EXCH, field::ASK_EXCH, field::TIME,
+    field::HIGH, field::LOW, field::CLOSE, field::OPEN, field::BID_EXCH, field::ASK_EXCH, field::LAST_EXCH,
+    field::TIME,
 ];
 /// The delayed data sender's order: the volume after the low; it sends no
 /// exchanges (skipped for delayed data).
-const STEP_ALL_DELAYED: [usize; 14] = [
+const STEP_ALL_DELAYED: [usize; 15] = [
     field::BID, field::ASK, field::LAST, field::BID_SIZE, field::ASK_SIZE, field::LAST_SIZE, field::HIGH,
-    field::LOW, field::VOLUME, field::CLOSE, field::OPEN, field::BID_EXCH, field::ASK_EXCH, field::TIME,
+    field::LOW, field::VOLUME, field::CLOSE, field::OPEN, field::BID_EXCH, field::ASK_EXCH, field::LAST_EXCH,
+    field::TIME,
 ];
 
 /// Which step a request is given.
@@ -250,7 +254,11 @@ impl Out<'_> {
     /// An exchange text; an empty one is not sent (`jextend.dK.c(List,int,
     /// int,String)@0-14`): no letters before the exchange map came.
     fn exchanges(&mut self, idx: usize) {
-        let tick_type = if idx == field::BID_EXCH { TICK_BID_EXCHANGE } else { TICK_ASK_EXCHANGE };
+        let tick_type = match idx {
+            field::BID_EXCH => TICK_BID_EXCHANGE,
+            field::ASK_EXCH => TICK_ASK_EXCHANGE,
+            _ => TICK_LAST_EXCHANGE,
+        };
         let value = render_exchange_mask_at(self.fields[idx], self.instrument, self.shared, self.seq);
         if !value.is_empty() {
             self.push(MdTick::Text { tick_type, value });
@@ -275,8 +283,9 @@ fn stream_pass(st: &mut StreamState, m: &Mirror, pass: Pass, out: &mut Out) {
                 (m.seen(kind) || fields[idx] != 0)
                     && (st.sizes_sent & (1 << kind as u8) == 0 || fields[idx] != st.fields[idx])
             }
-            field::BID_EXCH | field::ASK_EXCH => fields[idx] != st.fields[idx],
-            field::LAST_EXCH => false,
+            // Each exchange when it changes: the last trade's exchange is
+            // not given again for a trade on the same exchange (ibx#638).
+            field::BID_EXCH | field::ASK_EXCH | field::LAST_EXCH => fields[idx] != st.fields[idx],
             _ => fields[idx] != 0 && fields[idx] != st.fields[idx],
         };
     }
@@ -316,8 +325,8 @@ fn stream_pass(st: &mut StreamState, m: &Mirror, pass: Pass, out: &mut Out) {
             field::OPEN => out.price(TICK_OPEN, idx, false),
             field::TIME => out.time(),
             // The delayed sender sends no exchanges.
-            field::BID_EXCH | field::ASK_EXCH if delayed => {}
-            field::BID_EXCH | field::ASK_EXCH => out.exchanges(idx),
+            field::BID_EXCH | field::ASK_EXCH | field::LAST_EXCH if delayed => {}
+            field::BID_EXCH | field::ASK_EXCH | field::LAST_EXCH => out.exchanges(idx),
             _ => {}
         }
     }

@@ -6436,6 +6436,55 @@ fn stock_stream_joining_a_quote_in_the_reference_order() {
     }
 }
 
+// ibx#638, reference 10.51 (paper 12/10/2026, regular hours): the last
+// trade's exchange (84) is in the picture a joining request gets, after the
+// quote's exchanges and before the time; in a trade, after its time and
+// before its price, and only when it changed.
+#[test]
+fn stock_stream_gives_the_last_trade_exchange_when_it_changes() {
+    use crate::md_events::{MdStep, TestMessage};
+    let (client, rx, shared) = test_client();
+    let engine = top_engine(rx);
+    set_exchange_map(&shared, 5, ["K", "P", "Q", "V"].iter().enumerate().map(|(bit, letter)| {
+        crate::types::SmartComponent { bit_number: bit as i32, exchange: letter.to_string(), exchange_letter: letter.to_string() }
+    }).collect());
+    let aapl = Contract { con_id: 265598, symbol: "AAPL".into(), sec_type: "STK".into(), exchange: "SMART".into(),
+        ..Default::default() };
+    client.req_mkt_data(1, &aapl, "", false, false).unwrap();
+    let (mut q, _) = aapl_join_messages();
+    q.last_exch_mask = 2;
+    let whole = TestMessage { steps: Some(&[MdStep::CatchUp]), halted: Some(0), sizes_seen: true, ..Default::default() };
+    shared.market.push_test_message(5, &q, &whole);
+    client.core.join_stream(1, shared.market.md_events.head());
+    let mut w = SeqRec::default();
+    client.process_msgs(&mut w);
+    let at = |w: &SeqRec, e: &str| w.events.iter().position(|x| x == e);
+    let (ask_exch, last_exch, time) = (at(&w, "string:1:33:PQ"), at(&w, "string:1:84:P"), at(&w, "string:1:45:1790604766"));
+    assert!(ask_exch < last_exch && last_exch < time && ask_exch.is_some(), "{:?}", w.events);
+
+    // A trade on another exchange: time, exchange, then price.
+    let trade = [MdStep::Time, MdStep::Exchange, MdStep::Last];
+    q.last_exch_mask = 4;
+    q.last = q.last + crate::types::PRICE_SCALE / 100;
+    q.timestamp_ns += 1_000_000_000;
+    shared.market.push_test_message(5, &q, &TestMessage { steps: Some(&trade), sizes_seen: true, ..Default::default() });
+    let mut w = SeqRec::default();
+    client.process_msgs(&mut w);
+    let kinds: Vec<&str> = w.events.iter().filter(|e| e.starts_with("string:") || e.starts_with("price:1:4:"))
+        .map(|e| e.as_str()).collect();
+    assert_eq!(kinds, ["string:1:45:1790604767", "string:1:84:Q", "price:1:4:342.36:-"], "{:?}", w.events);
+
+    // A trade on the same exchange: no exchange.
+    q.last = q.last + crate::types::PRICE_SCALE / 100;
+    q.timestamp_ns += 1_000_000_000;
+    shared.market.push_test_message(5, &q, &TestMessage { steps: Some(&trade), sizes_seen: true, ..Default::default() });
+    let mut w = SeqRec::default();
+    client.process_msgs(&mut w);
+    assert!(!w.events.iter().any(|e| e.starts_with("string:1:84:")), "{:?}", w.events);
+    assert!(w.events.iter().any(|e| e.starts_with("price:1:4:")), "{:?}", w.events);
+    drop(engine);
+}
+
 // ibx#446: two messages read at once are not merged: each one's values go
 // out, in order (the old dispatch sent the last values only, and lost a
 // halted state repeated in a step with nothing else).

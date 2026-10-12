@@ -661,7 +661,11 @@ pub fn run(sc: &Scenario, opts: &Options, links: &mut Links, driver: &mut dyn Dr
         let pos = if l.starts_with("execDetails|") { 10 } else { 1 };
         run.opts.skip_orders.iter().any(|id| l.split('|').nth(pos) == Some(&id.to_string()))
     };
-    let keep = |l: &String| !session_notice(l) && !skip(l) && (run.opts.keep)(l);
+    // The recordings are of the reference 10.40, which does not give the
+    // last trade's exchange; 10.51, which ibx copies, does (ibx#638): left
+    // out until they are made again on 10.51 (ibx#604).
+    let last_exchange = |l: &str| l.starts_with("tickString|") && l.split('|').nth(2) == Some("84");
+    let keep = |l: &String| !session_notice(l) && !skip(l) && !last_exchange(l) && (run.opts.keep)(l);
     // Historical requests with no end time: their end is the time they
     // were made.
     let now: HashSet<String> = run.recs.iter().filter(|r| r.msg == "REQ_HISTORICAL_DATA")
