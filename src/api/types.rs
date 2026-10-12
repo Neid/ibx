@@ -471,11 +471,9 @@ impl Order {
             hidden: self.hidden,
             outside_rth: self.outside_rth,
             // A goodAfterTime that is not a date and time is left out, as
-            // the reference leaves it out (ibx#594).
-            good_after: match crate::config::parse_ib_expiry(&self.good_after_time) {
-                Ok(Some(crate::config::IbExpiry::Instant(secs))) => secs,
-                _ => 0,
-            },
+            // the reference leaves it out (ibx#594); a time alone is today's,
+            // and no zone is the machine's (ibx#598).
+            good_after: crate::config::good_after_secs(&self.good_after_time).unwrap_or(0),
             good_till,
             good_till_date_ymd,
             oca_group: self.oca_group.parse().unwrap_or(0),

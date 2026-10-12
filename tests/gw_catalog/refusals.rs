@@ -31,7 +31,9 @@ fn assert_refused(engine: &mut Engine, id: i64, rule: &str) {
     }
     let mine: Vec<&(i64, i64, String)> = errors.iter().filter(|e| e.0 == id).collect();
     assert!(
-        mine.iter().any(|(_, code, text)| *code == rule.api_code && matches_template(&rule.text, text, false)),
+        mine.iter().any(|(_, code, text)| *code == rule.api_code && (matches_template(&rule.text, text, false)
+            // The table is 10.40's; 10.51 adds the order id to 103 (ibx#625).
+            || (rule.api_code == 103 && *text == format!("{}: {}", rule.text, id)))),
         "rule {} (gateway code {}): want {} {:?}, got {:?}", rule.id, rule.code, rule.api_code, rule.text, errors,
     );
     // Nothing sent for the refused order: the next order is the first the
@@ -82,15 +84,21 @@ fn good_till_date_not_a_date() {
 }
 
 // A start time that cannot be read is left out by a current client's
-// reference, and the order is sent (ibx#594, paper 11/10/2026); ibx
-// refuses with the table's text only a time alone, which it cannot do.
+// reference, and the order is sent (ibx#594, paper 11/10/2026); a time
+// alone is today's (ibx#598). The table's text is the refusal of a zone
+// that is not the contract's.
 #[test]
 fn good_after_time_not_a_date() {
-    refused("337 bH.q@2497", &aapl(), &Order { good_after_time: "15:30:00".into(), ..order("LMT") });
     let mut engine = Engine::start();
+    engine.shared.reference.cache_time_zone_id(aapl().con_id, "US/Eastern");
+    engine.client.place_order(REFUSED, &aapl(), &Order { good_after_time: "20261230 10:00:00 Asia/Tokyo".into(), ..order("LMT") }).unwrap();
+    assert_refused(&mut engine, REFUSED, "337 bH.q@2497");
+    let mut engine = Engine::start();
+    engine.client.place_order(6, &aapl(), &Order { good_after_time: "15:30:00".into(), ..order("LMT") }).unwrap();
+    assert_eq!(field(&engine.orders(1)[0], 6121), Some("6"), "a time alone is sent");
     engine.client.place_order(REFUSED, &aapl(), &Order { good_after_time: "after lunch".into(), ..order("LMT") }).unwrap();
-    let frames = engine.orders(1);
-    assert_eq!(field(&frames[0], 6121), Some("7"), "the order is sent");
+    let frames = engine.orders(2);
+    assert_eq!(field(&frames[1], 6121), Some("7"), "the order is sent");
     assert!(engine.errors().iter().all(|e| e.0 != REFUSED));
 }
 

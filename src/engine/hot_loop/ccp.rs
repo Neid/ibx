@@ -1634,10 +1634,15 @@ impl CcpState {
                     return;
                 }
             },
-            // Pending on a replace: the reference reports nothing, so keep
-            // the current status. Reporting it as PendingCancel left the
-            // order looking cancelled, since nothing moves it back (ibx#247).
+            // Pending on a replace: a working order shows PreSubmitted until
+            // the replace is done (the reference 10.51, paper 12/10/2026:
+            // Submitted, then PreSubmitted and Submitted again; ibx#626).
+            // Any other status is kept: reporting it as PendingCancel left
+            // the order looking cancelled, since nothing moves it back
+            // (ibx#247).
             "6" if !is_cancel_request => match context.order(clord_id) {
+                Some(o) if matches!(o.status, crate::types::OrderStatus::Submitted | crate::types::OrderStatus::PreSubmitted) =>
+                    crate::types::OrderStatus::PreSubmitted,
                 Some(o) => o.status,
                 None => crate::types::OrderStatus::PendingReplace,
             },
@@ -1673,7 +1678,11 @@ impl CcpState {
         let replayed = is_status_report && self.awaiting_status_replay;
         let queried = replayed || (is_status_report && !context.status_queries.is_empty()
             && context.status_queries.remove(&clord_id));
-        let change = if queried {
+        // The pending report of a replace sets PreSubmitted over a working
+        // status, which the guard would take as stale (ibx#626).
+        let replace_pending = ord_status == "6" && !is_cancel_request
+            && status == crate::types::OrderStatus::PreSubmitted;
+        let change = if queried || replace_pending {
             context.apply_queried_status(clord_id, status)
         } else {
             context.apply_order_status(clord_id, status)
@@ -2870,13 +2879,24 @@ impl CcpState {
                 super::order_builder::combo_progress(context, ccp_conn, hb, progress);
                 return;
             }
-            if super::order_builder::rth_definition_reply(context, rid, msg) { return; }
+            // The zone of the contract's trading hours, from the order
+            // lookups too: an order's start time is shown in it (ibx#598).
+            let keep_zone = |shared: &SharedState| {
+                for def in crate::control::contracts::parse_secdef_records(msg).unwrap_or_default().iter().take(1) {
+                    if let Some(zone) = &def.time_zone_id { shared.reference.cache_time_zone_id(def.con_id, zone); }
+                }
+            };
+            if super::order_builder::rth_definition_reply(context, rid, msg) {
+                keep_zone(shared);
+                return;
+            }
             // Asked for the contract of an order given without a conId
             // (ibx#486): its definition is cached, not a user reply.
             if super::order_builder::order_contract_reply(context, shared, rid, msg) {
                 for def in crate::control::contracts::parse_secdef_records(msg).unwrap_or_default().iter().take(1) {
                     self.cache_definition(def, shared);
                 }
+                keep_zone(shared);
                 return;
             }
             // Asked for a round lot (ibx#287): not a user reply.
@@ -4688,6 +4708,26 @@ mod tests {
         // reference does for a modify confirm (ibx#473).
         let statuses: Vec<_> = shared.orders.drain_order_updates().iter().map(|u| u.status).collect();
         assert_eq!(statuses, [crate::types::OrderStatus::PreSubmitted; 2]);
+    }
+
+    // ibx#626 (the reference 10.51, paper 12/10/2026): the replace of a
+    // Submitted order shows PreSubmitted while it is pending, then
+    // Submitted again once replaced.
+    #[test]
+    fn a_pending_replace_of_a_working_order_shows_presubmitted() {
+        use crate::types::OrderStatus;
+        let (mut ccp, mut context, shared) = ord_status_test_state();
+        let routed = exec_report_frame(&[(39, "0"), (150, "0"), (100, "ARCA")]);
+        ccp.handle_exec_report(&routed, &mut context, &shared, &None, "");
+        assert_eq!(context.order(42).unwrap().status, OrderStatus::Submitted);
+        shared.orders.drain_order_updates();
+
+        let pending = exec_report_frame(&[(11, "42.1"), (39, "6"), (150, "6"), (100, "ARCA")]);
+        ccp.handle_exec_report(&pending, &mut context, &shared, &None, "");
+        let replaced = exec_report_frame(&[(11, "42.1"), (41, "42.0"), (39, "5"), (150, "5"), (100, "ARCA")]);
+        ccp.handle_exec_report(&replaced, &mut context, &shared, &None, "");
+        let statuses: Vec<_> = shared.orders.drain_order_updates().iter().map(|u| u.status).collect();
+        assert_eq!(statuses, [OrderStatus::PreSubmitted, OrderStatus::Submitted]);
     }
 
     // ibx#473: a stale report is still not reported (ibx#212), and the

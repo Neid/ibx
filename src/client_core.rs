@@ -359,6 +359,17 @@ pub fn connection_time_now() -> String {
     connection_time(&jiff::Timestamp::now().to_zoned(crate::gateway::machine_tz()), &zone)
 }
 
+/// A goodAfterTime as the reference shows it in openOrder: its time in the
+/// zone `zone` of the contract's trading hours, `yyyyMMdd HH:mm:ss {zone}`
+/// (ibx#598). None when the zone is not known or the text is not a time.
+pub fn shown_start_time(good_after_time: &str, zone: Option<&str>) -> Option<String> {
+    let zone = zone?;
+    let secs = crate::config::good_after_secs(good_after_time)?;
+    let tz = jiff::tz::TimeZone::get(crate::config::canonical_zone(zone)).ok()?;
+    let at = jiff::Timestamp::from_second(secs).ok()?.to_zoned(tz);
+    Some(connection_time(&at, zone))
+}
+
 /// `connection_time_now` for a given time and zone name.
 pub fn connection_time(at: &jiff::Zoned, zone: &str) -> String {
     format!("{} {}", at.strftime("%Y%m%d %H:%M:%S"), zone)
@@ -1020,6 +1031,12 @@ pub const MODIFY_OF_FINISHED_ORDER: (i64, &str) = (104, "Cannot modify a filled 
 /// A new order under the id of an order of this client that is working (ibx#538).
 pub const DUPLICATE_ORDER_ID: (i64, &str) = (103, "Duplicate order id");
 
+/// Error 103 with the order id after the text, as the reference 10.51
+/// gives it (ibx#625, paper 12/10/2026: "Duplicate order id: 57639").
+pub fn duplicate_order_id(order_id: OrderId) -> (i64, String) {
+    (DUPLICATE_ORDER_ID.0, format!("{}: {}", DUPLICATE_ORDER_ID.1, order_id))
+}
+
 /// The reference's refusal of a fractional quantity (ib-agent#192 B3).
 pub const FRACTIONAL_VIA_API: (i64, &str) = (10243,
     "Fractional-sized order cannot be placed via API. Please use desktop version to place this order.");
@@ -1360,6 +1377,9 @@ pub struct ClientCore {
     pub delayed_reqs: Mutex<HashSet<i64>>,
     /// Market data requests whose tickReqParams was sent (ibx#449).
     pub tick_req_params_sent: Mutex<HashSet<i64>>,
+    /// Warning 2174 was given for a goodAfterTime without a zone: the
+    /// reference gives it once per session (ibx#598).
+    start_time_zone_warned: AtomicBool,
     /// Tick-by-tick requests: reqId -> (instrument, conId, type). Kept apart
     /// from the market data maps, so both can run on one contract (ibx#455).
     pub tbt_reqs: Mutex<HashMap<i64, (InstrumentId, i64, TbtType)>>,
@@ -1823,6 +1843,7 @@ impl ClientCore {
             mdt_sent: Mutex::new(HashSet::new()),
             delayed_reqs: Mutex::new(HashSet::new()),
             tick_req_params_sent: Mutex::new(HashSet::new()),
+            start_time_zone_warned: AtomicBool::new(false),
             tbt_reqs: Mutex::new(HashMap::new()),
             contract_cache: Mutex::new(HashMap::new()),
         }
@@ -1830,6 +1851,7 @@ impl ClientCore {
 
     /// Clear all per-session state so the owning client can reconnect.
     pub fn reset(&self) {
+        self.start_time_zone_warned.store(false, Ordering::Relaxed);
         self.req_to_instrument.lock().unwrap().clear();
         self.instrument_to_req.lock().unwrap().clear();
         self.con_id_to_instrument.lock().unwrap().clear();
@@ -2879,14 +2901,23 @@ impl ClientCore {
     /// has one, else the symbol, security type and currency the server's
     /// portfolio row carries. The reference fills these in updatePortfolio;
     /// ibx sent only the contract id for a contract it had not looked up.
+    ///
+    /// The reference gives the contract on its listing exchange, with no
+    /// primary exchange (ibx#600; the reference 10.51, paper 12/10/2026:
+    /// NASDAQ for AXTI and MSFT, ARCA for SPY, in position, positionMulti
+    /// and updatePortfolio).
     pub fn position_contract(&self, con_id: i64, shared: &SharedState) -> ApiContract {
-        self.get_contract(con_id, shared).unwrap_or_else(|| {
+        let mut contract = self.get_contract(con_id, shared).unwrap_or_else(|| {
             let pi = shared.portfolio.position_info(con_id).unwrap_or_default();
             ApiContract {
                 con_id, symbol: pi.symbol, sec_type: pi.sec_type, currency: pi.currency,
                 multiplier: pi.multiplier, ..Default::default()
             }
-        })
+        });
+        if !contract.primary_exchange.is_empty() {
+            contract.exchange = std::mem::take(&mut contract.primary_exchange);
+        }
+        contract
     }
 
     /// The reference's local refusal of a fundamental data request
@@ -3150,7 +3181,9 @@ impl ClientCore {
     pub fn prepare_positions_multi(&self, shared: &SharedState) -> Vec<(i64, String, String, PositionsBatch)> {
         let mut subs = self.positions_multi.lock().unwrap();
         let mut out = Vec::new();
-        subs.retain_mut(|m| match advance_positions(&mut m.sub, shared, None) {
+        // In the order of reqPositions (ibx#600, paper 12/10/2026: the
+        // same order on the reference 10.51).
+        subs.retain_mut(|m| match advance_positions(&mut m.sub, shared, Some(m.account.as_str()).filter(|a| !a.is_empty())) {
             Some(batch) => {
                 let expired = batch.error.is_some();
                 out.push((m.req_id, m.account.clone(), m.model_code.clone(), batch));
@@ -3835,6 +3868,13 @@ impl ClientCore {
         placed_contract(&mut contract, &placed_exchange);
         let mut order = order;
         reported_unset_values(&mut order);
+        // The start time in the zone of the contract's trading hours, as
+        // the reference shows it (ibx#598, paper 12/10/2026: "16:00:00" on
+        // a Paris machine shows "20261012 10:00:00 US/Eastern").
+        let con_id = if contract.con_id != 0 { contract.con_id } else { reported_con_id };
+        if let Some(shown) = shown_start_time(&order.good_after_time, shared.reference.time_zone_id(con_id).as_deref()) {
+            order.good_after_time = shown;
+        }
         // What the reference's openOrder shows, read on both sides in the
         // order scenarios of 09/10/2026 (ibx#543):
         // - the quantity filled so far, on a working and on a filled order;
@@ -4022,7 +4062,7 @@ impl ClientCore {
     /// previews it. A pending cancel is checked by the engine, which holds
     /// the current status.
     pub fn refusal_for_order_id(&self, order_id: OrderId, order: &ApiOrder, shared: &SharedState) -> Option<(i64, String)> {
-        let duplicate = || Some((103, "Duplicate order id".to_string()));
+        let duplicate = || Some(duplicate_order_id(order_id));
         if self.finished_orders.lock().unwrap().contains(&order_id) {
             if order.what_if {
                 return None;
@@ -5480,9 +5520,6 @@ impl ClientCore {
         if order.discretionary_amt < 0.0 {
             last = read_error("Discretionary amount does not conform to the minimum price variation for this contract ");
         }
-        if let Some(refusal) = Self::good_after_time_refusal(order) {
-            last = Some(refusal);
-        }
         if set(order.trailing_percent) && set(order.aux_price) {
             last = read_error("Cannot specify Trailing Amount and Trailing Percent at the same time");
         }
@@ -5576,18 +5613,6 @@ impl ClientCore {
         if accepted { None } else { Some((343, INVALID_DATE_TIME.replace("%s", "End Time"))) }
     }
 
-    /// A goodAfterTime the reference cannot read is left out, and the
-    /// order goes without a start time (ibx#594, paper 11/10/2026:
-    /// "not a date", "20261230 99:99:99", a date alone, "2026-12-30
-    /// 10:00:00" and a zone that does not exist are all accepted, and
-    /// the order message has no start time). The reference also takes a
-    /// time alone, for today; ibx needs the date and refuses that form
-    /// with 337, rather than send the order with no start time.
-    fn good_after_time_refusal(order: &ApiOrder) -> Option<(i64, String)> {
-        let text = order.good_after_time.trim().as_bytes();
-        let time_alone = text.len() >= 5 && text[2] == b':' && text[..2].iter().all(u8::is_ascii_digit);
-        time_alone.then(|| (337, INVALID_DATE_TIME.replace("%s", "Start Time")))
-    }
 
     /// A goodAfterTime in a zone that exists and is not UTC, the zone of
     /// this machine or the zone of the contract's trading hours: error 337
@@ -5595,7 +5620,10 @@ impl ClientCore {
     /// on a US stock; US/Eastern is sent). Until the contract's zone is
     /// known any zone is taken, as for the goodTillDate.
     pub fn good_after_time_zone_refusal(order: &ApiOrder, contract_zone: Option<&str>) -> Option<(i64, String)> {
-        match crate::config::parse_ib_expiry_zoned(&order.good_after_time) {
+        // Read as the reference reads it: a time alone is today's (ibx#598).
+        let machine = crate::gateway::machine_time_zone();
+        let (text, _) = crate::config::good_after_dated(&order.good_after_time, &machine)?;
+        match crate::config::parse_ib_expiry_zoned(&text) {
             Ok(Some((crate::config::IbExpiry::Instant(_), Some(zone))))
                 if zone != "UTC" && contract_zone.is_some_and(|c| c != zone) && crate::gateway::machine_time_zone() != zone =>
             {
@@ -5896,6 +5924,14 @@ impl ClientCore {
         &self, order_id: OrderId, con_id: i64, exchange: &str, order: &ApiOrder, shared: &SharedState, account: &str,
     ) -> (Vec<(i64, String)>, Option<(i64, String)>) {
         let mut notices = Self::implied_zone_warnings(order);
+        // A goodAfterTime without a zone: 2174 the first time in the
+        // session only (ibx#598, paper 12/10/2026: three such orders, one
+        // warning).
+        if crate::config::good_after_dated(&order.good_after_time, &crate::gateway::machine_time_zone()).is_some_and(|(_, no_zone)| no_zone)
+            && !self.start_time_zone_warned.swap(true, Ordering::Relaxed)
+        {
+            notices.push((2174, IMPLIED_TIME_ZONE.to_string()));
+        }
         let contract_zone = shared.reference.time_zone_id(con_id);
         let account_pending = Self::order_account_pending(order, &shared.reference, account);
         // The algo check's warnings come before its refusal (ibx#263).
@@ -7342,6 +7378,48 @@ mod tests {
         assert_eq!(ClientCore::refusal_before_sending(&lmt(100.0), "ISLAND"), None);
     }
 
+    // ibx#598 (the reference 10.51, paper 12/10/2026, a Paris machine): a
+    // time alone is today's; no zone is the machine's; openOrder shows it in
+    // the contract's zone; 2174 once per session.
+    #[test]
+    fn a_good_after_time_is_read_and_shown_as_the_reference() {
+        use crate::config::good_after_dated;
+        let today = jiff::Timestamp::now().to_zoned(jiff::tz::TimeZone::get("Europe/Paris").unwrap()).date().strftime("%Y%m%d").to_string();
+        assert_eq!(good_after_dated("16:00:00", "Europe/Paris"), Some((format!("{today} 16:00:00 Europe/Paris"), true)));
+        assert_eq!(good_after_dated("20261012 16:00:00", "Europe/Paris"), Some(("20261012 16:00:00 Europe/Paris".to_string(), true)));
+        assert_eq!(good_after_dated("20261012 10:00:00 US/Eastern", "Europe/Paris"), Some(("20261012 10:00:00 US/Eastern".to_string(), false)));
+        assert_eq!(good_after_dated("20261012-14:00:00", "Europe/Paris"), Some(("20261012-14:00:00".to_string(), false)));
+        assert_eq!(good_after_dated("not a time", "Europe/Paris"), None);
+        // 16:00 Paris and 10:00 New York are the same start, shown in New
+        // York time (both 14:00 UTC on 12/10/2026).
+        assert_eq!(shown_start_time("20261012 10:00:00 US/Eastern", Some("US/Eastern")).as_deref(), Some("20261012 10:00:00 US/Eastern"));
+        assert_eq!(shown_start_time("20261012-14:00:00", Some("US/Eastern")).as_deref(), Some("20261012 10:00:00 US/Eastern"));
+        assert_eq!(shown_start_time("20261012-14:00:00", None), None);
+
+        let core = ClientCore::new();
+        let shared = SharedState::new();
+        let warned = |id: OrderId, gat: &str| core.order_read_checks(id, 265598, "SMART",
+            &ApiOrder { good_after_time: gat.into(), ..lmt(100.0) }, &shared, "DU1").0.iter().any(|n| n.0 == 2174);
+        assert!(warned(20, "20261012 16:00:00"), "the first without a zone");
+        assert!(!warned(21, "16:00:00"), "not again in the session");
+        core.reset();
+        assert!(warned(22, "16:00:00"), "again in a new session");
+    }
+
+    // ibx#600 (the reference 10.51, paper 12/10/2026): a position's contract
+    // is on its listing exchange, with no primary exchange.
+    #[test]
+    fn a_position_contract_is_on_its_listing_exchange() {
+        let core = ClientCore::new();
+        let shared = SharedState::new();
+        core.cache_contract(272093, ApiContract {
+            con_id: 272093, symbol: "MSFT".into(), sec_type: "STK".into(), exchange: "SMART".into(),
+            primary_exchange: "NASDAQ".into(), currency: "USD".into(), ..Default::default()
+        });
+        let c = core.position_contract(272093, &shared);
+        assert_eq!((c.exchange.as_str(), c.primary_exchange.as_str(), c.currency.as_str()), ("NASDAQ", "", "USD"));
+    }
+
     // ibx#607: the checks of postOnly, allowPreOpen and ignoreOpenAuction as
     // the reference reads the order (code read on 10.51; 10051 and 10052
     // seen on paper 12/10/2026, REL and LMT accepted).
@@ -7554,7 +7632,9 @@ mod tests {
         assert_eq!(checks(11, &after(&format!("20261230 10:00:00 {other}"))), Some(337));
         assert_eq!(checks(12, &after("20261230 10:00:00 US/Eastern")), None);
         assert_ne!(after("20261230 10:00:00 US/Eastern").attrs().good_after, 0);
-        assert_eq!(checks(13, &after("10:00:00")), Some(337), "a time alone: not done by ibx");
+        // ibx#598: a time alone is read as today's, as the reference.
+        assert_eq!(checks(13, &after("10:00:00")), None, "a time alone");
+        assert_ne!(after("10:00:00 US/Eastern").attrs().good_after, 0);
     }
 
     // ibx#463: a filled order was forgotten, so place_order with its id sent
@@ -7621,10 +7701,9 @@ mod tests {
         assert_eq!(core.take_order_id(&shared), 74);
         // An id at or below a reported one is no new id (103), unless the
         // server holds that order.
-        let duplicate = Some((103, "Duplicate order id".to_string()));
         let core = ClientCore::new();
         core.client_id.store(198, Ordering::Relaxed);
-        assert_eq!(core.refusal_for_order_id(68, &lmt(100.0), &shared), duplicate);
+        assert_eq!(core.refusal_for_order_id(68, &lmt(100.0), &shared), Some((103, "Duplicate order id: 68".to_string())));
         assert!(core.refusal_for_order_id(69, &lmt(100.0), &shared).is_none());
     }
 
@@ -7635,18 +7714,18 @@ mod tests {
     fn a_new_order_at_or_below_the_highest_id_is_refused() {
         let core = ClientCore::new();
         let shared = SharedState::new();
-        let duplicate = Some((103, "Duplicate order id".to_string()));
+        let duplicate = |id| Some(duplicate_order_id(id));
         assert!(core.refusal_for_order_id(5, &lmt(100.0), &shared).is_none(), "nothing placed yet");
         core.track_order(5, ApiContract::default(), lmt(100.0), 0);
         core.update_order_status(5, "Submitted", 0.0, 100.0);
-        assert_eq!(core.refusal_for_order_id(3, &lmt(100.0), &shared), duplicate, "below the highest");
+        assert_eq!(core.refusal_for_order_id(3, &lmt(100.0), &shared), duplicate(3), "below the highest");
         assert!(core.refusal_for_order_id(6, &lmt(100.0), &shared).is_none(), "above the highest");
         let what_if = ApiOrder { what_if: true, ..lmt(100.0) };
-        assert_eq!(core.refusal_for_order_id(4, &what_if, &shared), duplicate, "a what-if too");
+        assert_eq!(core.refusal_for_order_id(4, &what_if, &shared), duplicate(4), "a what-if too");
         core.track_what_if(9, ApiContract::default(), what_if.clone());
-        assert_eq!(core.refusal_for_order_id(8, &lmt(100.0), &shared), duplicate, "a what-if's id counts");
+        assert_eq!(core.refusal_for_order_id(8, &lmt(100.0), &shared), duplicate(8), "a what-if's id counts");
         core.reset();
-        assert_eq!(core.refusal_for_order_id(9, &lmt(100.0), &shared), duplicate, "kept after a reconnect");
+        assert_eq!(core.refusal_for_order_id(9, &lmt(100.0), &shared), duplicate(9), "kept after a reconnect");
         assert!(core.refusal_for_order_id(10, &lmt(100.0), &shared).is_none());
     }
 

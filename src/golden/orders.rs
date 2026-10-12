@@ -219,6 +219,12 @@ struct Known {
 fn order_lines(lines: &[String], known: Known) -> Vec<String> {
     lines.iter().filter(|l| !l.starts_with("error|-1|")).map(|l| {
         let mut f: Vec<String> = l.split('|').map(str::to_string).collect();
+        // The recordings are of the reference 10.40; 10.51, which ibx
+        // copies, adds the order id to 103 (ibx#625). Until they are made
+        // again on 10.51 (ibx#604), their 103 is read in the 10.51 form.
+        if f[0] == "error" && f.len() > 3 && f[2] == "103" && f[3] == "Duplicate order id" {
+            f[3] = format!("Duplicate order id: {}", f[1]);
+        }
         if known.stp_lmt && f[0] == "openOrder" && f[5].contains("orderType=STP,") {
             f[5] = f[5].split(',').map(|kv| if kv.starts_with("lmtPrice=") { "lmtPrice=-" } else { kv })
                 .collect::<Vec<_>>().join(",");

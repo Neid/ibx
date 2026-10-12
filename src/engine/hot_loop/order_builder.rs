@@ -339,8 +339,8 @@ fn send_orders(
             }
             if let Some(id) = own {
                 log::warn!("Order {} refused: an order of this client with that id is working", id);
-                let (code, message) = crate::client_core::DUPLICATE_ORDER_ID;
-                shared.orders.push_order_error(id, code, message.into());
+                let (code, message) = crate::client_core::duplicate_order_id(id);
+                shared.orders.push_order_error(id, code, message);
                 continue;
             }
             for id in order_req.new_order_ids() {

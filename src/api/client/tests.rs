@@ -1348,8 +1348,7 @@ fn place_order_trail_mit_trail_lit_peg_best_rpi_and_passv_rel() {
 
 // ibx#594 (paper 11/10/2026): a goodAfterTime that cannot be read is left
 // out and the order is sent without a start time, as the reference sends
-// it; a time alone, which the reference reads and ibx does not, is
-// refused with 337 and the reference's text. A good one is sent.
+// it; a time alone is today's (ibx#598). A good one is sent.
 #[test]
 fn place_order_unreadable_good_after_time_is_left_out() {
     let (client, rx, shared) = test_client();
@@ -1367,18 +1366,23 @@ fn place_order_unreadable_good_after_time_is_left_out() {
             other => panic!("{bad}: one plain order expected, got {other:?}"),
         }
     }
-    client.place_order(9, &spy(), &order("09:30:00")).unwrap();
-    assert!(rx.try_iter().all(|c| !matches!(c, ControlCommand::Order(_))), "a time alone: nothing sent");
     let mut w = RecordingWrapper::default();
     client.process_msgs(&mut w);
     assert!(!w.events.iter().any(|e| (4..=7).any(|id| e.starts_with(&format!("error:{id}:")))), "{:?}", w.events);
-    assert!(w.events.iter().any(|e| e.starts_with(
-        "error:9:337:Start Time: The date, time, or time-zone entered is invalid.\nThe correct format is yyyymmdd hh:mm:ss xx/xxxx\n")),
-        "{:?}", w.events);
-
     client.place_order(8, &spy(), &order("20261230 09:30:00 US/Eastern")).unwrap();
     match rx.try_recv().unwrap() {
         ControlCommand::Order(OrderRequest::SubmitLimitEx { attrs, .. }) => assert_eq!(attrs.good_after, 1_798_641_000),
+        other => panic!("expected SubmitLimitEx, got {:?}", other),
+    }
+    // ibx#598: a time alone is sent as today's at that time, as the
+    // reference reads it (paper 12/10/2026).
+    client.place_order(10, &spy(), &order("09:30:00 US/Eastern")).unwrap();
+    match rx.recv_timeout(std::time::Duration::from_secs(2)).unwrap() {
+        ControlCommand::Order(OrderRequest::SubmitLimitEx { attrs, .. }) => {
+            let today = jiff::Timestamp::now().to_zoned(jiff::tz::TimeZone::get("America/New_York").unwrap()).date();
+            let want = today.at(9, 30, 0, 0).in_tz("America/New_York").unwrap().timestamp().as_second();
+            assert_eq!(attrs.good_after, want);
+        }
         other => panic!("expected SubmitLimitEx, got {:?}", other),
     }
 }
@@ -1794,7 +1798,7 @@ fn what_if_on_an_unanswered_order_id_is_a_duplicate() {
     client.place_order(79, &spy(), &Order { lmt_price: 168.46, what_if: true, ..live.clone() }).unwrap();
     assert!(rx.try_recv().is_err(), "nothing is sent");
     let errors = shared.orders.drain_order_errors();
-    assert_eq!(errors.iter().map(|e| (e.0, e.1, e.2.as_str())).collect::<Vec<_>>(), [(79, 103, "Duplicate order id")]);
+    assert_eq!(errors.iter().map(|e| (e.0, e.1, e.2.as_str())).collect::<Vec<_>>(), [(79, 103, "Duplicate order id: 79")]);
     assert_eq!(client.core.tracked_order(79).map(|o| o.what_if), Some(false));
     assert!(client.core.what_if_orders.lock().unwrap().is_empty());
 }

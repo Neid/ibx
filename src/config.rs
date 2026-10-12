@@ -302,6 +302,50 @@ pub fn parse_ib_expiry_zoned(input: &str) -> Result<Option<(IbExpiry, Option<&st
     Ok(Some((IbExpiry::Instant(zoned.timestamp().as_second()), tz)))
 }
 
+/// A goodAfterTime as the reference reads it (ibx#598, paper 12/10/2026,
+/// the reference 10.51): a date and a time, or a time alone (today's date
+/// in its zone), in the zone given, else in the machine's zone `machine`
+/// ("16:00:00" and "20261012 16:00:00" on a Paris machine both start at
+/// 14:00 UTC). The `YYYYMMDD-HH:MM:SS` form is UTC. The text with its date
+/// and its zone written out, and whether the caller gave no zone; None
+/// for a text that is not such a time (left out, ibx#594).
+pub fn good_after_dated(input: &str, machine: &str) -> Option<(String, bool)> {
+    let s = input.trim();
+    if s.is_empty() {
+        return None;
+    }
+    let first = s.split_whitespace().next()?;
+    let time_alone = first.len() >= 3 && first.as_bytes()[2] == b':' && first.as_bytes()[..2].iter().all(u8::is_ascii_digit);
+    let (text, no_zone) = if time_alone {
+        // A time alone: today's date in its zone.
+        let zone = s[first.len()..].trim();
+        let (zone, no_zone) = if zone.is_empty() { (machine, true) } else { (zone, false) };
+        let tz = jiff::tz::TimeZone::get(canonical_zone(zone)).ok()?;
+        let today = jiff::Timestamp::now().to_zoned(tz).date();
+        (format!("{} {} {}", today.strftime("%Y%m%d"), first, zone), no_zone)
+    } else if s.len() > 8 && s.as_bytes()[8] == b'-' {
+        (s.to_string(), false)
+    } else if s.split_whitespace().count() == 2 {
+        (format!("{s} {machine}"), true)
+    } else {
+        (s.to_string(), false)
+    };
+    match parse_ib_expiry(&text) {
+        Ok(Some(IbExpiry::Instant(_))) => Some((text, no_zone)),
+        _ => None,
+    }
+}
+
+/// Unix seconds of a goodAfterTime as the reference reads it
+/// (`good_after_dated`), with the machine's zone; None when not a time.
+pub fn good_after_secs(input: &str) -> Option<i64> {
+    let (text, _) = good_after_dated(input, &crate::gateway::machine_time_zone())?;
+    match parse_ib_expiry(&text) {
+        Ok(Some(IbExpiry::Instant(secs))) => Some(secs),
+        _ => None,
+    }
+}
+
 /// Parse an API date-time (`YYYYMMDD HH:MM:SS [zone]` or
 /// `YYYYMMDD-HH:MM:SS`, the forms of `parse_ib_expiry`) to Unix seconds.
 /// `Ok(None)` for an empty string; a date with no time is an error.
