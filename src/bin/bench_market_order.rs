@@ -33,7 +33,7 @@ fn main() {
     println!();
 
     // Connect
-    println!("Connecting to IB...");
+    println!("Connecting...");
     let session = BenchSession::connect(&config);
     println!(
         "Connected in {:.3}s (account: {})",
@@ -49,7 +49,12 @@ fn main() {
     let mut buy_stats = LatencyStats::new(iterations as usize);
     let mut sell_stats = LatencyStats::new(iterations as usize);
     let mut rtt_stats = LatencyStats::new(iterations as usize);
-    let mut order_id = 1i64;
+    let first_order_id = session.first_order_id();
+    let mut order_id = first_order_id;
+    println!("  First order id: {}", first_order_id);
+    // Orders placed and not filled, and the shares bought and not sold back.
+    let mut working: Vec<i64> = Vec::new();
+    let mut held = 0i64;
 
     for i in 0..iterations {
         // BUY
@@ -60,8 +65,10 @@ fn main() {
             side: Side::Buy,
             qty: 1,
         });
+        session.keep_order_id(order_id);
 
         let buy_ns = wait_for_fill(&session.event_rx, order_id, buy_time, &start, "BUY");
+        if buy_ns.is_some() { held += 1 } else { working.push(order_id) }
         order_id += 1;
 
         if buy_ns.is_none() {
@@ -77,8 +84,10 @@ fn main() {
             side: Side::Sell,
             qty: 1,
         });
+        session.keep_order_id(order_id);
 
         let sell_ns = wait_for_fill(&session.event_rx, order_id, sell_time, &start, "SELL");
+        if sell_ns.is_some() { held -= 1 } else { working.push(order_id) }
         order_id += 1;
 
         if sell_ns.is_none() {
@@ -113,8 +122,19 @@ fn main() {
     sell_stats.report("SELL → FILL");
     println!();
     rtt_stats.report("BUY+SELL ROUND-TRIP");
+    println!();
+
+    // The orders not filled are cancelled; a share bought and not sold back
+    // is left as a position and reported.
+    let left = session.cancel_all(&working, Duration::from_secs(10));
+    println!("  Order ids:           {} to {}", first_order_id, order_id - 1);
+    println!("  Orders left working: {} {:?}", left.len(), left);
+    println!("  Position left:       {} share(s)", held);
 
     session.shutdown();
+    if !left.is_empty() || held != 0 {
+        std::process::exit(1);
+    }
 }
 
 fn wait_for_fill(
