@@ -161,6 +161,10 @@ pub fn canonical(cb: &Value) -> Option<String> {
         "marketDataType" => format!("marketDataType|{}|{}", i(1), i(2)),
         "tickReqParams" => format!("tickReqParams|{}|{}|{}|{}", i(1), n(num(&a[2])), s(3), i(4)),
         "tickSnapshotEnd" => format!("tickSnapshotEnd|{}", i(1)),
+        // The recordings are of the reference 10.40; 10.51, which ibx
+        // copies, adds the order id to 103 (ibx#625): read in that form
+        // until they are made again on 10.51 (ibx#604).
+        "error" if i(3) == 103 && s(4) == "Duplicate order id" => format!("error|{}|103|Duplicate order id: {}", i(1), i(1)),
         "error" => format!("error|{}|{}|{}", i(1), i(3), s(4)),
         "orderStatus" => format!(
             "orderStatus|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
