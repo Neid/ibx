@@ -1396,12 +1396,13 @@ fn reconnect_ccp_attempt(auth: &ReconnectAuth, token_hash: &str, host: &str, dep
         auth.username.clone()
     };
     let connect_req = format!(
-        "{};{};{};{};{};27;{};{};{};{};",
+        "{};{};{};{};{};{};{};{};{};{};",
         NS_VERSION_MIN,
         ns::NS_CONNECT_REQUEST,
         display_name,
         flags,
         NS_VERSION,
+        crate::config::LAUNCHER_VERSION,
         auth.hw_info,
         auth.server_session_id,
         auth.encoded,
@@ -1707,7 +1708,7 @@ impl Gateway {
         // the whole string for full control.
         let encoded = std::env::var("IBX_ENCODED").unwrap_or_else(|_| {
             match std::env::var("IBX_LOCALE") {
-                Ok(loc) if !loc.is_empty() => format!("17.0.10.0.101/W/{}/G", loc),
+                Ok(loc) if !loc.is_empty() => format!("{}/W/{}/G", crate::config::IB_JAVA, loc),
                 _ => IB_ENCODED.to_string(),
             }
         });
@@ -1742,12 +1743,13 @@ impl Gateway {
         };
         let session_id = session::get_session_id();
         let connect_req = format!(
-            "{};{};{};{};{};27;{};{};{};",
+            "{};{};{};{};{};{};{};{};{};",
             NS_VERSION_MIN,
             ns::NS_CONNECT_REQUEST,
             display_name,
             flags,
             NS_VERSION,
+            crate::config::LAUNCHER_VERSION,
             hw_info,
             session_id,
             encoded
@@ -3277,14 +3279,19 @@ mod tests {
     fn first_logon_values_reach_the_api() {
         let shared = SharedState::new();
         let logon = LogonValues { clock_offset_ms: Some(60_000), features: Some("APIELOG".into()), ..Default::default() };
-        apply_first_logon(&logon, Some("10411"), Some("20261201"), 199, &shared);
+        apply_first_logon(&logon, Some("10601"), Some("20271201"), 199, &shared);
         assert_eq!(shared.reference.clock().offset_ms(), 60_000);
         assert!(!shared.reference.matching_symbols_allowed());
         assert_eq!(shared.reference.backfill_years_limit(), Some(199));
         let notices = shared.drain_connection_notices();
         assert_eq!(notices.len(), 1);
         assert_eq!(notices[0].0, 2172);
-        assert!(notices[0].1.contains("1040.1") && notices[0].1.contains("20261201") && notices[0].1.contains("1041.1"), "{}", notices[0].1);
+        assert!(notices[0].1.contains("1051.1") && notices[0].1.contains("20271201") && notices[0].1.contains("1060.1"), "{}", notices[0].1);
+        // The cutoff the servers give a 10.40 login (10501, 15/12/2026)
+        // does not apply to the version ibx logs in as (ibx#601).
+        let shared = SharedState::new();
+        apply_first_logon(&LogonValues::default(), Some("10501"), Some("20261215"), 199, &shared);
+        assert!(shared.drain_connection_notices().iter().all(|n| n.0 != 2172));
 
         let shared = SharedState::new();
         let logon = LogonValues { features: Some("SECDEFTA,NIGHTLY".into()), ..Default::default() };
@@ -3487,7 +3494,7 @@ mod tests {
             let (mut s, _) = listener.accept().unwrap();
             let mut request = [0u8; 19];
             s.read_exact(&mut request).unwrap();
-            let answer = "MISC38;529;acct_mgt=https://a.example/sso|demo=email|ssl=1|additionalDemoUsers=demo_tws=prio:1/name:X|zid=0a1f.17;";
+            let answer = "MISC51;529;acct_mgt=https://a.example/sso|demo=email|ssl=1|additionalDemoUsers=demo_tws=prio:1/name:X|zid=0a1f.17;";
             let mut frame = b"#%#%".to_vec();
             frame.extend_from_slice(&(answer.len() as u32).to_be_bytes());
             frame.extend_from_slice(answer.as_bytes());
@@ -3495,7 +3502,7 @@ mod tests {
             request
         });
         let urls = request_misc_urls("127.0.0.1", port).unwrap();
-        assert_eq!(&server.join().unwrap(), b"#%#%\0\0\0\x0bMISC38;528;");
+        assert_eq!(&server.join().unwrap(), b"#%#%\0\0\0\x0bMISC51;528;");
         let keys: Vec<&str> = urls.iter().map(|(k, _)| k.as_str()).collect();
         assert_eq!(keys, ["acct_mgt", "demo", "ssl", "additionalDemoUsers", "zid"]);
         assert_eq!(urls[3].1, "demo_tws=prio:1/name:X");

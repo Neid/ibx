@@ -110,13 +110,13 @@ pub fn message_sets_clock(msg_type: &str, comm: Option<&str>, has_account: bool)
 }
 
 /// The version the client logs on with, build then sub-version
-/// (`10401c`), as the reference's `JtsVersion.a()`.
+/// (`10511b`), as the reference's `JtsVersion.a()`.
 pub fn own_version() -> String {
     format!("{}{}", crate::config::IB_BUILD, crate::config::IB_VERSION)
 }
 
 /// The version the reference names in its warning: major, a dot, minor
-/// (`1040.1`, `JtsVersion.BUILDANDREV`).
+/// (`1051.1`, `JtsVersion.BUILDANDREV`).
 fn own_version_label() -> String {
     let build = crate::config::IB_BUILD;
     format!("{}.{}", &build[..4], &build[4..])
@@ -406,13 +406,15 @@ mod tests {
 
     #[test]
     fn version_cutoff_warning_text() {
-        assert_eq!(own_version(), "10401c");
+        // The version of the reference 10.51 (ibx#601).
+        assert_eq!(own_version(), "10511b");
         assert_eq!(
-            version_cutoff_warning(Some("10411"), Some("20261201")).unwrap(),
-            "The version of the application you are running, 1040.1, needs to be upgraded, as it will be \
-             desupported on 20261201. The minimum supported version at that time will be 1041.1. "
+            version_cutoff_warning(Some("10601"), Some("20271201")).unwrap(),
+            "The version of the application you are running, 1051.1, needs to be upgraded, as it will be desupported on 20271201. The minimum supported version at that time will be 1060.1. "
         );
-        assert_eq!(version_cutoff_warning(Some("10401c"), Some("20261201")), None);
+        assert_eq!(version_cutoff_warning(Some("10511b"), Some("20261201")), None);
+        // The cutoff announced to 10.40 sessions (10501 from 15/12/2026) does not apply.
+        assert_eq!(version_cutoff_warning(Some("10501"), Some("20261215")), None);
         assert_eq!(version_cutoff_warning(None, None), None);
     }
 

@@ -6798,10 +6798,10 @@ fn req_historical_data_years_above_the_logon_limit() {
 #[test]
 fn version_cutoff_warning_reaches_the_client() {
     let (client, _rx, shared) = test_client();
-    crate::gateway::apply_first_logon(&Default::default(), Some("10411"), Some("20261201"), 199, &shared);
+    crate::gateway::apply_first_logon(&Default::default(), Some("10601"), Some("20271201"), 199, &shared);
     let mut w = RecordingWrapper::default();
     client.process_msgs(&mut w);
-    assert!(w.events.iter().any(|e| e.starts_with("error:-1:2172:The version of the application you are running, 1040.1,")), "{:?}", w.events);
+    assert!(w.events.iter().any(|e| e.starts_with("error:-1:2172:The version of the application you are running, 1051.1,")), "{:?}", w.events);
 }
 
 // ═══════════════════════════════════════════════════════════════════

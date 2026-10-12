@@ -1,7 +1,12 @@
-/// Client version identifiers.
-pub const IB_BUILD: &str = "10401";
-pub const IB_VERSION: &str = "c";
-pub const IB_ENCODED: &str = "17.0.10.0.101/W/en_US/G";
+/// Client version identifiers: those the reference 10.51 logs in with
+/// (build 1051.1b; its login of 12/10/2026, ibx#601).
+pub const IB_BUILD: &str = "10511";
+pub const IB_VERSION: &str = "b";
+/// The Java runtime the reference 10.51 runs on, as its login gives it.
+pub const IB_JAVA: &str = "25.0.2.0.101";
+pub const IB_ENCODED: &str = "25.0.2.0.101/W/en_US/G";
+/// The launcher version of the connect request.
+pub const LAUNCHER_VERSION: u32 = 28;
 
 /// Auth server endpoints.
 pub const CCP_HOSTS: &[&str] = &[
@@ -83,9 +88,10 @@ pub const FARM_LOGON_POLL_MS: u64 = 250;
 pub const TIMEOUT_SSL_AUTH: u64 = 20;
 pub const TIMEOUT_FARM_CONNECT: u64 = 8;
 
-/// Protocol version.
-pub const NS_VERSION: u32 = 50;
-pub const NS_VERSION_MIN: u32 = 38;
+/// Protocol versions of the reference 10.51 (the range `51..52` of its
+/// farm logins, 12/10/2026, ibx#601; 10.40 gave `38..50`).
+pub const NS_VERSION: u32 = 52;
+pub const NS_VERSION_MIN: u32 = 51;
 
 /// Stack-allocated FIX timestamp ("YYYYMMDD-HH:MM:SS"). Zero heap allocation.
 pub struct TimestampBuf {
