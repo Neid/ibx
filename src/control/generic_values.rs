@@ -61,14 +61,17 @@ pub const IPO_PRICES: i32 = 586;
 pub const SHORT_TERM_VOLUME: i32 = 595;
 /// Creditman Slow Mark Price (`generictick.z`): tick 79.
 pub const SLOW_MARK_PRICE: i32 = 619;
+/// Index Future Premium (`generictick.U`, ibx#495): one double, tick 31,
+/// for an index only (the reference 10.51 on SPX, paper 12/10/2026).
+pub const INDEX_FUTURE_PREMIUM: i32 = 162;
 
 /// The ticks ibx subscribes: the others of a valid list are accepted and
 /// not sent (their decoders are not read yet).
-const SENT: [i32; 23] = [
+const SENT: [i32; 24] = [
     OPTION_VOLUME, OPTION_OPEN_INTEREST, AVERAGE_OPTION_VOLUME, IMPLIED_VOLATILITY, MISC_STATS, AUCTION,
     RT_VOLUME, SHORTABLE, TRADE_COUNT, TRADE_RATE, VOLUME_RATE, LAST_RTH_TRADE, RT_TRADE_VOLUME,
     RT_HISTORICAL_VOLATILITY, DIVIDENDS, HISTORICAL_VOLATILITY, FUTURES_OPEN_INTEREST, 104,
-    PL_PRICE, FUNDAMENTALS, IPO_PRICES, SHORT_TERM_VOLUME, SLOW_MARK_PRICE,
+    PL_PRICE, FUNDAMENTALS, IPO_PRICES, SHORT_TERM_VOLUME, SLOW_MARK_PRICE, INDEX_FUTURE_PREMIUM,
 ];
 
 /// The ticks whose block has a 16-bit length (`jmdclient.br.ax`).
@@ -102,7 +105,7 @@ pub fn sent(code: i32) -> bool {
 /// the others wait for the top of book's acknowledgement.
 pub fn at_once(code: i32) -> bool {
     matches!(code, OPTION_OPEN_INTEREST | IMPLIED_VOLATILITY | RT_VOLUME | RT_TRADE_VOLUME | DIVIDENDS | FUTURES_OPEN_INTEREST
-        | PL_PRICE | FUNDAMENTALS | SLOW_MARK_PRICE)
+        | PL_PRICE | FUNDAMENTALS | SLOW_MARK_PRICE | INDEX_FUTURE_PREMIUM)
 }
 
 fn one_of(sec_type: &str, set: &[&str]) -> bool {
@@ -140,6 +143,7 @@ pub fn valid_for(code: i32, sec_type: &str) -> bool {
         PL_PRICE | SLOW_MARK_PRICE | SHORT_TERM_VOLUME => true,
         FUNDAMENTALS => !one_of(sec_type, &["CFD", "FOP", "FUT", "IOPT", "OPT", "SLB", "WAR"]),
         IPO_PRICES => one_of(sec_type, &["STK"]),
+        INDEX_FUTURE_PREMIUM => one_of(sec_type, &["IND"]),
         _ => false,
     }
 }
@@ -209,7 +213,7 @@ enum Field {
     ImpliedVol, HistVol, AvgVolume, Week13Hi, Week13Lo, Week26Hi, Week26Lo, Week52Hi, Week52Lo,
     AuctionVolume, AuctionImbalance, AuctionPrice, RegulatoryImbalance, Shortable, ShortableShares,
     TradeCount, TradeRate, VolumeRate, LastRthTrade, FuturesOpenInterest,
-    PlPrice, SlowMarkPrice, Volume3Min, Volume5Min, Volume10Min,
+    PlPrice, SlowMarkPrice, Volume3Min, Volume5Min, Volume10Min, IndexPremium,
 }
 
 /// The unset value of an int field (the reference's `Integer.MAX_VALUE`).
@@ -333,6 +337,13 @@ pub fn decode(code: i32, payload: &[u8], rec: &mut GenericRecord, ctx: DecodeCtx
             }
         }
         // `generictick.a7`: the daily historical volatility; tick 23.
+        // `generictick.U`: the index future premium, tick 31, as it changes.
+        INDEX_FUTURE_PREMIUM => {
+            let Some(d) = r.double() else { return out };
+            if rec.set_double(Field::IndexPremium, d) && d.is_finite() && d != f64::MAX {
+                out.push(GenTick::Generic(31, d));
+            }
+        }
         HISTORICAL_VOLATILITY => {
             let Some(d) = r.double() else { return out };
             if rec.set_double(Field::HistVol, d) && d != f64::MAX {
@@ -770,6 +781,19 @@ mod tests {
         assert_eq!(decode(SHORT_TERM_VOLUME, &volumes, &mut rec, CTX),
             vec![GenTick::Size(63, 1400.0), GenTick::Size(64, 3040.0), GenTick::Size(65, 7720.0)]);
         assert!(decode(SHORT_TERM_VOLUME, &volumes, &mut rec, CTX).is_empty());
+    }
+
+    // ibx#495: the index future premium is one double, tick 31 as it
+    // changes, for an index only (the reference 10.51 on SPX, 12/10/2026:
+    // tickGeneric 31 0.0004214518350973517).
+    #[test]
+    fn index_future_premium() {
+        let mut rec = GenericRecord::default();
+        let d = 0.0004214518350973517_f64;
+        assert_eq!(decode(INDEX_FUTURE_PREMIUM, &d.to_be_bytes(), &mut rec, CTX), vec![GenTick::Generic(31, d)]);
+        assert!(decode(INDEX_FUTURE_PREMIUM, &d.to_be_bytes(), &mut rec, CTX).is_empty(), "no change");
+        assert!(sent(INDEX_FUTURE_PREMIUM) && at_once(INDEX_FUTURE_PREMIUM));
+        assert!(valid_for(INDEX_FUTURE_PREMIUM, "IND") && !valid_for(INDEX_FUTURE_PREMIUM, "STK"));
     }
 
     // The ratios in the order of the reference's map; the contract id and

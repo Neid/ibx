@@ -6886,9 +6886,12 @@ fn two_requests_on_one_contract_share_the_subscription() {
     let mut w = RecordingWrapper::default();
     client.process_msgs(&mut w);
     let math = "The New Math of AI: Are Those Trillion-Dollar Numbers for Real? -- Barrons.com";
+    // The reference 10.51 gives a joining request its parameters before
+    // its market data type (paper 12/10/2026, ibx#495; 10.40 gave them the
+    // other way).
     assert_eq!(w.events, [
-        "market_data_type:9581:1".to_string(),
         "tick_req_params:9581:0.01:9c0001:3".to_string(),
+        "market_data_type:9581:1".to_string(),
         "tick_news:9581:1790893800000:DJ-RTPRO:DJ-RTPRO$1f790db1:VP Newstead Sells 2,399 Of Apple Inc >AAPL:A:800015:L:en".to_string(),
         format!("tick_news:9581:1790920800000:DJ-N:DJ-N$1f798bd2:{math}:L:en:A:800015"),
         format!("tick_news:9581:1790920800000:DJ-RTG:DJ-RTG$1f798bd2:{math}:L:en:A:800015"),
@@ -6915,7 +6918,8 @@ fn two_requests_on_one_contract_share_the_subscription() {
 }
 
 // ibx#444: a request that joins a quote with data gets all of it at its
-// first poll; both requests then get each change.
+// first poll, and the running one gets it again (ibx#495); both requests
+// then get each change.
 #[test]
 fn a_joining_stream_gets_the_quote_at_once() {
     let (client, rx, shared) = test_client();
@@ -6933,7 +6937,11 @@ fn a_joining_stream_gets_the_quote_at_once() {
     let mut w = RecordingWrapper::default();
     client.process_msgs(&mut w);
     assert!(w.events.iter().any(|e| e == "tick_price:2:1:100") && w.events.iter().any(|e| e == "tick_price:2:2:101"), "{:?}", w.events);
-    assert!(!w.events.iter().any(|e| e.contains(":1:1:100")), "nothing new for the first: {:?}", w.events);
+    // The first gets the quote again, before the one that joins (the
+    // reference 10.51, paper 12/10/2026, ibx#495).
+    let first = w.events.iter().position(|e| e == "tick_price:1:1:100");
+    let second = w.events.iter().position(|e| e == "tick_price:2:1:100");
+    assert!(first.is_some() && first < second, "{:?}", w.events);
 
     quote.bid = 99 * s;
     shared.market.push_test_message(5, &quote, &Default::default());
@@ -6964,7 +6972,8 @@ fn a_symbol_only_request_joins_the_contract_it_finds() {
     shared.market.push_md_merge(6, 5);
     let mut w = RecordingWrapper::default();
     client.process_msgs(&mut w);
-    assert_eq!(w.events, ["market_data_type:9581:1", "tick_req_params:9581:0.01:9c0001:3"]);
+    // Parameters before the type for a joining request on 10.51 (ibx#495).
+    assert_eq!(w.events, ["tick_req_params:9581:0.01:9c0001:3", "market_data_type:9581:1"]);
     assert_eq!(client.core.instrument_to_req.lock().unwrap().get(&5), Some(&vec![9580, 9581]));
     assert!(!client.core.instrument_to_req.lock().unwrap().contains_key(&6));
     client.cancel_mkt_data(9581).unwrap();

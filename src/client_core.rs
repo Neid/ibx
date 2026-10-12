@@ -1238,6 +1238,10 @@ pub struct ClientCore {
     /// The generic ticks of each market data request (ibx#450): a request
     /// gets the API ticks of those only.
     pub md_generic: Mutex<HashMap<i64, MdGeneric>>,
+    /// The last generic tick values of each instrument, by API tick type,
+    /// with the request code that gives them: a request that joins, and
+    /// the requests it joins, get them again (ibx#495).
+    pub(crate) md_generic_last: Mutex<HashMap<InstrumentId, std::collections::BTreeMap<i32, (i32, crate::control::generic_values::GenTick)>>>,
     /// Streaming requests that got 101 and wait for a line, oldest first
     /// (ibx#444).
     pub md_waiting: Mutex<Vec<MdWaiting>>,
@@ -1790,6 +1794,7 @@ impl ClientCore {
             md_news: Mutex::new(HashMap::new()),
             md_top_off: Mutex::new(HashSet::new()),
             md_generic: Mutex::new(HashMap::new()),
+            md_generic_last: Mutex::new(HashMap::new()),
             md_waiting: Mutex::new(Vec::new()),
             md_delayed_known: Mutex::new(HashSet::new()),
             md_frozen: Mutex::new(HashMap::new()),
@@ -2781,13 +2786,16 @@ impl ClientCore {
                 notices.push(MdNotice::MarketDataType { req_id, market_data_type: 3 });
             }
             let params = self.instrument_params.lock().unwrap().get(&instrument).cloned();
+            // A joining request gets its request parameters before its
+            // market data type (the reference 10.51, paper 12/10/2026, two
+            // joins; a first request gets them the other way, ibx#495).
             if let Some((min_tick, bbo_exchange, permissions)) = params
                 && self.tick_req_params_sent.lock().unwrap().insert(req_id)
             {
+                notices.push(MdNotice::TickReqParams { req_id, min_tick, bbo_exchange, permissions });
                 if let Some(market_data_type) = self.check_mdt_needed(req_id, true) {
                     notices.push(MdNotice::MarketDataType { req_id, market_data_type });
                 }
-                notices.push(MdNotice::TickReqParams { req_id, min_tick, bbo_exchange, permissions });
             }
             let news = self.md_news.lock().unwrap();
             let Some(key) = news.get(&req_id) else { continue };

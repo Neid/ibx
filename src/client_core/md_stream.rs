@@ -418,6 +418,8 @@ impl ClientCore {
         let queue = &shared.market.md_events;
         let head = at.unwrap_or_else(|| queue.head());
         if !joining {
+            // A new subscription starts with no generic value known (ibx#495).
+            self.md_generic_last.lock().unwrap().remove(&instrument);
             let mut reader = self.md_reader.lock().unwrap();
             let MdReader { mirrors, resets, .. } = &mut *reader;
             if let Some(m) = mirrors.get_mut(instrument as usize) {
@@ -534,7 +536,7 @@ impl ClientCore {
             // Requests that joined before this step: all of the quote first.
             if m.valid && self.md_joins_waiting.load(Ordering::Relaxed) > 0 {
                 for &req_id in reqs {
-                    d.join_if_due(req_id, instrument, m, seq);
+                    d.join_if_due(req_id, instrument, m, seq, reqs);
                 }
             }
             m.apply(&ev);
@@ -602,7 +604,7 @@ impl ClientCore {
             for (&instrument, reqs) in observers.iter() {
                 let Some(m) = mirrors.get(instrument as usize).filter(|m| m.valid && m.reset_at.is_none()) else { continue };
                 for &req_id in reqs {
-                    d.join_if_due(req_id, instrument, m, head);
+                    d.join_if_due(req_id, instrument, m, head, reqs);
                 }
             }
         }
@@ -674,6 +676,17 @@ impl Drain<'_> {
             codes.contains(&g.code)
                 || (matches!(g.code, RT_VOLUME | RT_TRADE_VOLUME) && codes.iter().any(|c| matches!(*c, RT_VOLUME | RT_TRADE_VOLUME)))
         };
+        // Kept for the requests that join (ibx#495).
+        {
+            let mut last = self.core.md_generic_last.lock().unwrap();
+            let kept = last.entry(g.instrument).or_default();
+            for t in &g.ticks {
+                let tick_type = match t {
+                    GenTick::Price(t, _) | GenTick::Size(t, _) | GenTick::Generic(t, _) | GenTick::Text(t, _) => *t,
+                };
+                kept.insert(tick_type, (g.code, t.clone()));
+            }
+        }
         let wanted: Vec<i64> = {
             let generic = self.core.md_generic.lock().unwrap();
             let live = reqs.iter().rev().copied()
@@ -697,13 +710,62 @@ impl Drain<'_> {
         }
     }
 
-    /// The join step of a request whose place in the queue is reached.
-    fn join_if_due(&mut self, req_id: i64, instrument: InstrumentId, m: &Mirror, seq: u64) {
+    /// The join step of a request whose place in the queue is reached:
+    /// the requests of the instrument already streaming get all of the
+    /// quote again, then the one that joins, each with the generic values
+    /// it asked that are known, as the reference gives a record's picture
+    /// to every subscriber when one joins (the reference 10.51, paper
+    /// 12/10/2026: two joins, the running request first in one, last in
+    /// the other; ibx#495).
+    fn join_if_due(&mut self, req_id: i64, instrument: InstrumentId, m: &Mirror, seq: u64, reqs: &[i64]) {
         let st = self.streams.entry(req_id).or_default();
-        if st.waiting_join && seq >= st.start {
-            st.waiting_join = false;
-            self.core.md_joins_waiting.fetch_sub(1, Ordering::AcqRel);
-            Self::pass(self.core, self.shared, self.out, self.snaps, req_id, st, instrument, m, Pass::Join, seq);
+        if !(st.waiting_join && seq >= st.start) {
+            return;
+        }
+        st.waiting_join = false;
+        self.core.md_joins_waiting.fetch_sub(1, Ordering::AcqRel);
+        let running: Vec<i64> = reqs.iter().copied().filter(|&r| r != req_id && !self.snaps.contains_key(&r))
+            .filter(|r| self.streams.get(r).is_some_and(|s| !s.waiting_join && !s.ended && s.mdt_done && s.start <= seq))
+            .collect();
+        for r in running.into_iter().chain(std::iter::once(req_id)) {
+            let Some(st) = self.streams.get_mut(&r) else { continue };
+            if r != req_id {
+                // Sent again from nothing, as the request that joins.
+                st.fields = [0; field::COUNT];
+                st.sizes_sent = 0;
+                st.halted_bits = 0;
+                st.halted_pending = false;
+            }
+            let mark = self.out.len();
+            Self::pass(self.core, self.shared, self.out, self.snaps, r, st, instrument, m, Pass::Join, seq);
+            if self.out.len() > mark {
+                self.known_generic(r, instrument);
+            }
+        }
+    }
+
+    /// The known generic values of `instrument` that request `req_id`
+    /// asked, by tick type (ibx#495).
+    fn known_generic(&mut self, req_id: i64, instrument: InstrumentId) {
+        use crate::control::generic_values::{GenTick, RT_TRADE_VOLUME, RT_VOLUME};
+        let codes = self.core.md_generic.lock().unwrap().get(&req_id).map(|g| g.codes.clone()).unwrap_or_default();
+        if codes.is_empty() {
+            return;
+        }
+        let last = self.core.md_generic_last.lock().unwrap();
+        let Some(kept) = last.get(&instrument) else { return };
+        for (code, t) in kept.values() {
+            // The real-time volume is a trade, not a value to restate.
+            if matches!(*code, RT_VOLUME | RT_TRADE_VOLUME) || !codes.contains(code) {
+                continue;
+            }
+            let tick = match t.clone() {
+                GenTick::Price(tick_type, value) => MdTick::Price { tick_type, value, can_auto_execute: false },
+                GenTick::Size(tick_type, value) => MdTick::Size { tick_type, value },
+                GenTick::Generic(tick_type, value) => MdTick::Generic { tick_type, value },
+                GenTick::Text(tick_type, value) => MdTick::Text { tick_type, value },
+            };
+            self.out.push(MdOut::Tick(req_id, tick));
         }
     }
 
@@ -822,6 +884,37 @@ mod tests {
         assert!(poll(&core, &shared).is_empty());
     }
 
+    // ibx#495 (the reference 10.51, paper 12/10/2026, MSFT with generic
+    // ticks 293 to 295): when a request joins a streaming contract, the
+    // running request gets all of the quote again, then the one that joins,
+    // each with the generic values it asked that are known.
+    #[test]
+    fn a_join_gives_the_picture_to_every_request_with_the_generic_values() {
+        let (core, shared) = (ClientCore::new(), SharedState::new());
+        let asked = || MdGeneric { codes: vec![293, 294], exchange: "SMART".into(), sec_type: "STK".into() };
+        core.md_generic.lock().unwrap().insert(1, asked());
+        stream(&core, &shared, 1, 5);
+        book(&shared, 5, 100);
+        shared.market.push_generic_ticks(crate::bridge::GenericTicks {
+            at: shared.market.md_events.position(), instrument: 5, code: 293,
+            ticks: vec![crate::control::generic_values::GenTick::Generic(54, 78096.0)],
+        });
+        assert_eq!(poll(&core, &shared).last().map(String::as_str), Some("generic:1:54:78096"));
+
+        core.md_generic.lock().unwrap().insert(2, asked());
+        stream(&core, &shared, 2, 5);
+        book(&shared, 5, 99);
+        let lines = poll(&core, &shared);
+        let picture = |r: i64| vec![
+            format!("price:{r}:1:100"), format!("size:{r}:0:1"), format!("price:{r}:2:101"), format!("size:{r}:3:1"),
+            format!("size:{r}:0:1"), format!("size:{r}:3:1"), format!("generic:{r}:54:78096"),
+        ];
+        let mut want: Vec<String> = picture(1);
+        want.push("mdt:2:1".into());
+        want.extend(picture(2));
+        assert_eq!(lines[..want.len()], want[..], "{lines:?}");
+    }
+
     // ibx#446: a slot the engine gives to another contract: the new
     // request gets only the new contract's steps, from an empty record;
     // the earlier contract's steps go to its cancelled request.
@@ -882,8 +975,11 @@ mod tests {
         book(&shared, 5, 99);
         let (notices, _) = core.take_md_rejects(&shared);
         assert!(notices.is_empty(), "{notices:?}");
+        // The running request gets the quote again when the other joins
+        // (the reference 10.51, paper 12/10/2026, ibx#495).
         assert_eq!(poll(&core, &shared), [
             "mdt:1:1", "price:1:1:100", "size:1:0:1", "price:1:2:101", "size:1:3:1", "size:1:0:1", "size:1:3:1",
+            "price:1:1:100", "size:1:0:1", "price:1:2:101", "size:1:3:1", "size:1:0:1", "size:1:3:1",
             "mdt:2:1", "price:2:1:100", "size:2:0:1", "price:2:2:101", "size:2:3:1", "size:2:0:1", "size:2:3:1",
             "price:2:1:99", "size:2:0:1", "price:1:1:99", "size:1:0:1",
         ]);

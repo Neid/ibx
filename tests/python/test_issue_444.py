@@ -54,7 +54,8 @@ def test_two_requests_share_one_contract():
 
     c.req_mkt_data(2, stock(), "", False, False)
     c._test_dispatch_once()
-    assert w.events[:2] == [("mdt", 2, 1), ("params", 2, 0.01, "9c0001", 3)]
+    # A joining request: its parameters before its type on 10.51 (ibx#495).
+    assert w.events[:2] == [("params", 2, 0.01, "9c0001", 3), ("mdt", 2, 1)]
     assert ("price", 2, 1, 100.0) in w.events
     assert not any(e[0] == "error" for e in w.events)
     w.events.clear()
