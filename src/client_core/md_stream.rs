@@ -356,8 +356,10 @@ fn stream_pass(st: &mut StreamState, m: &Mirror, pass: Pass, out: &mut Out) {
 /// set (all of them when the request joins or catches up), in the sender's
 /// order; the halted state from a trade step, from the first status known,
 /// as the reference's snapshot record marks it. A snapshot's bid or ask
-/// executes automatically only when the farm said so. The delayed sender
-/// sends no exchanges and no halted state.
+/// executes automatically only when the farm said so. No bid or ask
+/// exchange text: the reference sent none in 12 stock snapshots with the
+/// letters on the quote (10.51, paper, 12/10/2026, regular hours; ibx#503).
+/// The delayed sender sends no halted state either.
 fn snapshot_pass(snap: &mut PlainSnapshot, m: &Mirror, pass: Pass, out: &mut Out) {
     let (set, trade) = match pass {
         Pass::Join | Pass::Step(MdStep::CatchUp, _) => (field::ALL, true),
@@ -394,13 +396,6 @@ fn snapshot_pass(snap: &mut PlainSnapshot, m: &Mirror, pass: Pass, out: &mut Out
     for (idx, tt) in [(field::CLOSE, TICK_CLOSE), (field::OPEN, TICK_OPEN)] {
         if has(idx) && snap.take(out.api(tt)) {
             out.price(tt, idx, false);
-        }
-    }
-    if !delayed {
-        for (idx, tt) in [(field::BID_EXCH, TICK_BID_EXCHANGE), (field::ASK_EXCH, TICK_ASK_EXCHANGE)] {
-            if has(idx) && snap.take(tt) {
-                out.exchanges(idx);
-            }
         }
     }
     if has(field::TIME) && snap.take(out.api(TICK_LAST_TIMESTAMP)) {

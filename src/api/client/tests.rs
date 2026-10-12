@@ -6010,7 +6010,7 @@ fn plain_snapshot_sends_each_tick_type_once_then_the_end() {
     let mut w = SnapRec::default();
     client.process_msgs(&mut w);
     assert_eq!(w.events, vec![
-        "mdt:1:1", "price:1:1:100", "size:1:0:2", "price:1:2:101", "size:1:3:3", "string:1:32:N",
+        "mdt:1:1", "price:1:1:100", "size:1:0:2", "price:1:2:101", "size:1:3:3",
     ]);
     // The bid moves and the rest comes: the bid is not sent again; the end
     // comes with the daily figures, before the book update.
