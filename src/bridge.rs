@@ -974,6 +974,11 @@ pub enum OrderReport {
 }
 
 /// Fills, order status updates, cancel rejects, what-if responses, and order cache.
+/// Bits of `OrderState::dropped_flags` (ibx#607).
+pub const DROPPED_ALLOW_PRE_OPEN: u8 = 1;
+pub const DROPPED_IGNORE_OPEN_AUCTION: u8 = 2;
+pub const DROPPED_DEACTIVATE: u8 = 4;
+
 pub struct OrderState {
     /// Fills with what the report says about each execution.
     fills: Mutex<Vec<(Fill, FillExec)>>,
@@ -995,6 +1000,9 @@ pub struct OrderState {
     /// Notices of a server report given after the status of that report:
     /// the reject 201 and the cancel 202 (ibx#486).
     order_notices: Mutex<Vec<(u64, (i64, i64, String))>>,
+    /// The flags the engine dropped from an order before sending it, as
+    /// `DROPPED_*` bits: the order's openOrder shows them off (ibx#607).
+    dropped_flags: Mutex<HashMap<i64, u8>>,
     error_tap: ErrorTap,
     what_if_responses: Mutex<Vec<WhatIfResponse>>,
     completed_orders: Mutex<Vec<CompletedOrder>>,
@@ -1037,6 +1045,7 @@ impl OrderState {
             cancel_rejects: Mutex::new(Vec::with_capacity(16)),
             order_errors: Mutex::new(Vec::new()),
             order_notices: Mutex::new(Vec::new()),
+            dropped_flags: Mutex::new(HashMap::new()),
             error_tap: ErrorTap::default(),
             what_if_responses: Mutex::new(Vec::with_capacity(8)),
             completed_orders: Mutex::new(Vec::with_capacity(64)),
@@ -1188,6 +1197,17 @@ impl OrderState {
 
     pub fn drain_cancel_rejects(&self) -> Vec<CancelReject> {
         self.cancel_rejects.lock().unwrap().drain(..).collect()
+    }
+
+    /// Note flags dropped from an order before sending (`DROPPED_*` bits,
+    /// ibx#607).
+    #[doc(hidden)] pub fn note_dropped_flags(&self, order_id: i64, bits: u8) {
+        *self.dropped_flags.lock().unwrap().entry(order_id).or_default() |= bits;
+    }
+
+    /// The flags dropped from an order before sending (`DROPPED_*` bits).
+    pub fn dropped_flags(&self, order_id: i64) -> u8 {
+        self.dropped_flags.lock().unwrap().get(&order_id).copied().unwrap_or(0)
     }
 
     /// Order errors raised before anything was sent: (order id, code, message).

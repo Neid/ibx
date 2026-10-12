@@ -372,7 +372,7 @@ impl EClient {
         // Order errors (refused before sending, warnings of a report) ->
         // error, ahead of the status.
         for (order_id, code, msg) in shared.orders.drain_order_errors() {
-            self.core.note_order_error(order_id, code);
+            self.core.note_order_error(order_id, code, &msg);
             call_wrapper!(self.wrapper, py, "error", (shared.orders.api_order_id(order_id), code, msg.as_str(), ""));
         }
 

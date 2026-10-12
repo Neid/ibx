@@ -73,6 +73,11 @@ fn send_orders(
             log::warn!("What-if of order {} dropped: only a single new order can be previewed", oid);
             continue;
         }
+        // A preview is never sent deactivated (ibx#607, code read on 10.51:
+        // the attribute applies to an order that is not a what-if).
+        if what_if && let Some(attrs) = crate::engine::outside_rth::flag_attrs(&mut order_req) {
+            attrs.deactivate = false;
+        }
         // The global cancel waits for nothing: it ends the orders that
         // wait and cancels the book (`global_cancel`).
         if matches!(order_req, OrderRequest::GlobalCancel) {
@@ -207,8 +212,14 @@ fn send_orders(
         }
         // Outside RTH: kept only where the reference keeps it, from the
         // contract definition of the order's exchange (ibx#465).
-        if !apply_outside_rth(&mut order_req, context, conn, hb, shared) {
-            context.rth_parked.push(rewrap(order_req));
+        // Allow pre-open and ignore opening auction with it (ibx#607).
+        match apply_outside_rth(&mut order_req, context, conn, hb, shared) {
+            Some(false) => { context.rth_parked.push(rewrap(order_req)); continue; }
+            Some(true) => continue,
+            None => {}
+        }
+        // Post-only with sweep-to-fill, or on pegged to market (ibx#607).
+        if post_only_refusal(&order_req, context, shared) {
             continue;
         }
         // The price management flag, where the reference writes it; the
@@ -243,6 +254,9 @@ fn send_orders(
                 shared.orders.push_order_error(*order_id, code, message.into());
                 continue;
             }
+            // A replace sends a deactivated order on: its openOrder shows
+            // deactivate off from then on (ibx#607, paper 12/10/2026).
+            shared.orders.note_dropped_flags(*order_id, crate::bridge::DROPPED_DEACTIVATE);
         }
         // The reference refuses a cancel it cannot apply and sends nothing
         // (ibx#464; captured 23/09/2026): 10147 for an order it does not
@@ -2248,6 +2262,10 @@ pub(crate) fn reference_rank(tag: u32) -> u16 {
         // the origin and the orderRef).
         6248 | 6851 | 6852 | 6860 | 6861 | 6862 | 6866 | 6867 | 6876 | 6877 | 6878 => 74,
         6433 => 75,
+        // Allow pre-open and ignore opening auction, where outside RTH
+        // would be (ibx#607; the reference writes the attributes in no
+        // fixed order: 6524 came after the origin in its frames).
+        6524 | 6562 => 75,
         6115 => 76,
         6370 => 77,
         6268 => 78,
@@ -2268,6 +2286,9 @@ pub(crate) fn reference_rank(tag: u32) -> u16 {
         6939 => 92,
         6580 => 93,
         6942 => 94,
+        // Post-only and deactivate, before the price management flag as
+        // in the reference's frames of 12/10/2026 (ibx#607).
+        6605 | 6521 => 94,
         // The price management flag, most often last of the attributes in
         // the reference's frames (captures of 28/09 and 01/10/2026).
         8339 => 95,
@@ -2615,10 +2636,17 @@ fn modify_fields(
     // Outside-RTH only when the order has it: a replace without it leaves
     // the order regular-hours only (ibx#247).
     if attrs.outside_rth { f.push((6433, "1".to_string())); }
+    // Allow pre-open and ignore opening auction, restated where they
+    // apply (ibx#607, paper 12/10/2026).
+    if attrs.allow_pre_open { f.push((6524, "1".to_string())); }
+    if attrs.ignore_open_auction { f.push((6562, "1".to_string())); }
     // The touched trigger of MIT and LIT, restated (ib-agent#199, ibx#263).
     if let Some(t) = touched_trigger { f.push((6117, t)); }
     if let Some(u) = trail_unit { f.push((6268, u.to_string())); }
     f.extend(bench_attrs);
+    // Post-only, restated; deactivate never is: the replace sends the
+    // order on (ibx#607, paper 12/10/2026).
+    if attrs.post_only { f.push((6605, "1".to_string())); }
     // The price management flag, last of the attributes (ibx#492).
     if price_mgmt && !crate::engine::price_mgmt::excluded_kind(&kind) { f.push((8339, "1".to_string())); }
     // The algo block, restated as on the new order (`jclient.pe.d` writes
@@ -2785,43 +2813,103 @@ fn all_or_none_refusal(
     }
 }
 
-/// Outside RTH on a request (ibx#465). A request of an order that already
-/// waits, or with outside-RTH whose contract definition is not known yet,
-/// waits (false): the definition is asked once. Otherwise outside-RTH is
-/// dropped where the reference drops it, with warning 2109 on a new order
-/// (none on a replace), and the request goes on (true).
+/// Outside RTH on a request (ibx#465), with allow pre-open and ignore
+/// opening auction (ibx#607). A request of an order that already waits,
+/// or with one of them whose contract definition is not known yet, waits
+/// (`Some(false)`): the definition is asked once. A new order with outside
+/// RTH and allow pre-open where both apply is refused with 437
+/// (`Some(true)`). Otherwise each is dropped where the reference drops it,
+/// with warning 2109 on a new order (none on a replace), and the request
+/// goes on (None).
 fn apply_outside_rth(
     req: &mut OrderRequest,
     context: &mut Context,
     conn: &mut Connection,
     hb: &mut HeartbeatState,
     shared: &Arc<SharedState>,
-) -> bool {
+) -> Option<bool> {
     use crate::engine::outside_rth as rth;
     let oid = req.order_id();
     // A cancel-all waits behind the waiting orders, so it reaches them.
     if !context.rth_parked.is_empty()
         && (matches!(req, OrderRequest::CancelAll { .. }) || context.rth_parked.iter().any(|r| r.order_id() == oid))
     {
-        return false;
+        return Some(false);
     }
     let is_new = !matches!(req, OrderRequest::Modify { .. });
-    let Some((instrument, kind, tif, _, outside_rth)) = rth::rth_parts(req) else { return true };
-    if !*outside_rth { return true; }
-    let Some(instrument) = instrument.or_else(|| context.order(oid).map(|o| o.instrument)) else { return true };
+    let Some((instrument, kind, tif, _, outside_rth)) = rth::rth_parts(req) else { return None };
+    let rth_on = *outside_rth;
+    // Allow pre-open and ignore opening auction follow the same rule
+    // (ibx#607).
+    let (pre_open, ignore_opening) = rth::flag_attrs(req)
+        .map_or((false, false), |a| (a.allow_pre_open, a.ignore_open_auction));
+    if !rth_on && !pre_open && !ignore_opening { return None; }
+    let Some(instrument) = instrument.or_else(|| context.order(oid).map(|o| o.instrument)) else { return None };
     let ibkrats = context.market.exchange(instrument) == "IBKRATS";
     let (types, routed) = match definition(context, conn, hb, instrument) {
-        Definition::NoContract => return true,
-        Definition::Waiting => return false,
+        Definition::NoContract => return None,
+        Definition::Waiting => return Some(false),
         Definition::Known(types, routed) => (types, routed),
     };
     let exchange = if ibkrats { "IBKRATS" } else { routed.as_str() };
-    if !rth::outside_rth_applies(kind, tif, exchange, types) {
-        *outside_rth = false;
-        if is_new {
-            shared.orders.push_order_error(oid, 2109, rth::OUTSIDE_RTH_IGNORED.to_string());
-        }
+    let rth_kept = rth_on && rth::outside_rth_applies(kind, tif, exchange, types);
+    let pre_open_kept = pre_open && rth::open_flag_applies(kind, tif, exchange, types, types.pre_open);
+    let ignore_kept = ignore_opening && rth::open_flag_applies(kind, tif, exchange, types, types.ignore_opening);
+    // Both flags where both apply: refused with 437, nothing sent; the
+    // order is kept for its cancel (paper 12/10/2026: Cancelled, 202
+    // "Order was discarded", 161).
+    if rth_kept && pre_open_kept && is_new {
+        log::warn!("Order {} refused: outside RTH and allow pre-open together", oid);
+        shared.orders.push_order_error(oid, 437, rth::PRE_OPEN_AND_OUTSIDE_RTH.to_string());
+        let parent = req.new_order_side().and_then(|(_, a)| a).map_or(0, |a| a.parent_id);
+        context.unsent.insert(oid, (instrument, req.new_order_qty().unwrap_or(0), parent));
+        return Some(true);
     }
+    if let Some((_, _, _, _, outside_rth)) = rth::rth_parts(req) { *outside_rth = rth_kept; }
+    if let Some(attrs) = rth::flag_attrs(req) {
+        attrs.allow_pre_open = pre_open_kept;
+        attrs.ignore_open_auction = ignore_kept;
+    }
+    // One 2109 on a new order, naming the last attribute dropped; ignore
+    // opening auction is dropped without one (paper 12/10/2026).
+    let text = if pre_open && !pre_open_kept {
+        Some(rth::ALLOW_PRE_OPEN_IGNORED)
+    } else if rth_on && !rth_kept {
+        Some(rth::OUTSIDE_RTH_IGNORED)
+    } else {
+        None
+    };
+    if is_new && let Some(text) = text {
+        shared.orders.push_order_error(oid, 2109, text.to_string());
+    }
+    let mut dropped = 0;
+    if pre_open && !pre_open_kept { dropped |= crate::bridge::DROPPED_ALLOW_PRE_OPEN; }
+    if ignore_opening && !ignore_kept { dropped |= crate::bridge::DROPPED_IGNORE_OPEN_AUCTION; }
+    if dropped != 0 { shared.orders.note_dropped_flags(oid, dropped); }
+    None
+}
+
+/// A new order with post-only that the reference refuses as it checks the
+/// order, after the contract lookup (ibx#607): on pegged to market, an
+/// order type that takes post-only but cannot keep it (496, code read on
+/// 10.51; on AAPL the type's own refusal 387 comes first, paper
+/// 12/10/2026), with sweep-to-fill (497, paper 12/10/2026). Nothing is
+/// sent; the order is kept for its cancel, as one refused with 387.
+fn post_only_refusal(req: &OrderRequest, context: &mut Context, shared: &Arc<SharedState>) -> bool {
+    let Some((_, Some(attrs))) = req.new_order_side() else { return false };
+    if !attrs.post_only { return false; }
+    let (code, text) = if matches!(req, OrderRequest::SubmitEx { kind: crate::types::OrderKind::PegMkt { .. }, .. }) {
+        (496, "The Post-Only attribute cannot be used with order type \"PEG MKT\".")
+    } else if attrs.sweep_to_fill {
+        (497, "Post-Only and Sweep-to-Fill attributes cannot be used together.")
+    } else {
+        return false;
+    };
+    let Some(instrument) = req.instrument() else { return false };
+    let oid = req.order_id();
+    log::warn!("Order {} refused: post-only ({})", oid, code);
+    shared.orders.push_order_error(oid, code, text.to_string());
+    context.unsent.insert(oid, (instrument, req.new_order_qty().unwrap_or(0), attrs.parent_id));
     true
 }
 
@@ -3335,6 +3423,13 @@ fn push_extended_attrs(
     if attrs.sweep_to_fill {
         fields.push((6102, "1".to_string()));
     }
+    // The order attributes of ibx#607, as the reference writes them where
+    // they apply (paper 12/10/2026); the ones that do not apply were
+    // dropped before.
+    if attrs.allow_pre_open { fields.push((6524, "1".to_string())); }
+    if attrs.ignore_open_auction { fields.push((6562, "1".to_string())); }
+    if attrs.post_only { fields.push((6605, "1".to_string())); }
+    if attrs.deactivate { fields.push((6521, "1".to_string())); }
     if attrs.cash_qty > 0 {
         // Tag 152, the cash quantity attribute of the reference, written
         // with its price formatter (ibx#263; 5920 is only its column id).
@@ -5504,6 +5599,156 @@ mod tests {
             order_id: 61, instrument: 0, side: Side::Buy, qty: 1, price: 100 * P, tif: b'0',
             attrs: Default::default() });
         assert_eq!(tag(&tags, 35), Some("D"));
+    }
+
+    // ibx#607: the AAPL list on BEST (paper 12/10/2026) has PREOPGRTH,
+    // POSTONLY and DEACT, not RTHIGNOPG.
+    const AAPL_FLAGS_LIST: &str = "ACTIVETIM/1,AD/5,RTH/1,AON/1,PREOPGRTH/1,POSTONLY/1,DEACT/1,DEACTDIS/1,DEACTEOD/1";
+
+    /// Each request, once the AAPL definition with `AAPL_FLAGS_LIST` came
+    /// back: the frames sent, and the order errors.
+    fn flag_frames(reqs: Vec<OrderRequest>) -> (Vec<Vec<(u32, String)>>, Vec<(i64, i64, String)>, Context, Arc<SharedState>) {
+        let (client, mut server) = crate::protocol::connection::mem_pair();
+        let mut conn = Some(Connection::new_mem(client));
+        let shared = Arc::new(SharedState::new());
+        let mut context = Context::new();
+        context.market.register(265598);
+        context.set_symbol(0, "AAPL".to_string());
+        context.market.set_routing(0, "STK", "SMART");
+        for r in reqs { context.pending_orders.push(r); }
+        let mut frames = drain_frames(&mut context, &shared, &mut conn, &mut server);
+        if let Some(first) = frames.first().filter(|f| tag(f, 35) == Some("c")) {
+            let id = tag(first, 320).unwrap().to_string();
+            assert!(rth_definition_reply(&mut context, &id, &definition_reply(&id, "BEST", AAPL_FLAGS_LIST)));
+            frames = drain_frames(&mut context, &shared, &mut conn, &mut server);
+        }
+        let errors = shared.orders.drain_order_errors();
+        (frames, errors, context, shared)
+    }
+
+    fn lmt_with(order_id: OrderId, attrs: crate::types::OrderAttrs) -> OrderRequest {
+        OrderRequest::SubmitEx { order_id, instrument: 0, side: Side::Buy, qty: 1,
+            kind: crate::types::OrderKind::Limit { price: 100 * P }, tif: b'0', attrs }
+    }
+
+    fn tags_of(frame: &[(u32, String)]) -> Vec<u32> {
+        frame.iter().map(|f| f.0).filter(|t| [6433, 6521, 6524, 6562, 6605].contains(t)).collect()
+    }
+
+    // ibx#607, the reference's frames of 12/10/2026 (AAPL, SMART, DAY):
+    // allow pre-open (6524) on a LMT without outside RTH; post-only (6605)
+    // and deactivate (6521) with outside RTH; ignore opening auction never
+    // (RTHIGNOPG is not in the list), without a warning; each only as =1.
+    #[test]
+    fn the_order_flags_go_out_where_they_apply() {
+        use crate::types::OrderAttrs as A;
+        let (frames, errors, ..) = flag_frames(vec![
+            lmt_with(70, A { allow_pre_open: true, ..Default::default() }),
+            lmt_with(71, A { outside_rth: true, post_only: true, deactivate: true, ..Default::default() }),
+            lmt_with(72, A { ignore_open_auction: true, ..Default::default() }),
+            lmt_with(73, A { allow_pre_open: true, ignore_open_auction: true, post_only: true, deactivate: true, ..Default::default() }),
+        ]);
+        assert!(errors.is_empty(), "{errors:?}");
+        let sent: Vec<(Option<&str>, Vec<u32>)> = frames.iter().map(|f| (tag(f, 6121), tags_of(f))).collect();
+        assert_eq!(sent, [
+            (Some("70"), vec![6524]),
+            (Some("71"), vec![6433, 6605, 6521]),
+            (Some("72"), vec![]),
+            (Some("73"), vec![6524, 6605, 6521]),
+        ]);
+        for f in &frames {
+            for (t, v) in f.iter().filter(|(t, _)| [6521, 6524, 6605].contains(t)) {
+                assert_eq!(v, "1", "tag {t}");
+            }
+        }
+    }
+
+    // ibx#607, paper 12/10/2026: allow pre-open on a MKT does not apply:
+    // dropped with one 2109 naming it, the order sent; with outside RTH on
+    // a LMT, where both apply: 437 and nothing sent, its cancel ends it
+    // (Cancelled, 202 "Order was discarded", 161).
+    #[test]
+    fn allow_pre_open_is_dropped_with_2109_or_refused_with_437() {
+        use crate::types::OrderAttrs as A;
+        let (frames, errors, mut context, shared) = flag_frames(vec![
+            OrderRequest::SubmitEx { order_id: 80, instrument: 0, side: Side::Buy, qty: 1,
+                kind: crate::types::OrderKind::Market, tif: b'0', attrs: A { allow_pre_open: true, ..Default::default() } },
+            lmt_with(81, A { outside_rth: true, allow_pre_open: true, ..Default::default() }),
+        ]);
+        assert_eq!(frames.iter().map(|f| (tag(f, 6121), tags_of(f))).collect::<Vec<_>>(), [(Some("80"), vec![])]);
+        assert_eq!(errors, [
+            (80, 2109, "Order Event Warning:Attribute 'Allow pre-open' is ignored based on the order type and destination. PlaceOrder is now being processed.".to_string()),
+            (81, 437, "Order can have only one flag Outside RTH or Allow PreOpen.".to_string()),
+        ]);
+        assert_eq!(shared.orders.dropped_flags(80), crate::bridge::DROPPED_ALLOW_PRE_OPEN);
+
+        let (client, mut server) = crate::protocol::connection::mem_pair();
+        let mut conn = Some(Connection::new_mem(client));
+        context.pending_orders.push(OrderRequest::Cancel { order_id: 81 });
+        assert!(drain_frames(&mut context, &shared, &mut conn, &mut server).is_empty(), "nothing sent");
+        assert_eq!(shared.orders.drain_order_notices().iter().map(|n| (n.0, n.1)).collect::<Vec<_>>(), [(81, 202), (81, 161)]);
+    }
+
+    // ibx#607: ignore opening auction is dropped without a warning where
+    // it does not apply, and noted for the openOrder; a list with its key
+    // keeps it (code read on 10.51; no such list seen yet).
+    #[test]
+    fn ignore_opening_auction_follows_its_key() {
+        use crate::engine::outside_rth::{open_flag_applies, RthKind, RthTypes};
+        let lmt = RthKind::of(&crate::types::OrderKind::Limit { price: 1 });
+        let tokens = |s: &str| s.split(',').map(String::from).collect::<Vec<_>>();
+        let aapl = RthTypes::from_definition(&tokens(AAPL_FLAGS_LIST), "USSTK", "STK", "USD");
+        assert!(!open_flag_applies(lmt, b'0', "BEST", &aapl, aapl.ignore_opening));
+        assert!(open_flag_applies(lmt, b'0', "BEST", &aapl, aapl.pre_open));
+        let with_key = RthTypes::from_definition(&tokens("RTH/1,RTHIGNOPG/1"), "USSTK", "STK", "USD");
+        assert!(open_flag_applies(lmt, b'0', "BEST", &with_key, with_key.ignore_opening));
+        // Not on OVERNIGHT + DAY, and not where outside RTH does not apply.
+        assert!(!open_flag_applies(lmt, b'b', "BEST", &with_key, with_key.ignore_opening));
+        assert!(!open_flag_applies(RthKind::of(&crate::types::OrderKind::Market), b'0', "BEST", &aapl, aapl.pre_open));
+
+        let (frames, errors, _, shared) = flag_frames(vec![
+            lmt_with(85, crate::types::OrderAttrs { ignore_open_auction: true, ..Default::default() })]);
+        assert_eq!(tags_of(&frames[0]), Vec::<u32>::new());
+        assert!(errors.is_empty());
+        assert_eq!(shared.orders.dropped_flags(85), crate::bridge::DROPPED_IGNORE_OPEN_AUCTION);
+    }
+
+    // ibx#607, paper 12/10/2026: post-only with sweep-to-fill is refused
+    // with 497 and nothing sent; on PEG MKT with 496 (code read; AAPL's
+    // own list refuses the type first with 387, as here).
+    #[test]
+    fn post_only_refusals_after_the_lookup() {
+        use crate::types::OrderAttrs as A;
+        let (frames, errors, ..) = flag_frames(vec![
+            lmt_with(90, A { post_only: true, sweep_to_fill: true, ..Default::default() })]);
+        assert!(frames.is_empty(), "{frames:?}");
+        assert_eq!(errors, [(90, 497, "Post-Only and Sweep-to-Fill attributes cannot be used together.".to_string())]);
+
+        let shared = Arc::new(SharedState::new());
+        let mut context = Context::new();
+        let peg = OrderRequest::SubmitEx { order_id: 91, instrument: 0, side: Side::Buy, qty: 1,
+            kind: crate::types::OrderKind::PegMkt { price: 0, offset: px(0.05) }, tif: b'0',
+            attrs: A { post_only: true, ..Default::default() } };
+        assert!(post_only_refusal(&peg, &mut context, &shared));
+        assert_eq!(shared.orders.drain_order_errors(),
+            [(91, 496, "The Post-Only attribute cannot be used with order type \"PEG MKT\".".to_string())]);
+        assert!(context.unsent.contains_key(&91));
+        assert!(!post_only_refusal(&lmt_with(92, A { post_only: true, ..Default::default() }), &mut context, &shared));
+    }
+
+    // ibx#607, the reference's replaces of 12/10/2026: allow pre-open and
+    // post-only restated, deactivate never (the order goes on to
+    // Submitted); the openOrder then shows deactivate off.
+    #[test]
+    fn a_replace_restates_the_flags_but_deactivate() {
+        let attrs = crate::types::OrderAttrs {
+            allow_pre_open: true, post_only: true, deactivate: true, ..Default::default() };
+        let ours = replace_fields(1655484157, Side::Buy, 1, crate::types::OrderKind::Limit { price: px(101.0) }, b'0', attrs);
+        let reference = parse_frame("35=G|11=1655484157.1|41=1655484157.0|44=101.00|1=DU1|6524=1|8339=1|6605=1|6122=c|38=1|54=1|40=2|55=AAPL|167=STK|6035=AAPL|59=0|6008=265598|6088=Socket|6211=|6238=");
+        assert_eq!(tags_of(&reference), [6524, 6605]);
+        let mut ours_tags = tags_of(&ours);
+        ours_tags.sort();
+        assert_eq!(ours_tags, [6524, 6605]);
     }
 
     /// The captured frame's fields named in `tags`, in its order.

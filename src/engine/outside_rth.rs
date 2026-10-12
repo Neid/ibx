@@ -53,6 +53,11 @@ pub(crate) struct RthTypes {
     pub price_chk: bool,
     /// The all-or-none key (AON) is in the list (ibx#263).
     pub aon: bool,
+    /// The keys of allow pre-open (PREOPGRTH) and of ignore opening
+    /// auction (RTHIGNOPG) are in the list (ibx#607: the AAPL list on BEST
+    /// has the first, not the second, paper 12/10/2026).
+    pub pre_open: bool,
+    pub ignore_opening: bool,
     /// SMART is a valid exchange of the contract (tag 6046 names it BEST;
     /// `jclient.dy.dI()`), for the redirect precaution (ibx#486).
     pub smart: bool,
@@ -89,6 +94,8 @@ impl RthTypes {
                 "PASSVREL" => t.passv_rel = true,
                 "PRICECHK" => t.price_chk = true,
                 "AON" => t.aon = true,
+                "PREOPGRTH" => t.pre_open = true,
+                "RTHIGNOPG" => t.ignore_opening = true,
                 _ => {}
             }
         }
@@ -166,6 +173,25 @@ pub(crate) fn outside_rth_applies(kind: RthKind, tif: u8, exchange: &str, types:
         && !types.erh_only
 }
 
+/// Text of warning 2109 when allow pre-open is dropped from a new order
+/// (ibx#607, paper 12/10/2026: a MKT order with allowPreOpen). One 2109
+/// names the last attribute dropped: allow pre-open after outside RTH.
+pub(crate) const ALLOW_PRE_OPEN_IGNORED: &str = "Order Event Warning:Attribute 'Allow pre-open' \
+    is ignored based on the order type and destination. PlaceOrder is now being processed.";
+
+/// Text of error 437: outside RTH and allow pre-open on one order, where
+/// both apply (ibx#607, paper 12/10/2026).
+pub(crate) const PRE_OPEN_AND_OUTSIDE_RTH: &str = "Order can have only one flag Outside RTH or Allow PreOpen.";
+
+/// True when allow pre-open, or ignore opening auction, stays on the order
+/// (ibx#607, code read on 10.51): the outside-RTH rule, the attribute's
+/// key in the order-type list (no list allows it, as for all-or-none), and
+/// not the time in force OVERNIGHT + DAY. Ignore opening auction is also
+/// dropped on SMART with pre-open re-route, an attribute ibx never sets.
+pub(crate) fn open_flag_applies(kind: RthKind, tif: u8, exchange: &str, types: &RthTypes, key: bool) -> bool {
+    tif != b'b' && (!types.types_known || key) && outside_rth_applies(kind, tif, exchange, types)
+}
+
 /// The parts of a request the rule reads: the instrument (None for a
 /// replace, whose instrument is the order's), the type classes, the time in
 /// force, and the outside-RTH flag. None for a request that never carries
@@ -187,6 +213,22 @@ pub(crate) fn rth_parts(req: &mut OrderRequest) -> Option<(Option<u32>, RthKind,
         R::SubmitEx { instrument, kind, tif, attrs, .. } =>
             Some((Some(*instrument), RthKind::of(kind), *tif, Some(*kind), &mut attrs.outside_rth)),
         R::Modify { kind, tif, attrs, .. } => Some((None, RthKind::of(kind), *tif, Some(*kind), &mut attrs.outside_rth)),
+        _ => None,
+    }
+}
+
+/// The attributes of a request that carries the flags of ibx#607 (a new
+/// order of the extended encoder, or a replace). None for the others,
+/// which never carry them.
+pub(crate) fn flag_attrs(req: &mut OrderRequest) -> Option<&mut crate::types::OrderAttrs> {
+    use OrderRequest as R;
+    match req {
+        R::SubmitTrailingStopPctEx { attrs, .. }
+        | R::SubmitLimitEx { attrs, .. }
+        | R::SubmitAdaptive { attrs, .. }
+        | R::SubmitAlgo { attrs, .. }
+        | R::SubmitEx { attrs, .. }
+        | R::Modify { attrs, .. } => Some(attrs),
         _ => None,
     }
 }

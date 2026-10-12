@@ -522,6 +522,12 @@ pub struct OrderAttrs {
     /// Work the order in the overnight session too (API includeOvernight),
     /// sent as an order attribute (ibx#467).
     pub include_overnight: bool,
+    /// The API postOnly, allowPreOpen, ignoreOpenAuction and deactivate,
+    /// sent as order attributes where they apply (ibx#607).
+    pub post_only: bool,
+    pub allow_pre_open: bool,
+    pub ignore_open_auction: bool,
+    pub deactivate: bool,
     /// The API clearingIntent: empty, IB, Away or PTA (ibx#417). A
     /// clearing away from the broker lets a short-side order pass the
     /// reference's side check.

@@ -512,6 +512,12 @@ impl Order {
             professional_customer: self.professional_customer,
             reference_exchange: self.reference_exchange_id.clone(),
             include_overnight: self.include_overnight,
+            // Not sent with the AccuDistr algo, as the reference (ibx#607,
+            // paper 12/10/2026: the order accepted without it).
+            post_only: self.post_only && !self.algo_strategy.eq_ignore_ascii_case("AccuDistr"),
+            allow_pre_open: self.allow_pre_open,
+            ignore_open_auction: self.ignore_open_auction,
+            deactivate: self.deactivate,
             clearing_intent: self.clearing_intent.clone(),
             short_sale: ShortSale {
                 slot: self.short_sale_slot,
@@ -556,6 +562,11 @@ impl Order {
             || !self.conditions.is_empty()
             // includeOvernight rides the attributes (ibx#467).
             || self.include_overnight
+            // The order attributes of ibx#607.
+            || self.post_only
+            || self.allow_pre_open
+            || self.ignore_open_auction
+            || self.deactivate
             // The clearing intent and the short-sale instructions reach the
             // side check and the short-sale fields (ibx#417).
             || !self.clearing_intent.is_empty()

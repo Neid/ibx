@@ -1512,6 +1512,15 @@ const ORDER_TYPE_ALIASES: [(&str, &str); 15] = [
     ("TRAILLMT", "TRAIL LIMIT"),
 ];
 
+/// The order types that can rest as post-only, the others refused with
+/// 10051 (ibx#607, code read on 10.51: each order type's own answer, up
+/// its class chain; the types ibx supports, under the names ibx uses).
+/// Paper 12/10/2026: LMT and REL accepted, MKT refused.
+const POST_ONLY_TYPES: [&str; 16] = [
+    "LMT", "REL", "MIDPRICE", "MIDPX", "RPI", "PASSV REL", "PEG BEST", "PEG MKT", "PEG MID", "PEG MIDPT", "STP LMT",
+    "LOC", "LIT", "TRAIL LIMIT", "TRAIL LIT", "QUOTE",
+];
+
 /// The reference's text for an invalid date or time (errors 337 and 343);
 /// %s is the field's label.
 pub(crate) const INVALID_DATE_TIME: &str = "%s: The date, time, or time-zone entered is invalid.\n\
@@ -3782,6 +3791,12 @@ impl ClientCore {
                 let dropped = self.rth_dropped.lock().unwrap().contains(&order_id);
                 order.outside_rth = (order.outside_rth && !dropped)
                     || info.as_ref().is_some_and(|i| i.order.outside_rth);
+                // The flags dropped before sending show off, as the
+                // reference's openOrder (ibx#607, paper 12/10/2026).
+                let flags = shared.orders.dropped_flags(order_id);
+                if flags & crate::bridge::DROPPED_ALLOW_PRE_OPEN != 0 { order.allow_pre_open = false; }
+                if flags & crate::bridge::DROPPED_IGNORE_OPEN_AUCTION != 0 { order.ignore_open_auction = false; }
+                if flags & crate::bridge::DROPPED_DEACTIVATE != 0 { order.deactivate = false; }
                 let modified = self.modified_orders.lock().unwrap().contains(&order_id);
                 session_order_fields(&mut order, &shared.reference.user_name(), modified);
                 (t.contract, order, t.last_fill_price, client_id)
@@ -3846,18 +3861,19 @@ impl ClientCore {
     /// ignored) marks the order as sent without it (ibx#486, the STP and
     /// TRAIL orders of premarket_order_types, 28/09/2026: openOrder shows
     /// outsideRth false, also after a replace).
-    pub fn note_order_error(&self, order_id: OrderId, code: i64) {
-        if code == 2109 {
+    pub fn note_order_error(&self, order_id: OrderId, code: i64, message: &str) {
+        // The 2109 of allow pre-open leaves outside RTH as it is (ibx#607).
+        if code == 2109 && message.contains("'Outside Regular Trading Hours'") {
             self.rth_dropped.lock().unwrap().insert(order_id);
         }
         // The redirect precaution discards the order (ibx#486).
         if matches!(code, 10311 | 10329) {
             self.discarded.lock().unwrap().insert(order_id);
         }
-        // Refused with 387 before it was sent: the order is not an open
+        // Refused with 387, or 437, 496, 497 (ibx#607), before it was sent: the order is not an open
         // order, and no open-order request lists it; its cancel ends it
         // (ibx#542).
-        if code == 387
+        if matches!(code, 387 | 437 | 496 | 497)
             && let Some(o) = self.open_orders.lock().unwrap().get_mut(&order_id)
             && o.status == "PendingSubmit"
         {
@@ -4709,6 +4725,46 @@ impl ClientCore {
             format!("Account config doesn't allow to assign 'true' value for ProfessionalCustomer for account {}", account)
         };
         Some((145, format!("Error in validating entry fields -{}", cause)))
+    }
+
+    /// postOnly, allowPreOpen and ignoreOpenAuction checked as the
+    /// reference reads the order, after the account config (ibx#607; code
+    /// read on 10.51, the placeOrder handler right after the checks of
+    /// 145; paper 12/10/2026: postOnly on MKT refused with 10051 at once,
+    /// its id not used). postOnly: an order type that cannot rest as
+    /// post-only (10051), the IBKRATS venue (464), the time in force
+    /// OVERNIGHT + DAY (10052). allowPreOpen or
+    /// ignoreOpenAuction: the overnight venues (464), OVERNIGHT + DAY
+    /// (10052). ignoreOpenAuction with scaleAutoReset: 10340.
+    pub fn open_flags_refusal(order: &ApiOrder, exchange: &str) -> Option<(i64, String)> {
+        const INVALID_EXCHANGE: (i64, &str) = (464, "Invalid exchange");
+        // The time in force named after the text (paper 12/10/2026).
+        const INVALID_TIF: (i64, &str) = (10052, "Invalid time in force:OVERNIGHT + DAY");
+        let overnight_day = order.tif.eq_ignore_ascii_case("OVERNIGHT + DAY");
+        let refuse = |(code, text): (i64, &str)| Some((code, text.to_string()));
+        if order.post_only {
+            if !POST_ONLY_TYPES.iter().any(|t| t.eq_ignore_ascii_case(&order.order_type)) {
+                return refuse((10051, "Invalid order type"));
+            }
+            if exchange.eq_ignore_ascii_case("IBKRATS") {
+                return refuse(INVALID_EXCHANGE);
+            }
+            if overnight_day {
+                return refuse(INVALID_TIF);
+            }
+        }
+        if order.allow_pre_open || order.ignore_open_auction {
+            if exchange.eq_ignore_ascii_case("OVERNIGHT") || exchange.eq_ignore_ascii_case("IBEOS") {
+                return refuse(INVALID_EXCHANGE);
+            }
+            if overnight_day {
+                return refuse(INVALID_TIF);
+            }
+        }
+        if order.ignore_open_auction && order.scale_auto_reset {
+            return Some((10340, "The following order attribute is not supported: ScaleAutoReset".to_string()));
+        }
+        None
     }
 
     /// The time in force the reference sends for an API value it does not
@@ -5834,6 +5890,7 @@ impl ClientCore {
         // new order).
         let refusal = Self::refusal_before_sending_for(order, exchange, account_pending)
             .or_else(|| Self::account_config_refusal(order, shared.reference.account_features().as_deref(), account))
+            .or_else(|| Self::open_flags_refusal(order, exchange))
             .or_else(|| Self::order_id_refusal(order_id))
             .or_else(|| self.refusal_for_order_id(order_id, order, shared))
             .or_else(|| {
@@ -7267,6 +7324,57 @@ mod tests {
         assert_eq!(ClientCore::refusal_before_sending(&lmt(100.0), "ISLAND"), None);
     }
 
+    // ibx#607: the checks of postOnly, allowPreOpen and ignoreOpenAuction as
+    // the reference reads the order (code read on 10.51; 10051 and 10052
+    // seen on paper 12/10/2026, REL and LMT accepted).
+    #[test]
+    fn the_open_flags_are_checked_as_the_order_is_read() {
+        let refusal = |order: &ApiOrder, exchange: &str| ClientCore::open_flags_refusal(order, exchange).map(|r| r.0);
+        let post = |order_type: &str| ApiOrder { order_type: order_type.into(), post_only: true, ..lmt(100.0) };
+        for ok in ["LMT", "REL", "MIDPRICE", "PEG MKT", "PEG MID", "STP LMT", "LIT", "TRAIL LIMIT", "PASSV REL"] {
+            assert_eq!(refusal(&post(ok), "SMART"), None, "{ok}");
+        }
+        for refused in ["MKT", "STP", "TRAIL", "MOC", "MIT", "MTL", "PEG BENCH", "SNAP MKT", "TRAIL MIT"] {
+            assert_eq!(refusal(&post(refused), "SMART"), Some(10051), "{refused}");
+        }
+        assert_eq!(refusal(&post("LMT"), "IBKRATS"), Some(464));
+        // With AccuDistr: accepted, the attribute not sent (paper 12/10/2026).
+        let accu = ApiOrder { algo_strategy: "AccuDistr".into(), ..post("LMT") };
+        assert_eq!(refusal(&accu, "SMART"), None);
+        assert!(!accu.attrs().post_only);
+        assert!(post("LMT").attrs().post_only);
+        let overnight = |order: ApiOrder| ApiOrder { tif: "OVERNIGHT + DAY".into(), ..order };
+        assert_eq!(refusal(&overnight(post("LMT")), "SMART"), Some(10052));
+        let pre_open = ApiOrder { allow_pre_open: true, ..lmt(100.0) };
+        let ignore = ApiOrder { ignore_open_auction: true, ..lmt(100.0) };
+        for order in [&pre_open, &ignore] {
+            assert_eq!(refusal(order, "SMART"), None);
+            assert_eq!(refusal(order, "OVERNIGHT"), Some(464));
+            assert_eq!(refusal(order, "IBEOS"), Some(464));
+            assert_eq!(refusal(&overnight(order.clone()), "SMART"), Some(10052));
+        }
+        let reset = ApiOrder { scale_auto_reset: true, ..ignore.clone() };
+        assert_eq!(ClientCore::open_flags_refusal(&reset, "SMART"),
+            Some((10340, "The following order attribute is not supported: ScaleAutoReset".to_string())));
+        // Deactivate alone is not checked here; an order without the
+        // flags passes.
+        assert_eq!(refusal(&ApiOrder { deactivate: true, ..lmt(100.0) }, "IBKRATS"), None);
+        assert_eq!(refusal(&lmt(100.0), "IBKRATS"), None);
+    }
+
+    // ibx#607: the flags reach the engine and make the order an extended
+    // one, so the attributes go out.
+    #[test]
+    fn the_open_flags_reach_the_order_attributes() {
+        let order = ApiOrder { post_only: true, allow_pre_open: true, ignore_open_auction: true, deactivate: true, ..lmt(100.0) };
+        assert!(order.has_extended_attrs());
+        let a = order.attrs();
+        assert!(a.post_only && a.allow_pre_open && a.ignore_open_auction && a.deactivate);
+        for one in [ApiOrder { post_only: true, ..lmt(100.0) }, ApiOrder { deactivate: true, ..lmt(100.0) }] {
+            assert!(one.has_extended_attrs());
+        }
+    }
+
     // ibx#468: two local refusals of the reference.
     #[test]
     fn midprice_outside_rth_and_trail_limit_fields_are_refused() {
@@ -7367,6 +7475,16 @@ mod tests {
         assert_eq!(checks(9, &side), Some(321));
         let customer = ApiOrder { customer_account: "X123".into(), ..lmt(100.0) };
         assert_eq!(checks(9, &customer), Some(145));
+        assert_eq!(checks(9, &lmt(100.0)), None, "the id was not used");
+        // ibx#607 (paper 12/10/2026): post-only on MKT, and a flag with
+        // OVERNIGHT + DAY, refused as the order is read: the id is not used
+        // (its cancel answers 10147).
+        let mkt = ApiOrder { order_type: "MKT".into(), post_only: true, ..lmt(0.0) };
+        assert_eq!(core.order_read_checks(9, 265598, "SMART", &mkt, &shared, "DU1").1,
+            Some((10051, "Invalid order type".to_string())));
+        let overnight = ApiOrder { tif: "OVERNIGHT + DAY".into(), allow_pre_open: true, ..lmt(100.0) };
+        assert_eq!(core.order_read_checks(9, 265598, "SMART", &overnight, &shared, "DU1").1,
+            Some((10052, "Invalid time in force:OVERNIGHT + DAY".to_string())));
         assert_eq!(checks(9, &lmt(100.0)), None, "the id was not used");
         // A price that is not a number: after the id check.
         assert_eq!(checks(10, &lmt(f64::NAN)), Some(110));
