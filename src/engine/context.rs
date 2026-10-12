@@ -79,6 +79,9 @@ pub(crate) struct BookEntry {
 ///   order); a global cancel that answers for it does not take it out
 ///   (paper 11/10/2026: 161 at 3 s and again at 6 s, none at 12 s;
 ///   ibx#551);
+/// - a filled order stays [`FILLED_ORDER_KEPT`] (paper 12/10/2026, regular
+///   hours, reference 10.51: 161 at 3, 8, 12 and 20 s after the fill, none
+///   at 35 and 65 s; ibx#551);
 /// - an order that was never sent (refused before the send, or held and
 ///   cancelled) gets no report, so nothing takes it out: 161 at every
 ///   global cancel of the session (paper 09/10/2026, three runs).
@@ -94,6 +97,9 @@ pub(crate) struct EndedOrder {
 
 /// How long the reference keeps a cancelled order in its book.
 pub(crate) const CANCELLED_ORDER_KEPT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// How long the reference keeps a filled order in its book (ibx#551).
+pub(crate) const FILLED_ORDER_KEPT: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// The table size of a `java.util.HashMap` that held `peak` entries: 16,
 /// doubled each time the entries pass three quarters of it; it never
@@ -1516,13 +1522,17 @@ impl Context {
     /// Remove an order that ended with `status`, and keep that status for a
     /// later cancel of the same id (ibx#464).
     pub fn finish_order(&mut self, order_id: OrderId, status: OrderStatus) {
-        let kept = matches!(status, OrderStatus::Cancelled | OrderStatus::Rejected)
-            .then(|| self.book.get(&order_id).cloned()).flatten();
+        let keep = match status {
+            OrderStatus::Cancelled | OrderStatus::Rejected => Some(CANCELLED_ORDER_KEPT),
+            OrderStatus::Filled => Some(FILLED_ORDER_KEPT),
+            _ => None,
+        };
+        let kept = keep.and_then(|d| self.book.get(&order_id).cloned().map(|e| (e, d)));
         if !self.forget_order(order_id) {
             return;
         }
-        if let Some(entry) = kept {
-            self.keep_ended(order_id, self.server_id(order_id), entry, Some(Instant::now() + CANCELLED_ORDER_KEPT));
+        if let Some((entry, keep)) = kept {
+            self.keep_ended(order_id, self.server_id(order_id), entry, Some(Instant::now() + keep));
         }
         if self.finished_orders.insert(order_id, status).is_none() {
             self.finished_order_ids.push_back(order_id);

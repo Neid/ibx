@@ -122,6 +122,7 @@ impl EClient {
         let mut state = OrderState::default();
         state.status = view.state.status.clone();
         state.commission_and_fees = view.state.commission_and_fees;
+        state.commission_and_fees_currency = view.state.commission_and_fees_currency.clone();
         state.completed_time = view.state.completed_time.clone();
         state.completed_status = view.state.completed_status.clone();
         let c_py = Py::new(py, c)?.into_any();

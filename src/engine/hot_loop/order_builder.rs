@@ -1892,7 +1892,9 @@ fn api_cancel(context: &mut Context, shared: &Arc<SharedState>, order_id: OrderI
 /// A cancelled order and an order the server refused are known for the
 /// time the reference keeps them (ibx#551, paper 11/10/2026, market
 /// closed): 10148 "state: Cancelled" for both at 3 s and 8 s after their
-/// end, 10147 at 12 s and 19 s.
+/// end, 10147 at 12 s and 19 s. A filled order likewise while it is kept
+/// (paper 12/10/2026, regular hours: 10148 "state: Filled" at 5, 10, 14
+/// and 24 s after the fill, 10147 at 40 and 70 s).
 fn cancel_refusal(context: &Context, order_id: crate::types::OrderId) -> Option<(i64, String)> {
     let not_found = || Some((
         10147,
@@ -1912,6 +1914,12 @@ fn cancel_refusal(context: &Context, order_id: crate::types::OrderId) -> Option<
                     return not_found();
                 }
                 OrderStatus::Cancelled
+            }
+            Some(OrderStatus::Filled) => {
+                if !context.ended_is_kept(order_id, Instant::now()) {
+                    return not_found();
+                }
+                OrderStatus::Filled
             }
             Some(status) => status,
             None => return not_found(),
@@ -4961,6 +4969,24 @@ mod tests {
         assert!(errors[0].2.ends_with("state: Filled."), "{}", errors[0].2);
     }
 
+    // ibx#551, paper 12/10/2026 (regular hours, reference 10.51): a filled
+    // order is answered 10148 "state: Filled" up to 24 s after its fill,
+    // 10147 at 40 s.
+    #[test]
+    fn cancel_of_a_filled_order_finds_it_while_it_is_kept() {
+        let (sent, errors) = cancel_of(|ctx| {
+            ctx.insert_order(order(5, 10, OrderStatus::Filled));
+            ctx.finish_order(5, OrderStatus::Filled);
+            let kept = ctx.ended_orders(Instant::now());
+            let left = kept[0].until.unwrap() - Instant::now();
+            assert!(left > std::time::Duration::from_secs(29) && left <= std::time::Duration::from_secs(30), "{left:?}");
+            // Its time is over.
+            ctx.keep_ended(5, kept[0].server_id, kept[0].entry.clone(), Some(Instant::now()));
+        });
+        assert_eq!(sent, 0);
+        assert_eq!(errors, [(5, 10147, "OrderId 5 that needs to be cancelled is not found.".to_string())]);
+    }
+
     #[test]
     fn cancel_of_a_working_order_is_sent() {
         let (sent, errors) = cancel_of(|ctx| ctx.insert_order(order(5, 0, OrderStatus::Submitted)));
@@ -5260,9 +5286,6 @@ mod tests {
             ctx.insert_order(Order::new(61, 0, Side::Buy, 1, 100, b'2', b'0', 0));
             ctx.bind_server_id(61, 7061);
             ctx.finish_order(61, OrderStatus::Cancelled);
-            // A filled order is not kept by this rule.
-            ctx.insert_order(Order::new(62, 0, Side::Buy, 1, 100, b'2', b'0', 0));
-            ctx.finish_order(62, OrderStatus::Filled);
         });
         assert_eq!(notices, [(61, 161)]);
         let kept = context.ended_orders(Instant::now());
@@ -5327,6 +5350,20 @@ mod tests {
         let (notices, mut context) = global_cancel_notices(|ctx| {
             ctx.insert_order(Order::new(81, 0, Side::Buy, 1, 100, b'2', b'0', 0));
             ctx.finish_order(81, OrderStatus::Rejected);
+        });
+        assert_eq!(notices, [(81, 161)]);
+        let kept = context.ended_orders(Instant::now());
+        assert_eq!(kept.len(), 1, "still there for the next global cancel");
+        assert!(context.ended_orders(kept[0].until.unwrap()).is_empty());
+    }
+
+    // ibx#551, paper 12/10/2026 (regular hours, reference 10.51): 161 for
+    // a filled order at 3, 8, 12 and 20 s after its fill, none at 35 s.
+    #[test]
+    fn global_cancel_answers_161_for_a_filled_order_while_it_is_kept() {
+        let (notices, mut context) = global_cancel_notices(|ctx| {
+            ctx.insert_order(Order::new(81, 0, Side::Buy, 1, 100, b'2', b'0', 0));
+            ctx.finish_order(81, OrderStatus::Filled);
         });
         assert_eq!(notices, [(81, 161)]);
         let kept = context.ended_orders(Instant::now());

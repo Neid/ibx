@@ -1334,6 +1334,10 @@ pub struct ClientCore {
     discarded: Mutex<HashSet<OrderId>>,
     /// The last report given for each order (ibx#486).
     last_reports: Mutex<HashMap<OrderId, OrderReport>>,
+    /// The commission of each execution of an order, by execution id
+    /// without its revision: their sum is the order's commission on its
+    /// openOrder (ibx#546).
+    order_commissions: Mutex<HashMap<OrderId, Vec<(String, f64)>>>,
     // Commission reports that came before their execution, by execution id
     // without its revision (ibx#471). Bounded: reports for executions this
     // client never sees (earlier sessions, other clients) are dropped oldest
@@ -1833,6 +1837,7 @@ impl ClientCore {
             rth_dropped: Mutex::new(HashSet::new()),
             discarded: Mutex::new(HashSet::new()),
             last_reports: Mutex::new(HashMap::new()),
+            order_commissions: Mutex::new(HashMap::new()),
             pending_commissions: Mutex::new(PendingCommissions::default()),
             open_orders: Mutex::new(HashMap::new()),
             held_orders: Mutex::new(Vec::new()),
@@ -3978,8 +3983,25 @@ impl ClientCore {
             .find(|se| !se.execution.exec_id.is_empty()
                 && crate::engine::hot_loop::ccp::split_exec_revision(&se.execution.exec_id).0 == base)
             .map(|se| se.execution.order_id)?;
-        let last = self.last_reports.lock().unwrap().get(&order_id).cloned()?;
-        Some((order_id, last))
+        // From its first commission report on, the order's openOrder shows
+        // its commission and currency (observed on the reference 10.51,
+        // 12/10/2026, regular hours; ibx#546).
+        let total = {
+            let mut all = self.order_commissions.lock().unwrap();
+            let execs = all.entry(order_id).or_default();
+            match execs.iter_mut().find(|(b, _)| b.as_str() == base) {
+                Some(e) => e.1 = report.commission_and_fees,
+                None => execs.push((base.to_string(), report.commission_and_fees)),
+            }
+            execs.iter().map(|(_, c)| c).sum::<f64>()
+        };
+        let mut reports = self.last_reports.lock().unwrap();
+        let last = reports.get_mut(&order_id)?;
+        if let Some(view) = last.view.as_mut() {
+            view.state.commission_and_fees = total;
+            view.state.commission_and_fees_currency = report.currency.clone();
+        }
+        Some((order_id, last.clone()))
     }
 
     /// Keep the price of an order's last print for later order_status
@@ -7757,6 +7779,39 @@ mod tests {
             order_state: Default::default(), last_exec: Default::default(),
         });
         assert!(core.refusal_for_order_id(60, &lmt(100.0), &shared).is_none());
+    }
+
+    // ibx#546, reference 10.51 (paper 12/10/2026, regular hours): the
+    // openOrder given again with a commission report shows the order's
+    // commission and currency; a second execution adds its own, a revised
+    // report replaces the one of its execution.
+    #[test]
+    fn the_report_given_with_a_commission_shows_the_order_commission() {
+        let core = ClientCore::new();
+        let view = OrderView {
+            contract: ApiContract::default(), order: ApiOrder::default(), state: ApiOrderState::default(),
+            last_fill_price: 0.0, client_id: 0,
+        };
+        core.remember_report(7, OrderReport {
+            view: Some(view), status: "Filled".into(), filled: 2.0, remaining: 0.0, avg_fill_price: 0.0,
+            perm_id: 0, parent_id: 0, last_fill_price: 0.0, client_id: 0, why_held: String::new(),
+        });
+        for id in ["0000e0d5.6ab5f36f.01.01", "0000e0d5.6ab5f370.01.01"] {
+            let exec = ApiExecution { exec_id: id.into(), order_id: 7, ..Default::default() };
+            core.push_execution(-1, ApiContract::default(), exec, None);
+        }
+        let report = |id: &str, c: f64| ApiCommissionAndFeesReport {
+            exec_id: id.into(), commission_and_fees: c, currency: "USD".into(), ..Default::default()
+        };
+        let state = |r: &ApiCommissionAndFeesReport| {
+            let (id, last) = core.report_of_commission(r).expect("the order's report");
+            assert_eq!(id, 7);
+            let s = last.view.unwrap().state;
+            (s.commission_and_fees, s.commission_and_fees_currency)
+        };
+        assert_eq!(state(&report("0000e0d5.6ab5f36f.01.01", 1.0)), (1.0, "USD".to_string()));
+        assert_eq!(state(&report("0000e0d5.6ab5f370.01.01", 0.5)), (1.5, "USD".to_string()));
+        assert_eq!(state(&report("0000e0d5.6ab5f370.01.02", 0.25)), (1.25, "USD".to_string()));
     }
 
     // Reports for executions this client never sees are dropped oldest
