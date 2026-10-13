@@ -3084,6 +3084,14 @@ const RTH_LOOKUP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5
 pub(crate) fn rth_definition_reply(context: &mut Context, req_id: &str, msg: &[u8]) -> bool {
     let Some(idx) = context.rth_lookups.iter().position(|(id, _, _)| id == req_id) else { return false };
     let (_, key, _) = context.rth_lookups.swap_remove(idx);
+    store_rth_types(context, key, msg);
+    release_rth_parked(context);
+    true
+}
+
+/// The order rules of a contract on an exchange, from a definition reply
+/// of that exchange (ibx#465, ibx#669).
+fn store_rth_types(context: &mut Context, key: (i64, String), msg: &[u8]) {
     let tags = fix::fix_parse(msg);
     let tokens: Vec<String> = tags.get(&6431).map(|v| v.split(',').map(String::from).collect()).unwrap_or_default();
     let def = crate::control::contracts::parse_secdef_response(msg);
@@ -3115,8 +3123,6 @@ pub(crate) fn rth_definition_reply(context: &mut Context, req_id: &str, msg: &[u
     log::info!("Outside RTH definition for con_id {} on {}: {:?}", key.0, key.1, types);
     log::debug!("Order-type list for con_id {} on {}: {:?}", key.0, key.1, tokens);
     context.rth_types.insert(key, types);
-    release_rth_parked(context);
-    true
 }
 
 /// Lookups with no reply in time: the empty list, as the reference when it
@@ -3322,6 +3328,18 @@ pub(crate) fn order_contract_reply(context: &mut Context, shared: &SharedState, 
                     context.market.unregister(slot);
                 }
                 None => context.market.resolve_con_id(slot, con_id),
+            }
+            // The reply holds the contract's record on the order's
+            // exchange: its order rules are taken from it, no second
+            // definition is asked, as the reference uses its lookup's
+            // record (ibx#669; the reference's lookup replies carry the
+            // order types and valid exchanges, 13/10/2026).
+            let instrument = context.market.instrument_by_con_id(con_id).unwrap_or(slot);
+            let destination = context.market.order_routing(instrument).1;
+            let replied = fix::fix_parse(msg).get(&207).cloned().unwrap_or_default();
+            let key = (con_id, destination);
+            if replied == key.1 && !context.rth_types.contains_key(&key) {
+                store_rth_types(context, key, msg);
             }
             log::info!("Order contract lookup {}: conId {}", req_id, con_id);
         } else {
@@ -4589,6 +4607,29 @@ mod tests {
     // 55=AAPL|167=CS|100=BEST|15=USD` before the 35=D); the answer gives the
     // order its conId. A second order of the same contract is looked up
     // again and takes the slot of that conId; no contract gives 200.
+    // ibx#669: the order rules come from the order's own lookup reply when
+    // it holds the record of the order's exchange: after the reply, the
+    // order goes out with no second definition asked.
+    #[test]
+    fn the_lookup_reply_gives_the_order_rules() {
+        let mut context = Context::new();
+        let slot = context.market.try_register_unresolved().unwrap();
+        context.market.set_symbol(slot, "AAPL".into());
+        context.market.set_routing(slot, "STK", "SMART");
+        context.market.set_currency(slot, "USD");
+        context.pending_orders.push(OrderRequest::SubmitLimit { order_id: 6, instrument: slot, side: Side::Buy, qty: 1, price: 100 * P });
+        let shared = Arc::new(SharedState::new());
+        let (client, mut server) = crate::protocol::connection::mem_pair();
+        let mut conn = Some(Connection::new_mem(client));
+        assert_eq!(drain_frames(&mut context, &shared, &mut conn, &mut server).len(), 1, "the lookup");
+        let id = format!("FixSecDefReqBySymbol{}", ORDER_LOOKUP_FIRST_ID);
+        let reply = format!("8=FIX.4.1|35=d|320={id}|322=*|323=4|55=AAPL|167=STK|207=BEST|6008=265598|15=USD|6431=LMT/3,MKT/1,STP/1,RTH/1,PRICECHK/1|6046=BEST,NASDAQ,ARCA|146=1|6344=1|6008=265598|10=000|").replace('|', "");
+        assert!(order_contract_reply(&mut context, &shared, &id, reply.as_bytes()));
+        assert!(context.rth_types.get(&(265598, "BEST".to_string())).is_some_and(|t| t.price_chk && t.smart));
+        let frames = drain_frames(&mut context, &shared, &mut conn, &mut server);
+        assert!(frames.iter().all(|f| !tag(f, 320).is_some_and(|v| v.starts_with("ibxrth"))), "{frames:?}");
+    }
+
     // ibx#667: an order for the broker's ATS venue given by symbol is
     // looked up on SMART, as the reference (pre-market 13/10/2026).
     #[test]
