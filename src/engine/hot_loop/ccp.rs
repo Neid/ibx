@@ -3890,7 +3890,7 @@ const LEDGER_KEYS: &[(&str, &str)] = &[
 ///   seven decimals; captured 07/10/2026: exchange rate `1.00`, cash
 ///   balance `896958.4231`). A tag the row has not gives no row.
 /// `form_10_40`: the rows of the account frames without the currency of
-/// 8002, as 10.40 gave them (ibx#637).
+/// their own field, as 10.40 gave them (ibx#637).
 pub(crate) fn parse_account_rows(text: &str, form_10_40: bool) -> (Vec<(String, String, String)>, Option<i64>) {
     let mut rows = Vec::new();
     let mut time: Option<i64> = None;
@@ -3956,7 +3956,8 @@ pub(crate) fn parse_account_rows(text: &str, form_10_40: bool) -> (Vec<(String, 
                 value = None;
             }
             // The account frames of 10.51 give SettledCashByDate once per
-            // currency, BASE and USD, in 8002 (ibx#637; paper 13/10/2026).
+            // currency, BASE and USD, in its own field (ibx#637; paper
+            // 13/10/2026).
             "8002" if ledger || !form_10_40 => currency = val,
             "15" if !ledger => currency = val,
             "8004" => value = Some(val),
