@@ -1454,6 +1454,11 @@ impl HotLoop {
         }
         if self.context.lot_ready.is_empty() { return; }
         for sub in std::mem::take(&mut self.context.lot_ready) {
+            // A snapshot's type taken from the definition goes to the
+            // client (ibx#676).
+            if sub.snapshot && !sub.sec_type.is_empty() {
+                self.shared.market.push_md_kind(sub.instrument, &sub.sec_type);
+            }
             self.route_md_subscribe(&sub);
         }
     }
@@ -1969,8 +1974,12 @@ impl HotLoop {
                         };
                         // Its type for the routing too: the request's
                         // parameters name the option's exchange code (ibx#671).
+                        let untyped = sub.sec_type.is_empty();
                         if farm::fill_from_definition(&self.context, &mut sub) && !sub.sec_type.is_empty() {
                             self.context.market.set_routing(id, &sub.sec_type, "");
+                            if untyped && sub.snapshot {
+                                self.shared.market.push_md_kind(id, &sub.sec_type);
+                            }
                         }
                         if con_id == 0 {
                             self.lookup_md_contract(sub, String::new(), filters);

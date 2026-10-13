@@ -715,6 +715,9 @@ pub struct MarketDataState {
     /// Slots of requests without a conId whose contract was found, with
     /// its conId (ibx#444).
     md_resolved: Mutex<Vec<(InstrumentId, i64)>>,
+    /// The security type of a snapshot's contract taken from its
+    /// definition (ibx#676).
+    md_kinds: Mutex<Vec<(InstrumentId, String)>>,
     /// The request parameters of acked subscriptions (ibx#449).
     tick_req_params: Mutex<Vec<TickReqParams>>,
     /// Request parameters known before the acknowledgement, and whether the
@@ -810,6 +813,7 @@ impl MarketDataState {
             md_rejects: Mutex::new(Vec::new()),
             md_merges: Mutex::new(Vec::new()),
             md_resolved: Mutex::new(Vec::new()),
+            md_kinds: Mutex::new(Vec::new()),
             tick_req_params: Mutex::new(Vec::new()),
             early_tick_req_params: Mutex::new(Vec::new()),
             snapshot_acks: Mutex::new(Vec::new()),
@@ -884,6 +888,18 @@ impl MarketDataState {
     /// The lookup of a request without a conId found its contract (ibx#444).
     #[doc(hidden)] pub fn push_md_resolved(&self, instrument: InstrumentId, con_id: i64) {
         self.md_resolved.lock().unwrap().push((instrument, con_id));
+    }
+
+    /// A snapshot's contract given by its conId alone has this type, from
+    /// its definition (ibx#676).
+    #[doc(hidden)] pub fn push_md_kind(&self, instrument: InstrumentId, sec_type: &str) {
+        self.md_kinds.lock().unwrap().push((instrument, sec_type.to_string()));
+    }
+
+    pub fn drain_md_kinds(&self) -> Vec<(InstrumentId, String)> {
+        let mut kinds = self.md_kinds.lock().unwrap();
+        if kinds.is_empty() { return Vec::new(); }
+        kinds.drain(..).collect()
     }
 
     pub fn drain_md_resolved(&self) -> Vec<(InstrumentId, i64)> {

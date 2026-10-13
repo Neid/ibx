@@ -408,6 +408,27 @@ fn snapshot_pass(snap: &mut PlainSnapshot, m: &Mirror, pass: Pass, out: &mut Out
     let f = m.fields;
     let has = |idx: usize| set & (1 << idx) != 0 && f[idx] != 0;
     let kept = matches!(pass, Pass::Step(MdStep::KeptQuote, _));
+    // An index (ibx#680; the reference 10.51, SPX on CBOE, 13/10/2026,
+    // regular hours): a time of 0, high, low and close unset, then the bid
+    // and ask with their sizes; never a last, its size, the volume, the
+    // open or the halted state, so it ends at the time limit.
+    if snap.index && !delayed {
+        if snap.take(TICK_LAST_TIMESTAMP) {
+            out.push(MdTick::Time { tick_type: TICK_LAST_TIMESTAMP, secs: 0 });
+        }
+        for tt in [TICK_HIGH, TICK_LOW, TICK_CLOSE] {
+            if snap.take(tt) {
+                out.unset_price(tt);
+            }
+        }
+        for (idx, size, pt, st) in [(field::BID, field::BID_SIZE, TICK_BID, TICK_BID_SIZE), (field::ASK, field::ASK_SIZE, TICK_ASK, TICK_ASK_SIZE)] {
+            if has(idx) && snap.take(pt) {
+                out.price(pt, idx, false);
+                out.size(st, size);
+            }
+        }
+        return;
+    }
     for (idx, size, pt, st, auto) in [
         (field::BID, field::BID_SIZE, TICK_BID, TICK_BID_SIZE, m.auto.bid_auto()),
         (field::ASK, field::ASK_SIZE, TICK_ASK, TICK_ASK_SIZE, m.auto.ask_auto()),
@@ -547,6 +568,16 @@ impl ClientCore {
     /// `mdoff` gets no top of book tick; its snapshot still ends as the
     /// quote completes (ibx#444).
     pub fn poll_market_data(&self, shared: &SharedState, now: Option<std::time::Instant>, out: &mut Vec<MdOut>) {
+        // A snapshot asked with no type takes its definition's (ibx#676).
+        for (instrument, kind) in shared.market.drain_md_kinds() {
+            let reqs: Vec<i64> = self.instrument_to_req.lock().unwrap().get(&instrument).cloned().unwrap_or_default();
+            let mut snaps = self.snapshot_reqs.lock().unwrap();
+            for req in reqs {
+                if let Some(snap) = snaps.get_mut(&req) {
+                    snap.retype(&kind);
+                }
+            }
+        }
         let queue = &shared.market.md_events;
         let head = queue.head();
         let tail = queue.tail();
@@ -1068,6 +1099,32 @@ mod tests {
             "price:1:1:99", "size:1:0:1",
         ]);
         assert!(poll(&core, &shared).is_empty());
+    }
+
+    // ibx#680 (the reference 10.51, SPX on CBOE, 13/10/2026, regular
+    // hours): an index snapshot gives a time of 0, high, low and close
+    // unset, the bid and ask with their sizes, and nothing of the last; it
+    // is not complete (it ends at the time limit). ibx#676: a snapshot asked
+    // with no type takes its definition's.
+    #[test]
+    fn an_index_snapshot_and_a_retyped_one() {
+        let (core, shared) = (ClientCore::new(), SharedState::new());
+        assert!(core.attach_md_request(&shared, 1, 5, true, "IND", "CBOE", None, false, false));
+        let q = Quote { bid: 7800 * PRICE_SCALE, ask: 7801 * PRICE_SCALE, bid_size: QTY_SCALE, ask_size: QTY_SCALE,
+            last: 7800 * PRICE_SCALE, high: 7810 * PRICE_SCALE, ..Default::default() };
+        shared.market.push_test_message(5, &q, &TestMessage { steps: Some(&[MdStep::Quote, MdStep::Last]), ..Default::default() });
+        let max = f64::MAX;
+        assert_eq!(poll(&core, &shared), ["mdt:1:1".to_string(), "string:1:45:0".into(), format!("price:1:6:{max}"),
+            format!("price:1:7:{max}"), format!("price:1:9:{max}"), "price:1:1:7800".into(), "size:1:0:1".into(),
+            "price:1:2:7801".into(), "size:1:3:1".into()]);
+        assert!(!core.snapshot_reqs.lock().unwrap()[&1].complete());
+
+        let mut snap = PlainSnapshot::new("", std::time::Instant::now());
+        assert!(snap.untyped);
+        snap.retype("OPT");
+        assert!(!snap.untyped && !snap.index);
+        snap.retype("IND");
+        assert!(!snap.index, "typed once");
     }
 
     // ibx#671 (the reference 10.51, 13/10/2026, an option with no trade

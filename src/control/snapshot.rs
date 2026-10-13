@@ -109,11 +109,31 @@ pub struct PlainSnapshot {
     /// The tick types sent (or never to be sent), as `tick_bit`s.
     pub sent: u64,
     option: bool,
+    /// An index: the reference's snapshot has no last side (ibx#680).
+    pub index: bool,
+    /// Asked with no security type: typed once the engine knows the
+    /// definition's (ibx#676).
+    pub untyped: bool,
 }
 
 impl PlainSnapshot {
     pub fn new(sec_type: &str, started: Instant) -> Self {
-        Self { started, sent: premarked(sec_type), option: is_option(sec_type) }
+        Self {
+            started, sent: premarked(sec_type), option: is_option(sec_type),
+            index: sec_type.eq_ignore_ascii_case("IND"), untyped: sec_type.is_empty(),
+        }
+    }
+
+    /// The type of a snapshot asked with none, from the contract's
+    /// definition (ibx#676): what it waits for follows that type.
+    pub fn retype(&mut self, sec_type: &str) {
+        if !self.untyped || sec_type.is_empty() {
+            return;
+        }
+        self.untyped = false;
+        self.sent = (self.sent & !premarked("")) | premarked(sec_type);
+        self.option = is_option(sec_type);
+        self.index = sec_type.eq_ignore_ascii_case("IND");
     }
 
     /// Whether the tick type is to be sent now: the first time only, and
