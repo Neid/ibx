@@ -61,6 +61,9 @@ pub(crate) struct RthTypes {
     /// SMART is a valid exchange of the contract (tag 6046 names it BEST;
     /// `jclient.dy.dI()`), for the redirect precaution (ibx#486).
     pub smart: bool,
+    /// The contract's valid exchanges, BEST named SMART; None when the
+    /// definition has no list (ibx#630).
+    pub valid_exchanges: Option<Vec<String>>,
 }
 
 impl RthTypes {

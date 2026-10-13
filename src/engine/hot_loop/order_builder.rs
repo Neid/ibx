@@ -241,6 +241,12 @@ fn send_orders(
             if route_bbo_precaution(&order_req, context, shared) {
                 continue;
             }
+            // Directed to an exchange the contract does not list (ibx#630).
+            match invalid_exchange_refusal(&order_req, context, conn, hb, shared) {
+                Some(false) => { context.rth_parked.push(rewrap(order_req)); continue; }
+                Some(true) => continue,
+                None => {}
+            }
             drop_seek_off_smart(&mut order_req, context, shared);
         }
         // The contract's currency (tag 15), USD when unknown (ibx#466).
@@ -3014,6 +3020,8 @@ pub(crate) fn rth_definition_reply(context: &mut Context, req_id: &str, msg: &[u
         def.as_ref().map(|d| d.currency.as_str()).unwrap_or(""),
     );
     types.smart = tags.get(&6046).is_some_and(|v| v.split(',').any(|e| e == "BEST" || e == "SMART"));
+    types.valid_exchanges = tags.get(&6046).map(|v| v.split(',')
+        .map(|e| if e == "BEST" { "SMART".to_string() } else { e.to_string() }).collect());
     log::info!("Outside RTH definition for con_id {} on {}: {:?}", key.0, key.1, types);
     log::debug!("Order-type list for con_id {} on {}: {:?}", key.0, key.1, tokens);
     context.rth_types.insert(key, types);
@@ -3311,6 +3319,50 @@ fn redirect_precaution(
                 timestamp_ns: context.now_ns(),
             });
             shared.orders.push_order_notice(oid, 201, "Order rejected - reason:Order was discarded.".into());
+            Some(true)
+        }
+    }
+}
+
+/// An order directed to an exchange its contract does not list among its
+/// valid exchanges (from the contract's definition on that exchange, BEST
+/// counted as SMART) is refused with 464 "Invalid exchange" and nothing is
+/// sent; kept, not working, its cancel ends it with Cancelled, 202 and 161
+/// (ibx#630; the reference 10.51 and 10.40 check it after the redirect and
+/// route-to-BBO precautions, `trader.order.proc.aN.a(...)@3544`; paper
+/// 12/10 and 13/10/2026: AAPL to ISLAND refused, to NASDAQ sent). Not
+/// checked: the broker's ATS venue, AVGCOST and IBDESK, as the reference,
+/// and a definition without a list. `Some(false)` while the definition is
+/// asked, `Some(true)` when refused, `None` to go on.
+fn invalid_exchange_refusal(
+    req: &OrderRequest,
+    context: &mut Context,
+    conn: &mut Connection,
+    hb: &mut HeartbeatState,
+    shared: &Arc<SharedState>,
+) -> Option<bool> {
+    if req.combo().is_some() || matches!(req, OrderRequest::SubmitBracket { .. } | OrderRequest::CancelAll { .. }) {
+        return None;
+    }
+    let qty = req.new_order_qty()?;
+    let instrument = req.instrument()?;
+    let exchange = context.market.exchange(instrument).to_ascii_uppercase();
+    if matches!(exchange.as_str(), "" | "SMART" | "IBKRATS" | "AVGCOST" | "IBDESK") {
+        return None;
+    }
+    match definition(context, conn, hb, instrument) {
+        Definition::NoContract => None,
+        Definition::Waiting => Some(false),
+        Definition::Known(types, _) => {
+            let listed = types.valid_exchanges.as_ref()?.iter().any(|e| e.eq_ignore_ascii_case(&exchange));
+            if listed {
+                return None;
+            }
+            let oid = req.order_id();
+            log::warn!("Order {} refused: {} is not a valid exchange of its contract", oid, exchange);
+            shared.orders.push_order_error(oid, 464, "Invalid exchange".to_string());
+            let parent = req.new_order_side().and_then(|(_, a)| a).map_or(0, |a| a.parent_id);
+            context.unsent.insert(oid, (instrument, qty, parent));
             Some(true)
         }
     }
@@ -6343,6 +6395,54 @@ mod tests {
         let (frames, errors) = run("SMART", &with_prot, mkt_prt(97));
         assert_eq!((frames.len(), tag(&frames[0], 40)), (1, Some("U")));
         assert!(errors.is_empty());
+    }
+
+    // ibx#630 (the reference 10.51, paper, pre-market 12/10 and 13/10/2026,
+    // redirect precaution bypassed): AAPL directed to ISLAND, which its
+    // valid exchanges do not list, is refused with 464 and nothing is sent;
+    // its cancel ends it with Cancelled, 202 and 161. Directed to NASDAQ,
+    // which they list, it is sent; so is it when the definition has no list.
+    #[test]
+    fn a_directed_order_to_an_exchange_the_contract_does_not_list_gets_464() {
+        const VALID: &str = "BEST,AMEX,NYSE,CBOE,PHLX,ISE,CHX,ARCA,NASDAQ,DRCTEDGE,BEX,BATS,EDGEA,BYX,IEX,EDGX,FOXRIVER,PEARL,NYSENAT,LTSE,MEMX,IBEOS,OVERNIGHT,TPLUS0,PSX";
+        let run = |exchange: &str, valid: Option<&str>, order_id: OrderId| {
+            let (client, mut server) = crate::protocol::connection::mem_pair();
+            let mut conn = Some(Connection::new_mem(client));
+            let shared = Arc::new(SharedState::new());
+            let mut context = Context::new();
+            context.bypass_redirect_warning = true;
+            context.market.register(265598);
+            context.set_symbol(0, "AAPL".to_string());
+            context.market.set_routing(0, "STK", exchange);
+            context.pending_orders.push(OrderRequest::SubmitLimit {
+                order_id, instrument: 0, side: Side::Buy, qty: 1, price: px(100.0) });
+            let frames = drain_frames(&mut context, &shared, &mut conn, &mut server);
+            assert_eq!(tag(&frames[0], 35), Some("c"), "the definition is asked: {frames:?}");
+            let id = tag(&frames[0], 320).unwrap().to_string();
+            let mut fields = vec![(35, "d"), (320, id.as_str()), (6008, "265598"), (55, "AAPL"), (167, "STK"),
+                (15, "USD"), (207, exchange), (6523, "USSTK"), (6431, "DAY/3,LMT/3,MKT/1,RTH/1")];
+            if let Some(v) = valid {
+                fields.push((6046, v));
+            }
+            assert!(rth_definition_reply(&mut context, &id, &fix::fix_build(&fields, 1)));
+            let frames = drain_frames(&mut context, &shared, &mut conn, &mut server);
+            (frames, shared, context, conn, server)
+        };
+        let (frames, shared, mut context, mut conn, mut server) = run("ISLAND", Some(VALID), 70);
+        assert!(frames.is_empty(), "nothing sent: {frames:?}");
+        assert_eq!(shared.orders.drain_order_errors(), [(70, 464, "Invalid exchange".to_string())]);
+        assert!(shared.orders.drain_order_updates().is_empty(), "no status with the refusal");
+        context.pending_orders.push(OrderRequest::Cancel { order_id: 70 });
+        assert!(drain_frames(&mut context, &shared, &mut conn, &mut server).is_empty(), "nothing sent");
+        assert_eq!(shared.orders.drain_order_updates().iter().map(|u| (u.order_id, u.status)).collect::<Vec<_>>(),
+            [(70, OrderStatus::Cancelled)]);
+        assert_eq!(shared.orders.drain_order_notices().iter().map(|n| (n.0, n.1)).collect::<Vec<_>>(), [(70, 202), (70, 161)]);
+
+        for (exchange, valid) in [("NASDAQ", Some(VALID)), ("ISLAND", None)] {
+            let (frames, shared, ..) = run(exchange, valid, 71);
+            assert_eq!(frames.iter().filter(|f| tag(f, 35) == Some("D")).count(), 1, "{exchange}: sent: {frames:?}");
+            assert!(shared.orders.drain_order_errors().is_empty(), "{exchange}");
+        }
     }
 
     // ibx#542, paper 09/10/2026 (the reference and ibx on the same case):

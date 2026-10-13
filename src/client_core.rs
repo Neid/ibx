@@ -3954,10 +3954,11 @@ impl ClientCore {
         if matches!(code, 10311 | 10329 | 10353) {
             self.discarded.lock().unwrap().insert(order_id);
         }
-        // Refused with 387, or 437, 496, 497 (ibx#607), before it was sent: the order is not an open
-        // order, and no open-order request lists it; its cancel ends it
-        // (ibx#542).
-        if matches!(code, 387 | 437 | 496 | 497)
+        // Refused with 387, or 437, 496, 497 (ibx#607), or 464 on an
+        // exchange the contract does not list (ibx#630), before it was
+        // sent: the order is not an open order, and no open-order request
+        // lists it; its cancel ends it (ibx#542).
+        if matches!(code, 387 | 437 | 496 | 497 | 464)
             && let Some(o) = self.open_orders.lock().unwrap().get_mut(&order_id)
             && o.status == "PendingSubmit"
         {
