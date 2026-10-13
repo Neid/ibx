@@ -3236,7 +3236,13 @@ fn look_up_order_contract(context: &mut Context, conn: &mut Connection, hb: &mut
     let lookup = super::ccp::SymbolLookup {
         symbol: context.market.symbol(instrument).to_string(),
         sec_type,
-        exchange: context.market.exchange(instrument).to_string(),
+        // An order for the broker's ATS venue is looked up on SMART, as
+        // the reference looks it up (ibx#667; observed 13/10/2026,
+        // pre-market, paper: AAPL for the venue, the lookup on BEST).
+        exchange: match context.market.exchange(instrument) {
+            "IBKRATS" => "SMART".to_string(),
+            other => other.to_string(),
+        },
         currency: context.market.currency(instrument).to_string(),
         filters,
         continuous: false,
@@ -4557,6 +4563,24 @@ mod tests {
     // 55=AAPL|167=CS|100=BEST|15=USD` before the 35=D); the answer gives the
     // order its conId. A second order of the same contract is looked up
     // again and takes the slot of that conId; no contract gives 200.
+    // ibx#667: an order for the broker's ATS venue given by symbol is
+    // looked up on SMART, as the reference (pre-market 13/10/2026).
+    #[test]
+    fn an_order_for_the_ats_venue_is_looked_up_on_smart() {
+        let mut context = Context::new();
+        let slot = context.market.try_register_unresolved().unwrap();
+        context.market.set_symbol(slot, "AAPL".into());
+        context.market.set_routing(slot, "STK", "IBKRATS");
+        context.market.set_currency(slot, "USD");
+        context.pending_orders.push(OrderRequest::SubmitLimit { order_id: 6, instrument: slot, side: Side::Buy, qty: 1, price: 100 * P });
+        let shared = Arc::new(SharedState::new());
+        let (client, mut server) = crate::protocol::connection::mem_pair();
+        let mut conn = Some(Connection::new_mem(client));
+        let frames = drain_frames(&mut context, &shared, &mut conn, &mut server);
+        assert_eq!(frames.len(), 1, "{frames:?}");
+        assert_eq!((tag(&frames[0], 35), tag(&frames[0], 100), tag(&frames[0], 207)), (Some("c"), Some("BEST"), None));
+    }
+
     #[test]
     fn a_new_order_without_a_contract_id_waits_for_its_lookup() {
         let mut context = Context::new();
