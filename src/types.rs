@@ -1964,7 +1964,7 @@ pub struct CompletedOrder {
 
 /// Optional request-side filters for a by-symbol contract-details lookup.
 /// Empty/zero fields are omitted from the request (ib-agent#171, ibx#229).
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct SecDefFilters {
     pub primary_exchange: String,
     pub local_symbol: String,
@@ -2127,7 +2127,9 @@ pub enum ControlCommand {
     /// A slot of its own for the contract of an order given without a
     /// conId: the engine looks the contract up before the order goes out,
     /// as the reference does for each API order (ibx#486).
-    RegisterOrderContract { symbol: String, sec_type: String, exchange: String, currency: String, reply_tx: Option<crossbeam_channel::Sender<Result<InstrumentId, String>>> },
+    /// `filters`: the contract's terms for the lookup of a contract other
+    /// than a stock (ibx#666).
+    RegisterOrderContract { symbol: String, sec_type: String, exchange: String, currency: String, filters: Box<SecDefFilters>, reply_tx: Option<crossbeam_channel::Sender<Result<InstrumentId, String>>> },
     /// Request historical bar data via historical data connection.
     FetchHistorical {
         req_id: ReqId,

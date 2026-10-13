@@ -2113,11 +2113,17 @@ impl HotLoop {
                 ControlCommand::RegisterInstrument { con_id, symbol, sec_type, exchange, reply_tx } => {
                     self.register_or_reject(con_id, symbol, &sec_type, &exchange, &reply_tx);
                 }
-                ControlCommand::RegisterOrderContract { symbol, sec_type, exchange, currency, reply_tx } => {
+                ControlCommand::RegisterOrderContract { symbol, sec_type, exchange, currency, filters, reply_tx } => {
                     // Its conId comes from the lookup before the order
-                    // goes out (ibx#486).
+                    // goes out (ibx#486); a contract other than a stock is
+                    // looked up with its terms, as the reference (ibx#666).
                     if let Some(id) = self.register_slot_or_reject(None, symbol, &sec_type, &exchange, &reply_tx) {
                         self.context.market.set_currency(id, &currency);
+                        if !matches!(sec_type.to_ascii_uppercase().as_str(), "" | "STK" | "CS") {
+                            self.context.order_lookup_filters.insert(id, *filters);
+                        } else {
+                            self.context.order_lookup_filters.remove(&id);
+                        }
                     }
                 }
                 ControlCommand::ResolveContract { req_id, lookup, request } => {

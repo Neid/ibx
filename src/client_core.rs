@@ -1946,6 +1946,7 @@ impl ClientCore {
     pub fn order_instrument(
         &self, control_tx: &ControlSender, order_id: OrderId, what_if: bool,
         con_id: i64, symbol: &str, exchange: &str, sec_type: &str, currency: &str,
+        filters: crate::types::SecDefFilters,
     ) -> Result<InstrumentId, String> {
         if con_id != 0 || sec_type.eq_ignore_ascii_case("BAG") {
             return self.find_or_register_instrument(control_tx, con_id, symbol, exchange, sec_type);
@@ -1956,7 +1957,7 @@ impl ClientCore {
         let (reply_tx, reply_rx) = crossbeam_channel::bounded(1);
         control_tx.send(ControlCommand::RegisterOrderContract {
             symbol: symbol.to_string(), sec_type: sec_type.to_string(), exchange: exchange.to_string(),
-            currency: currency.to_string(), reply_tx: Some(reply_tx),
+            currency: currency.to_string(), filters: Box::new(filters), reply_tx: Some(reply_tx),
         }).map_err(|e| format!("Engine stopped: {}", e))?;
         Self::recv_registration(reply_rx)
     }
@@ -5274,29 +5275,18 @@ impl ClientCore {
         (out, ok)
     }
 
-    /// Reject orders whose contract is not a common stock.
-    ///
-    /// The outbound order encoding in `engine::hot_loop::order_builder` only
-    /// supports common stock, and the instrument registry drops
-    /// `sec_type`/`exchange`. A non-STK contract (OPT/FUT/BAG/…) would
-    /// therefore be sent as a stock order on the underlying symbol with no
-    /// error surfaced. Until non-STK encoding lands, reject those contracts
-    /// up front.
-    ///
-    /// An empty `sec_type` is treated as STK (the engine default), so existing
-    /// stock callers that omit the field are unaffected.
-    /// See: https://github.com/deepentropy/ibx/issues/202
+    /// Refuse orders on the security types whose order message ibx does not
+    /// write yet. Written: stocks (an empty type is a stock), combos
+    /// (ibx#470), futures, CFDs and forex pairs (ibx#666, the reference's
+    /// messages of 13/10/2026). The others (options and the rest) would
+    /// otherwise go out without the fields their message needs (ibx#202).
     pub fn validate_order_contract(sec_type: &str) -> Result<(), String> {
-        // A combo (BAG) goes out with its legs, as the reference builds it
-        // (ibx#470).
-        if sec_type.is_empty() || sec_type.eq_ignore_ascii_case("STK") || sec_type.eq_ignore_ascii_case("BAG") {
+        const WRITTEN: [&str; 5] = ["STK", "BAG", "FUT", "CFD", "CASH"];
+        if sec_type.is_empty() || WRITTEN.iter().any(|t| sec_type.eq_ignore_ascii_case(t)) {
             return Ok(());
         }
         Err(format!(
-            "Unsupported contract sec_type '{}': only STK and BAG orders are supported. \
-             Other contracts (OPT/FUT/…) are not yet wire-encoded and would \
-             otherwise be silently sent as a stock order on the underlying symbol. \
-             See https://github.com/deepentropy/ibx/issues/202",
+            "Unsupported contract sec_type '{}': orders are written for STK, BAG, FUT, CFD and CASH only.              See https://github.com/deepentropy/ibx/issues/666",
             sec_type
         ))
     }

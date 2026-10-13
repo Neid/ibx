@@ -195,6 +195,17 @@ fn send_orders(
                 }
             }
         }
+        // A contract other than a stock or a combo: its definition first,
+        // for the fields its order message carries (ibx#666).
+        if let Some(instrument) = order_req.new_order_qty().and(order_req.instrument()).filter(|_| order_req.combo().is_none()) {
+            let (sec_type, _) = context.market.order_routing(instrument);
+            if !matches!(sec_type.as_str(), "" | "STK" | "BAG")
+                && matches!(definition(context, conn, hb, instrument), Definition::Waiting)
+            {
+                context.rth_parked.push(rewrap(order_req));
+                continue;
+            }
+        }
         // A pegged or protection type the contract's list does not allow
         // on the order's exchange is refused, as the reference (ibx#414,
         // ibx#493).
@@ -2133,6 +2144,16 @@ fn send_new_order(
         .map(|id| id.to_string());
     let client_id = context.api_client_id.to_string();
     let stock = fields.iter().any(|&(t, v)| t == 167 && v == "STK");
+    // A future, a CFD or a forex pair: its contract month (futures), local
+    // symbol and multiplier from its definition, and a forex quantity with
+    // two decimals (the reference 10.51, paper, 13/10/2026: MES, AAPL CFD,
+    // EUR.USD; ibx#666).
+    let sec_type = field(fields, 167).unwrap_or("");
+    let terms = matches!(sec_type, "FUT" | "CFD" | "CASH").then(|| {
+        let (_, destination) = context.market.order_routing(instrument);
+        context.rth_types.get(&(con_id, destination))
+    }).flatten();
+    let cash_qty = (sec_type == "CASH").then(|| field(fields, 38).map(|q| format!("{q}.00"))).flatten();
     // An option's terms after its symbol, and its multiplier
     // (`jclient.pe.c(StringBuffer)@1195-1235`, `@1485`).
     let option = context.market.option_terms(instrument).map(|t| (
@@ -2144,6 +2165,7 @@ fn send_new_order(
     let mut out: Vec<(u32, &str)> = Vec::with_capacity(fields.len() + short_sale.len() + 10);
     for &(tag, value) in fields {
         match (tag, what_if) {
+            (38, _) if cash_qty.is_some() => out.push((38, cash_qty.as_deref().unwrap_or(value))),
             (11, Some(clord)) => out.push((11, clord)),
             (583 | 6209, Some(_)) => {}
             _ => out.push((tag, value)),
@@ -2177,6 +2199,13 @@ fn send_new_order(
     out.push((6119, &client_id));
     // A stock's multiplier, as the reference writes it; an option's terms.
     if stock { out.push((231, "1.00")); }
+    if let Some(t) = terms {
+        if sec_type == "FUT" && !t.contract_month.is_empty() { out.push((200, t.contract_month.as_str())); }
+        if !t.local_symbol.is_empty() { out.extend([(48, t.local_symbol.as_str()), (22, "101")]); }
+    }
+    if let Some(t) = terms {
+        out.push((231, if t.multiplier.is_empty() { "1.00" } else { t.multiplier.as_str() }));
+    }
     if let Some((maturity, right, strike, multiplier)) = &option {
         out.extend([(200, maturity.as_str()), (201, *right), (202, strike.as_str()), (231, multiplier.as_str())]);
     }
@@ -2330,7 +2359,8 @@ pub(crate) fn reference_rank(tag: u32) -> u16 {
         18 => 123,
         // An option's maturity, right and strike follow the symbol.
         55 | 200 | 201 | 202 => 124,
-        167 => 125,
+        // The local symbol and its source after the security type (ibx#666).
+        167 | 48 | 22 => 125,
         231 => 126,
         54 => 127,
         59 => 128,
@@ -3021,6 +3051,11 @@ pub(crate) fn rth_definition_reply(context: &mut Context, req_id: &str, msg: &[u
     );
     types.smart = tags.get(&6046).is_some_and(|v| v.split(',').any(|e| e == "BEST" || e == "SMART"));
     types.under_sec_type = tags.get(&310).cloned().unwrap_or_default();
+    if let Some(d) = def.as_ref() {
+        types.local_symbol = d.local_symbol.clone();
+        types.contract_month = d.contract_month.clone();
+        types.multiplier = format!("{:.2}", if d.multiplier > 0.0 { d.multiplier } else { 1.0 });
+    }
     types.valid_exchanges = tags.get(&6046).map(|v| v.split(',')
         .map(|e| if e == "BEST" { "SMART".to_string() } else { e.to_string() }).collect());
     log::info!("Outside RTH definition for con_id {} on {}: {:?}", key.0, key.1, types);
@@ -3155,11 +3190,14 @@ fn look_up_order_contract(context: &mut Context, conn: &mut Connection, hb: &mut
     // takes its answer (ibx#547; the bracket recordings of 26/09/2026:
     // three orders placed at once, one lookup; placed three seconds apart
     // on 09/10/2026, one lookup each).
-    let same = |m: &crate::engine::market_state::MarketState, a, b| {
+    let filters = context.order_lookup_filters.get(&instrument).cloned().unwrap_or_default();
+    let same = |c: &Context, a, b| {
+        let m = &c.market;
         m.symbol(a) == m.symbol(b) && m.order_routing(a) == m.order_routing(b)
             && m.exchange(a) == m.exchange(b) && m.currency(a) == m.currency(b)
+            && c.order_lookup_filters.get(&a) == c.order_lookup_filters.get(&b)
     };
-    if let Some(&(in_flight, _)) = context.order_lookups.iter().find(|(_, other)| same(&context.market, *other, instrument)) {
+    if let Some(&(in_flight, _)) = context.order_lookups.iter().find(|(_, other)| same(context, *other, instrument)) {
         context.order_lookups.push((in_flight, instrument));
         return;
     }
@@ -3172,7 +3210,7 @@ fn look_up_order_contract(context: &mut Context, conn: &mut Connection, hb: &mut
         sec_type,
         exchange: context.market.exchange(instrument).to_string(),
         currency: context.market.currency(instrument).to_string(),
-        filters: Default::default(),
+        filters,
         continuous: false,
     };
     super::ccp::send_symbol_lookup_on(conn, crate::types::ReqId::from(lookup_id), &lookup, "");
@@ -7938,6 +7976,33 @@ mod tests {
     // (1 call), strike 202, 167=OPT, 231. Without them the server refused
     // the option's conId sent as a stock (201 "Contract does not match
     // supplied contract parameters", paper 03/10/2026).
+    // ibx#666: the order messages of a future, a CFD and a forex pair, as
+    // the reference 10.51 wrote them (paper, 13/10/2026, `.tmp/666`): the
+    // contract month of a future after the symbol, the local symbol and
+    // its source after the security type, the multiplier, a forex
+    // quantity with two decimals.
+    #[test]
+    fn future_cfd_and_forex_orders_as_the_reference() {
+        let run = |sec_type: &str, symbol: &str, exchange: &str, destination: &str, local: &str, month: &str, mult: &str, qty: u32, price: i64| {
+            let tags = wire_tags_with(|c| {
+                c.market.set_symbol(0, symbol.into());
+                c.market.set_routing(0, sec_type, exchange);
+                c.rth_types.insert((265598, destination.to_string()), crate::engine::outside_rth::RthTypes {
+                    rth: true, sec_type: sec_type.into(), local_symbol: local.into(), contract_month: month.into(),
+                    multiplier: mult.into(), ..Default::default()
+                });
+            }, OrderRequest::SubmitLimit { order_id: 9, instrument: 0, side: Side::Buy, qty, price });
+            tags.iter().filter(|(t, _)| matches!(t, 38 | 40 | 55 | 200 | 167 | 48 | 22 | 231 | 54 | 59 | 100 | 6210))
+                .map(|(t, v)| format!("{t}={v}")).collect::<Vec<_>>().join("|")
+        };
+        assert_eq!(run("FUT", "MES", "CME", "CME", "MESZ6", "202612", "5.00", 1, 1000 * P),
+            "38=1|40=2|55=MES|200=202612|167=FUT|48=MESZ6|22=101|231=5.00|54=1|59=0|100=CME|6210=CME");
+        assert_eq!(run("CFD", "AAPL", "SMART", "BEST", "AAPLn", "", "1.00", 1, 100 * P),
+            "38=1|40=2|55=AAPL|167=CFD|48=AAPLn|22=101|231=1.00|54=1|59=0|100=BEST|6210=BEST");
+        assert_eq!(run("CASH", "EUR", "IDEALPRO", "IDEALPRO", "EUR.USD", "", "1.00", 20000, P),
+            "38=20000.00|40=2|55=EUR|167=CASH|48=EUR.USD|22=101|231=1.00|54=1|59=0|100=IDEALPRO|6210=IDEALPRO");
+    }
+
     #[test]
     fn option_orders_carry_the_option_terms() {
         let tags = wire_tags_with(|c| {

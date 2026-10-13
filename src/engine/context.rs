@@ -284,6 +284,9 @@ pub struct Context {
     /// unless its order type is one the flag never goes with (ibx#492).
     pub(crate) price_mgmt_send: bool,
     /// Round lot by conId, once its definition was read (ibx#287).
+    /// The terms an order's contract is looked up with, by the order's
+    /// slot, for a contract other than a stock (ibx#666).
+    pub(crate) order_lookup_filters: HashMap<crate::types::InstrumentId, crate::types::SecDefFilters>,
     pub(crate) round_lots: HashMap<i64, i64>,
     /// The conIds of US stocks and warrants among the definitions read
     /// (ibx#648).
@@ -396,6 +399,7 @@ impl Context {
             price_mgmt_exclusions: None,
             price_mgmt_send: false,
             round_lots: HashMap::new(),
+            order_lookup_filters: HashMap::new(),
             us_lots: std::collections::HashSet::new(),
             agg_groups: HashMap::new(),
             listing_exchanges: HashMap::new(),

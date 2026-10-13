@@ -67,6 +67,12 @@ pub(crate) struct RthTypes {
     /// The security type of the contract's underlying (tag 310), for a CFD
     /// (ibx#619).
     pub under_sec_type: String,
+    /// What the order message of a contract other than a stock carries
+    /// (ibx#666): its local symbol, its contract month, its multiplier
+    /// with two decimals (1.00 when the definition has none).
+    pub local_symbol: String,
+    pub contract_month: String,
+    pub multiplier: String,
 }
 
 impl RthTypes {

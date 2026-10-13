@@ -40,7 +40,12 @@ impl EClient {
         }
         let instrument = if contract.sec_type.eq_ignore_ascii_case("BAG") { 0 } else {
             py.detach(|| self.core.order_instrument(&tx, oid, false, contract.con_id, &contract.symbol,
-                &contract.exchange, &contract.sec_type, &contract.currency)).map_err(PyRuntimeError::new_err)?
+                &contract.exchange, &contract.sec_type, &contract.currency, crate::types::SecDefFilters {
+                    primary_exchange: String::new(), local_symbol: contract.local_symbol.clone(),
+                    last_trade_date_or_contract_month: contract.last_trade_date_or_contract_month.clone(),
+                    strike: contract.strike, right: contract.right.clone(), multiplier: contract.multiplier.clone(),
+                    trading_class: contract.trading_class.clone(), ..Default::default()
+                })).map_err(PyRuntimeError::new_err)?
         };
         send_cmd(py, &tx, ControlCommand::HoldOrder {
             order_id: oid, instrument,
@@ -96,7 +101,12 @@ impl EClient {
         // order goes out (ibx#486).
         let instrument = if con_id == 0 && !contract.sec_type.eq_ignore_ascii_case("BAG") {
             py.detach(|| self.core.order_instrument(&tx, oid, api_order.what_if, con_id, &contract.symbol,
-                &contract.exchange, &contract.sec_type, &contract.currency)).map_err(PyRuntimeError::new_err)?
+                &contract.exchange, &contract.sec_type, &contract.currency, crate::types::SecDefFilters {
+                    primary_exchange: String::new(), local_symbol: contract.local_symbol.clone(),
+                    last_trade_date_or_contract_month: contract.last_trade_date_or_contract_month.clone(),
+                    strike: contract.strike, right: contract.right.clone(), multiplier: contract.multiplier.clone(),
+                    trading_class: contract.trading_class.clone(), ..Default::default()
+                })).map_err(PyRuntimeError::new_err)?
         } else {
             let known = self.core.con_id_to_instrument.lock().unwrap().get(&con_id).copied();
             match known {
