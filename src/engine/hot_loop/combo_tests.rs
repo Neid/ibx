@@ -443,6 +443,27 @@ fn directed_combo_without_definition_is_the_captured_one() {
     assert_eq!(s.callbacks.0, ["error 32 200 No security definition has been found for the request"]);
 }
 
+// ibx#677 (the reference 10.51, paper 13/10/2026, whose logon lists
+// REJGNONAT): a SMART combo without any NonGuaranteed value gets 10043 with
+// two legs, 10045 with three.
+#[test]
+fn combos_without_a_non_guaranteed_value() {
+    let mut s = Session::new();
+    let place = |s: &mut Session, contract: &ApiContract, order: &ApiOrder| -> Vec<String> {
+        s.client.place_order(7, contract, order).unwrap();
+        s.run();
+        std::mem::take(&mut s.callbacks.0)
+    };
+    let bare = ApiOrder { smart_combo_routing_params: Vec::new(), ..combo_lmt("BUY", 1.0) };
+    s.engine.shared.reference.set_logon_features("REJGNONAT,PRICECHK");
+    assert_eq!(place(&mut s, &spy_qqq("QQQ,SPY"), &bare),
+        ["error 7 10043 Missing or invalid NonGuaranteed value. REL+MKT, LMT+MKT, and REL+LMT order of two legs can only be set as non-guaranteed."]);
+    let mut three = spy_qqq("QQQ,SPY,DIA");
+    three.combo_legs.push(leg(4_242, "BUY"));
+    assert_eq!(place(&mut s, &three, &bare), ["error 7 10045 This combo order is not supported."]);
+    s.assert_nothing_sent();
+}
+
 // ibx#470: the reference's refusals while it reads and checks a combo
 // order (`jextend.bH.q(ee)`, `jextend.bH.S()`, `jextend.at.a(OrderCreator)`),
 // before anything is sent.
