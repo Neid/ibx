@@ -3282,7 +3282,7 @@ fn look_up_order_contract(context: &mut Context, conn: &mut Connection, hb: &mut
 /// The answer to an order's contract lookup (ibx#486): one contract gives
 /// the slot its conId (or the waiting orders the slot of that conId when
 /// there is one already); none or several give error 200 to the waiting
-/// orders, which stay in the reference's API pending map. False when the
+/// orders, which are not kept (their cancel gives 10147). False when the
 /// reply is not for such a lookup. The cache of definitions takes the
 /// reply's records as any other reply.
 pub(crate) fn order_contract_reply(context: &mut Context, shared: &SharedState, req_id: &str, msg: &[u8]) -> bool {
@@ -3329,12 +3329,12 @@ pub(crate) fn order_contract_reply(context: &mut Context, shared: &SharedState, 
             let (refused, kept): (Vec<OrderRequest>, Vec<OrderRequest>) = std::mem::take(&mut context.rth_parked).into_iter()
                 .partition(|r| r.instrument() == Some(slot) && !matches!(r, OrderRequest::CancelAll { .. }));
             context.rth_parked = kept;
+            // The order is not kept: its cancel finds nothing, 10147, as
+            // the reference (paper, 13/10/2026, regular hours: an AAPL
+            // order for JONES, 200 then 10147).
             for r in refused {
                 let oid = r.order_id();
                 shared.orders.push_order_error(oid, crate::engine::combo::NO_DEFINITION.0, crate::engine::combo::NO_DEFINITION.1.to_string());
-                if !matches!(r, OrderRequest::SubmitWhatIf { .. }) {
-                    context.api_pending.insert(oid, r);
-                }
             }
             // The orders of a group on another contract go on without it.
             for group in context.order_groups.iter_mut() {
@@ -4632,14 +4632,14 @@ mod tests {
         assert!(order_contract_reply(&mut context, &shared, &id, reply.as_bytes()));
         assert_eq!(context.market.con_id(slot), None, "the slot is freed");
         assert_eq!(context.drain_pending_orders().next().and_then(|r| r.instrument()), Some(known));
-        // No contract: 200 to the waiting order, kept in the API pending map.
+        // No contract: 200 to the waiting order, which is not kept.
         let slot = context.market.try_register_unresolved().unwrap();
         context.market.set_symbol(slot, "XYZ".into());
         context.rth_parked.push(OrderRequest::SubmitLimit { order_id: 7, instrument: slot, side: Side::Buy, qty: 1, price: 100 * P });
         context.order_lookups.push((ORDER_LOOKUP_FIRST_ID + 1, slot));
         let empty = "8=FIX.4.1|35=d|320=FixSecDefReqBySymbol3221225473|322=*|323=4|6038=Y|6019=0|6344=0|".replace('|', "\x01");
         assert!(order_contract_reply(&mut context, &shared, "FixSecDefReqBySymbol3221225473", empty.as_bytes()));
-        assert!(context.rth_parked.is_empty() && context.api_pending.contains_key(&7));
+        assert!(context.rth_parked.is_empty() && !context.api_pending.contains_key(&7));
         assert_eq!(shared.orders.drain_order_errors(), [(7, 200, "No security definition has been found for the request".to_string())]);
     }
 
