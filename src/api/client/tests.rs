@@ -6819,6 +6819,33 @@ fn kept_minus_one_has_no_size_and_no_auto_execution() {
     }
 }
 
+// ibx#647 (the reference 10.51, paper, 13/10/2026 after hours, the second
+// stream of an option with no bid or ask): after the kept -1 with an unset
+// size, the farm's own sizes of 0 come; its -1 prices, unchanged, do not.
+#[test]
+fn farm_sizes_of_zero_follow_a_kept_minus_one() {
+    let (client, rx, shared) = test_client();
+    let engine = top_engine(rx);
+    let option = Contract { con_id: 900_000_001, symbol: "SPY".into(), sec_type: "OPT".into(),
+        exchange: "SMART".into(), ..Default::default() };
+    client.req_mkt_data(1, &option, "", false, false).unwrap();
+    let s = crate::types::PRICE_SCALE;
+    let q = crate::types::Quote { bid: -s, ask: -s, ..Default::default() };
+    // The kept step carries its size fields, as the engine writes it.
+    let kept = crate::md_events::TestMessage { steps: Some(&[crate::md_events::MdStep::KeptQuote]), auto_bits: Some(12), sizes_seen: true, ..Default::default() };
+    shared.market.push_test_message(5, &q, &kept);
+    let farm = crate::md_events::TestMessage { steps: Some(&[crate::md_events::MdStep::Quote]), auto_bits: Some(12), sizes_seen: true, ..Default::default() };
+    shared.market.push_test_message(5, &q, &farm);
+    let mut w = SeqRec::default();
+    client.process_msgs(&mut w);
+    let quote: Vec<&String> = w.events.iter().filter(|e| e.starts_with("price:1:1:") || e.starts_with("price:1:2:")
+        || e.starts_with("size:1:0:") || e.starts_with("size:1:3:")).collect();
+    let unset = |tt: i32| format!("size:1:{tt}:{}", f64::MAX);
+    assert_eq!(quote, [&"price:1:1:-1:-".to_string(), &unset(0), &"price:1:2:-1:-".to_string(), &unset(3),
+        &"size:1:0:0".to_string(), &"size:1:3:0".to_string()], "{:?}", w.events);
+    drop(engine);
+}
+
 // A snapshot that never completes ends 11 s after its start; a stream
 // never ends.
 #[test]

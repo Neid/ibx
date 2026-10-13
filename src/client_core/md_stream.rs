@@ -122,6 +122,15 @@ fn size_kind(idx: usize) -> Option<SizeKind> {
     }
 }
 
+/// The price of the side of a kept step's size field.
+fn kept_price(ev: &MdEvent, size_idx: usize) -> i64 {
+    match size_idx {
+        field::BID_SIZE => ev.values[field::BID],
+        field::ASK_SIZE => ev.values[field::ASK],
+        _ => 0,
+    }
+}
+
 impl Mirror {
     fn apply(&mut self, ev: &MdEvent) {
         let mut set = ev.fields;
@@ -129,8 +138,11 @@ impl Mirror {
             let i = set.trailing_zeros() as usize;
             set &= set - 1;
             self.fields[i] = ev.values[i];
-            // A catch-up says which sizes came.
-            if ev.step != MdStep::CatchUp && let Some(kind) = size_kind(i) {
+            // A catch-up says which sizes came. A kept -1 has no size: the
+            // farm's first size, 0 too, is then given (ibx#647).
+            if ev.step != MdStep::CatchUp && let Some(kind) = size_kind(i)
+                && !(ev.step == MdStep::KeptQuote && kept_price(ev, i) < 0)
+            {
                 self.seen |= 1 << kind as u8;
             }
         }
