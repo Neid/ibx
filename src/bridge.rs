@@ -523,7 +523,9 @@ pub enum Event {
     HistogramData { req_id: ReqId, entries: Vec<HistogramEntry> },
     /// A bar of a historical request kept up to date.
     HistoricalUpdate { req_id: ReqId, bar: HistoricalBar },
-    /// Commission report of an execution.
+    /// Commission report of an execution, given after the `Fill` of that
+    /// execution only (ibx#644): the reports of executions of earlier
+    /// sessions, which the server sends after the login, are not given.
     CommissionReport(api::CommissionAndFeesReport),
     /// An order that reached its end (filled, cancelled, rejected).
     CompletedOrder(CompletedOrder),
@@ -1350,9 +1352,22 @@ impl OrderState {
     }
 
     #[doc(hidden)] pub fn push_commission_report(&self, report: api::CommissionAndFeesReport) {
-        let copy = self.error_tap.copy(&report);
+        self.push_commission_report_to(report, true);
+    }
+
+    /// A commission report for the client's queue, and for the event
+    /// channel only with `to_events`: the engine gives it there after the
+    /// `Fill` of its execution only (ibx#644), as the callbacks give no
+    /// commission report without its execution.
+    #[doc(hidden)] pub fn push_commission_report_to(&self, report: api::CommissionAndFeesReport, to_events: bool) {
+        let copy = if to_events { self.error_tap.copy(&report) } else { None };
         self.commission_reports.push(report);
         self.error_tap.emit(copy.map(|report| Event::CommissionReport(report)));
+    }
+
+    /// Whether an event channel is attached.
+    #[doc(hidden)] pub fn events_attached(&self) -> bool {
+        self.error_tap.events.get().is_some()
     }
 
     #[doc(hidden)] pub fn push_order_update(&self, update: OrderUpdate) {

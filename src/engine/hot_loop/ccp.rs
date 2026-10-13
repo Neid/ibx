@@ -46,6 +46,11 @@ pub(crate) const NO_SECURITY_DEFINITION: &str = "No security definition has been
 /// after a reconnect burst still hits the window.
 const EXEC_ID_WINDOW: usize = 1024;
 
+/// Commission reports held for the `Fill` of their execution, on the
+/// event channel (ibx#644): the day's earlier executions replayed at the
+/// login never get one, so the oldest are dropped.
+const HELD_COMMISSION_EVENTS: usize = 64;
+
 /// Convert a FIX OrderID hex string (e.g. "00cf16ed.000225ed.69ca0941.0001") to a stable i64 permId.
 /// Uses FNV-1a hash of the first 3 dot-segments (the stable prefix) so that permId
 /// remains constant across modifications (the last segment increments on each modify).
@@ -317,6 +322,14 @@ pub(crate) struct CcpState {
     /// the highest revision (ibx#471). Bounded like `seen_exec_ids`.
     pub(crate) commission_revisions: std::collections::HashMap<String, u64>,
     pub(crate) commission_order: VecDeque<String>,
+    /// The executions the event channel gave a `Fill` for, without their
+    /// revision, oldest first (ibx#644): only their commission reports go
+    /// to the event channel. Bounded like `seen_exec_ids`.
+    pub(crate) fill_events: HashSet<String>,
+    pub(crate) fill_event_order: VecDeque<String>,
+    /// Commission reports that came before the `Fill` of their execution,
+    /// given on the event channel after it (ibx#644). Oldest dropped first.
+    pub(crate) held_commission_events: VecDeque<(String, api::CommissionAndFeesReport)>,
     /// conId of this session's fills and the realized P&L counted for each,
     /// by execution id without its revision (ibx#478). Bounded like the
     /// commission window.
@@ -752,6 +765,9 @@ impl CcpState {
             exec_id_order: VecDeque::with_capacity(256),
             commission_revisions: std::collections::HashMap::with_capacity(256),
             commission_order: VecDeque::with_capacity(256),
+            fill_events: HashSet::new(),
+            fill_event_order: VecDeque::new(),
+            held_commission_events: VecDeque::new(),
             exec_realized: std::collections::HashMap::with_capacity(256),
             order_messages_sent: HashSet::new(),
             report_leg_prices: Vec::new(),
@@ -837,6 +853,26 @@ impl CcpState {
         }
     }
 
+    /// The event channel gave the `Fill` of `exec_id` (ibx#644): its
+    /// commission reports go there from now on; one that came before is
+    /// returned, to be given after the `Fill`.
+    pub(crate) fn note_fill_event(&mut self, exec_id: &str) -> Option<api::CommissionAndFeesReport> {
+        let (base, _) = split_exec_revision(exec_id);
+        if base.is_empty() {
+            return None;
+        }
+        if self.fill_events.insert(base.to_string()) {
+            self.fill_event_order.push_back(base.to_string());
+            while self.fill_event_order.len() > EXEC_ID_WINDOW {
+                if let Some(old) = self.fill_event_order.pop_front() {
+                    self.fill_events.remove(&old);
+                }
+            }
+        }
+        let held = self.held_commission_events.iter().position(|(b, _)| b == base)?;
+        self.held_commission_events.remove(held).map(|(_, report)| report)
+    }
+
     /// Record a commission report for `exec_id`. Returns `false` for a
     /// report to skip, as the reference does (ibx#471): the same execution
     /// id again, or a lower revision than one already reported. The revision
@@ -901,7 +937,19 @@ impl CcpState {
                 log::debug!("Commission report for {}: no fill of this session, realized P&L not counted", exec_id);
             }
         }
-        shared.orders.push_commission_report(report);
+        // On the event channel only after the `Fill` of its execution
+        // (ibx#644): the server also sends, after the login, the reports of
+        // the day's earlier executions, which come with no execution. One
+        // that comes before its `Fill` waits for it.
+        let (base, _) = split_exec_revision(exec_id);
+        let to_events = self.fill_events.contains(base);
+        if !to_events && shared.orders.events_attached() {
+            if self.held_commission_events.len() >= HELD_COMMISSION_EVENTS {
+                self.held_commission_events.pop_front();
+            }
+            self.held_commission_events.push_back((base.to_string(), report.clone()));
+        }
+        shared.orders.push_commission_report_to(report, to_events);
     }
 
     pub(crate) fn poll_executions(
@@ -2138,6 +2186,7 @@ impl CcpState {
         }
 
         if let Some((fill, mut exec)) = fill_out {
+            let fill_exec_id = event_tx.as_ref().map(|_| exec.exec_id.clone());
             if delivered {
                 shared.orders.push_fill_with_exec(fill, exec);
             } else {
@@ -2149,6 +2198,9 @@ impl CcpState {
                 shared.orders.push_untracked_execution(report_contract(parsed, shared), execution, exec);
             }
             emit(event_tx, Event::Fill(fill));
+            if let Some(report) = fill_exec_id.and_then(|id| self.note_fill_event(&id)) {
+                emit(event_tx, Event::CommissionReport(report));
+            }
         }
         if let Some(update) = update_out {
             if delivered {
@@ -4275,6 +4327,38 @@ mod tests {
         let fills = shared.orders.drain_fills_with_exec();
         assert_eq!(fills.len(), 1);
         assert_eq!(fills[0].1.exec_id, "0000e0d5.6ab5f36f.01.01");
+    }
+
+    // ibx#644 (paper 12/10/2026, ex578: 2 fills, 14 commission reports on
+    // the event channel): the commission reports of the day's earlier
+    // executions, sent after the login with no execution, stay off the
+    // event channel; the callbacks' queue still has them. A report that
+    // comes before its fill is given right after the `Fill`.
+    #[test]
+    fn no_commission_report_event_without_its_fill() {
+        let (mut ccp, mut context, shared) = ord_status_test_state();
+        let (tx, rx) = crossbeam_channel::unbounded();
+        shared.attach_event_channel(&tx);
+        let event_tx = Some(tx);
+        // An execution of an earlier session: its report only.
+        ccp.handle_commission_report(&commission_frame(&[(17, "0000e0d5.6ab5f36f.01.01")]), &shared);
+        // This session's fill, its report before it.
+        ccp.handle_commission_report(&commission_frame(&[(17, "0000e0d5.6ab5f370.01.01"), (6378, "0.5")]), &shared);
+        let fill = exec_report_frame(&[(20, "0"), (39, "1"), (150, "1"), (17, "0000e0d5.6ab5f370.01.01"),
+            (31, "336.25"), (32, "1"), (14, "1"), (151, "1"), (6, "336.25")]);
+        ccp.handle_exec_report(&fill, &mut context, &shared, &event_tx, "");
+        // A later revision of the same execution, after its fill.
+        ccp.handle_commission_report(&commission_frame(&[(17, "0000e0d5.6ab5f370.01.02"), (6378, "0.6")]), &shared);
+        let events: Vec<String> = rx.try_iter().filter_map(|e| match e {
+            Event::Fill(f) => Some(format!("fill {}", f.order_id)),
+            Event::CommissionReport(r) => Some(format!("commission {} {}", r.exec_id, r.commission_and_fees)),
+            _ => None,
+        }).collect();
+        assert_eq!(events, ["fill 42", "commission 0000e0d5.6ab5f370.01.01 0.5", "commission 0000e0d5.6ab5f370.01.02 0.6"]);
+        // The client's queue has the three reports: the callbacks give
+        // the ones whose execution they know.
+        assert_eq!(shared.orders.drain_commission_reports().len(), 3);
+        assert!(ccp.held_commission_events.iter().all(|(b, _)| b == "0000e0d5.6ab5f36f.01"));
     }
 
     // ibx#474: the captured fill of 25/09/2026 (clientId 250, orderRef
