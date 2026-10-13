@@ -312,6 +312,9 @@ pub struct Context {
     pub(crate) order_presets: HashMap<String, Option<String>>,
     pub(crate) presets_asked: std::collections::HashSet<String>,
     pub(crate) next_preset_request: u32,
+    /// Contracts whose trading hours were asked for an order and have not
+    /// come: an order with a zone to check waits for them (ibx#668).
+    pub(crate) zone_pending: std::collections::HashSet<i64>,
     /// Depth requests refused with 10092: their cancel answers nothing
     /// (ibx#678).
     pub(crate) depth_unsupported: std::collections::HashSet<ReqId>,
@@ -424,6 +427,7 @@ impl Context {
             order_presets: HashMap::new(),
             presets_asked: std::collections::HashSet::new(),
             next_preset_request: 3,
+            zone_pending: std::collections::HashSet::new(),
             depth_unsupported: std::collections::HashSet::new(),
             def_parked: Vec::new(),
             def_ready: Vec::new(),

@@ -148,6 +148,36 @@ fn send_orders(
                 continue;
             }
         }
+        // The time zones the client could not check: against the zone of
+        // the contract's trading hours, once they came; the order waits for
+        // them when they were asked (ibx#668; the reference 10.51, paper,
+        // 13/10/2026 pre-market: 337 for a start time in Asia/Tokyo on
+        // MSFT, after its trading hours, nothing sent).
+        let con_id = order_req.instrument().and_then(|i| context.market.con_id(i)).unwrap_or(0);
+        if let Some(attrs) = order_req.new_order_attrs_mut()
+            && !attrs.zone_checks.is_empty()
+        {
+            // The replays of the 10.40 recordings do not wait: they hold no
+            // answer to the trading hours ibx asks.
+            match shared.reference.time_zone_id(con_id) {
+                None if context.zone_pending.contains(&con_id) && !shared.reference.order_rules_10_40() => {
+                    context.rth_parked.push(rewrap(order_req));
+                    continue;
+                }
+                None => attrs.zone_checks.clear(),
+                Some(zone) => {
+                    let failed = attrs.zone_checks.iter()
+                        .find(|(zones, _, _)| zones.iter().any(|z| *z != zone))
+                        .map(|(_, code, message)| (*code, message.clone()));
+                    attrs.zone_checks.clear();
+                    if let Some((code, message)) = failed {
+                        log::warn!("Order {} refused: a time zone that is not its contract's ({})", oid, zone);
+                        shared.orders.push_order_error(oid, code, message);
+                        continue;
+                    }
+                }
+            }
+        }
         // A quantity that is not whole: refused with 10243 and nothing
         // sent, as the reference refuses it for an API client (ib-agent#192
         // B3). Sent with the API client fields of every new order, it was
@@ -3700,6 +3730,16 @@ pub(crate) fn preset_reply(context: &mut Context, parsed: &std::collections::Has
     release_rth_parked(context);
 }
 
+/// The trading hours of order contracts came (ibx#668): the orders that
+/// waited for their zone go on.
+pub(crate) fn zones_known(context: &mut Context, still_waiting: impl Fn(i64) -> bool) {
+    let before = context.zone_pending.len();
+    context.zone_pending.retain(|con_id| still_waiting(*con_id));
+    if context.zone_pending.len() != before {
+        release_rth_parked(context);
+    }
+}
+
 /// The waiting requests go back ahead of the queue, in their order.
 fn release_rth_parked(context: &mut Context) {
     let parked = std::mem::take(&mut context.rth_parked);
@@ -4410,6 +4450,37 @@ mod tests {
         drain_and_send_orders(&mut conn, &mut context, "DU1", &mut HeartbeatState::new(), false, &shared);
         // Every message sent, its fields one after the other.
         peer.messages().iter().flat_map(|m| crate::test_support::parse_fields(m)).collect()
+    }
+
+    // ibx#668: an order with a zone to check waits for the trading hours
+    // asked for its contract, then is refused when the zone is not the
+    // contract's; nothing sent.
+    #[test]
+    fn a_zone_check_waits_for_the_trading_hours() {
+        let mut context = Context::new();
+        context.order_ids.start_at(FIRST as i32);
+        let instrument = context.market.register(265598);
+        context.rth_types.insert((265598, "BEST".to_string()), crate::engine::outside_rth::RthTypes {
+            rth: true, sec_type: "STK".into(), ..Default::default()
+        });
+        let start = "Start Time: The date, time, or time-zone entered is invalid.".to_string();
+        let order = OrderRequest::SubmitLimitEx {
+            order_id: FIRST, instrument, side: Side::Buy, qty: 1, price: 100 * crate::types::PRICE_SCALE, tif: b'0',
+            attrs: crate::types::OrderAttrs { zone_checks: vec![(vec!["Asia/Tokyo".into()], 337, start.clone())], ..Default::default() },
+        };
+        let shared = Arc::new(SharedState::new());
+        let (conn, mut peer) = crate::test_support::Peer::pair();
+        let mut conn = Some(conn);
+        let mut hb = HeartbeatState::new();
+        context.zone_pending.insert(265598);
+        context.pending_orders.push(order);
+        drain_and_send_orders(&mut conn, &mut context, "DU1", &mut hb, false, &shared);
+        assert_eq!(context.rth_parked.len(), 1, "waits for the trading hours");
+        shared.reference.cache_time_zone_id(265598, "US/Eastern");
+        zones_known(&mut context, |_| false);
+        drain_and_send_orders(&mut conn, &mut context, "DU1", &mut hb, false, &shared);
+        assert!(peer.messages().is_empty(), "nothing sent");
+        assert_eq!(shared.orders.drain_order_errors(), [(FIRST, 337, start)]);
     }
 
     // ibx#660 (the reference 10.51, paper, 13/10/2026): includeOvernight on

@@ -1361,7 +1361,7 @@ pub struct ClientCore {
     pub what_if_orders: Mutex<HashMap<OrderId, std::collections::VecDeque<(ApiContract, ApiOrder)>>>,
     /// Orders sent with a refusal the engine gives once their contract is
     /// looked up, by id, with its code (ibx#665): the order is then gone.
-    pub deferred_refusals: Mutex<HashMap<OrderId, i64>>,
+    pub deferred_refusals: Mutex<HashMap<OrderId, Vec<i64>>>,
     // Ids of tracked orders that were filled or cancelled: never sent again (ibx#463).
     pub finished_orders: Mutex<HashSet<OrderId>>,
     /// Ids of tracked orders placed again under the same id (a modify):
@@ -1680,6 +1680,8 @@ fn is_given(v: f64) -> bool {
 pub struct DeferredChecks {
     pub errors: Vec<(i64, String)>,
     pub refused: bool,
+    /// The time zone checks waiting for the contract's zone (ibx#668).
+    pub zone_checks: Vec<(Vec<String>, i64, String)>,
 }
 
 /// The auto cancel date of a GTC order, from the server's report (ibx#546;
@@ -4032,11 +4034,12 @@ impl ClientCore {
         // is gone, its id used; a lookup that failed ends it too.
         {
             let mut deferred = self.deferred_refusals.lock().unwrap();
-            if let Some(&expected) = deferred.get(&order_id)
-                && (code == expected || code == 200)
+            if let Some(expected) = deferred.get(&order_id)
+                && (expected.contains(&code) || code == 200)
             {
+                let refused = expected.contains(&code);
                 deferred.remove(&order_id);
-                if code == expected {
+                if refused {
                     self.open_orders.lock().unwrap().remove(&order_id);
                     let mut previews = self.what_if_orders.lock().unwrap();
                     if let Some(queue) = previews.get_mut(&order_id) {
@@ -6189,13 +6192,46 @@ impl ClientCore {
         if later.is_some() && !order.what_if && !self.is_order_tracked(order_id) {
             self.note_order_id(order_id);
         }
+        // The zones the reference checks against the contract's, when that
+        // zone is not known yet: the engine checks them once it is (ibx#668).
+        let zone_checks = if contract_zone.is_none() { Self::pending_zone_checks(order) } else { Vec::new() };
         if looked_up && (later.is_some() || !algo_warnings.is_empty()) {
             let refused = later.is_some();
             algo_warnings.extend(later);
-            return (notices, None, Some(DeferredChecks { errors: algo_warnings, refused }));
+            return (notices, None, Some(DeferredChecks { errors: algo_warnings, refused, zone_checks }));
         }
         notices.extend(algo_warnings);
-        (notices, later, None)
+        let deferred = (later.is_none() && !zone_checks.is_empty())
+            .then(|| DeferredChecks { errors: Vec::new(), refused: false, zone_checks });
+        (notices, later, deferred)
+    }
+
+    /// The time zone checks of an order whose contract's zone is not
+    /// known, in the reference's order (ibx#668; code read on 10.51: start
+    /// time 337, end time 343, then the condition times 10314): each with
+    /// the zones that must be the contract's. A zone that is UTC or this
+    /// machine's is taken, as in the checks made at once.
+    pub fn pending_zone_checks(order: &ApiOrder) -> Vec<(Vec<String>, i64, String)> {
+        let machine = crate::gateway::machine_time_zone();
+        let foreign = |zone: &str| zone != "UTC" && zone != machine;
+        let mut checks = Vec::new();
+        if let Some((text, _)) = crate::config::good_after_dated(&order.good_after_time, &machine)
+            && let Ok(Some((crate::config::IbExpiry::Instant(_), Some(zone)))) = crate::config::parse_ib_expiry_zoned(&text)
+            && foreign(&zone)
+        {
+            checks.push((vec![zone.to_string()], 337, INVALID_DATE_TIME.replace("%s", "Start Time")));
+        }
+        if let Ok(Some((_, Some(zone)))) = crate::config::parse_ib_expiry_zoned(&order.good_till_date)
+            && foreign(&zone)
+        {
+            checks.push((vec![zone.to_string()], 343, INVALID_DATE_TIME.replace("%s", "End Time")));
+        }
+        let zones: Vec<String> = Self::condition_times(order)
+            .filter_map(|t| parse_condition_time(t, &machine)).map(|c| c.zone).collect();
+        if zones.iter().any(|z| foreign(z)) {
+            checks.push((zones, 10314, INVALID_DATE_TIME.replace("%s", "Time")));
+        }
+        checks
     }
 
     /// The checks of `order_read_checks` given after the order's contract
@@ -6213,13 +6249,18 @@ impl ClientCore {
         };
         match attrs {
             Some(attrs) => {
+                let mut codes: Vec<i64> = deferred.zone_checks.iter().map(|(_, code, _)| *code).collect();
                 if deferred.refused
                     && let Some((code, _)) = deferred.errors.last()
                 {
-                    self.deferred_refusals.lock().unwrap().insert(order_id, *code);
+                    codes.push(*code);
+                }
+                if !codes.is_empty() {
+                    self.deferred_refusals.lock().unwrap().insert(order_id, codes);
                 }
                 attrs.after_lookup = deferred.errors;
                 attrs.after_lookup_refused = deferred.refused;
+                attrs.zone_checks = deferred.zone_checks;
                 true
             }
             None => {
@@ -7923,7 +7964,7 @@ mod tests {
         assert_eq!((now, later), (Some((443, text.clone())), None));
         let (_, now, later) = core.order_read_checks(32, 0, "SMART", &order, &shared, "DU1", true);
         assert_eq!(now, None);
-        assert_eq!(later, Some(DeferredChecks { errors: vec![(443, text.clone())], refused: true }));
+        assert_eq!(later, Some(DeferredChecks { errors: vec![(443, text.clone())], refused: true, zone_checks: Vec::new() }));
 
         let mut cmd = ClientCore::build_order_request(&order, 32, 0).unwrap();
         assert!(core.carry_deferred_checks(32, &mut cmd, later, &shared));
@@ -7937,6 +7978,25 @@ mod tests {
         core.note_order_error(32, 443, &text);
         assert!(!core.is_order_tracked(32));
         assert!(core.deferred_refusals.lock().unwrap().is_empty());
+    }
+
+    // ibx#668: a start time in a foreign zone on a contract whose zone is
+    // not known yet is checked later, by the engine, against that zone.
+    #[test]
+    fn a_foreign_zone_waits_for_the_contracts_zone() {
+        let core = ClientCore::new();
+        let shared = SharedState::new();
+        let machine = crate::gateway::machine_time_zone();
+        let other = if machine == "Asia/Tokyo" { "Europe/Paris" } else { "Asia/Tokyo" };
+        let order = ApiOrder { good_after_time: format!("20261230 23:00:00 {other}"), ..lmt(100.0) };
+        let (_, now, later) = core.order_read_checks(41, 272093, "SMART", &order, &shared, "DU1", false);
+        assert_eq!(now, None);
+        let start = INVALID_DATE_TIME.replace("%s", "Start Time");
+        assert_eq!(later.map(|d| d.zone_checks), Some(vec![(vec![other.to_string()], 337, start.clone())]));
+        // Once the zone is known the check is made at once.
+        shared.reference.cache_time_zone_id(272093, "US/Eastern");
+        let (_, now, later) = core.order_read_checks(42, 272093, "SMART", &order, &shared, "DU1", false);
+        assert_eq!((now, later), (Some((337, start)), None));
     }
 
     // ibx#548 (paper 11/10/2026): an order refused by a check that follows

@@ -474,6 +474,7 @@ impl Order {
             tif_preset: self.tif.is_empty() && !self.include_overnight,
             after_lookup: Vec::new(),
             after_lookup_refused: false,
+            zone_checks: Vec::new(),
             outside_rth: self.outside_rth,
             // A goodAfterTime that is not a date and time is left out, as
             // the reference leaves it out (ibx#594); a time alone is today's,

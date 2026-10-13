@@ -476,6 +476,10 @@ pub struct OrderAttrs {
     /// warnings and, when `after_lookup_refused`, the refusal last.
     pub after_lookup: Vec<(i64, String)>,
     pub after_lookup_refused: bool,
+    /// The time zone checks the client could not make, the contract's
+    /// zone not known yet (ibx#668): each refuses with its code and text
+    /// when one of its zones is not the contract's.
+    pub zone_checks: Vec<(Vec<String>, i64, String)>,
     /// Customer account (tag 6207) and professional customer (tag 6636),
     /// sent only on an account whose config allows them (ibx#425).
     pub customer_account: String,

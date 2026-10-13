@@ -1165,7 +1165,11 @@ impl CcpState {
                         // The exchange directory: not the depth exchanges,
                         // which come from the routing table (#453).
                         "102" => {}
-                        "107" => self.handle_schedule_reply(msg, shared, event_tx),
+                        "107" => {
+                            self.handle_schedule_reply(msg, shared, event_tx);
+                            let waits = &self.order_zone_waits;
+                            super::order_builder::zones_known(context, |con_id| waits.iter().any(|(_, c)| *c == con_id));
+                        }
                         _ => {}
                     }
                 }
@@ -2673,16 +2677,17 @@ impl CcpState {
     /// request seen 9 to 18 ms after the order's lookup, paper 12/10/2026).
     /// The order does not wait for them; their zone is kept for the
     /// contract, and the order's start time is shown in it (#598).
-    fn ask_order_schedule(&mut self, msg: &[u8], shared: &SharedState, ccp_conn: &mut Option<Connection>, hb: &mut HeartbeatState) {
-        let Some(def) = crate::control::contracts::parse_secdef_records(msg).unwrap_or_default().into_iter().next() else { return };
+    /// The conId whose zone is then waited for, when it is not known.
+    fn ask_order_schedule(&mut self, msg: &[u8], shared: &SharedState, ccp_conn: &mut Option<Connection>, hb: &mut HeartbeatState) -> Option<i64> {
+        let Some(def) = crate::control::contracts::parse_secdef_records(msg).unwrap_or_default().into_iter().next() else { return None };
         if def.join_key.is_empty() || def.con_id == 0 {
-            return;
+            return None;
         }
         if let Some((_, known)) = self.schedules.get(&def.join_key).filter(|(day, _)| *day == utc_day()) {
             if let Some(zone) = known.as_ref().map(|s| s.timezone.as_str()).filter(|z| !z.is_empty()) {
                 shared.reference.cache_time_zone_id(def.con_id, zone);
             }
-            return;
+            return None;
         }
         let asked = self.order_zone_waits.iter().any(|(k, _)| *k == def.join_key)
             || self.pending_schedule_pair.iter().any(|p| !p.ready && p.join_key == def.join_key);
@@ -2691,6 +2696,7 @@ impl CcpState {
             log::info!("Trading hours of con_id {} asked for its orders ({})", def.con_id, def.join_key);
             self.send_schedule_subscribe(&def.join_key, ccp_conn, hb);
         }
+        Some(def.con_id)
     }
 
     fn handle_schedule_reply(
@@ -2990,7 +2996,9 @@ impl CcpState {
             };
             if super::order_builder::rth_definition_reply(context, rid, msg) {
                 keep_zone(shared);
-                self.ask_order_schedule(msg, shared, ccp_conn, hb);
+                if let Some(con_id) = self.ask_order_schedule(msg, shared, ccp_conn, hb) {
+                    context.zone_pending.insert(con_id);
+                }
                 return;
             }
             // Asked for the contract of an order given without a conId
@@ -3000,7 +3008,9 @@ impl CcpState {
                     self.cache_definition(def, shared);
                 }
                 keep_zone(shared);
-                self.ask_order_schedule(msg, shared, ccp_conn, hb);
+                if let Some(con_id) = self.ask_order_schedule(msg, shared, ccp_conn, hb) {
+                    context.zone_pending.insert(con_id);
+                }
                 return;
             }
             // Asked for a round lot (ibx#287): not a user reply.
