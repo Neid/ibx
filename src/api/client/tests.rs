@@ -3787,7 +3787,7 @@ fn process_msgs_dispatches_mkt_depth_exchanges() {
     let mut rows: Vec<crate::types::DepthMktDataDescription> = shared.reference.drain_depth_exchanges().unwrap();
     rows.sort_by(|a, b| (a.exchange.clone(), a.service_data_type.clone()).cmp(&(b.exchange.clone(), b.service_data_type.clone())));
     let got: Vec<String> = rows.iter().map(|d| format!("{}/{}/{}/{}/{}", d.exchange, d.sec_type, d.listing_exch, d.service_data_type, d.agg_group)).collect();
-    assert_eq!(got, ["NASDAQ/STK//Deep/-1", "NASDAQ/STK//Deep2/-1", "SMART/STK/OTCBB/AggDeep/1"]);
+    assert_eq!(got, ["NASDAQ/STK//Deep/2147483647", "NASDAQ/STK//Deep2/2147483647", "SMART/STK/OTCBB/AggDeep/1"]);
 
     let (client, _rx, shared) = test_client();
     shared.reference.set_depth_exchanges(rows);

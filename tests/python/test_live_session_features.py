@@ -384,14 +384,17 @@ class TestSessionFeatures:
             assert required in exchange_names, f"Missing {required} in depth exchanges"
 
     def test_depth_exchanges_fields_populated(self):
-        """Each DepthMktDataDescription has non-empty exchange and listing_exch."""
+        """Each DepthMktDataDescription has an exchange and a type. The listing
+        exchange is set only on the rows that name one: the reference 10.51
+        gave it on 2 of its 306 rows (ibx#652, paper, 13/10/2026)."""
         self.c.req_mkt_depth_exchanges()
         self.w.got_depth_exchanges.wait(timeout=10)
 
-        for d in self.w.depth_exchanges[:20]:
+        assert self.w.depth_exchanges
+        for d in self.w.depth_exchanges:
             assert d.exchange, f"Empty exchange field: {d}"
-            assert d.listing_exch, f"Empty listing_exch field: {d}"
-            assert d.sec_type in ("STK", "FUT"), f"Unexpected sec_type: {d.sec_type}"
+            assert d.sec_type, f"Empty sec_type: {d}"
+        assert any(d.listing_exch for d in self.w.depth_exchanges), "no row names a listing exchange"
 
     # ── Market Rule ──
 

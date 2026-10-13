@@ -329,7 +329,10 @@ impl RoutingTable {
                     sec_type: key.sec_type.clone(),
                     listing_exch: if key.listing == "*" { String::new() } else { key.listing.clone() },
                     service_data_type: dt.name().to_string(),
-                    agg_group: key.agg_group,
+                    // No group (-1 in the table) is the API's unset int, as
+                    // the reference 10.51 gives it (ibx#652, paper
+                    // 13/10/2026: 2147483647 on 300 of its 306 rows).
+                    agg_group: if key.agg_group == -1 { i32::MAX } else { key.agg_group },
                 });
             }
         }
@@ -438,7 +441,8 @@ mod tests {
     }
 
     // reqMktDepthExchanges: every depth route, the smart-routing row shown
-    // as SMART, no listing as empty; a top-only exchange is not listed.
+    // as SMART, no listing as empty, no group as the API's unset int
+    // (ibx#652); a top-only exchange is not listed.
     #[test]
     fn depth_exchanges_from_depth_rows() {
         let t = RoutingTable::parse(MD, TableKind::MarketData);
@@ -450,11 +454,11 @@ mod tests {
         }));
         assert!(rows.contains(&DepthExchange {
             exchange: "NASDAQ".into(), sec_type: "STK".into(), listing_exch: String::new(),
-            service_data_type: "Deep2".into(), agg_group: -1,
+            service_data_type: "Deep2".into(), agg_group: i32::MAX,
         }));
         assert!(rows.contains(&DepthExchange {
             exchange: "SEHK".into(), sec_type: "STK".into(), listing_exch: String::new(),
-            service_data_type: "DeepX".into(), agg_group: -1,
+            service_data_type: "DeepX".into(), agg_group: i32::MAX,
         }));
         assert_eq!(rows.iter().filter(|r| r.service_data_type == "Deep").count(), 6);
     }
