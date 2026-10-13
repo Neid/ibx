@@ -2,7 +2,7 @@
 
 use pyo3::prelude::*;
 
-use super::values::{decimal_from_py, decimal_to_py, official_names};
+use super::values::{decimal_from_py, decimal_max_string, decimal_to_py, float_max_string, int_max_string, official_names};
 
 // ── Tick type constants matching ibapi's TickTypeEnum ──
 
@@ -81,6 +81,11 @@ impl TickAttribLast {
         Self { past_limit, unreported }
     }
 
+    /// The official library's text (ibx#654).
+    fn __str__(&self) -> String {
+        format!("PastLimit: {}, Unreported: {}", self.past_limit as i32, self.unreported as i32)
+    }
+
     fn __repr__(&self) -> String {
         format!("TickAttribLast(pastLimit={}, unreported={})", self.past_limit, self.unreported)
     }
@@ -104,6 +109,11 @@ impl TickAttribBidAsk {
     #[pyo3(signature = (bid_past_low=false, ask_past_high=false))]
     fn new(bid_past_low: bool, ask_past_high: bool) -> Self {
         Self { bid_past_low, ask_past_high }
+    }
+
+    /// The official library's text (ibx#654).
+    fn __str__(&self) -> String {
+        format!("BidPastLow: {}, AskPastHigh: {}", self.bid_past_low as i32, self.ask_past_high as i32)
     }
 
     fn __repr__(&self) -> String {
@@ -138,6 +148,11 @@ impl HistoricalTick {
     fn get_size(&self, py: Python<'_>) -> PyResult<Py<PyAny>> { decimal_to_py(py, self.size) }
     #[setter(size)]
     fn set_size(&mut self, v: &Bound<'_, PyAny>) -> PyResult<()> { self.size = decimal_from_py(v)?; Ok(()) }
+
+    /// The official library's text (ibx#654).
+    fn __str__(&self) -> String {
+        format!("Time: {}, Price: {}, Size: {}", int_max_string(self.time), float_max_string(self.price), decimal_max_string(self.size))
+    }
 
     fn __repr__(&self) -> String {
         format!("HistoricalTick(time={}, price={}, size={})", self.time, self.price, self.size)
@@ -176,6 +191,14 @@ impl HistoricalTickLast {
     fn get_size(&self, py: Python<'_>) -> PyResult<Py<PyAny>> { decimal_to_py(py, self.size) }
     #[setter(size)]
     fn set_size(&mut self, v: &Bound<'_, PyAny>) -> PyResult<()> { self.size = decimal_from_py(v)?; Ok(()) }
+
+    /// The official library's text (ibx#654).
+    fn __str__(&self, py: Python<'_>) -> String {
+        let a = self.tick_attrib_last.borrow(py);
+        format!("Time: {}, TickAttribLast: PastLimit: {}, Unreported: {}, Price: {}, Size: {}, Exchange: {}, SpecialConditions: {}",
+            int_max_string(self.time), a.past_limit as i32, a.unreported as i32, float_max_string(self.price),
+            decimal_max_string(self.size), self.exchange, self.special_conditions)
+    }
 
     fn __repr__(&self, py: Python<'_>) -> String {
         let a = self.tick_attrib_last.borrow(py);
@@ -222,6 +245,14 @@ impl HistoricalTickBidAsk {
     fn get_size_ask(&self, py: Python<'_>) -> PyResult<Py<PyAny>> { decimal_to_py(py, self.size_ask) }
     #[setter(size_ask)]
     fn set_size_ask(&mut self, v: &Bound<'_, PyAny>) -> PyResult<()> { self.size_ask = decimal_from_py(v)?; Ok(()) }
+
+    /// The official library's text (ibx#654).
+    fn __str__(&self, py: Python<'_>) -> String {
+        let a = self.tick_attrib_bid_ask.borrow(py);
+        format!("Time: {}, TickAttriBidAsk: BidPastLow: {}, AskPastHigh: {}, PriceBid: {}, PriceAsk: {}, SizeBid: {}, SizeAsk: {}",
+            int_max_string(self.time), a.bid_past_low as i32, a.ask_past_high as i32, float_max_string(self.price_bid),
+            float_max_string(self.price_ask), decimal_max_string(self.size_bid), decimal_max_string(self.size_ask))
+    }
 
     fn __repr__(&self, py: Python<'_>) -> String {
         let a = self.tick_attrib_bid_ask.borrow(py);

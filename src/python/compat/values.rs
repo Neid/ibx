@@ -123,3 +123,32 @@ macro_rules! official_names {
     };
 }
 pub(crate) use official_names;
+
+/// The official library's text of a float (`floatMaxString`): at most 8
+/// decimals with the trailing zeros cut, empty when unset (ibx#654).
+pub fn float_max_string(v: f64) -> String {
+    if v == f64::MAX {
+        return String::new();
+    }
+    let s = format!("{v:.8}");
+    let s = if s.contains('.') { s.trim_end_matches('0').trim_end_matches('.') } else { s.as_str() };
+    s.to_string()
+}
+
+/// The official library's text of a Decimal (`decimalMaxString`), empty
+/// when unset (ibx#654).
+pub fn decimal_max_string(v: f64) -> String {
+    if v == f64::MAX { String::new() } else { format!("{v}") }
+}
+
+/// The official library's text of an int (`intMaxString`), empty when
+/// unset (ibx#654).
+pub fn int_max_string(v: i64) -> String {
+    if v == i32::MAX as i64 { String::new() } else { v.to_string() }
+}
+
+/// The official library's text of a long (`longMaxString`), empty when
+/// unset (ibx#654).
+pub fn long_max_string(v: i64) -> String {
+    if v == i64::MAX { String::new() } else { v.to_string() }
+}

@@ -6,8 +6,8 @@ use pyo3::exceptions::PyRuntimeError;
 use crate::types::*;
 use super::super::types::PRICE_SCALE_F;
 use super::values::{
-    attr, decimal_from_py, decimal_text_from_py, decimal_text_to_py, decimal_to_py, empty_list, items,
-    list_or_none, official_names,
+    attr, decimal_from_py, decimal_max_string, decimal_text_from_py, decimal_text_to_py, decimal_to_py, empty_list,
+    float_max_string, int_max_string, items, list_or_none, long_max_string, official_names,
 };
 
 // ── Contract ──
@@ -935,6 +935,28 @@ impl Order {
             transmit,
             ..Default::default()
         })
+    }
+
+    /// The official library's text (ibx#654): ids, type, side, quantity at
+    /// the limit price, the time in force, then the combo legs and the
+    /// conditions when there are some.
+    fn __str__(&self, py: Python<'_>) -> PyResult<String> {
+        let mut s = format!("{},{},{}: {} {} {}@{} {}",
+            int_max_string(self.order_id), int_max_string(self.client_id as i64), long_max_string(self.perm_id),
+            self.order_type, self.action, decimal_max_string(self.total_quantity), float_max_string(self.lmt_price), self.tif);
+        for (name, list) in [("CMB", &self.order_combo_legs), ("COND", &self.conditions)] {
+            let list = list.bind(py);
+            if list.is_none() || list.len().unwrap_or(0) == 0 {
+                continue;
+            }
+            s.push_str(&format!(" {name}("));
+            for item in list.try_iter()? {
+                s.push_str(&item?.str()?.to_string());
+                s.push(',');
+            }
+            s.push(')');
+        }
+        Ok(s)
     }
 
     fn __repr__(&self) -> String {
@@ -2193,6 +2215,11 @@ impl OrderComboLeg {
     fn __repr__(&self) -> String {
         format!("OrderComboLeg(price={})", self.price)
     }
+
+    /// The official library's text: the price, empty when unset (ibx#654).
+    fn __str__(&self) -> String {
+        float_max_string(self.price)
+    }
 }
 
 // ── TagValue ──
@@ -2247,6 +2274,13 @@ impl OrderAllocation {
     #[new]
     #[pyo3(signature = ())]
     fn new() -> Self { Self::default() }
+
+    /// The official library's text (ibx#654).
+    fn __str__(&self) -> String {
+        format!("Account: {}, Position: {}, PositionDesired: {}, PositionAfter: {}, DesiredAllocQty: {}, AllowedAllocQty: {}, IsMonetary: {}",
+            self.account, self.position, self.position_desired, self.position_after, self.desired_alloc_qty,
+            self.allowed_alloc_qty, if self.is_monetary { "True" } else { "False" })
+    }
 
     fn __repr__(&self) -> String {
         format!("OrderAllocation(account='{}', position={})", self.account, self.position)
@@ -2856,6 +2890,14 @@ impl BarData {
     #[setter(wap)]
     fn set_wap(&mut self, v: &Bound<'_, PyAny>) -> PyResult<()> { self.wap = decimal_from_py(v)?; Ok(()) }
 
+    /// The official library's text (ibx#654).
+    fn __str__(&self) -> String {
+        format!("Date: {}, Open: {}, High: {}, Low: {}, Close: {}, Volume: {}, WAP: {}, BarCount: {}",
+            self.date, float_max_string(self.open), float_max_string(self.high), float_max_string(self.low),
+            float_max_string(self.close), decimal_max_string(self.volume), decimal_max_string(self.wap),
+            int_max_string(self.bar_count as i64))
+    }
+
     fn __repr__(&self) -> String {
         format!("BarData(date='{}', O={}, H={}, L={}, C={}, V={})",
             self.date, self.open, self.high, self.low, self.close, self.volume)
@@ -3279,6 +3321,18 @@ impl Execution {
     #[new]
     #[pyo3(signature = ())]
     fn new() -> Self { Self::default() }
+
+    /// The official library's text (ibx#654); ibx has no exercise or
+    /// lapse type, the official default's name is given.
+    fn __str__(&self) -> String {
+        format!("ExecId: {}, Time: {}, Account: {}, Exchange: {}, Side: {}, Shares: {}, Price: {}, PermId: {}, ClientId: {}, OrderId: {}, Liquidation: {}, CumQty: {}, AvgPrice: {}, OrderRef: {}, EvRule: {}, EvMultiplier: {}, ModelCode: {}, LastLiquidity: {}, PendingPriceRevision: {}, Submitter: {}, OptExerciseOrLapseType: None",
+            self.exec_id, self.time, self.acct_number, self.exchange, self.side, decimal_max_string(self.shares),
+            float_max_string(self.price), long_max_string(self.perm_id), int_max_string(self.client_id),
+            int_max_string(self.order_id), int_max_string(self.liquidation as i64), decimal_max_string(self.cum_qty),
+            float_max_string(self.avg_price), self.order_ref, self.ev_rule, float_max_string(self.ev_multiplier),
+            self.model_code, int_max_string(self.last_liquidity as i64),
+            if self.pending_price_revision { "True" } else { "False" }, self.submitter)
+    }
 
     #[getter(shares)]
     fn get_shares(&self, py: Python<'_>) -> PyResult<Py<PyAny>> { decimal_to_py(py, self.shares) }
