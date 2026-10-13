@@ -76,7 +76,6 @@ fn aapl_with_delayed_data_asked_before_the_open() {
 // keeps its values 45 s at least (capture of 07/10/2026), how long is not
 // read yet.
 #[test]
-#[ignore = "ibx#508: the reference keeps a contract's quote after the cancel and gives it to the next request"]
 fn a_new_request_gets_the_quote_kept_from_a_cancelled_one() {
     assert!(replay_and_compare("l1_aapl_preopen_delayed", None, &[9100]) > 10);
 }

@@ -84,6 +84,50 @@ const SERVER_TAG_CAPACITY: usize = MAX_INSTRUMENTS * 4;
 /// with a real conId (0 occurs in practice for conId-less contracts).
 const FREE_SLOT: i64 = i64::MIN;
 
+/// How many contracts keep their last bid and ask after their last request
+/// ended (ibx#508).
+pub const KEPT_QUOTES: usize = 64;
+
+/// A contract's last bid, ask, their sizes and auto-execution flags, kept
+/// after its last market data request ended, as the reference's contract
+/// record keeps them for the session (ibx#508; the reference 10.51, paper,
+/// pre-market 13/10/2026: still given after 300 s, to another API
+/// connection too, and after the contract was only an option's
+/// underlying). Kept until another contract needs the entry.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct KeptQuote {
+    /// 0: an empty entry.
+    pub con_id: i64,
+    pub bid: Price,
+    pub bid_size: Qty,
+    pub ask: Price,
+    pub ask_size: Qty,
+    /// The last trade's exchange (`Quote::last_exch_mask`), 0 when none.
+    pub last_exch: i64,
+    /// `QuoteMarks::auto_word`.
+    pub auto: u8,
+    stamp: u64,
+}
+
+impl KeptQuote {
+    /// The kept bid and ask of values as the farm sent them, scaled as the
+    /// farm path scales them (`MarketState::apply_tick_sized`): the price
+    /// tick and size increment of the book entry, the contract's round lot.
+    pub fn from_wire(con_id: i64, wire: [Option<i64>; 4], min_tick: f64, size_tick: Option<f64>, round_lot: i64, auto_bits: Option<i64>) -> Self {
+        let price = |v: Option<i64>| v.and_then(|m| m.checked_mul(scale_tick(min_tick))).unwrap_or(0);
+        let size = |v: Option<i64>| v.and_then(|m| m.checked_mul(scale_size(size_tick) * round_lot)).unwrap_or(0);
+        let mut marks = QuoteMarks::default();
+        if let Some(bits) = auto_bits {
+            marks.set_auto_bits(bits);
+        }
+        Self::new(con_id, price(wire[0]), size(wire[2]), price(wire[1]), size(wire[3]), marks.auto_word())
+    }
+
+    pub fn new(con_id: i64, bid: Price, bid_size: Qty, ask: Price, ask_size: Qty, auto: u8) -> Self {
+        Self { con_id, bid, bid_size, ask, ask_size, last_exch: 0, auto, stamp: 0 }
+    }
+}
+
 /// Pre-allocated quote storage indexed by InstrumentId.
 /// All quotes live in a contiguous array for cache efficiency.
 pub struct MarketState {
@@ -137,6 +181,13 @@ pub struct MarketState {
     /// The terms of an option, written on its orders; None for any other
     /// contract.
     option_terms: [Option<Box<OptionTerms>>; MAX_INSTRUMENTS],
+    /// The last bid and ask of contracts whose requests ended (ibx#508),
+    /// given to the next request at its acknowledgement. Preallocated: the
+    /// cancel path writes it without allocating.
+    kept: [KeptQuote; KEPT_QUOTES],
+    /// Write counter of `kept`: the entry with the smallest stamp is the
+    /// oldest, overwritten when the table is full.
+    kept_clock: u64,
 }
 
 /// The terms of an option contract its orders carry, as the reference
@@ -172,7 +223,60 @@ impl MarketState {
             sec_types: std::array::from_fn(|_| None),
             exchanges: std::array::from_fn(|_| None),
             option_terms: std::array::from_fn(|_| None),
+            kept: [KeptQuote::default(); KEPT_QUOTES],
+            kept_clock: 0,
         }
+    }
+
+    /// Keep a contract's last bid and ask (ibx#508): in its own entry, else
+    /// an empty one, else over the oldest. Nothing without a bid or an ask.
+    pub fn keep_quote(&mut self, mut k: KeptQuote) {
+        if k.con_id == 0 || (k.bid == 0 && k.ask == 0) {
+            return;
+        }
+        self.kept_clock += 1;
+        k.stamp = self.kept_clock;
+        let mut at = 0;
+        for (i, e) in self.kept.iter().enumerate() {
+            if e.con_id == k.con_id {
+                at = i;
+                break;
+            }
+            if self.kept[at].con_id != 0 && (e.con_id == 0 || e.stamp < self.kept[at].stamp) {
+                at = i;
+            }
+        }
+        self.kept[at] = k;
+    }
+
+    /// The bid and ask a contract kept, taken out of the table (ibx#508).
+    pub fn take_kept(&mut self, con_id: i64) -> Option<KeptQuote> {
+        if con_id == 0 {
+            return None;
+        }
+        let e = self.kept.iter_mut().find(|e| e.con_id == con_id)?;
+        Some(std::mem::take(e))
+    }
+
+    /// A kept bid and ask become the quote of a new request's slot, with
+    /// their sizes seen and their auto-execution flags (ibx#508).
+    pub fn seed_kept(&mut self, id: InstrumentId, k: &KeptQuote) {
+        let i = id as usize;
+        if i >= MAX_INSTRUMENTS {
+            return;
+        }
+        let q = &mut self.quotes[i];
+        q.bid = k.bid;
+        q.bid_size = k.bid_size;
+        q.ask = k.ask;
+        q.ask_size = k.ask_size;
+        q.last_exch_mask = k.last_exch;
+        let m = &mut self.marks[i];
+        let auto = QuoteMarks::from_auto_word(k.auto);
+        if let Some(on) = auto.bid_auto() { m.set_bid_auto(on); }
+        if let Some(on) = auto.ask_auto() { m.set_ask_auto(on); }
+        m.set_seen(SizeKind::Bid);
+        m.set_seen(SizeKind::Ask);
     }
 
     /// Register an IB contract, returns the assigned InstrumentId, or None
@@ -258,6 +362,12 @@ impl MarketState {
             self.con_id_to_instrument.remove(&con_id);
         }
         self.instrument_to_con_id[instrument as usize] = FREE_SLOT;
+        // Its last bid and ask stay for the next request (ibx#508).
+        let q = self.quotes[instrument as usize];
+        self.keep_quote(KeptQuote {
+            last_exch: q.last_exch_mask,
+            ..KeptQuote::new(con_id, q.bid, q.bid_size, q.ask, q.ask_size, self.marks[instrument as usize].auto_word())
+        });
         self.quotes[instrument as usize] = Quote::default();
         self.marks[instrument as usize] = QuoteMarks::default();
         self.symbols[instrument as usize] = None;
@@ -686,6 +796,65 @@ impl MarketState {
 mod tests {
     use super::*;
     use crate::types::PRICE_SCALE;
+
+    // ibx#508: a freed slot keeps its contract's bid and ask for the next
+    // request, by conId; the table is fixed and overwrites the oldest.
+    #[test]
+    fn a_freed_slot_keeps_its_bid_and_ask() {
+        let mut m = MarketState::new();
+        let id = m.try_register(265598).unwrap();
+        let q = &mut m.quotes[id as usize];
+        q.bid = 34045 * PRICE_SCALE / 100;
+        q.ask = 34052 * PRICE_SCALE / 100;
+        q.bid_size = 320 * QTY_SCALE;
+        q.ask_size = 40 * QTY_SCALE;
+        q.last_exch_mask = 8;
+        m.marks[id as usize].set_auto_bits(12);
+        m.unregister(id);
+        assert_eq!(m.quote(id).bid, 0);
+        let k = m.take_kept(265598).unwrap();
+        assert_eq!((k.bid, k.bid_size, k.ask, k.ask_size, k.last_exch), (q_bid(), 320 * QTY_SCALE, 34052 * PRICE_SCALE / 100, 40 * QTY_SCALE, 8));
+        assert_eq!(QuoteMarks::from_auto_word(k.auto).ask_auto(), Some(true));
+        // Taken once.
+        assert!(m.take_kept(265598).is_none());
+        // A slot without a bid or an ask keeps nothing.
+        let id = m.try_register(1).unwrap();
+        m.unregister(id);
+        assert!(m.take_kept(1).is_none());
+        fn q_bid() -> i64 { 34045 * PRICE_SCALE / 100 }
+    }
+
+    #[test]
+    fn the_kept_table_overwrites_the_oldest_and_seeds_a_slot() {
+        let mut m = MarketState::new();
+        for c in 1..=(KEPT_QUOTES as i64 + 1) {
+            m.keep_quote(KeptQuote::new(c, c * PRICE_SCALE, QTY_SCALE, c * PRICE_SCALE + 1, QTY_SCALE, 0));
+        }
+        // The first one was the oldest.
+        assert!(m.take_kept(1).is_none());
+        assert!(m.take_kept(2).is_some());
+        // The same conId again: its own entry, not a second one.
+        m.keep_quote(KeptQuote::new(3, 7, 1, 8, 1, 0));
+        assert_eq!(m.take_kept(3).map(|k| k.bid), Some(7));
+        assert!(m.take_kept(3).is_none());
+        // Seeded into a new slot: the quote and its sizes seen.
+        let id = m.try_register(9).unwrap();
+        m.seed_kept(id, &KeptQuote::new(9, 5, 2, 6, 3, 0));
+        assert_eq!((m.quote(id).bid, m.quote(id).ask_size), (5, 3));
+        assert!(m.marks(id).seen(SizeKind::Bid) && m.marks(id).seen(SizeKind::Ask));
+    }
+
+    // ibx#508: an option's underlying book, as the farm sent it, scaled as
+    // the farm path scales it.
+    #[test]
+    fn a_kept_quote_from_the_wire_is_scaled_as_the_farm_path() {
+        let k = KeptQuote::from_wire(265598, [Some(34188), Some(34207), Some(2), Some(1)], 0.01, Some(1.0), 40, Some(12));
+        assert_eq!((k.bid, k.ask), (34188 * scale_tick(0.01), 34207 * scale_tick(0.01)));
+        assert_eq!((k.bid_size, k.ask_size), (80 * QTY_SCALE, 40 * QTY_SCALE));
+        assert_eq!(QuoteMarks::from_auto_word(k.auto).bid_auto(), Some(true));
+        // No ask: kept as 0.
+        assert_eq!(KeptQuote::from_wire(1, [Some(1), None, None, None], 0.01, None, 1, None).ask, 0);
+    }
 
     #[test]
     fn register_returns_sequential_ids() {

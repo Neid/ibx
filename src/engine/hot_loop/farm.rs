@@ -961,9 +961,9 @@ impl FarmState {
 
         // An option model entry's ack (ibx#502); the model's own pair of
         // the option carries the option's ticks.
-        if let Some((instrument, code, under)) = self.optmd.ack(rx_farm, req_id, server_tag, min_tick) {
+        let size_min_tick = parts.get(8).and_then(|v| v.parse::<f64>().ok());
+        if let Some((instrument, code, under)) = self.optmd.ack(rx_farm, req_id, server_tag, min_tick, size_min_tick) {
             if !under && matches!(code, 442 | 443) {
-                let size_min_tick = parts.get(8).and_then(|v| v.parse::<f64>().ok());
                 context.market.register_farm_tag_sized(rx_farm, server_tag, instrument, min_tick, size_min_tick);
             }
             return;
@@ -1030,7 +1030,42 @@ impl FarmState {
                 }
                 shared.market.push_tick_req_params(params);
             }
+            self.give_kept_quote(instrument, context, shared);
         }
+    }
+
+    /// The bid and ask a contract kept from its earlier requests (ibx#508),
+    /// at the acknowledgement of a new one, after its request parameters:
+    /// the bid with its size, then the ask with its size, as two book
+    /// updates (the reference 10.51, paper, pre-market 13/10/2026: bid
+    /// price, bid size twice, ask price, ask size twice, before any data
+    /// message). The first data message then gives what changed.
+    fn give_kept_quote(&mut self, instrument: InstrumentId, context: &mut Context, shared: &SharedState) {
+        use crate::md_events::{field::*, MdStep};
+        let Some(con_id) = context.market.con_id(instrument) else { return };
+        let Some(kept) = context.market.take_kept(con_id) else { return };
+        let q = context.quote(instrument);
+        // Data came already: the kept values are older.
+        if q.bid != 0 || q.ask != 0 {
+            return;
+        }
+        context.market.seed_kept(instrument, &kept);
+        let q = context.quote(instrument);
+        let auto = context.market.marks(instrument).auto_word();
+        let queue = &shared.market.md_events;
+        // The last trade's exchange the contract kept is not given again
+        // for a trade on the same exchange (the recording of 28/09/2026: no
+        // last exchange on the new request; ibx#638).
+        if q.last_exch_mask != 0 {
+            queue.offer_quote(instrument, MdStep::Kept, 1 << LAST_EXCH, q, None, auto);
+            queue.publish();
+        }
+        for fields in [1 << BID | 1 << BID_SIZE, 1 << ASK | 1 << ASK_SIZE] {
+            queue.offer_quote(instrument, MdStep::Quote, fields, q, None, auto);
+            queue.publish();
+        }
+        shared.market.push_quote(instrument, q);
+        log::info!("Market data of instrument {}: the kept bid and ask of con_id {} given", instrument, con_id);
     }
 
     /// The BBO exchange code of a market data acknowledgement (ibx#441), as

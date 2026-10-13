@@ -152,6 +152,10 @@ pub enum MdStep {
     /// or for a request that takes over a quote with data: the
     /// differences go out as one step.
     CatchUp = 6,
+    /// What a contract kept from its earlier requests and that a new
+    /// request does not get again (ibx#508): the last trade's exchange.
+    /// Sets the request's baseline, sends nothing.
+    Kept = 7,
 }
 
 impl MdStep {
@@ -162,6 +166,7 @@ impl MdStep {
             3 => Self::Exchange,
             4 => Self::Last,
             5 => Self::Quote,
+            7 => Self::Kept,
             _ => Self::CatchUp,
         }
     }
@@ -552,7 +557,7 @@ impl TestMessage<'_> {
             match step {
                 MdStep::Daily => DAILY,
                 MdStep::Time => 1 << TIME,
-                MdStep::Exchange => 1 << LAST_EXCH,
+                MdStep::Exchange | MdStep::Kept => 1 << LAST_EXCH,
                 MdStep::Last => LAST_TRADE,
                 MdStep::Quote => QUOTE,
                 MdStep::CatchUp => ALL,

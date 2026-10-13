@@ -736,6 +736,12 @@ impl HotLoop {
     /// Cancel the top of book of an instrument on each farm it went to
     /// (#445).
     fn route_md_cancel(&mut self, instrument: InstrumentId) {
+        // The underlying's bid and ask stay for its next request, as the
+        // reference's record of the underlying keeps them (ibx#508).
+        if let Some((con_id, wire, min_tick, size_tick, auto)) = self.farm.optmd.under_book(instrument) {
+            let lot = self.context.round_lots.get(&con_id).copied().unwrap_or(1);
+            self.context.market.keep_quote(crate::engine::market_state::KeptQuote::from_wire(con_id, wire, min_tick, size_tick, lot, auto));
+        }
         // The option model's cancels around the top of book's (ibx#502).
         let (model_pre, model_post) = self.farm.optmd.stop(instrument);
         if self.md_pass.on {

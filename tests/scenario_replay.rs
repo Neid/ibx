@@ -491,18 +491,15 @@ fn session_start_first_client() {
 // 79); 460, 577, 587, 614 and 623 not sent for this stock.
 #[test]
 fn generic_ticks_one_by_one() {
-    // Compared: the errors and the ticks of the generic entries. The top of
-    // book is left out: a request on a contract asked just before gets the
-    // quote the reference kept (ibx#508). The version notice comes from the
-    // logon frame, which the replay has not.
+    // Compared: the errors and every tick, the top of book included: a
+    // request on a contract asked just before gets the quote the reference
+    // kept at its acknowledgement (ibx#508). The version notice comes from
+    // the logon frame, which the replay has not.
     fn generic(l: &str) -> bool {
         let f: Vec<&str> = l.split('|').collect();
         match f[0] {
             "error" => f[2] != "2172",
-            "tickPrice" => matches!(f[2], "37" | "78" | "79" | "96" | "97" | "98" | "99"),
-            "tickSize" => matches!(f[2], "63" | "64" | "65"),
-            "tickString" => f[2] == "47",
-            "tickGeneric" => true,
+            "tickPrice" | "tickSize" | "tickString" | "tickGeneric" => true,
             _ => false,
         }
     }
@@ -511,7 +508,7 @@ fn generic_ticks_one_by_one() {
     assert_eq!((o.frame_error.as_deref(), o.frames_compared), (None, 36));
     let theirs: Vec<String> = o.theirs.iter().map(|(_, l)| l.clone()).collect();
     ibx::test_support::scenario::assert_same_callbacks(&o.ours, &theirs);
-    assert_eq!(o.ours.len(), 22);
+    assert_eq!(o.ours.len(), 190);
 }
 
 // The same ticks in one list on AAPL (07/10/2026): the mark price and the

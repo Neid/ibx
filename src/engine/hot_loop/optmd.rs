@@ -62,6 +62,8 @@ pub(crate) struct ModelEntry {
     pub(crate) under: bool,
     pub(crate) tag: Option<u32>,
     pub(crate) min_tick: f64,
+    /// The size increment of its acknowledgement, when it gave one.
+    pub(crate) size_tick: Option<f64>,
 }
 
 /// The option model of one option instrument.
@@ -78,6 +80,11 @@ pub(crate) struct OptionModel {
     under_bid: Option<f64>,
     under_ask: Option<f64>,
     under_last: Option<f64>,
+    /// The underlying's bid, ask, bid size and ask size as the farm sent
+    /// them, and its auto-execution bits: kept for the underlying's next
+    /// request when the model stops (ibx#508).
+    under_wire: [Option<i64>; 4],
+    under_auto: Option<i64>,
     /// The underlying's trade tag: (farm, tag, price tick).
     under_trade: Option<(FarmId, u32, f64)>,
     pub(crate) state: market::ModelState,
@@ -210,7 +217,7 @@ impl OptMd {
                 farm_req: 0, farm: if under { under_farm } else { opt_farm },
                 con_id: if under { terms.under_con_id.to_string() } else { con_id.to_string() },
                 exchange: exchange.to_string(), sec_type: if under { under_sec.clone() } else { opt_sec.clone() },
-                code, under, tag: None, min_tick: 0.0,
+                code, under, tag: None, min_tick: 0.0, size_tick: None,
             });
         };
         if snapshot {
@@ -228,7 +235,7 @@ impl OptMd {
         let under_con_id = terms.under_con_id;
         let mut model = OptionModel {
             instrument, snapshot, terms, opt_farm, under_farm, entries, vols_sent: false,
-            under_bid: None, under_ask: None, under_last: None, under_trade: None,
+            under_bid: None, under_ask: None, under_last: None, under_wire: [None; 4], under_auto: None, under_trade: None,
             state: market::ModelState::default(), next_pass: None, passes: 0, sent: [None; 4], frozen: false,
         };
         let known = self.params.get(&under_con_id).copied();
@@ -297,6 +304,16 @@ impl OptMd {
 
     /// The model of an instrument stops: the cancels to send before its
     /// top of book's, and those after it.
+    /// The underlying's bid and ask of the model of `instrument`, as the
+    /// farm sent them, for the underlying's next request (ibx#508): its
+    /// conId, the four values (bid, ask, bid size, ask size), the price
+    /// tick and size increment of its book entry, its auto-execution bits.
+    pub(crate) fn under_book(&self, instrument: InstrumentId) -> Option<(i64, [Option<i64>; 4], f64, Option<f64>, Option<i64>)> {
+        let m = self.models.iter().find(|m| m.instrument == instrument)?;
+        let e = m.entry(442, true).filter(|e| e.tag.is_some())?;
+        Some((m.terms.under_con_id, m.under_wire, e.min_tick, e.size_tick, m.under_auto))
+    }
+
     pub(crate) fn stop(&mut self, instrument: InstrumentId) -> (Messages, Messages) {
         self.starting.retain(|s| s.instrument != instrument);
         let Some(pos) = self.models.iter().position(|m| m.instrument == instrument) else { return (Vec::new(), Vec::new()) };
@@ -353,11 +370,12 @@ impl OptMd {
 
     /// An acknowledgement of a model entry: the instrument and the entry's
     /// code, None when it is not one.
-    pub(crate) fn ack(&mut self, farm: FarmId, req_id: u32, tag: u32, min_tick: f64) -> Option<(InstrumentId, i32, bool)> {
+    pub(crate) fn ack(&mut self, farm: FarmId, req_id: u32, tag: u32, min_tick: f64, size_tick: Option<f64>) -> Option<(InstrumentId, i32, bool)> {
         for m in &mut self.models {
             if let Some(e) = m.entries.iter_mut().find(|e| e.farm == farm && e.farm_req == req_id) {
                 e.tag = Some(tag);
                 e.min_tick = min_tick;
+                e.size_tick = size_tick;
                 log::info!("Option model entry {} ack: server_tag {} -> instrument {}", e.code, tag, m.instrument);
                 return Some((m.instrument, e.code, e.under));
             }
@@ -385,13 +403,29 @@ impl OptMd {
     #[inline]
     pub(crate) fn tick(&mut self, farm: FarmId, t: &tick_decoder::RawTick) {
         use tick_decoder as td;
-        if !matches!(t.tick_type, td::O_BID_PRICE | td::O_ASK_PRICE | td::O_LAST_PRICE) {
+        if !matches!(t.tick_type, td::O_BID_PRICE | td::O_ASK_PRICE | td::O_LAST_PRICE
+            | td::O_BID_SIZE | td::O_ASK_SIZE | td::O_AUTO_EXEC | td::O_ATTRIBUTES)
+        {
             return;
         }
         for m in &mut self.models {
             let quote_tick = m.entries.iter()
                 .find(|e| e.under && e.code == 442 && e.farm == farm && e.tag == Some(t.server_tag))
                 .map(|e| e.min_tick);
+            // The underlying's book as the farm sent it (ibx#508).
+            if quote_tick.is_some() && !t.stats_block {
+                match t.tick_type {
+                    td::O_BID_PRICE => m.under_wire[0] = Some(t.magnitude),
+                    td::O_ASK_PRICE => m.under_wire[1] = Some(t.magnitude),
+                    td::O_BID_SIZE => m.under_wire[2] = Some(t.magnitude),
+                    td::O_ASK_SIZE => m.under_wire[3] = Some(t.magnitude),
+                    td::O_AUTO_EXEC | td::O_ATTRIBUTES => m.under_auto = Some(t.magnitude),
+                    _ => {}
+                }
+            }
+            if !matches!(t.tick_type, td::O_BID_PRICE | td::O_ASK_PRICE | td::O_LAST_PRICE) {
+                continue;
+            }
             let trade_tick = m.under_trade.filter(|(f, tag, _)| *f == farm && *tag == t.server_tag).map(|(_, _, tick)| tick);
             let Some(price_tick) = quote_tick.or(trade_tick) else { continue };
             let v = scaled(t.magnitude, price_tick);

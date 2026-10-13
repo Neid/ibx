@@ -655,6 +655,13 @@ fn pass_one(
     if st.ended {
         return false;
     }
+    // What the contract kept is the request's baseline: not sent (ibx#508).
+    if let Pass::Step(MdStep::Kept, set) = pass {
+        for idx in (0..field::COUNT).filter(|i| set & (1 << i) != 0) {
+            st.fields[idx] = m.fields[idx];
+        }
+        return false;
+    }
     let mark = out.len();
     let complete = {
         let mut o = Out { out: &mut *out, req_id, fields: &m.fields, delayed: st.delayed, shared, instrument, seq };
