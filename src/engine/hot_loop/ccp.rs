@@ -408,6 +408,10 @@ pub(crate) struct CcpState {
     /// The contracts of orders waiting for the zone of their trading
     /// hours, by schedule key (ibx#636).
     pub(crate) order_zone_waits: Vec<(String, i64)>,
+    /// The auto cancel date each order's reports gave last, by order
+    /// (ibx#683): the one the order holds, which its openOrder shows only
+    /// from a status report or a modify on.
+    pub(crate) held_cancel_dates: std::collections::HashMap<crate::types::OrderId, String>,
     /// Counter for internal schedule subscribe req IDs.
     pub(crate) next_schedule_sub_id: u32,
     /// Fan-out state for by-symbol lookups: the records wait for the
@@ -799,6 +803,7 @@ impl CcpState {
             ccp_sign_iv: std::sync::Mutex::new(Vec::new()),
             pending_schedule_pair: Vec::new(),
             order_zone_waits: Vec::new(),
+            held_cancel_dates: std::collections::HashMap::new(),
             schedules: std::collections::HashMap::new(),
             next_schedule_sub_id: 1,
             pending_fanout: Vec::new(),
@@ -1968,10 +1973,27 @@ impl CcpState {
             let outside_rth = parsed.get(&6433).is_some_and(|s| s == "1")
                 || shared.orders.get_order_info(clord_id).is_some_and(|i| i.order.outside_rth);
             let clearing_intent = parsed.get(&6419).cloned().unwrap_or_default();
-            // Kept when a later report leaves it out (ibx#546).
-            let auto_cancel_date = parsed.get(&6596).cloned()
-                .or_else(|| shared.orders.get_order_info(clord_id).map(|i| i.order.auto_cancel_date).filter(|d| !d.is_empty()))
-                .unwrap_or_default();
+            // The date the openOrder shows is the one of the order as it
+            // was last sent, which a status report replaces; a new-order
+            // report gives the order its date but not the openOrder, until
+            // the next modify (ibx#683; code read on 10.51; observed on
+            // paper 13/10/2026: a STP whose only report was a new-order
+            // one showed no date until its modify, a LMT whose first
+            // report was a status one showed it at once). Kept when a later
+            // report leaves it out (ibx#546).
+            let reported_date = parsed.get(&6596).cloned();
+            let shown_before = shared.orders.get_order_info(clord_id).map(|i| i.order.auto_cancel_date).unwrap_or_default();
+            let held_before = self.held_cancel_dates.get(&clord_id).cloned().unwrap_or_default();
+            let auto_cancel_date = if parsed.get(&20).is_some_and(|t| t == "3") {
+                reported_date.clone().unwrap_or(shown_before)
+            } else if parsed.get(&150).is_some_and(|t| t == "5") {
+                if held_before.is_empty() { shown_before } else { held_before }
+            } else {
+                shown_before
+            };
+            if let Some(date) = reported_date {
+                self.held_cancel_dates.insert(clord_id, date);
+            }
             let exec_exchange = parsed.get(&30).cloned().unwrap_or_default();
             let transact_time = parsed.get(&60).cloned().unwrap_or_default();
             let avg_px: f64 = parsed.get(&6).and_then(|s| s.parse().ok()).unwrap_or(0.0);
@@ -5118,6 +5140,34 @@ mod tests {
         assert_eq!(context.finished_status(1626578655), Some(crate::types::OrderStatus::Cancelled));
         let info = shared.orders.get_order_info(1626578655).unwrap();
         assert_eq!(info.order_state.status, "Cancelled");
+    }
+
+    // ibx#683 (the reference 10.51, paper, 13/10/2026): the auto cancel
+    // date of a new-order report reaches the order but not its openOrder,
+    // until the report of its modify; a status report gives it at once.
+    #[test]
+    fn the_auto_cancel_date_shows_from_a_status_report_or_a_modify() {
+        let report = |id: i64, ver: u32, exec: &str, trans: &str, status: &str| pipe_frame(&format!(
+            "8=FIX.4.1|9=000300|35=8|34=000100|43=N|52=20261013-18:28:15|11={id}.{ver}|17=140781.1791916.{ver}|150={exec}|20={trans}|39={status}|167=CS|55=AAPL|38=1|99=1000|32=0|31=0.00|14=0|151=1|6=0|54=1|37=0|1=DU1|60=20261013-18:28:15|6596=20270331-20:00:00|40=3|59=1|6008=265598|15=USD|6004=BEST|6119=198|6121=57690|10=000|"));
+        let shown = |shared: &SharedState, id: i64| shared.orders.get_order_info(id).map(|i| i.order.auto_cancel_date).unwrap_or_default();
+        let mut context = Context::new();
+        let shared = SharedState::new();
+        let mut ccp = CcpState::new();
+        let instrument = context.register_instrument(265598);
+        let (client, _server) = socket_pair();
+        let mut conn = Some(Connection::new_mem(client));
+        let mut hb = HeartbeatState::new();
+        // A STP: its only report a new-order one; then its modify's.
+        context.insert_order(crate::types::Order::new(328103937, instrument, Side::Buy, 1, 0, b'3', b'1', 1000 * PRICE_SCALE));
+        ccp.process_ccp_message(&report(328103937, 0, "0", "0", "0"), &mut conn, &mut context, &shared, &None, &mut hb, "DU1");
+        assert_eq!(shown(&shared, 328103937), "");
+        context.modify_versions.insert(328103937, 1);
+        ccp.process_ccp_message(&report(328103937, 1, "5", "0", "0"), &mut conn, &mut context, &shared, &None, &mut hb, "DU1");
+        assert_eq!(shown(&shared, 328103937), "20270331-20:00:00");
+        // A LMT whose first report is a status one.
+        context.insert_order(crate::types::Order::new(328103938, instrument, Side::Buy, 1, 240 * PRICE_SCALE, b'2', b'1', 0));
+        ccp.process_ccp_message(&report(328103938, 0, "A", "3", "A"), &mut conn, &mut context, &shared, &None, &mut hb, "DU1");
+        assert_eq!(shown(&shared, 328103938), "20270331-20:00:00");
     }
 
     // ibx#252: a refused cancel of a working order changes neither its
