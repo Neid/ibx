@@ -383,6 +383,11 @@ impl OptMd {
         None
     }
 
+    /// A model entry by its request number on `farm`.
+    pub(crate) fn entry(&self, farm: FarmId, req_id: u32) -> Option<&ModelEntry> {
+        self.models.iter().flat_map(|m| &m.entries).find(|e| e.farm == farm && e.farm_req == req_id)
+    }
+
     /// The code of a server tag of a model entry on `farm` (a generic tick
     /// block), None when it is none.
     pub(crate) fn code_of(&self, farm: FarmId, tag: u32) -> Option<i32> {

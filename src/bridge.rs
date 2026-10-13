@@ -2050,6 +2050,18 @@ impl ReferenceState {
         true
     }
 
+    /// A BBO exchange code known from an entry that is no instrument's (the
+    /// option model's underlying, ibx#664): true when the key is new.
+    #[doc(hidden)] pub fn observe_exchange_map_key(&self, code: &str, sec_type_id: u8) -> bool {
+        let key: ExchangeMapKey = (code.to_string(), sec_type_id);
+        let mut maps = self.exchange_maps.lock().unwrap();
+        if maps.iter().any(|(k, _)| *k == key) {
+            return false;
+        }
+        maps.push((key, None));
+        true
+    }
+
     /// The exchange map of a BBO exchange arrived (ibx#441).
     #[doc(hidden)] pub fn set_exchange_map(&self, code: &str, sec_type_id: u8, map: Vec<crate::types::SmartComponent>) {
         self.set_exchange_map_at(code, sec_type_id, map, 0);

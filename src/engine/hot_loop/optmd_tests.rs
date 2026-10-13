@@ -337,3 +337,37 @@ fn a_frozen_option_keeps_its_computations() {
         assert_eq!(last.implied_vol, NOT_COMPUTED, "the last without its volatility");
     }
 }
+
+// ibx#664: the underlying's exchange map is asked at the acknowledgement of
+// the model's bid and ask entry of the underlying, once per key, as the
+// reference 10.51 asked AAPL's in a fresh process (13/10/2026, regular
+// hours) before AAPL itself was asked.
+#[test]
+fn the_model_asks_the_underlyings_exchange_map() {
+    let shared = Arc::new(SharedState::new());
+    shared.reference.set_api_features(crate::control::logon::ApiFeatures::parse("ODDLOTBIDASK,PRCEXTRAPREC"));
+    let mut engine = HotLoop::new(shared.clone(), None, None);
+    engine.set_farm_name("usfarm".into());
+    let (client, mut farm_side) = crate::protocol::connection::mem_pair();
+    engine.farm_conn = Some(crate::protocol::connection::Connection::new_mem(client));
+    engine.context.option_terms.insert(OPTION, terms());
+    let id = engine.context.market.register(OPTION);
+    engine.context.market.set_routing(id, "OPT", "SMART");
+    engine.route_md_subscribe(&farm::MdSubscribe {
+        con_id: OPTION, symbol: "AAPL".into(), exchange: "SMART".into(), sec_type: "OPT".into(),
+        last_trade_date: "20261218".into(), strike: 340.0, right: "C".into(), multiplier: "100".into(),
+        instrument: id, mode_9887: 0, snapshot: false,
+    });
+    assert_eq!(sent(&mut farm_side).len(), 4);
+    let ack_with = |engine: &mut HotLoop, tag: u32, req: u32| {
+        let msg = format!("8=O\x0135=Q\x01{tag},{req},0.01,0,3,9c,,1,1");
+        engine.farm.process_farm_message(msg.as_bytes(), &mut engine.farm_conn, &mut engine.context, &engine.shared, &None, &mut engine.hb);
+    };
+    ack_with(&mut engine, 179, 3);
+    let msgs = sent(&mut farm_side);
+    assert_eq!(msgs.len(), 1, "{msgs:#?}");
+    assert!(msgs[0].contains("|6008=265598|207=BEST|167=CS|264=626"), "{}", msgs[0]);
+    // The last entry's acknowledgement does not ask it again.
+    ack_with(&mut engine, 179, 4);
+    assert!(sent(&mut farm_side).is_empty());
+}

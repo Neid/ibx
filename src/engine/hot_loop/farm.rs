@@ -988,6 +988,14 @@ impl FarmState {
             if !under && matches!(code, 442 | 443) {
                 context.market.register_farm_tag_sized(rx_farm, server_tag, instrument, min_tick, size_min_tick);
             }
+            // The underlying's exchange map is asked at its bid and ask's
+            // acknowledgement, as for a contract asked by the API (ibx#664;
+            // observed 13/10/2026, regular hours, a fresh reference 10.51:
+            // the AAPL call's model asks AAPL's map before AAPL is asked).
+            if under && code == 442 {
+                let map = self.observe_under_exchange_map(instrument, req_id, parts.get(5).copied(), shared);
+                self.send_after_ack(&[], map, sink, hb);
+            }
             return;
         }
 
@@ -1095,6 +1103,38 @@ impl FarmState {
     /// contract's key (code, security type) becomes known, and the first
     /// time a key with a code is seen the exchange map is asked with the
     /// gateway's own generic tick 626 on the farm of the acknowledgement.
+    fn observe_under_exchange_map(
+        &mut self,
+        instrument: InstrumentId,
+        req_id: u32,
+        code: Option<&str>,
+        shared: &SharedState,
+    ) -> Option<ExchangeMapSub> {
+        let code = code.map(str::trim).filter(|c| !c.is_empty() && *c != "ffffffff")?;
+        let e = self.optmd.entry(self.rx_farm, req_id)?;
+        let api_sec_type = if e.sec_type == "CS" { "STK" } else { e.sec_type.as_str() };
+        let sec_type_id = crate::types::sec_type_id(api_sec_type)?;
+        if !shared.reference.observe_exchange_map_key(code, sec_type_id)
+            || self.exchange_map_subs.iter().any(|s| s.code == code && s.sec_type_id == sec_type_id)
+        {
+            return None;
+        }
+        let sub = ExchangeMapSub {
+            req_id: self.next_md_req_id,
+            farm: self.rx_farm,
+            code: code.to_string(),
+            sec_type_id,
+            con_id: e.con_id.clone(),
+            exchange: e.exchange.clone(),
+            sec_type: e.sec_type.clone(),
+            server_tag: None,
+            instrument,
+        };
+        self.next_md_req_id += 1;
+        log::info!("Starting to observe the exchange map {}:{} (underlying of instrument {}, id {})", code, api_sec_type, instrument, sub.req_id);
+        Some(sub)
+    }
+
     fn observe_exchange_map(
         &mut self,
         instrument: InstrumentId,
