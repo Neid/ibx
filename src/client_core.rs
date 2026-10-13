@@ -359,6 +359,10 @@ pub const SERVER_VERSION: i32 = 214;
 /// the reference 10.51 (ibx#486, ibx#662).
 const SUMMARY_FRAMES_TWICE: bool = SERVER_VERSION < 225;
 
+/// The odd-lot quotes (generic tick 787) are given from session level 225
+/// (ibx#616).
+const ODD_LOT_QUOTES: bool = SERVER_VERSION >= 225;
+
 /// Connection time of a session in the reference's form
 /// `yyyyMMdd HH:mm:ss {zone}`, local time of the machine (ibx#426). The zone
 /// is the machine zone of the session (`IBX_TZ` when set).
@@ -3449,7 +3453,16 @@ impl ClientCore {
     /// reference computes them once.
     pub fn generic_tick_list_refusal(&self, generic_tick_list: &str, snapshot: bool, sec_type: &str) -> Option<(i64, String)> {
         use crate::control::generic_tick;
-        if snapshot || generic_tick_list.is_empty() || generic_tick::parse(generic_tick_list, sec_type).is_some() {
+        if snapshot || generic_tick_list.is_empty() {
+            return None;
+        }
+        if let Some(ticks) = generic_tick::parse(generic_tick_list, sec_type) {
+            // The odd-lot quotes need session level 225 and no `mdoff`
+            // (ibx#616, code read 13/10/2026).
+            let mdoff = generic_tick_list.split(',').any(|t| t.trim().eq_ignore_ascii_case("mdoff"));
+            if ticks.iter().any(|t| t.code == generic_tick::ODD_LOT) && (!ODD_LOT_QUOTES || mdoff) {
+                return Some((10367, "Requesting \"Odd Lot Bid/Ask Quotes\" generic tick 787 is not allowed".to_string()));
+            }
             return None;
         }
         let legal = self.generic_legal.lock().unwrap().get_or_insert_with(|| generic_tick::legal_ones(sec_type)).clone();
@@ -6610,6 +6623,20 @@ impl ClientCore {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ibx#616: below session level 225 the odd-lot quotes (787) are
+    // refused with 10367, also in a list with other ticks; a list the
+    // reference cannot read keeps its 321.
+    #[test]
+    fn odd_lot_quotes_are_refused_below_level_225() {
+        let core = ClientCore::new();
+        let refused = Some((10367, "Requesting \"Odd Lot Bid/Ask Quotes\" generic tick 787 is not allowed".to_string()));
+        assert_eq!(core.generic_tick_list_refusal("787", false, "STK"), refused);
+        assert_eq!(core.generic_tick_list_refusal("233,787", false, "STK"), refused);
+        assert_eq!(core.generic_tick_list_refusal("787", true, "STK"), None, "not checked on a snapshot");
+        assert_eq!(core.generic_tick_list_refusal("787,999", false, "STK").map(|r| r.0), Some(321));
+        assert_eq!(core.generic_tick_list_refusal("233", false, "STK"), None);
+    }
 
     // ibx#505: the provider names of the logon list; a modify of an order
     // for one of them is refused with 105 unless it names SMART.

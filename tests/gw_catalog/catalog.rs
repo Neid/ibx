@@ -28,7 +28,12 @@ pub fn csv_fields(line: &str) -> Vec<String> {
 
 /// The rows of a catalog file as maps column name to value.
 pub fn rows(name: &str) -> Vec<HashMap<String, String>> {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/gw1040/catalog").join(name);
+    rows_of("gw1040", name)
+}
+
+/// The rows of a catalog of one reference version.
+pub fn rows_of(version: &str, name: &str) -> Vec<HashMap<String, String>> {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures").join(version).join("catalog").join(name);
     let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
     let mut lines = text.lines().filter(|l| !l.trim().is_empty());
     let header = csv_fields(lines.next().unwrap());
@@ -63,7 +68,18 @@ impl ErrorCode {
 }
 
 pub fn error_codes() -> BTreeMap<i64, ErrorCode> {
-    rows("error_codes.csv").into_iter().map(|r| {
+    // The codes of 10.40, then those only 10.51 has (the move to 10.51,
+    // ibx#559): a rule of 10.51 written behind its session level raises
+    // them (ibx#616).
+    let mut codes = error_codes_of("gw1040");
+    for (code, e) in error_codes_of("gw1051") {
+        codes.entry(code).or_insert(e);
+    }
+    codes
+}
+
+fn error_codes_of(version: &str) -> BTreeMap<i64, ErrorCode> {
+    rows_of(version, "error_codes.csv").into_iter().map(|r| {
         let messages = if r["message"].is_empty() {
             Vec::new()
         } else {
