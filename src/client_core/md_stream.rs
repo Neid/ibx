@@ -444,7 +444,11 @@ fn snapshot_pass(snap: &mut PlainSnapshot, m: &Mirror, pass: Pass, out: &mut Out
         out.price(TICK_LAST, field::LAST, false);
         out.size(TICK_LAST_SIZE, field::LAST_SIZE);
     }
-    let volume = has(field::VOLUME) && snap.take(out.api(TICK_VOLUME));
+    // An option's volume of 0 is given too (ibx#681; the reference 10.51,
+    // an option with no trade, 13/10/2026).
+    let option = snap.is_option();
+    let volume = (has(field::VOLUME) || (option && set & (1 << field::VOLUME) != 0 && m.seen(SizeKind::Volume)))
+        && snap.take(out.api(TICK_VOLUME));
     if volume && !delayed {
         out.size(TICK_VOLUME, field::VOLUME);
     }
@@ -461,10 +465,21 @@ fn snapshot_pass(snap: &mut PlainSnapshot, m: &Mirror, pass: Pass, out: &mut Out
             out.price(tt, idx, false);
         }
     }
+    // An option's bid and ask exchanges (ibx#681; the reference 10.51,
+    // 13/10/2026: in option snapshots, not in stock ones, ibx#503).
+    if option && !delayed {
+        for (idx, tt) in [(field::BID_EXCH, TICK_BID_EXCHANGE), (field::ASK_EXCH, TICK_ASK_EXCHANGE)] {
+            if has(idx) && snap.take(tt) {
+                out.exchanges(idx);
+            }
+        }
+    }
     if has(field::TIME) && snap.take(out.api(TICK_LAST_TIMESTAMP)) {
         out.time();
     }
-    if trade && !delayed && let Some(status) = m.halted && snap.take(TICK_HALTED) {
+    // An option snapshot gives no halted state (ibx#647; the reference
+    // 10.51, 12/10/2026 after hours and 13/10/2026 regular hours).
+    if trade && !delayed && !option && let Some(status) = m.halted && snap.take(TICK_HALTED) {
         out.halted(status);
     }
 }
@@ -1099,6 +1114,20 @@ mod tests {
             "price:1:1:99", "size:1:0:1",
         ]);
         assert!(poll(&core, &shared).is_empty());
+    }
+
+    // ibx#681, ibx#647 (the reference 10.51, 13/10/2026, an option with
+    // no trade): its snapshot gives a volume of 0 and no halted state.
+    #[test]
+    fn an_option_snapshot_gives_a_zero_volume_and_no_halted_state() {
+        let (core, shared) = (ClientCore::new(), SharedState::new());
+        assert!(core.attach_md_request(&shared, 1, 5, true, "OPT", "SMART", None, false, false));
+        let q = Quote { bid: 245 * PRICE_SCALE, ask: 246 * PRICE_SCALE, bid_size: QTY_SCALE, ask_size: QTY_SCALE, ..Default::default() };
+        shared.market.push_test_message(5, &q, &TestMessage { steps: Some(&[MdStep::Quote, MdStep::Last, MdStep::Daily]), halted: Some(0),
+            sizes_seen: true, ..Default::default() });
+        let lines = poll(&core, &shared);
+        assert!(lines.iter().any(|l| l == "size:1:8:0"), "{lines:?}");
+        assert!(!lines.iter().any(|l| l.starts_with("generic:1:49")), "{lines:?}");
     }
 
     // ibx#680 (the reference 10.51, SPX on CBOE, 13/10/2026, regular

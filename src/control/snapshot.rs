@@ -154,6 +154,11 @@ impl PlainSnapshot {
         self.sent & done == done || self.sent & delayed == delayed
     }
 
+    /// A snapshot of an option (its computations, its exchange strings).
+    pub fn is_option(&self) -> bool {
+        self.option
+    }
+
     pub fn timed_out(&self, now: Instant) -> bool {
         now.duration_since(self.started) >= TIMEOUT
     }
