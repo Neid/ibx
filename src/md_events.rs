@@ -156,6 +156,9 @@ pub enum MdStep {
     /// request does not get again (ibx#508): the last trade's exchange.
     /// Sets the request's baseline, sends nothing.
     Kept = 7,
+    /// The bid and ask a contract kept, given to a new request as a book
+    /// update; a snapshot gives them without auto-execution (ibx#671).
+    KeptQuote = 8,
 }
 
 impl MdStep {
@@ -167,6 +170,7 @@ impl MdStep {
             4 => Self::Last,
             5 => Self::Quote,
             7 => Self::Kept,
+            8 => Self::KeptQuote,
             _ => Self::CatchUp,
         }
     }
@@ -559,7 +563,7 @@ impl TestMessage<'_> {
                 MdStep::Time => 1 << TIME,
                 MdStep::Exchange | MdStep::Kept => 1 << LAST_EXCH,
                 MdStep::Last => LAST_TRADE,
-                MdStep::Quote => QUOTE,
+                MdStep::Quote | MdStep::KeptQuote => QUOTE,
                 MdStep::CatchUp => ALL,
             }
         };
@@ -584,7 +588,7 @@ impl TestMessage<'_> {
                 ev.halted = self.halted.filter(|s| *s != -1).map(|s| (s & 3) as u8);
                 halted_given |= ev.halted.is_some();
             }
-            if matches!(step, MdStep::Quote | MdStep::CatchUp)
+            if matches!(step, MdStep::Quote | MdStep::KeptQuote | MdStep::CatchUp)
                 && let Some(bits) = self.auto_bits
             {
                 let mut marks = QuoteMarks::default();

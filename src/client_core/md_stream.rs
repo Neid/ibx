@@ -378,7 +378,7 @@ fn stream_pass(st: &mut StreamState, m: &Mirror, pass: Pass, out: &mut Out) {
         out.halted(status);
     }
     // A book update clears every mark.
-    if matches!(pass, Pass::Step(MdStep::Quote | MdStep::CatchUp, _)) {
+    if matches!(pass, Pass::Step(MdStep::Quote | MdStep::KeptQuote | MdStep::CatchUp, _)) {
         st.halted_pending = false;
     }
     st.fields = *fields;
@@ -407,12 +407,15 @@ fn snapshot_pass(snap: &mut PlainSnapshot, m: &Mirror, pass: Pass, out: &mut Out
     let delayed = out.delayed;
     let f = m.fields;
     let has = |idx: usize| set & (1 << idx) != 0 && f[idx] != 0;
+    let kept = matches!(pass, Pass::Step(MdStep::KeptQuote, _));
     for (idx, size, pt, st, auto) in [
         (field::BID, field::BID_SIZE, TICK_BID, TICK_BID_SIZE, m.auto.bid_auto()),
         (field::ASK, field::ASK_SIZE, TICK_ASK, TICK_ASK_SIZE, m.auto.ask_auto()),
     ] {
         if has(idx) && snap.take(out.api(pt)) {
-            out.price(pt, idx, !delayed && auto == Some(true));
+            // Kept values carry no auto-execution for a snapshot (ibx#671;
+            // the reference 10.51: false in a snapshot, true in a stream).
+            out.price(pt, idx, !delayed && !kept && auto == Some(true));
             out.size(st, size);
         }
     }
@@ -613,12 +616,12 @@ impl ClientCore {
                     break;
                 }
                 end = seq + 1;
-                if kind == MdStep::Quote { books = true } else { others = true }
+                if matches!(kind, MdStep::Quote | MdStep::KeptQuote) { books = true } else { others = true }
             }
             if books && others {
                 for quotes in [false, true] {
                     for seq in start..end {
-                        if (queue.step_at(seq).0 == MdStep::Quote) == quotes {
+                        if matches!(queue.step_at(seq).0, MdStep::Quote | MdStep::KeptQuote) == quotes {
                             step(seq, None);
                         }
                     }

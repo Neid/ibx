@@ -1081,9 +1081,7 @@ impl FarmState {
         }
         context.market.seed_kept(instrument, &kept);
         let q = context.quote(instrument);
-        // The kept bid and ask carry no auto-execution: a snapshot given
-        // them shows false (ibx#671; the reference 10.51, 13/10/2026).
-        let auto = 0;
+        let auto = context.market.marks(instrument).auto_word();
         let queue = &shared.market.md_events;
         // The last trade's exchange the contract kept is not given again
         // for a trade on the same exchange (the recording of 28/09/2026: no
@@ -1093,7 +1091,9 @@ impl FarmState {
             queue.publish();
         }
         for fields in [1 << BID | 1 << BID_SIZE, 1 << ASK | 1 << ASK_SIZE] {
-            queue.offer_quote(instrument, MdStep::Quote, fields, q, None, auto);
+            // Its own step: a snapshot gives these without auto-execution,
+            // a stream with it (ibx#671; the reference 10.51, 13/10/2026).
+            queue.offer_quote(instrument, MdStep::KeptQuote, fields, q, None, auto);
             queue.publish();
         }
         shared.market.push_quote(instrument, q);

@@ -6664,6 +6664,28 @@ fn option_stream_auto_execution_comes_from_the_farm() {
     drop(engine);
 }
 
+// ibx#671 (the reference 10.51, 13/10/2026): the bid and ask a contract
+// kept are given with their auto-execution to a stream, without it to a
+// snapshot.
+#[test]
+fn kept_bid_and_ask_auto_execution_stream_and_snapshot() {
+    for snapshot in [false, true] {
+        let (client, rx, shared) = test_client();
+        let engine = top_engine(rx);
+        let option = Contract { con_id: 900_000_001, symbol: "SPY".into(), sec_type: "OPT".into(),
+            exchange: "SMART".into(), ..Default::default() };
+        client.req_mkt_data(1, &option, "", snapshot, false).unwrap();
+        let s = crate::types::PRICE_SCALE;
+        let message = crate::md_events::TestMessage { steps: Some(&[crate::md_events::MdStep::KeptQuote]), auto_bits: Some(12), ..Default::default() };
+        shared.market.push_test_message(5, &crate::types::Quote { bid: 3 * s, ask: 4 * s, ..Default::default() }, &message);
+        let mut w = SeqRec::default();
+        client.process_msgs(&mut w);
+        let bid = w.events.iter().find(|e| e.starts_with("price:1:1:")).cloned().unwrap_or_default();
+        assert_eq!(bid, if snapshot { "price:1:1:3:-" } else { "price:1:1:3:auto" }, "snapshot {snapshot}: {:?}", w.events);
+        drop(engine);
+    }
+}
+
 // A snapshot that never completes ends 11 s after its start; a stream
 // never ends.
 #[test]
