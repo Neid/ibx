@@ -1674,6 +1674,11 @@ fn is_given(v: f64) -> bool {
 /// A TRAIL LIMIT's limit price, offset and stop price are what the server
 /// reports (44, 6370, 6117), as the reference's openOrder (ib-agent#194,
 /// ibx#491).
+/// The refusal of fundamentals to an API client whose logon does not allow
+/// them (ibx#674; the reference 10.51, paper 13/10/2026, with its final
+/// period).
+pub const FUNDAMENTALS_NOT_ALLOWED: (i64, &str) = (10358, "Fundamentals data is not allowed.");
+
 /// The checks of an order given once its contract is looked up
 /// (ibx#665): the errors in order, the last one a refusal when `refused`.
 #[derive(Debug, Clone, PartialEq)]
@@ -2994,7 +2999,13 @@ impl ClientCore {
 
     /// The reference's local refusal of a fundamental data request
     /// (#434): only a stock may be asked, else 321.
-    pub fn fundamental_refusal(sec_type: &str) -> Option<(i32, String)> {
+    pub fn fundamental_refusal(sec_type: &str, fundamentals_allowed: bool) -> Option<(i32, String)> {
+        // 10358 first, without the logon's permission (ibx#674; code read
+        // on 10.51).
+        if !fundamentals_allowed {
+            let (code, text) = FUNDAMENTALS_NOT_ALLOWED;
+            return Some((code as i32, text.to_string()));
+        }
         (sec_type != "STK").then(|| (321, "Error validating request.-'bL' : cause - Please enter a valid security type".to_string()))
     }
 
@@ -3494,8 +3505,14 @@ impl ClientCore {
     /// first, before anything else of the request. Its "Legal ones" are
     /// those of the security type of the first list refused, as the
     /// reference computes them once.
-    pub fn generic_tick_list_refusal(&self, generic_tick_list: &str, snapshot: bool, sec_type: &str) -> Option<(i64, String)> {
+    pub fn generic_tick_list_refusal(&self, generic_tick_list: &str, snapshot: bool, sec_type: &str, fundamentals_allowed: bool) -> Option<(i64, String)> {
         use crate::control::generic_tick;
+        // Fundamental ratios (258) without the logon's permission: 10358
+        // before any other check of the list, snapshot or not (ibx#674;
+        // code read on 10.51; paper 13/10/2026, BMW with "233,236,258").
+        if !fundamentals_allowed && generic_tick_list.split(',').any(|t| t.trim() == "258") {
+            return Some((FUNDAMENTALS_NOT_ALLOWED.0, FUNDAMENTALS_NOT_ALLOWED.1.to_string()));
+        }
         if snapshot || generic_tick_list.is_empty() {
             return None;
         }
@@ -6851,11 +6868,11 @@ mod tests {
         // The text as the reference 10.51 gave it to a client at level 214
         // (paper, 13/10/2026, regular hours), with its final period.
         let refused = Some((10367, "Requesting \"Odd Lot Bid/Ask Quotes\" generic tick 787 is not allowed.".to_string()));
-        assert_eq!(core.generic_tick_list_refusal("787", false, "STK"), refused);
-        assert_eq!(core.generic_tick_list_refusal("233,787", false, "STK"), refused);
-        assert_eq!(core.generic_tick_list_refusal("787", true, "STK"), None, "not checked on a snapshot");
-        assert_eq!(core.generic_tick_list_refusal("787,999", false, "STK").map(|r| r.0), Some(321));
-        assert_eq!(core.generic_tick_list_refusal("233", false, "STK"), None);
+        assert_eq!(core.generic_tick_list_refusal("787", false, "STK", true), refused);
+        assert_eq!(core.generic_tick_list_refusal("233,787", false, "STK", true), refused);
+        assert_eq!(core.generic_tick_list_refusal("787", true, "STK", true), None, "not checked on a snapshot");
+        assert_eq!(core.generic_tick_list_refusal("787,999", false, "STK", true).map(|r| r.0), Some(321));
+        assert_eq!(core.generic_tick_list_refusal("233", false, "STK", true), None);
     }
 
     // ibx#505: the provider names of the logon list; a modify of an order

@@ -74,7 +74,7 @@ impl EClient {
         // An invalid generic tick list of a request that is no snapshot:
         // 321 (ibx#450).
         if let Some((code, text)) = crate::client_core::ClientCore::market_data_exchange_refusal(&contract.exchange, &contract.sec_type)
-            .or_else(|| self.core.generic_tick_list_refusal(generic_tick_list, snapshot, &contract.sec_type))
+            .or_else(|| self.core.generic_tick_list_refusal(generic_tick_list, snapshot, &contract.sec_type, self.shared.reference.fundamentals_allowed()))
         {
             self.shared.orders.push_order_error(req_id, code, text);
             return Ok(());

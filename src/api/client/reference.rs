@@ -304,7 +304,7 @@ impl EClient {
         // One API request for the pacing, whatever it sends (ibx#565).
         let _request = crate::engine::park::one_request();
         if !crate::client_core::ClientCore::ids_fit("req_fundamental_data", &[req_id, contract.con_id]) { return Ok(()); }
-        if let Some((code, text)) = ClientCore::fundamental_refusal(&contract.sec_type) {
+        if let Some((code, text)) = ClientCore::fundamental_refusal(&contract.sec_type, self.shared.reference.fundamentals_allowed()) {
             self.shared.reference.push_historical_error(req_id, code, text);
             return Ok(());
         }

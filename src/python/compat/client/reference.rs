@@ -401,8 +401,9 @@ impl EClient {
         if let Some(r) = self.not_connected(req_id) { return r; }
         if !crate::client_core::ClientCore::ids_fit("req_fundamental_data", &[req_id, contract.con_id]) { return Ok(()); }
         let _ = fundamental_data_options;
-        if let Some((code, text)) = ClientCore::fundamental_refusal(&contract.sec_type) {
-            self.shared_state()?.reference.push_historical_error(req_id, code, text);
+        let shared = self.shared_state()?;
+        if let Some((code, text)) = ClientCore::fundamental_refusal(&contract.sec_type, shared.reference.fundamentals_allowed()) {
+            shared.reference.push_historical_error(req_id, code, text);
             return Ok(());
         }
         let tx = self.tx()?;

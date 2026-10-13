@@ -2233,6 +2233,14 @@ impl ReferenceState {
         self.logon_features.lock().unwrap().clone()
     }
 
+    /// Whether the logon allows fundamentals to an API client (the
+    /// server feature ALLOW_FNDT_SOMEAPI); without it the reference
+    /// refuses them with 10358 (ibx#674).
+    pub fn fundamentals_allowed(&self) -> bool {
+        // The 10.40 form sends them (its recordings ask 258 of the farm).
+        self.form_10_40() || crate::control::logon::has_feature(&self.logon_features(), "ALLOW_FNDT_SOMEAPI")
+    }
+
     /// Keep the feature list of a logon reply (ibx#571). The same list
     /// again, as on a new logon of the same session, copies nothing.
     #[doc(hidden)] pub fn set_logon_features(&self, features: &str) {

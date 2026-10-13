@@ -2253,7 +2253,9 @@ fn req_historical_data_refuses_unknown_what_to_show_and_format_date() {
 
 #[test]
 fn historical_requests_without_con_id_ask_for_the_contract_first() {
-    let (client, rx, _shared) = test_client();
+    let (client, rx, shared) = test_client();
+    // A logon that allows fundamentals (ibx#674).
+    shared.reference.set_logon_features("ALLOW_FNDT_SOMEAPI");
     let aapl = Contract { symbol: "AAPL".into(), sec_type: "STK".into(), exchange: "SMART".into(), currency: "USD".into(), ..Default::default() };
     client.req_historical_data(1, &aapl, "", "1 D", "1 hour", "TRADES", true, 1, false).unwrap();
     client.req_head_time_stamp(2, &aapl, "TRADES", true, 1).unwrap();
@@ -2766,6 +2768,8 @@ fn news_request_refusals() {
 #[test]
 fn req_fundamental_data_sends_fetch() {
     let (client, rx, shared) = test_client();
+    // A logon that allows fundamentals (ibx#674).
+    shared.reference.set_logon_features("ALLOW_FNDT_SOMEAPI");
     // #434: only a stock may be asked; anything else is 321 at once.
     client.req_fundamental_data(5, &Contract { sec_type: String::new(), ..spy() }, "ReportSnapshot").unwrap();
     assert!(rx.try_recv().is_err());
@@ -4234,6 +4238,22 @@ fn overnight_times_in_force_are_refused() {
         assert!(rx.try_recv().is_err(), "{tif}: nothing sent");
         assert_eq!(shared.orders.drain_order_errors(), [(74, 10052, format!("Invalid time in force:{tif}"))]);
     }
+}
+
+// ibx#674 (the reference 10.51, paper, 13/10/2026; code read): without the
+// logon's permission, generic tick 258 is refused with 10358, also in a
+// snapshot, and so is reqFundamentalData; nothing sent.
+#[test]
+fn fundamentals_without_the_logon_permission_are_refused() {
+    let (client, rx, shared) = test_client();
+    let bmw = Contract { symbol: "BMW".into(), sec_type: "STK".into(), exchange: "SMART".into(), currency: "EUR".into(), con_id: 14204, ..Default::default() };
+    client.req_mkt_data(1, &bmw, "233,236,258", false, false).unwrap();
+    client.req_mkt_data(2, &bmw, "258", true, false).unwrap();
+    client.req_fundamental_data(3, &bmw, "ReportSnapshot").unwrap();
+    assert!(rx.try_recv().is_err(), "nothing sent");
+    let text = "Fundamentals data is not allowed.".to_string();
+    assert_eq!(shared.orders.drain_order_errors(), [(1, 10358, text.clone()), (2, 10358, text.clone())]);
+    assert_eq!(shared.reference.drain_historical_errors(), [(3, 10358, text)]);
 }
 
 // ibx#660 (the reference 10.51, paper, 13/10/2026): a Minutes time in
