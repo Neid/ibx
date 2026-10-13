@@ -62,8 +62,8 @@ impl EClient {
         }
         // The order is read and checked now, as the reference does; one
         // that is refused is not held (ibx#547).
-        let (notices, refusal) = self.core.order_read_checks(
-            oid, contract.con_id, &contract.exchange, order, &self.shared, &self.account_id);
+        let (notices, refusal, _) = self.core.order_read_checks(
+            oid, contract.con_id, &contract.exchange, order, &self.shared, &self.account_id, false);
         let combo = ClientCore::combo_order(contract, order, &self.shared.reference, &self.account_id);
         for (code, message) in notices {
             self.shared.orders.push_order_error(oid, code, message);
@@ -101,8 +101,11 @@ impl EClient {
         // The warnings and the refusal of the order as it is read; the
         // warnings of an order that was held were given when it was placed
         // with transmit off (ibx#547).
-        let (notices, refusal) = self.core.order_read_checks(
-            oid, contract.con_id, &contract.exchange, order, &self.shared, &self.account_id);
+        // A contract without a conId is looked up first; what the reference
+        // checks once it is known comes after (ibx#665).
+        let looked_up = contract.con_id == 0 && !contract.sec_type.eq_ignore_ascii_case("BAG");
+        let (notices, refusal, deferred) = self.core.order_read_checks(
+            oid, contract.con_id, &contract.exchange, order, &self.shared, &self.account_id, looked_up);
         if !was_held {
             for (code, message) in notices {
                 self.shared.orders.push_order_error(oid, code, message);
@@ -168,6 +171,10 @@ impl EClient {
         } else {
             ClientCore::build_order_request(&sent, oid, instrument)?
         };
+        let mut cmd = cmd;
+        if !self.core.carry_deferred_checks(oid, &mut cmd, deferred, &self.shared) {
+            return Ok(());
+        }
         built.push(cmd);
         self.core.cache_contract(contract.con_id, contract.clone());
         if order.what_if {

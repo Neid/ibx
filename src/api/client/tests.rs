@@ -5164,16 +5164,28 @@ fn a_refused_pending_order_is_listed_with_its_status_only() {
 
 // ibx#660 (the reference 10.51 at level 214, 13/10/2026): an order placed
 // with no time in force holds the one of the account's order preset once
-// notice 10349 named it.
+// notice 10349 named it; a modify with no time in force restates it.
 #[test]
 fn the_preset_time_in_force_is_the_orders() {
-    let (client, _rx, shared) = test_client();
+    let (client, rx, shared) = test_client();
     placed_order(&client, &shared, 63);
     shared.orders.push_order_error(63, 10349, "Order TIF was set to GTC based on order preset.".into());
     let mut w = StatusRecorder::default();
     client.process_msgs(&mut w);
-    let tif = client.core.open_orders.lock().unwrap().get(&63).map(|o| o.order.tif.clone());
-    assert_eq!(tif.as_deref(), Some("GTC"));
+    let tif = || client.core.open_orders.lock().unwrap().get(&63).map(|o| o.order.tif.clone());
+    assert_eq!(tif().as_deref(), Some("GTC"));
+    while rx.try_recv().is_ok() {}
+    let modify = Order {
+        action: "BUY".into(), total_quantity: 100.0, order_type: "LMT".into(), lmt_price: 335.0,
+        order_ref: "ref1".into(), ..Default::default()
+    };
+    client.place_order(63, &spy(), &modify).unwrap();
+    let sent = std::iter::from_fn(|| rx.try_recv().ok()).find_map(|cmd| match cmd {
+        ControlCommand::Order(OrderRequest::Modify { tif, .. }) => Some(tif),
+        _ => None,
+    });
+    assert_eq!(sent, Some(b'1'));
+    assert_eq!(tif().as_deref(), Some("GTC"));
 }
 
 #[test]

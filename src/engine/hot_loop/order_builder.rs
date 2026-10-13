@@ -132,6 +132,22 @@ fn send_orders(
             context.rth_parked.push(rewrap(order_req));
             continue;
         }
+        // Once the contract is known: what the reference checks then, read
+        // by the client when the order was placed (the algo checks with
+        // their warnings, the price, the time zones), the order dropped
+        // when refused (ibx#665).
+        if let Some(attrs) = order_req.new_order_attrs_mut()
+            && !attrs.after_lookup.is_empty()
+        {
+            let refused = attrs.after_lookup_refused;
+            for (code, message) in std::mem::take(&mut attrs.after_lookup) {
+                shared.orders.push_order_error(oid, code, message);
+            }
+            if refused {
+                log::warn!("Order {} refused once its contract was known", oid);
+                continue;
+            }
+        }
         // A quantity that is not whole: refused with 10243 and nothing
         // sent, as the reference refuses it for an API client (ib-agent#192
         // B3). Sent with the API client fields of every new order, it was
@@ -4344,6 +4360,41 @@ mod tests {
         drain_and_send_orders(&mut conn, &mut context, "DU1", &mut HeartbeatState::new(), false, &shared);
         // Every message sent, its fields one after the other.
         peer.messages().iter().flat_map(|m| crate::test_support::parse_fields(m)).collect()
+    }
+
+    // ibx#665: what the client read for after the contract's lookup is
+    // given once the contract is known: a refused order sends nothing, an
+    // order with warnings only goes out after them.
+    #[test]
+    fn checks_after_the_lookup_are_given_once_the_contract_is_known() {
+        let mut context = Context::new();
+        context.order_ids.start_at(FIRST as i32);
+        let instrument = context.market.register(265598);
+        context.rth_types.insert((265598, "BEST".to_string()), crate::engine::outside_rth::RthTypes {
+            rth: true, sec_type: "STK".into(), ..Default::default()
+        });
+        let order = |id: OrderId, after: Vec<(i64, String)>, refused: bool| OrderRequest::SubmitLimitEx {
+            order_id: id, instrument, side: Side::Buy, qty: 1, price: 100 * crate::types::PRICE_SCALE, tif: b'0',
+            attrs: crate::types::OrderAttrs { after_lookup: after, after_lookup_refused: refused, ..Default::default() },
+        };
+        let shared = Arc::new(SharedState::new());
+        let (conn, mut peer) = crate::test_support::Peer::pair();
+        let mut conn = Some(conn);
+        let mut hb = HeartbeatState::new();
+        let refusal = (443, "Order processing failed. Unknown algo attribute:giveUp".to_string());
+        context.pending_orders.push(order(FIRST, vec![refusal.clone()], true));
+        drain_and_send_orders(&mut conn, &mut context, "DU1", &mut hb, false, &shared);
+        assert!(peer.messages().is_empty(), "nothing sent for the refused order");
+        assert_eq!(shared.orders.drain_order_errors(), [(FIRST, refusal.0, refusal.1)]);
+        assert!(context.order(FIRST).is_none());
+
+        let warning = (2174, "a warning".to_string());
+        context.pending_orders.push(order(FIRST + 1, vec![warning.clone()], false));
+        drain_and_send_orders(&mut conn, &mut context, "DU1", &mut hb, false, &shared);
+        assert_eq!(shared.orders.drain_order_errors(), [(FIRST + 1, warning.0, warning.1)]);
+        let sent: Vec<Vec<(u32, String)>> = peer.messages().iter().map(|m| crate::test_support::parse_fields(m)).collect();
+        assert_eq!(sent.len(), 1);
+        assert!(sent[0].iter().any(|(t, v)| *t == 35 && v == "D"));
     }
 
     // ibx#660 (observed 13/10/2026, paper, the reference at level 214): an

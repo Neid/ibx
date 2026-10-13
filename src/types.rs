@@ -471,6 +471,11 @@ pub struct OrderAttrs {
     /// Placed with no time in force: it takes the account's order preset
     /// for its security type (ibx#660).
     pub tif_preset: bool,
+    /// What the reference answers once the order's contract is known,
+    /// for an order whose contract is looked up first (ibx#665): the
+    /// warnings and, when `after_lookup_refused`, the refusal last.
+    pub after_lookup: Vec<(i64, String)>,
+    pub after_lookup_refused: bool,
     /// Customer account (tag 6207) and professional customer (tag 6636),
     /// sent only on an account whose config allows them (ibx#425).
     pub customer_account: String,
@@ -1508,6 +1513,20 @@ impl OrderRequest {
             | Self::SubmitEx { instrument, .. }
             | Self::SubmitAdaptive { instrument, .. }
             | Self::SubmitAlgo { instrument, .. } => Some(instrument),
+            _ => None,
+        }
+    }
+
+    /// The attributes of a new order that carries them (ibx#665). None
+    /// for any other request.
+    pub fn new_order_attrs_mut(&mut self) -> Option<&mut OrderAttrs> {
+        match self {
+            Self::SubmitWhatIf { request } => request.new_order_attrs_mut(),
+            Self::SubmitTrailingStopPctEx { attrs, .. }
+            | Self::SubmitLimitEx { attrs, .. }
+            | Self::SubmitEx { attrs, .. }
+            | Self::SubmitAdaptive { attrs, .. }
+            | Self::SubmitAlgo { attrs, .. } => Some(attrs),
             _ => None,
         }
     }

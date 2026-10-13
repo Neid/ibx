@@ -1359,6 +1359,9 @@ pub struct ClientCore {
     /// first: the contract and order the answer reports (ibx#462). Kept
     /// apart from the open orders.
     pub what_if_orders: Mutex<HashMap<OrderId, std::collections::VecDeque<(ApiContract, ApiOrder)>>>,
+    /// Orders sent with a refusal the engine gives once their contract is
+    /// looked up, by id, with its code (ibx#665): the order is then gone.
+    pub deferred_refusals: Mutex<HashMap<OrderId, i64>>,
     // Ids of tracked orders that were filled or cancelled: never sent again (ibx#463).
     pub finished_orders: Mutex<HashSet<OrderId>>,
     /// Ids of tracked orders placed again under the same id (a modify):
@@ -1671,9 +1674,14 @@ fn is_given(v: f64) -> bool {
 /// A TRAIL LIMIT's limit price, offset and stop price are what the server
 /// reports (44, 6370, 6117), as the reference's openOrder (ib-agent#194,
 /// ibx#491).
-/// usePriceMgmtAlgo as openOrder reports it (ibx#492): 0 or 1, never
-/// unset, as the reference; the value the server's report gives, else the
-/// caller's, unset read as 0.
+/// The checks of an order given once its contract is looked up
+/// (ibx#665): the errors in order, the last one a refusal when `refused`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DeferredChecks {
+    pub errors: Vec<(i64, String)>,
+    pub refused: bool,
+}
+
 /// The auto cancel date of a GTC order, from the server's report (ibx#546;
 /// the reference 10.51, paper 13/10/2026: `20270331-20:00:00` given as
 /// '20270331 22:00:00 CET'): the time in the machine's zone, then the
@@ -1703,6 +1711,9 @@ pub(crate) fn auto_cancel_date_view(raw: &str, tz: &jiff::tz::TimeZone) -> Optio
     Some(format!("{} {}", local.strftime("%Y%m%d %H:%M:%S"), label))
 }
 
+/// usePriceMgmtAlgo as openOrder reports it (ibx#492): 0 or 1, never
+/// unset, as the reference; the value the server's report gives, else the
+/// caller's, unset read as 0.
 fn reported_price_mgmt(order: &mut ApiOrder, reported: Option<&ApiOrder>) {
     order.use_price_mgmt_algo = match reported {
         Some(r) => r.use_price_mgmt_algo,
@@ -1883,6 +1894,7 @@ impl ClientCore {
             held_orders: Mutex::new(Vec::new()),
             held_open_orders: Mutex::new(Vec::new()),
             what_if_orders: Mutex::new(HashMap::new()),
+            deferred_refusals: Mutex::new(HashMap::new()),
             finished_orders: Mutex::new(HashSet::new()),
             modified_orders: Mutex::new(HashSet::new()),
             silent_executions: Mutex::new(HashSet::new()),
@@ -3834,11 +3846,16 @@ impl ClientCore {
     pub fn track_order(&self, order_id: OrderId, contract: ApiContract, mut order: ApiOrder, instrument: InstrumentId) {
         // Kept with the time in force the reference reports for it, which
         // a modify must restate (ibx#467).
+        let restated = order.tif.is_empty() && !order.include_overnight;
         order.tif = Self::held_tif(&order).to_string();
         self.note_order_id(order_id);
         let mut orders = self.open_orders.lock().unwrap();
         // An order that was never sent is placed as a new order.
         if let Some(o) = orders.get_mut(&order_id).filter(|o| o.status != UNSENT_STATUS) {
+            // A modify with no time in force keeps the held one (ibx#660).
+            if restated {
+                order.tif = std::mem::take(&mut o.order.tif);
+            }
             o.contract = contract;
             o.order = order;
             o.instrument = instrument;
@@ -4011,17 +4028,42 @@ impl ClientCore {
     /// TRAIL orders of premarket_order_types, 28/09/2026: openOrder shows
     /// outsideRth false, also after a replace).
     pub fn note_order_error(&self, order_id: OrderId, code: i64, message: &str) {
+        // A refusal given after the contract's lookup (ibx#665): the order
+        // is gone, its id used; a lookup that failed ends it too.
+        {
+            let mut deferred = self.deferred_refusals.lock().unwrap();
+            if let Some(&expected) = deferred.get(&order_id)
+                && (code == expected || code == 200)
+            {
+                deferred.remove(&order_id);
+                if code == expected {
+                    self.open_orders.lock().unwrap().remove(&order_id);
+                    let mut previews = self.what_if_orders.lock().unwrap();
+                    if let Some(queue) = previews.get_mut(&order_id) {
+                        queue.pop_back();
+                        if queue.is_empty() { previews.remove(&order_id); }
+                    }
+                }
+            }
+        }
         // The 2109 of allow pre-open leaves outside RTH as it is (ibx#607).
         if code == 2109 && message.contains("'Outside Regular Trading Hours'") {
             self.rth_dropped.lock().unwrap().insert(order_id);
         }
         // Placed with no time in force: the order holds the one of the
         // account's order preset (ibx#660).
+        // A what-if shows it too (the reference 10.51, 13/10/2026).
         if code == 10349
             && let Some(tif) = message.strip_prefix("Order TIF was set to ").and_then(|m| m.split(' ').next())
-            && let Some(o) = self.open_orders.lock().unwrap().get_mut(&order_id)
         {
-            o.order.tif = tif.to_string();
+            if let Some(o) = self.open_orders.lock().unwrap().get_mut(&order_id) {
+                o.order.tif = tif.to_string();
+            }
+            if let Some(previews) = self.what_if_orders.lock().unwrap().get_mut(&order_id) {
+                for (_, o) in previews.iter_mut().filter(|(_, o)| o.tif.is_empty()) {
+                    o.tif = tif.to_string();
+                }
+            }
         }
         // The redirect precaution discards the order (ibx#486).
         // So does the precaution of routeMarketableToBbo (ibx#608).
@@ -6082,9 +6124,18 @@ impl ClientCore {
     /// with transmit off, which is then not held (ibx#547, paper
     /// 09/10/2026: 2174, 391, 439, 321 and 103 at the placeOrder with
     /// transmit off).
+    ///
+    /// The checks the reference makes once the order's contract is known
+    /// (the algo checks with their warnings, the price, the time zones)
+    /// come in the third value instead when `looked_up`: the order's
+    /// contract is looked up first, and they are given after its answer
+    /// (ibx#665; the reference 10.51, paper, 13/10/2026: 443 about 0.9 s
+    /// after an order by symbol, at once on a conId, and only 200 on a
+    /// symbol with no definition).
     pub fn order_read_checks(
         &self, order_id: OrderId, con_id: i64, exchange: &str, order: &ApiOrder, shared: &SharedState, account: &str,
-    ) -> (Vec<(i64, String)>, Option<(i64, String)>) {
+        looked_up: bool,
+    ) -> (Vec<(i64, String)>, Option<(i64, String)>, Option<DeferredChecks>) {
         let mut notices = Self::implied_zone_warnings(order);
         // A goodAfterTime without a zone: 2174 the first time in the
         // session only (ibx#598, paper 12/10/2026: three such orders, one
@@ -6108,20 +6159,58 @@ impl ClientCore {
             .or_else(|| Self::account_config_refusal(order, shared.reference.account_features().as_deref(), account))
             .or_else(|| Self::open_flags_refusal(order, exchange))
             .or_else(|| Self::order_id_refusal(order_id))
-            .or_else(|| self.refusal_for_order_id(order_id, order, shared))
-            .or_else(|| {
-                let later = Self::algo_definition_refusal(order, exchange, &shared.reference, &mut algo_warnings)
-                    .or_else(|| Self::good_till_date_refusal(order, contract_zone.as_deref()))
-                    .or_else(|| Self::good_after_time_zone_refusal(order, contract_zone.as_deref()))
-                    .or_else(|| Self::condition_time_zone_refusal(order, contract_zone.as_deref()))
-                    .or_else(|| Self::price_refusal(order));
-                if later.is_some() && !order.what_if && !self.is_order_tracked(order_id) {
-                    self.note_order_id(order_id);
-                }
-                later
-            });
+            .or_else(|| self.refusal_for_order_id(order_id, order, shared));
+        if refusal.is_some() {
+            return (notices, refusal, None);
+        }
+        let later = Self::algo_definition_refusal(order, exchange, &shared.reference, &mut algo_warnings)
+            .or_else(|| Self::good_till_date_refusal(order, contract_zone.as_deref()))
+            .or_else(|| Self::good_after_time_zone_refusal(order, contract_zone.as_deref()))
+            .or_else(|| Self::condition_time_zone_refusal(order, contract_zone.as_deref()))
+            .or_else(|| Self::price_refusal(order));
+        if later.is_some() && !order.what_if && !self.is_order_tracked(order_id) {
+            self.note_order_id(order_id);
+        }
+        if looked_up && (later.is_some() || !algo_warnings.is_empty()) {
+            let refused = later.is_some();
+            algo_warnings.extend(later);
+            return (notices, None, Some(DeferredChecks { errors: algo_warnings, refused }));
+        }
         notices.extend(algo_warnings);
-        (notices, refusal)
+        (notices, later, None)
+    }
+
+    /// The checks of `order_read_checks` given after the order's contract
+    /// lookup (ibx#665): carried by the order to the engine, which gives
+    /// them once the contract is known. An order that cannot carry them
+    /// (a modify, a request without attributes) gets them now; false when
+    /// it is then refused and not to be sent.
+    pub fn carry_deferred_checks(&self, order_id: OrderId, cmd: &mut ControlCommand, deferred: Option<DeferredChecks>,
+        shared: &SharedState) -> bool
+    {
+        let Some(deferred) = deferred else { return true };
+        let attrs = match cmd {
+            ControlCommand::Order(req) => req.new_order_attrs_mut(),
+            _ => None,
+        };
+        match attrs {
+            Some(attrs) => {
+                if deferred.refused
+                    && let Some((code, _)) = deferred.errors.last()
+                {
+                    self.deferred_refusals.lock().unwrap().insert(order_id, *code);
+                }
+                attrs.after_lookup = deferred.errors;
+                attrs.after_lookup_refused = deferred.refused;
+                true
+            }
+            None => {
+                for (code, message) in deferred.errors {
+                    shared.orders.push_order_error(order_id, code, message);
+                }
+                !deferred.refused
+            }
+        }
     }
 
     /// The commands of the orders one placeOrder transmits, as one group
@@ -6392,7 +6481,15 @@ impl ClientCore {
             order_id,
             qty: order.total_quantity as u32,
             kind: Self::order_kind(order)?,
-            tif: order.tif_byte(),
+            // No time in force restates the one the order holds, also one
+            // an order preset set (ibx#660; the reference 10.51, paper,
+            // 13/10/2026: a modify with none of an order held as GTC goes
+            // out GTC).
+            tif: if order.tif.is_empty() && !order.include_overnight {
+                ApiOrder { tif: working.tif.clone(), ..Default::default() }.tif_byte()
+            } else {
+                order.tif_byte()
+            },
             // The algo, restated by the reference's replace (ibx#263).
             attrs: crate::types::OrderAttrs { algo: Self::order_algo(order)?, ..order.attrs() },
         })))
@@ -7605,7 +7702,7 @@ mod tests {
         let core = ClientCore::new();
         let shared = SharedState::new();
         let warned = |id: OrderId, gat: &str| core.order_read_checks(id, 265598, "SMART",
-            &ApiOrder { good_after_time: gat.into(), ..lmt(100.0) }, &shared, "DU1").0.iter().any(|n| n.0 == 2174);
+            &ApiOrder { good_after_time: gat.into(), ..lmt(100.0) }, &shared, "DU1", false).0.iter().any(|n| n.0 == 2174);
         assert!(warned(20, "20261012 16:00:00"), "the first without a zone");
         assert!(!warned(21, "16:00:00"), "not again in the session");
         core.reset();
@@ -7786,6 +7883,44 @@ mod tests {
         assert!(!core.finished_orders.lock().unwrap().contains(&9));
     }
 
+    // ibx#665 (the reference 10.51, paper, 13/10/2026): an AccuDistr order
+    // with a parameter the algorithm does not have gets 443 at once on a
+    // contract given by conId, and after the contract's lookup on one
+    // given by symbol; the order then carries the refusal to the engine,
+    // and the 443 ends it in the client.
+    #[test]
+    fn the_algo_refusal_of_an_order_by_symbol_comes_after_its_lookup() {
+        let core = ClientCore::new();
+        let shared = SharedState::new();
+        shared.reference.add_algo_definitions(include_str!("../tests/fixtures/algo/IBALGO-AE-20261002.xml"));
+        shared.reference.add_algo_definitions(include_str!("../tests/fixtures/algo/IBALGO-AL-STK-20261002.xml"));
+        let order = ApiOrder {
+            algo_strategy: "AccuDistr".into(),
+            algo_params: [("componentSize", "1"), ("giveUp", "1")].iter()
+                .map(|(t, v)| crate::api::types::TagValue { tag: t.to_string(), value: v.to_string() }).collect(),
+            ..lmt(100.0)
+        };
+        let text = "Order processing failed. Unknown algo attribute:giveUp".to_string();
+        let (_, now, later) = core.order_read_checks(31, 265598, "SMART", &order, &shared, "DU1", false);
+        assert_eq!((now, later), (Some((443, text.clone())), None));
+        let (_, now, later) = core.order_read_checks(32, 0, "SMART", &order, &shared, "DU1", true);
+        assert_eq!(now, None);
+        assert_eq!(later, Some(DeferredChecks { errors: vec![(443, text.clone())], refused: true }));
+
+        let mut cmd = ClientCore::build_order_request(&order, 32, 0).unwrap();
+        assert!(core.carry_deferred_checks(32, &mut cmd, later, &shared));
+        match &cmd {
+            ControlCommand::Order(OrderRequest::SubmitLimitEx { attrs, .. }) => {
+                assert_eq!((attrs.after_lookup.clone(), attrs.after_lookup_refused), (vec![(443, text.clone())], true));
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+        core.track_order(32, ApiContract::default(), order, 0);
+        core.note_order_error(32, 443, &text);
+        assert!(!core.is_order_tracked(32));
+        assert!(core.deferred_refusals.lock().unwrap().is_empty());
+    }
+
     // ibx#548 (paper 11/10/2026): an order refused by a check that follows
     // the look at its id has used the id: placed again, 103, where it got
     // the first refusal again (439 for an unknown algorithm). An order
@@ -7796,7 +7931,7 @@ mod tests {
         let core = ClientCore::new();
         let shared = SharedState::new();
         shared.reference.cache_time_zone_id(265598, "US/Eastern");
-        let checks = |id: OrderId, order: &ApiOrder| core.order_read_checks(id, 265598, "SMART", order, &shared, "DU1").1.map(|r| r.0);
+        let checks = |id: OrderId, order: &ApiOrder| core.order_read_checks(id, 265598, "SMART", order, &shared, "DU1", false).1.map(|r| r.0);
         // A zone that is not the contract's: 343, after the id check.
         let machine = crate::gateway::machine_time_zone();
         let other = if machine == "Asia/Tokyo" { "Europe/Paris" } else { "Asia/Tokyo" };
@@ -7818,10 +7953,10 @@ mod tests {
         // OVERNIGHT + DAY, refused as the order is read: the id is not used
         // (its cancel answers 10147).
         let mkt = ApiOrder { order_type: "MKT".into(), post_only: true, ..lmt(0.0) };
-        assert_eq!(core.order_read_checks(9, 265598, "SMART", &mkt, &shared, "DU1").1,
+        assert_eq!(core.order_read_checks(9, 265598, "SMART", &mkt, &shared, "DU1", false).1,
             Some((10051, "Invalid order type".to_string())));
         let overnight = ApiOrder { tif: "OVERNIGHT + DAY".into(), allow_pre_open: true, ..lmt(100.0) };
-        assert_eq!(core.order_read_checks(9, 265598, "SMART", &overnight, &shared, "DU1").1,
+        assert_eq!(core.order_read_checks(9, 265598, "SMART", &overnight, &shared, "DU1", false).1,
             Some((10052, "Invalid time in force:OVERNIGHT + DAY".to_string())));
         assert_eq!(checks(9, &lmt(100.0)), None, "the id was not used");
         // A price that is not a number: after the id check.
