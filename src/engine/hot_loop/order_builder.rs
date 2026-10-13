@@ -160,7 +160,7 @@ fn send_orders(
             // The replays of the 10.40 recordings do not wait: they hold no
             // answer to the trading hours ibx asks.
             match shared.reference.time_zone_id(con_id) {
-                None if context.zone_pending.contains(&con_id) && !shared.reference.order_rules_10_40() => {
+                None if context.zone_pending.contains(&con_id) && !shared.reference.form_10_40() => {
                     context.rth_parked.push(rewrap(order_req));
                     continue;
                 }

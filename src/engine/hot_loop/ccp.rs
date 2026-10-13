@@ -3746,7 +3746,7 @@ pub(crate) fn handle_account_update(msg: &[u8], context: &mut Context, shared: &
         let (rows, ledgers) = if ledger {
             (Vec::new(), parse_ledger_rows(text))
         } else {
-            (parse_account_rows(text).0, Vec::new())
+            (parse_account_rows(text, shared.reference.form_10_40()).0, Vec::new())
         };
         shared.portfolio.push_account_summary_event(crate::bridge::AccountSummaryEvent {
             sr_id: sr_id.to_string(),
@@ -3794,7 +3794,7 @@ pub(crate) fn handle_account_update(msg: &[u8], context: &mut Context, shared: &
     shared.portfolio.set_account(context.account());
     // The account stream's values as sent, for update_account_value (ibx#475).
     if is_account_stream(text) {
-        let (rows, time_secs) = parse_account_rows(text);
+        let (rows, time_secs) = parse_account_rows(text, shared.reference.form_10_40());
         let ledger = text.split(SOH_CHAR).any(|p| p == "35=RL");
         shared.portfolio.update_account_rows(|store| {
             for (key, currency, value) in &rows {
@@ -3889,7 +3889,9 @@ const LEDGER_KEYS: &[(&str, &str)] = &[
 ///   number the row has, written as the reference's account values (two to
 ///   seven decimals; captured 07/10/2026: exchange rate `1.00`, cash
 ///   balance `896958.4231`). A tag the row has not gives no row.
-pub(crate) fn parse_account_rows(text: &str) -> (Vec<(String, String, String)>, Option<i64>) {
+/// `form_10_40`: the rows of the account frames without the currency of
+/// 8002, as 10.40 gave them (ibx#637).
+pub(crate) fn parse_account_rows(text: &str, form_10_40: bool) -> (Vec<(String, String, String)>, Option<i64>) {
     let mut rows = Vec::new();
     let mut time: Option<i64> = None;
     let ledger = text.split('\x01').any(|p| p == "35=RL");
@@ -3953,7 +3955,9 @@ pub(crate) fn parse_account_rows(text: &str) -> (Vec<(String, String, String)>, 
                 currency = "";
                 value = None;
             }
-            "8002" if ledger => currency = val,
+            // The account frames of 10.51 give SettledCashByDate once per
+            // currency, BASE and USD, in 8002 (ibx#637; paper 13/10/2026).
+            "8002" if ledger || !form_10_40 => currency = val,
             "15" if !ledger => currency = val,
             "8004" => value = Some(val),
             "6066" => {
@@ -7115,7 +7119,7 @@ mod tests {
     fn soh(s: &str) -> String { s.replace('|', "\x01") }
 
     fn rows_of(frame: &str) -> Vec<(String, String, String)> {
-        parse_account_rows(&soh(frame)).0
+        parse_account_rows(&soh(frame), false).0
     }
 
     fn row(k: &str, c: &str, v: &str) -> (String, String, String) {
@@ -7130,8 +7134,10 @@ mod tests {
             row("AccountCode", "", "DU0000001"),
             row("AccountReady", "", "true"),
             row("Leverage-S", "", "0.07"),
-            row("SettledCashByDate", "", "20260925:932758.72933742;20260928:899133.49933742"),
-        ], "a row with no value is skipped; UT rows have no currency");
+            // The currency the frame gives, as 10.51 shows it (10.40 gave
+            // none, ibx#637).
+            row("SettledCashByDate", "BASE", "20260925:932758.72933742;20260928:899133.49933742"),
+        ], "a row with no value is skipped");
         let um = rows_of(UM_IMAGE);
         assert_eq!(um, [
             row("AccruedCash", "USD", "1893.50"),
@@ -7139,7 +7145,23 @@ mod tests {
             row("MaintMarginReq", "USD", "11647.75"),
             row("NetLiquidation", "USD", "953633.06"),
         ], "each key as sent, the Full keys too");
-        assert_eq!(parse_account_rows(&soh(UM_IMAGE)).1, Some(1790323947));
+        assert_eq!(parse_account_rows(&soh(UM_IMAGE), false).1, Some(1790323947));
+        // The 10.40 form: no currency on the settled cash row.
+        assert!(parse_account_rows(&soh(UT_IMAGE), true).0.contains(&row("SettledCashByDate", "", "20260925:932758.72933742;20260928:899133.49933742")));
+    }
+
+    // ibx#637 (the reference 10.51, paper, 13/10/2026): the server now sends
+    // SettledCashByDate and its -S key once per currency (BASE and USD);
+    // the reference gives each row with its currency.
+    #[test]
+    fn settled_cash_rows_keep_their_currency() {
+        let ut = rows_of("8=O|35=UT|6529=AR.4|8001=TradingType-S|6066=1791875523|8004=STKNOPT|6288=0            |8001=SettledCashByDate|8002=BASE|6066=1791875523|8004=20261013:904151.11|6288=0            |8001=SettledCashByDate|8002=USD|6066=1791875523|8004=20261013:904151.11|6288=0            |8001=SettledCashByDate-S|8002=BASE|6066=1791875523|8004=20261013:904151.11|6288=0|");
+        assert_eq!(ut, [
+            row("TradingType-S", "", "STKNOPT"),
+            row("SettledCashByDate", "BASE", "20261013:904151.11"),
+            row("SettledCashByDate", "USD", "20261013:904151.11"),
+            row("SettledCashByDate-S", "BASE", "20261013:904151.11"),
+        ]);
     }
 
     #[test]

@@ -4200,7 +4200,7 @@ fn modify_must_restate_the_held_overnight_time_in_force() {
     for (tif, include_overnight, held, text) in cases {
         let (client, rx, shared) = test_client();
         // The 10.40 form: 10.51 refuses these times in force (ibx#660).
-        shared.reference.set_order_rules_10_40(true);
+        shared.reference.set_form_10_40(true);
         shared.market.set_instrument_count(1);
         client.place_order(72, &spy(), &lmt(tif, include_overnight, 600.0)).unwrap();
         while rx.try_recv().is_ok() {}

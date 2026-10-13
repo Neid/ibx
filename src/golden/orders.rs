@@ -75,7 +75,7 @@ pub(crate) fn replay_orders(fx: &Fixture) -> OrderReplay {
     // A recording of 10.40 follows its order rules (ibx#660); one with no
     // version is from before 10.51.
     if fx.header.get("gateway_version").and_then(|v| v.as_i64()).is_none_or(|v| v < 10500) {
-        s.shared.reference.set_order_rules_10_40(true);
+        s.shared.reference.set_form_10_40(true);
     }
     if let Some(start) = fx.recs.iter().find(|r| r.msg == "START_API") {
         // The client id of the recorded session, on the wire (6119) and in

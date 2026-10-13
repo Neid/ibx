@@ -5015,7 +5015,7 @@ impl ClientCore {
     /// nothing sent). The 10.40 form took them (ibx#467).
     pub fn overnight_tif_refusal(order: &ApiOrder, reference: &crate::bridge::ReferenceState) -> Option<(i64, String)> {
         let overnight = order.tif.eq_ignore_ascii_case(TIF_OVERNIGHT) || order.tif.eq_ignore_ascii_case(TIF_OVERNIGHT_DAY);
-        (overnight && !reference.order_rules_10_40())
+        (overnight && !reference.form_10_40())
             .then(|| (10052, format!("Invalid time in force:{}", order.tif)))
     }
 

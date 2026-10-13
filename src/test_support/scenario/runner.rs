@@ -663,7 +663,7 @@ pub fn run(sc: &Scenario, opts: &Options, links: &mut Links, driver: &mut dyn Dr
     // A recording of 10.40 follows its order rules (ibx#660); one with no
     // version is from before 10.51.
     if sc.header.get("gateway_version").and_then(|v| v.as_i64()).is_none_or(|v| v < 10500) {
-        links.shared.reference.set_order_rules_10_40(true);
+        links.shared.reference.set_form_10_40(true);
     }
     let recs = prepare(sc, opts);
     if opts.paced {
