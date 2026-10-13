@@ -145,7 +145,9 @@ impl EClient {
         let working = if order.what_if { None } else { self.core.working_order(&self.shared, oid) };
         if working.is_some() {
             let refusal = self.core.tracked_contract(oid)
-                .and_then(|placed| ClientCore::combo_modify_refusal(contract, &placed));
+                .and_then(|placed| ClientCore::combo_modify_refusal(contract, &placed)
+                    .or_else(|| ClientCore::algo_destination_modify_refusal(contract, &placed,
+                        |e| self.shared.reference.is_algo_provider(e))));
             if let Some((code, message)) = refusal {
                 self.shared.orders.push_order_error(oid, code, message);
                 return Ok(());

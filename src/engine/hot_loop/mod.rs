@@ -259,6 +259,12 @@ impl HotLoop {
         self.context.scale_us_lots = on;
     }
 
+    /// The logon's algo providers: an order for one of them goes through
+    /// SMART with the provider as its second destination (ibx#505).
+    pub fn set_algo_providers(&mut self, names: Vec<String>) {
+        self.context.algo_providers = names;
+    }
+
     /// The server's sizes come in round lots, as in the 10.40 form, whose
     /// entries had no mark; by default they come in shares (ibx#663).
     pub fn set_lot_sizes(&mut self, on: bool) {

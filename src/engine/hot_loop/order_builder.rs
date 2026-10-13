@@ -2163,9 +2163,15 @@ fn send_new_order(
         super::format_price((t.strike * crate::types::PRICE_SCALE as f64).round() as crate::types::Price).to_string(),
         format_price_ref((t.multiplier * crate::types::PRICE_SCALE as f64).round() as crate::types::Price).to_string(),
     ));
+    // An order for an algo provider's destination goes through SMART with
+    // the provider as its second destination, as the reference (ibx#505;
+    // observed 07/10 and 13/10/2026, AAPL for FOXRIVER).
+    let algo_destination = field(fields, 100)
+        .is_some_and(|d| context.algo_providers.iter().any(|p| p.eq_ignore_ascii_case(d)));
     let mut out: Vec<(u32, &str)> = Vec::with_capacity(fields.len() + short_sale.len() + 10);
     for &(tag, value) in fields {
         match (tag, what_if) {
+            (100, _) if algo_destination => out.push((100, "BEST")),
             (38, _) if cash_qty.is_some() => out.push((38, cash_qty.as_deref().unwrap_or(value))),
             (11, Some(clord)) => out.push((11, clord)),
             (583 | 6209, Some(_)) => {}
@@ -7833,6 +7839,23 @@ mod tests {
         let late = key_of(&frames[3]).unwrap();
         assert_eq!((late.group, late.child), (1, 3));
         assert_eq!(late.rgb, key_of(&frames[0]).unwrap().rgb);
+    }
+
+    // ibx#505: an order for an algo provider's destination (FOXRIVER on
+    // the paper logon of 13/10/2026) goes through SMART with the provider
+    // as its second destination; another directed exchange keeps both.
+    #[test]
+    fn an_algo_provider_destination_goes_through_smart() {
+        for (exchange, routing, second) in [("FOXRIVER", "BEST", "FOXRIVER"), ("ARCA", "ARCA", "ARCA")] {
+            let (frames, _) = session_frames(|c| {
+                c.market.set_routing(0, "STK", exchange);
+                c.rth_types.insert((265598, exchange.to_string()), crate::engine::outside_rth::RthTypes {
+                    sec_type: "STK".into(), types_known: true, ..Default::default()
+                });
+                c.algo_providers = crate::bridge::algo_provider_names("FOXRIVER/STK:A;IBALGO/STK:B;JONES/STK:C");
+            }, vec![limit_ex(1, Side::Buy, 230 * P, Default::default())], 1);
+            assert_eq!((tag(&frames[0], 100), tag(&frames[0], 6210)), (Some(routing), Some(second)), "{exchange}");
+        }
     }
 
     /// A session that allows price management, with the paper exclusion

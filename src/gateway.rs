@@ -961,6 +961,8 @@ pub struct Gateway {
     pub omnibus: bool,
     /// Logon tag 6611: the smart combo conId of each currency (ibx#470).
     pub raw_smart_combo_con_ids: String,
+    /// The algo provider list of the login burst (ibx#505).
+    pub raw_algo_providers: String,
     /// Account config (6040=210): feature list (6542) and MiFID config id
     /// (8234); None when the answer was not in the login burst (ibx#425).
     pub account_config: Option<(Vec<String>, String)>,
@@ -1969,6 +1971,7 @@ impl Gateway {
         let mut super_user = false;
         let mut omnibus = false;
         let mut raw_smart_combo_con_ids = String::new();
+        let mut raw_algo_providers = String::new();
         let mut scale_us_lots = false;
         let mut user_book = false;
         // Tick-by-tick limit fields, first value seen (ibx#455).
@@ -2137,6 +2140,11 @@ impl Gateway {
             // The smart combo conIds by currency (ibx#470).
             if let Some(v) = fields.get(&6611) {
                 if raw_smart_combo_con_ids.is_empty() { raw_smart_combo_con_ids = v.clone(); }
+            }
+            // The algo providers, whose names are destinations the
+            // reference routes through SMART (ibx#505).
+            if let Some(v) = fields.get(&6597) {
+                if raw_algo_providers.is_empty() { raw_algo_providers = v.clone(); }
             }
             if let Some(v) = fields.get(&6542) {
                 scale_us_lots |= features_scale_us_lots(v);
@@ -2322,6 +2330,9 @@ impl Gateway {
                 omnibus = true;
             } else if part.starts_with("6611=") && raw_smart_combo_con_ids.is_empty() {
                 raw_smart_combo_con_ids = part[5..].to_string();
+            } else if part.starts_with("6597=") && raw_algo_providers.is_empty() {
+                raw_algo_providers = part[5..].to_string();
+                log::info!("Found algo providers from init response: {}", raw_algo_providers);
             } else if let Some(id) = white_branding_part(part).filter(|_| white_branding_id.is_empty()) {
                 white_branding_id = id.to_string();
                 log::info!("Found white branding ID from init response");
@@ -2536,6 +2547,7 @@ impl Gateway {
             super_user,
             omnibus,
             raw_smart_combo_con_ids,
+            raw_algo_providers,
             account_config,
             algo_definitions,
             scale_us_lots,
@@ -2629,6 +2641,7 @@ impl Gateway {
         shared.reference.set_paper_session(self.user_book);
         shared.reference.set_short_sale_flags(self.super_user, self.omnibus);
         shared.reference.set_smart_combo_con_ids(&self.raw_smart_combo_con_ids);
+        shared.reference.set_algo_providers(&self.raw_algo_providers);
         shared.reference.set_tick_by_tick_limits(self.tick_by_tick_limit, self.tick_by_tick_off);
         // The snapshot rate limit is the API ticker limit (ibx#446).
         shared.reference.set_snapshot_rate_limit(self.max_real_time_requests);
@@ -2710,6 +2723,7 @@ impl Gateway {
         let tx = hot_loop.control_channel();
         hot_loop.set_account_id(self.account_id.clone());
         hot_loop.set_scale_us_lots(self.scale_us_lots);
+        hot_loop.set_algo_providers(crate::bridge::algo_provider_names(&self.raw_algo_providers));
         hot_loop.set_price_mgmt(self.price_mgmt, self.price_mgmt_exclusions.as_deref());
         hot_loop.set_max_real_time_requests(self.max_real_time_requests);
         hot_loop.set_depth_limit(self.depth_limit);

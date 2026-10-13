@@ -1519,6 +1519,8 @@ pub struct ReferenceState {
     /// The smart combo conId of each currency, from logon tag 6611
     /// (ibx#470).
     smart_combo_con_ids: Mutex<HashMap<String, i64>>,
+    /// The algo providers of the logon (ibx#505).
+    algo_providers: Mutex<Vec<String>>,
     /// The API client id the new orders carry (ibx#466); 0 until set.
     api_client_id: std::sync::atomic::AtomicI64,
     /// User name of the session: the submitter of the orders it places (ibx#519).
@@ -1608,6 +1610,7 @@ impl ReferenceState {
             super_user: AtomicBool::new(false),
             omnibus: AtomicBool::new(false),
             smart_combo_con_ids: Mutex::new(HashMap::new()),
+            algo_providers: Mutex::new(Vec::new()),
             api_client_id: std::sync::atomic::AtomicI64::new(0),
             user_name: Mutex::new(String::new()),
             algo_definitions: Mutex::new(Default::default()),
@@ -2275,6 +2278,17 @@ impl ReferenceState {
     }
 
     /// Keep logon tag 6611, `CUR:conId,...` (ibx#470).
+    /// The logon's algo providers (ibx#505).
+    #[doc(hidden)] pub fn set_algo_providers(&self, raw: &str) {
+        *self.algo_providers.lock().unwrap() = algo_provider_names(raw);
+    }
+
+    /// Whether an order exchange names an algo provider: the reference
+    /// routes such an order through SMART (ibx#505).
+    pub fn is_algo_provider(&self, exchange: &str) -> bool {
+        !exchange.is_empty() && self.algo_providers.lock().unwrap().iter().any(|p| p.eq_ignore_ascii_case(exchange))
+    }
+
     #[doc(hidden)] pub fn set_smart_combo_con_ids(&self, raw: &str) {
         let table = raw.split(',').filter_map(|entry| {
             let (currency, con_id) = entry.split_once(':')?;
@@ -3246,4 +3260,16 @@ mod tests {
             assert!(reads > 0);
         }
     }
+}
+
+/// The provider names of the logon's algo provider list (ibx#505): entries
+/// separated by ';', each a name then '/' and its security types
+/// (`FOXRIVER/STK:...;IBALGO/...;JONES/STK:...`). The reference keeps every
+/// name, whatever its security types (code read 13/10/2026).
+pub fn algo_provider_names(raw: &str) -> Vec<String> {
+    raw.split(';')
+        .filter_map(|entry| entry.split('/').next())
+        .map(|name| name.trim().to_string())
+        .filter(|name| !name.is_empty())
+        .collect()
 }

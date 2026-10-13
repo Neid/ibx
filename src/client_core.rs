@@ -1733,11 +1733,15 @@ fn session_order_fields(order: &mut ApiOrder, user: &str, modified: bool) {
 /// exchange the order was placed on and no primary exchange, as the
 /// reference shows it (ibx#519: SMART on every report of an order placed
 /// on SMART).
-fn placed_contract(contract: &mut ApiContract, placed_exchange: &str) {
+fn placed_contract(contract: &mut ApiContract, placed_exchange: &str, shared: &SharedState) {
     if contract.sec_type.eq_ignore_ascii_case("BAG") {
         return;
     }
-    if !placed_exchange.is_empty() {
+    // An order for an algo provider's destination is held as a SMART
+    // order (ibx#505; observed 13/10/2026, AAPL for FOXRIVER).
+    if shared.reference.is_algo_provider(placed_exchange) {
+        contract.exchange = "SMART".to_string();
+    } else if !placed_exchange.is_empty() {
         contract.exchange = placed_exchange.to_string();
     }
     contract.primary_exchange.clear();
@@ -1751,7 +1755,7 @@ pub fn preview_view(contract: &mut ApiContract, order: &mut ApiOrder, placed_exc
     // or 1; the other types are refused), as the reference (ibx#608,
     // paper 12/10/2026).
     order.what_if_type = 1;
-    placed_contract(contract, placed_exchange);
+    placed_contract(contract, placed_exchange, shared);
 }
 
 fn reported_trail_limit(order: &mut ApiOrder, reported: &ApiOrder) {
@@ -3917,7 +3921,7 @@ impl ClientCore {
         } else {
             contract
         };
-        placed_contract(&mut contract, &placed_exchange);
+        placed_contract(&mut contract, &placed_exchange, shared);
         let mut order = order;
         reported_unset_values(&mut order);
         // The start time in the zone of the contract's trading hours, as
@@ -4302,7 +4306,7 @@ impl ClientCore {
                     reported_price_mgmt(&mut order, info.as_ref().map(|i| &i.order));
                     let modified = self.modified_orders.lock().unwrap().contains(&oid);
                     session_order_fields(&mut order, &shared.reference.user_name(), modified);
-                    placed_contract(&mut contract, &o.contract.exchange);
+                    placed_contract(&mut contract, &o.contract.exchange, shared);
                     reported_unset_values(&mut order);
                     Self::apply_combo_view(oid, &mut contract, &mut order, shared);
                     result.push((oid, TrackedOrder {
@@ -5421,6 +5425,21 @@ impl ClientCore {
     /// A modify of a combo order must name the legs of the working order
     /// (ibx#470): else 10059 and nothing is sent
     /// (`jextend.bH.c(jclient.pe, jsecdef.dl)@965-1070`).
+    /// The reference's refusal of a modify of an order for an algo
+    /// provider's destination (ibx#505): it holds such an order as a SMART
+    /// order, and a modify whose exchange and primary exchange are not
+    /// SMART does not match it (observed 07/10 and 13/10/2026, a price
+    /// change of an AAPL order for FOXRIVER).
+    pub fn algo_destination_modify_refusal(contract: &ApiContract, placed: &ApiContract,
+        is_provider: impl Fn(&str) -> bool) -> Option<(i64, String)> {
+        if !is_provider(&placed.exchange) {
+            return None;
+        }
+        let smart = |e: &str| e.eq_ignore_ascii_case("SMART") || e.eq_ignore_ascii_case("BEST");
+        (!smart(&contract.exchange) && !smart(&contract.primary_exchange))
+            .then(|| (105, "Order being modified does not match original order.".to_string()))
+    }
+
     pub fn combo_modify_refusal(contract: &ApiContract, working: &ApiContract) -> Option<(i64, String)> {
         if !contract.sec_type.eq_ignore_ascii_case("BAG") || contract.combo_legs.is_empty() {
             return None;
@@ -6580,6 +6599,20 @@ impl ClientCore {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ibx#505: the provider names of the logon list; a modify of an order
+    // for one of them is refused with 105 unless it names SMART.
+    #[test]
+    fn a_modify_of_an_algo_provider_order_is_refused() {
+        let names = crate::bridge::algo_provider_names("FOXRIVER/STK:x;IBALGO/STK,FUT:y;;JONES/STK:z");
+        assert_eq!(names, ["FOXRIVER", "IBALGO", "JONES"]);
+        let provider = |e: &str| names.iter().any(|n| n.eq_ignore_ascii_case(e));
+        let on = |exchange: &str| ApiContract { symbol: "AAPL".into(), sec_type: "STK".into(), exchange: exchange.into(), ..Default::default() };
+        let refused = ClientCore::algo_destination_modify_refusal(&on("FOXRIVER"), &on("FOXRIVER"), provider);
+        assert_eq!(refused, Some((105, "Order being modified does not match original order.".to_string())));
+        assert_eq!(ClientCore::algo_destination_modify_refusal(&on("SMART"), &on("FOXRIVER"), provider), None);
+        assert_eq!(ClientCore::algo_destination_modify_refusal(&on("ARCA"), &on("ARCA"), provider), None);
+    }
 
     // ibx#486: whyHeld as jclient.pe.iK(): only PreSubmitted; "child" while
     // the parent is not done with a fill; "trigger" for the stop types.
