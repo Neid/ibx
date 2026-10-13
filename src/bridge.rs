@@ -717,6 +717,9 @@ pub struct MarketDataState {
     md_resolved: Mutex<Vec<(InstrumentId, i64)>>,
     /// The request parameters of acked subscriptions (ibx#449).
     tick_req_params: Mutex<Vec<TickReqParams>>,
+    /// Request parameters known before the acknowledgement, and whether the
+    /// contract is an option (ibx#535).
+    early_tick_req_params: Mutex<Vec<(TickReqParams, bool)>>,
     snapshot_acks: Mutex<Vec<TickReqParams>>,
     /// Tick-by-tick requests that ended with an error: the request, the
     /// code and the whole text (ibx#455).
@@ -808,6 +811,7 @@ impl MarketDataState {
             md_merges: Mutex::new(Vec::new()),
             md_resolved: Mutex::new(Vec::new()),
             tick_req_params: Mutex::new(Vec::new()),
+            early_tick_req_params: Mutex::new(Vec::new()),
             snapshot_acks: Mutex::new(Vec::new()),
             tbt_errors: SeqQueue::new(&stamp),
             error_tap: ErrorTap::default(),
@@ -831,6 +835,17 @@ impl MarketDataState {
 
     pub fn drain_tick_req_params(&self) -> Vec<TickReqParams> {
         self.tick_req_params.lock().unwrap().drain(..).collect()
+    }
+
+    /// The request parameters of a contract asked before, given when a new
+    /// subscription of it starts, before any acknowledgement; its market
+    /// data type waits for the acknowledgement (ibx#535).
+    #[doc(hidden)] pub fn push_early_tick_req_params(&self, params: TickReqParams, option: bool) {
+        self.early_tick_req_params.lock().unwrap().push((params, option));
+    }
+
+    pub fn drain_early_tick_req_params(&self) -> Vec<(TickReqParams, bool)> {
+        self.early_tick_req_params.lock().unwrap().drain(..).collect()
     }
 
     /// Acknowledgement of a regulatory snapshot request (ibx#446): the

@@ -1376,6 +1376,9 @@ pub struct ClientCore {
     pub delayed_reqs: Mutex<HashSet<i64>>,
     /// Market data requests whose tickReqParams was sent (ibx#449).
     pub tick_req_params_sent: Mutex<HashSet<i64>>,
+    /// Requests that got their parameters before their acknowledgement;
+    /// their market data type comes alone at it (ibx#535).
+    md_params_early: Mutex<HashSet<i64>>,
     /// Warning 2174 was given for a goodAfterTime without a zone: the
     /// reference gives it once per session (ibx#598).
     start_time_zone_warned: AtomicBool,
@@ -1845,6 +1848,7 @@ impl ClientCore {
             mdt_sent: Mutex::new(HashSet::new()),
             delayed_reqs: Mutex::new(HashSet::new()),
             tick_req_params_sent: Mutex::new(HashSet::new()),
+            md_params_early: Mutex::new(HashSet::new()),
             start_time_zone_warned: AtomicBool::new(false),
             tbt_reqs: Mutex::new(HashMap::new()),
             contract_cache: Mutex::new(HashMap::new()),
@@ -1904,6 +1908,7 @@ impl ClientCore {
         self.mdt_sent.lock().unwrap().clear();
         self.delayed_reqs.lock().unwrap().clear();
         self.tick_req_params_sent.lock().unwrap().clear();
+        self.md_params_early.lock().unwrap().clear();
         self.tbt_reqs.lock().unwrap().clear();
         self.contract_cache.lock().unwrap().clear();
     }
@@ -2576,6 +2581,7 @@ impl ClientCore {
         self.mdt_sent.lock().unwrap().remove(&req_id);
         let delayed = self.delayed_reqs.lock().unwrap().remove(&req_id);
         self.tick_req_params_sent.lock().unwrap().remove(&req_id);
+        self.md_params_early.lock().unwrap().remove(&req_id);
         self.md_joins.lock().unwrap().retain(|(r, _)| *r != req_id);
         let news = self.md_news.lock().unwrap().remove(&req_id);
         self.md_news_asked.lock().unwrap().remove(&req_id);
@@ -2776,13 +2782,22 @@ impl ClientCore {
             let params = self.instrument_params.lock().unwrap().get(&instrument).cloned();
             // A joining request gets its request parameters before its
             // market data type (the reference 10.51, paper 12/10/2026, two
-            // joins; a first request gets them the other way, ibx#495).
+            // joins; a first request gets them the other way, ibx#495); one
+            // without top of book the other way (13/10/2026, pre-market, a
+            // news-only request joining a news-only one, two runs; ibx#535).
             if let Some((min_tick, bbo_exchange, permissions)) = params
                 && self.tick_req_params_sent.lock().unwrap().insert(req_id)
             {
-                notices.push(MdNotice::TickReqParams { req_id, min_tick, bbo_exchange, permissions });
-                if let Some(market_data_type) = self.check_mdt_needed(req_id, true) {
-                    notices.push(MdNotice::MarketDataType { req_id, market_data_type });
+                let top_off = self.last_quotes.lock().unwrap().get(&req_id).is_some_and(|st| st.top_off);
+                let mdt = self.check_mdt_needed(req_id, true)
+                    .map(|market_data_type| MdNotice::MarketDataType { req_id, market_data_type });
+                let params = MdNotice::TickReqParams { req_id, min_tick, bbo_exchange, permissions };
+                if top_off {
+                    notices.extend(mdt);
+                    notices.push(params);
+                } else {
+                    notices.push(params);
+                    notices.extend(mdt);
                 }
             }
             let news = self.md_news.lock().unwrap();
@@ -3349,12 +3364,35 @@ impl ClientCore {
     /// when the farm grants the subscription, before the request
     /// parameters (ibx#446). The parameters are kept for the requests that
     /// join later (ibx#444).
-    pub fn take_tick_req_params(&self, shared: &SharedState) -> Vec<(i64, Option<i32>, f64, String, i64)> {
+    /// The request parameters (with the market data type before them) of
+    /// the requests whose subscription was acknowledged. A request without
+    /// top of book (`mdoff`) or on an option, whose contract's parameters
+    /// were known, gets them when its subscription starts, and its market
+    /// data type alone at the acknowledgement (the reference 10.51, paper,
+    /// pre-market 13/10/2026, two runs each: news only on a stock asked
+    /// before, an option asked before: parameters about 120 ms after the
+    /// request, before any acknowledgement; the type about 110 ms later). A
+    /// top-of-book request on a stock asked before gets both at the
+    /// acknowledgement, the type first (MSFT, NVDA, AMD the same day; AAPL,
+    /// 10.40, 28/09/2026). An item without parameters is a market data
+    /// type alone (ibx#535).
+    pub fn take_tick_req_params(&self, shared: &SharedState) -> Vec<(i64, Option<i32>, Option<(f64, String, i64)>)> {
+        let early = shared.market.drain_early_tick_req_params();
         let params = shared.market.drain_tick_req_params();
-        if params.is_empty() {
+        if params.is_empty() && early.is_empty() {
             return Vec::new();
         }
         let mut out = Vec::new();
+        for (p, option) in early {
+            let permissions = p.snapshot_permissions as i64;
+            for req_id in self.md_requests_of(p.instrument) {
+                let top_off = self.last_quotes.lock().unwrap().get(&req_id).is_some_and(|st| st.top_off);
+                if (option || top_off) && self.tick_req_params_sent.lock().unwrap().insert(req_id) {
+                    self.md_params_early.lock().unwrap().insert(req_id);
+                    out.push((req_id, None, Some((p.min_tick, p.bbo_exchange.clone(), permissions))));
+                }
+            }
+        }
         for p in params {
             let permissions = p.snapshot_permissions as i64;
             // The requests of a frozen contract are on its frozen slot
@@ -3363,7 +3401,11 @@ impl ClientCore {
             self.instrument_params.lock().unwrap().insert(instrument, (p.min_tick, p.bbo_exchange.clone(), permissions));
             for req_id in self.md_requests_of(instrument) {
                 if self.tick_req_params_sent.lock().unwrap().insert(req_id) {
-                    out.push((req_id, self.check_mdt_needed(req_id, true), p.min_tick, p.bbo_exchange.clone(), permissions));
+                    out.push((req_id, self.check_mdt_needed(req_id, true), Some((p.min_tick, p.bbo_exchange.clone(), permissions))));
+                } else if self.md_params_early.lock().unwrap().remove(&req_id)
+                    && let Some(mdt) = self.check_mdt_needed(req_id, true)
+                {
+                    out.push((req_id, Some(mdt), None));
                 }
             }
         }

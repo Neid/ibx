@@ -72,7 +72,7 @@ pub struct StreamState {
     /// The bid and ask auto-execution comes from the farm.
     farm_auto: bool,
     /// `mdoff`: no top of book ticks.
-    top_off: bool,
+    pub(crate) top_off: bool,
 }
 
 /// What a new request is.

@@ -6151,6 +6151,39 @@ fn captured_eur_usd(shared: &SharedState, steps: &[crate::md_events::MdStep], ha
     message(shared, &captured_eur_usd_quote(), steps, halted);
 }
 
+// ibx#535 (the reference 10.51, paper, pre-market 13/10/2026, two runs
+// each): on a contract asked before, a request without top of book gets
+// its request parameters when its subscription starts and its market
+// data type alone at the acknowledgement; a top-of-book request gets both
+// at the acknowledgement, the type first.
+#[test]
+fn known_parameters_go_early_without_top_of_book_only() {
+    let params = || crate::bridge::TickReqParams {
+        instrument: 5, min_tick: 0.01, bbo_exchange: "9c0001".into(), snapshot_permissions: 3,
+    };
+    for (ticks, early) in [("mdoff,236", true), ("", false)] {
+        let (client, rx, shared) = test_client();
+        let engine = top_engine(rx);
+        client.req_mkt_data(1, &spy_stk(), ticks, false, false).unwrap();
+        // The subscription starts: the contract's parameters are known.
+        shared.market.push_early_tick_req_params(params(), false);
+        let mut w = SeqRec::default();
+        client.process_msgs(&mut w);
+        let at_start = w.events.clone();
+        // The acknowledgement.
+        shared.market.push_tick_req_params(params());
+        client.process_msgs(&mut w);
+        if early {
+            assert_eq!(at_start, ["params:1:0.01:9c0001:3"], "{ticks}");
+            assert_eq!(w.events, ["params:1:0.01:9c0001:3", "mdt:1:1"], "{ticks}");
+        } else {
+            assert!(at_start.is_empty(), "{at_start:?}");
+            assert_eq!(w.events, ["mdt:1:1", "params:1:0.01:9c0001:3"]);
+        }
+        drop(engine);
+    }
+}
+
 // ibx#446, captured 02/10/2026 (EUR.USD snapshots 9460-9462): the market
 // data type, then the request parameters; the trade's time and halted
 // state, the daily high, low and close, then the bid and the ask with
@@ -7008,12 +7041,13 @@ fn two_requests_on_one_contract_share_the_subscription() {
     let mut w = RecordingWrapper::default();
     client.process_msgs(&mut w);
     let math = "The New Math of AI: Are Those Trillion-Dollar Numbers for Real? -- Barrons.com";
-    // The reference 10.51 gives a joining request its parameters before
-    // its market data type (paper 12/10/2026, ibx#495; 10.40 gave them the
-    // other way).
+    // A joining request without top of book gets its market data type
+    // before its parameters, as in this recording (the reference 10.51,
+    // 13/10/2026, two runs; ibx#535); a top-of-book request joining gets
+    // the parameters first (12/10/2026, ibx#495).
     assert_eq!(w.events, [
-        "tick_req_params:9581:0.01:9c0001:3".to_string(),
         "market_data_type:9581:1".to_string(),
+        "tick_req_params:9581:0.01:9c0001:3".to_string(),
         "tick_news:9581:1790893800000:DJ-RTPRO:DJ-RTPRO$1f790db1:VP Newstead Sells 2,399 Of Apple Inc >AAPL:A:800015:L:en".to_string(),
         format!("tick_news:9581:1790920800000:DJ-N:DJ-N$1f798bd2:{math}:L:en:A:800015"),
         format!("tick_news:9581:1790920800000:DJ-RTG:DJ-RTG$1f798bd2:{math}:L:en:A:800015"),
@@ -7094,8 +7128,10 @@ fn a_symbol_only_request_joins_the_contract_it_finds() {
     shared.market.push_md_merge(6, 5);
     let mut w = RecordingWrapper::default();
     client.process_msgs(&mut w);
-    // Parameters before the type for a joining request on 10.51 (ibx#495).
-    assert_eq!(w.events, ["tick_req_params:9581:0.01:9c0001:3", "market_data_type:9581:1"]);
+    // A joining request without top of book: the type before the
+    // parameters (the reference 10.51, 13/10/2026, two runs; ibx#535). A
+    // top-of-book request joining gets the parameters first (ibx#495).
+    assert_eq!(w.events, ["market_data_type:9581:1", "tick_req_params:9581:0.01:9c0001:3"]);
     assert_eq!(client.core.instrument_to_req.lock().unwrap().get(&5), Some(&vec![9580, 9581]));
     assert!(!client.core.instrument_to_req.lock().unwrap().contains_key(&6));
     client.cancel_mkt_data(9581).unwrap();

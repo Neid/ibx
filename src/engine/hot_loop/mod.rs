@@ -641,6 +641,17 @@ impl HotLoop {
         if let Some(f) = self.pool.get_mut(id) {
             f.note_request(Instant::now());
         }
+        // A contract asked before in the session: its request parameters
+        // are known now, before any acknowledgement; the client gives them
+        // now to the requests the reference gives them to (ibx#535).
+        if !news_contract && sub.mode_9887 == 0
+            && let Some((min_tick, bbo_exchange, permissions)) = self.farm.con_params.get(&sub.con_id).cloned()
+        {
+            let option = matches!(sub.sec_type.to_ascii_uppercase().as_str(), "OPT" | "FOP" | "IOPT");
+            self.shared.market.push_early_tick_req_params(crate::bridge::TickReqParams {
+                instrument: sub.instrument, min_tick, bbo_exchange, snapshot_permissions: permissions as i32,
+            }, option);
+        }
         if !news_contract {
             if self.md_pass.on {
                 let now = self.pace_now();

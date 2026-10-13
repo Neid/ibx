@@ -483,11 +483,15 @@ impl EClient {
 
         // Request parameters, once per request (ibx#449), after the market
         // data type (ibx#446).
-        for (req_id, mdt, min_tick, bbo_exchange, permissions) in self.core.take_tick_req_params(&self.shared) {
+        // Known before the acknowledgement: the parameters first, the type
+        // alone at it (ibx#535).
+        for (req_id, mdt, params) in self.core.take_tick_req_params(&self.shared) {
             if let Some(mdt) = mdt {
                 wrapper.market_data_type(req_id, mdt);
             }
-            wrapper.tick_req_params(req_id, min_tick, &bbo_exchange, permissions);
+            if let Some((min_tick, bbo_exchange, permissions)) = params {
+                wrapper.tick_req_params(req_id, min_tick, &bbo_exchange, permissions);
+            }
         }
 
         // The market data steps queued by the engine → tick callbacks, in
