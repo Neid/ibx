@@ -469,6 +469,7 @@ impl Order {
             // Unset (`i32::MAX`) is no minimum quantity.
             min_qty: if self.min_qty == i32::MAX { 0 } else { self.min_qty.max(0) as u32 },
             hidden: self.hidden,
+            tif_preset: self.tif.is_empty() && !self.include_overnight,
             outside_rth: self.outside_rth,
             // A goodAfterTime that is not a date and time is left out, as
             // the reference leaves it out (ibx#594); a time alone is today's,

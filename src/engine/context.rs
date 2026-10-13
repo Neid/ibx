@@ -306,6 +306,12 @@ pub struct Context {
     pub(crate) def_kinds: HashMap<i64, (String, String)>,
     /// The logon's algo providers (ibx#505).
     pub(crate) algo_providers: Vec<String>,
+    /// The account's order presets by security type: the time in force
+    /// they set, None when they set none (ibx#660). A type asked and not
+    /// answered yet is in `presets_asked`.
+    pub(crate) order_presets: HashMap<String, Option<String>>,
+    pub(crate) presets_asked: std::collections::HashSet<String>,
+    pub(crate) next_preset_request: u32,
     /// Depth requests refused with 10092: their cancel answers nothing
     /// (ibx#678).
     pub(crate) depth_unsupported: std::collections::HashSet<ReqId>,
@@ -415,6 +421,9 @@ impl Context {
             option_terms: HashMap::new(),
             def_kinds: HashMap::new(),
             algo_providers: Vec::new(),
+            order_presets: HashMap::new(),
+            presets_asked: std::collections::HashSet::new(),
+            next_preset_request: 3,
             depth_unsupported: std::collections::HashSet::new(),
             def_parked: Vec::new(),
             def_ready: Vec::new(),

@@ -213,6 +213,13 @@ fn send_orders(
                         shared.orders.push_order_error(oid, code, message);
                         continue;
                     }
+                    // The preset of a combo is asked once its set-up is
+                    // done, right before the order (capture of
+                    // 28/09/2026, rth_order_types).
+                    if !preset_tif(context, conn, hb, shared, &mut order_req, "COMB") {
+                        context.rth_parked.push(rewrap(order_req));
+                        continue;
+                    }
                     combo_track = Some(combo_order_setup(context, shared, &mut order_req, built, spec));
                 }
             }
@@ -225,6 +232,12 @@ fn send_orders(
             if (!matches!(sec_type.as_str(), "" | "STK" | "BAG") || context.market.blank_symbol(instrument))
                 && matches!(definition(context, conn, hb, instrument), Definition::Waiting)
             {
+                context.rth_parked.push(rewrap(order_req));
+                continue;
+            }
+            let (sec_type, _) = context.market.order_routing(instrument);
+            let sec_type = if matches!(sec_type.as_str(), "" | "CS") { "STK".to_string() } else { sec_type };
+            if !preset_tif(context, conn, hb, shared, &mut order_req, &sec_type) {
                 context.rth_parked.push(rewrap(order_req));
                 continue;
             }
@@ -3562,6 +3575,65 @@ fn drop_seek_off_smart(req: &mut OrderRequest, context: &Context, shared: &Arc<S
 pub(crate) const ROUTE_BBO_WARNING: &str = "Warning: Setting \"Route marketable orders to exchanges at BBO only\" \
     order attribute can result in higher total cost of the trade after exchange fees and commissions.";
 
+/// An order placed with no time in force takes the one of the account's
+/// order preset for its security type, with notice 10349, as the
+/// reference at the session level ibx gives (observed 13/10/2026, paper:
+/// "Order TIF was set to GTC based on order preset.", then the order goes
+/// out GTC). The preset is asked from the server at the first such order
+/// of a type and kept for the session (ibx#660). A preset with no time in
+/// force leaves DAY. False while the preset is on its way.
+fn preset_tif(
+    context: &mut Context,
+    conn: &mut Connection,
+    hb: &mut HeartbeatState,
+    shared: &Arc<SharedState>,
+    req: &mut OrderRequest,
+    sec_type: &str,
+) -> bool {
+    let oid = req.order_id();
+    let Some(tif) = req.preset_tif_mut() else { return true };
+    let Some(preset) = context.order_presets.get(sec_type) else {
+        if context.presets_asked.insert(sec_type.to_string()) {
+            let request_id = format!("OPR.{}", context.next_preset_request);
+            context.next_preset_request += 1;
+            let kind = format!("s={sec_type}");
+            let now = chrono_free_timestamp();
+            match conn.send_fix(&[(35, "U"), (52, &now), (6556, &request_id), (6040, "193"),
+                (8166, "G"), (8176, "1"), (8168, &kind)])
+            {
+                Ok(()) => hb.last_ccp_sent = Instant::now(),
+                Err(e) => log::error!("Order preset request not sent: {}", e),
+            }
+        }
+        return false;
+    };
+    if let Some(name) = preset {
+        let code = match name.as_str() {
+            "GTC" => b'1',
+            "IOC" => b'3',
+            "FOK" => b'4',
+            "OPG" => b'2',
+            "DAY" => b'0',
+            _ => return true,
+        };
+        *tif = code;
+        shared.orders.push_order_error(oid, 10349, format!("Order TIF was set to {name} based on order preset."));
+    }
+    true
+}
+
+/// The answer of an order preset request (ibx#660): the time in force it
+/// sets for its security type; the orders that waited for it go on.
+pub(crate) fn preset_reply(context: &mut Context, parsed: &std::collections::HashMap<u32, String>) {
+    let Some(sec_type) = parsed.get(&8168).and_then(|k| k.strip_prefix("s=")) else { return };
+    let sec_type = sec_type.split('&').next().unwrap_or(sec_type).to_string();
+    let tif = parsed.get(&4026).cloned();
+    log::info!("Order preset of {}: time in force {:?}", sec_type, tif);
+    context.presets_asked.remove(&sec_type);
+    context.order_presets.insert(sec_type, tif);
+    release_rth_parked(context);
+}
+
 /// The waiting requests go back ahead of the queue, in their order.
 fn release_rth_parked(context: &mut Context) {
     let parked = std::mem::take(&mut context.rth_parked);
@@ -4274,6 +4346,50 @@ mod tests {
         peer.messages().iter().flat_map(|m| crate::test_support::parse_fields(m)).collect()
     }
 
+    // ibx#660 (observed 13/10/2026, paper, the reference at level 214): an
+    // order placed with no time in force asks the account's preset of its
+    // security type, then goes out with the preset's GTC and notice 10349;
+    // the next order of the type takes the kept preset without asking.
+    #[test]
+    fn empty_tif_takes_the_order_preset() {
+        let mut context = Context::new();
+        context.order_ids.start_at(FIRST as i32);
+        let instrument = context.market.register(265598);
+        context.rth_types.insert((265598, "BEST".to_string()), crate::engine::outside_rth::RthTypes {
+            rth: true, sec_type: "STK".into(), ..Default::default()
+        });
+        let order = |id: OrderId| OrderRequest::SubmitLimitEx {
+            order_id: id, instrument, side: Side::Buy, qty: 1, price: 240 * crate::types::PRICE_SCALE,
+            tif: b'0', attrs: crate::types::OrderAttrs { tif_preset: true, ..Default::default() },
+        };
+        let shared = Arc::new(SharedState::new());
+        let (conn, mut peer) = crate::test_support::Peer::pair();
+        let mut conn = Some(conn);
+        let mut hb = HeartbeatState::new();
+        context.pending_orders.push(order(FIRST));
+        drain_and_send_orders(&mut conn, &mut context, "DU1", &mut hb, false, &shared);
+        let asked: Vec<Vec<(u32, String)>> = peer.messages().iter().map(|m| crate::test_support::parse_fields(m)).collect();
+        assert_eq!(asked.len(), 1, "the preset request only: {asked:?}");
+        let field = |f: &[(u32, String)], t: u32| f.iter().find(|(k, _)| *k == t).map(|(_, v)| v.clone());
+        assert_eq!((field(&asked[0], 35), field(&asked[0], 6040), field(&asked[0], 6556), field(&asked[0], 8166),
+            field(&asked[0], 8176), field(&asked[0], 8168)),
+            (Some("U".into()), Some("193".into()), Some("OPR.3".into()), Some("G".into()), Some("1".into()), Some("s=STK".into())));
+        assert!(shared.orders.drain_order_errors().is_empty());
+
+        let reply: std::collections::HashMap<u32, String> =
+            [(8166, "G"), (8168, "s=STK"), (8169, "v=1"), (4026, "GTC")].into_iter().map(|(t, v)| (t, v.to_string())).collect();
+        preset_reply(&mut context, &reply);
+        context.pending_orders.push(order(FIRST + 1));
+        drain_and_send_orders(&mut conn, &mut context, "DU1", &mut hb, false, &shared);
+        let sent: Vec<Vec<(u32, String)>> = peer.messages().iter().map(|m| crate::test_support::parse_fields(m)).collect();
+        assert_eq!(sent.len(), 2, "both orders, no second preset request: {sent:?}");
+        for f in &sent {
+            assert_eq!((field(f, 35), field(f, 59)), (Some("D".into()), Some("1".into())));
+        }
+        let notice = "Order TIF was set to GTC based on order preset.".to_string();
+        assert_eq!(shared.orders.drain_order_errors(), [(FIRST, 10349, notice.clone()), (FIRST + 1, 10349, notice)]);
+    }
+
     /// Encode one order request and return each sent frame's tags, for
     /// requests that send several orders.
     fn wire_frames(req: OrderRequest, frames: usize) -> Vec<Vec<(u32, String)>> {
@@ -4917,18 +5033,18 @@ mod tests {
         assert_eq!(pos(&ours, 6091) + 1, pos(&ours, 15));
 
         // A MKT preview is a MKT order (captured in ib-agent#160), not a limit at 0.
-        let mkt = wire_tags(what_if_of(crate::api::types::Order { action: "SELL".into(), total_quantity: 1.0,
+        let mkt = wire_tags(what_if_of(crate::api::types::Order { tif: "DAY".into(), action: "SELL".into(), total_quantity: 1.0,
             order_type: "MKT".into(), ..Default::default() }, 101));
         assert_eq!((tag(&mkt, 40), tag(&mkt, 44), tag(&mkt, 6091)), (Some("1"), None, Some("1")));
 
         // An algo preview keeps the algo fields (ibx#462: it went out as a
         // real algo order).
-        let vwap = wire_tags(what_if_of(crate::api::types::Order { action: "BUY".into(), total_quantity: 1.0,
+        let vwap = wire_tags(what_if_of(crate::api::types::Order { tif: "DAY".into(), action: "BUY".into(), total_quantity: 1.0,
             order_type: "LMT".into(), lmt_price: 100.0, algo_strategy: "Vwap".into(),
             algo_params: vec![crate::api::types::TagValue { tag: "maxPctVol".into(), value: "0.1".into() }],
             ..Default::default() }, 102));
         assert_eq!((tag(&vwap, 847), tag(&vwap, 18), tag(&vwap, 6091)), (Some("Vwap"), Some("e"), Some("1")));
-        let adaptive = wire_tags(what_if_of(crate::api::types::Order { action: "BUY".into(), total_quantity: 1.0,
+        let adaptive = wire_tags(what_if_of(crate::api::types::Order { tif: "DAY".into(), action: "BUY".into(), total_quantity: 1.0,
             order_type: "LMT".into(), lmt_price: 100.0, algo_strategy: "Adaptive".into(), ..Default::default() }, 103));
         assert_eq!((tag(&adaptive, 847), tag(&adaptive, 6091)), (Some("Adaptive"), Some("1")));
     }
@@ -4937,7 +5053,7 @@ mod tests {
     // (ORDER-WHATIF.md 4, from the code read).
     #[test]
     fn what_if_drops_the_oca_fields() {
-        let child = crate::api::types::Order { action: "SELL".into(), total_quantity: 1.0, order_type: "LMT".into(),
+        let child = crate::api::types::Order { tif: "DAY".into(), action: "SELL".into(), total_quantity: 1.0, order_type: "LMT".into(),
             lmt_price: 110.0, parent_id: 7, oca_group: "G".into(), oca_type: 1, ..Default::default() };
         let tags = wire_tags(what_if_of(child, 104));
         assert!(tag(&tags, 583).is_none() && tag(&tags, 6209).is_none(), "{tags:?}");
@@ -4949,7 +5065,7 @@ mod tests {
     // the working order, its versions and its ClOrdID are left as they are.
     #[test]
     fn what_if_on_a_working_order_id_does_not_touch_it() {
-        let lmt = crate::api::types::Order { action: "BUY".into(), total_quantity: 1.0, order_type: "LMT".into(),
+        let lmt = crate::api::types::Order { tif: "DAY".into(), action: "BUY".into(), total_quantity: 1.0, order_type: "LMT".into(),
             lmt_price: 101.0, ..Default::default() };
         let (client, mut server) = crate::protocol::connection::mem_pair();
         let mut conn = Some(Connection::new_mem(client));
@@ -4974,7 +5090,7 @@ mod tests {
         assert_eq!(context.last_clord.get(&105).map(String::as_str), Some("105.2"));
         assert_eq!(context.what_ifs.len(), 1);
         // A preview of a new id leaves no order behind.
-        let new_id = what_if_of(crate::api::types::Order { action: "BUY".into(), total_quantity: 1.0,
+        let new_id = what_if_of(crate::api::types::Order { tif: "DAY".into(), action: "BUY".into(), total_quantity: 1.0,
             order_type: "LMT".into(), lmt_price: 1.0, ..Default::default() }, 106);
         context.pending_orders.push(new_id);
         let frames = drain_frames(&mut context, &shared, &mut conn, &mut server);
@@ -6465,7 +6581,7 @@ mod tests {
     #[test]
     fn peg_mid_matches_the_reference() {
         let reference = "35=D|11=1626578609.0|44=237.82|1=DU1|6122=c|6121=76|6119=192|38=1|40=P|211=0.00|18=M|55=AAPL|167=STK|231=1.00|54=1|59=0|100=BEST|6210=BEST|6008=265598|6088=Socket|15=USD|6211=|6238=";
-        let order = crate::api::types::Order {
+        let order = crate::api::types::Order { tif: "DAY".into(),
             action: "BUY".into(), total_quantity: 1.0, order_type: "PEG MID".into(),
             lmt_price: 237.82, aux_price: 0.05, ..Default::default()
         };
@@ -7170,7 +7286,7 @@ mod tests {
     fn adaptive_stop_is_the_captured_frame() {
         const STP: &str = "35=D|11=1288736453.0|99=495.48|1=DUXXXXXXX|6117=495.48|6115=0|6122=c|6010=fourleg|847=Adaptive|5957=1|5958=adaptivePriority|5960=Normal|6121=81|6119=198|38=1|40=3|18=e|55=AAPL|167=STK|231=1.00|54=1|59=0|100=BEST|6210=BEST|6008=265598|6088=Socket|15=USD|6211=|6238=";
         use crate::api::types::{Order as ApiOrder, TagValue};
-        let order = ApiOrder {
+        let order = ApiOrder { tif: "DAY".into(),
             action: "BUY".into(), total_quantity: 1.0, order_type: "STP".into(), aux_price: 495.48,
             algo_strategy: "Adaptive".into(), order_ref: "fourleg".into(),
             algo_params: vec![TagValue { tag: "adaptivePriority".into(), value: "Normal".into() }],

@@ -468,6 +468,9 @@ pub struct OrderAttrs {
     pub min_qty: u32,
     /// Hidden order — not displayed on book (IB tag 6135).
     pub hidden: bool,
+    /// Placed with no time in force: it takes the account's order preset
+    /// for its security type (ibx#660).
+    pub tif_preset: bool,
     /// Customer account (tag 6207) and professional customer (tag 6636),
     /// sent only on an account whose config allows them (ibx#425).
     pub customer_account: String,
@@ -1505,6 +1508,21 @@ impl OrderRequest {
             | Self::SubmitEx { instrument, .. }
             | Self::SubmitAdaptive { instrument, .. }
             | Self::SubmitAlgo { instrument, .. } => Some(instrument),
+            _ => None,
+        }
+    }
+
+    /// The time in force of a new order placed with none, which the
+    /// account's order preset sets (ibx#660). None for any other request.
+    pub fn preset_tif_mut(&mut self) -> Option<&mut u8> {
+        match self {
+            Self::SubmitWhatIf { request } => request.preset_tif_mut(),
+            Self::SubmitTrailingStopPctEx { tif, attrs, .. }
+            | Self::SubmitLimitEx { tif, attrs, .. }
+            | Self::SubmitEx { tif, attrs, .. }
+            | Self::SubmitAdaptive { tif, attrs, .. }
+            | Self::SubmitAlgo { tif, attrs, .. }
+                if attrs.tif_preset => Some(tif),
             _ => None,
         }
     }

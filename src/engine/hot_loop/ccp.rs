@@ -1145,6 +1145,11 @@ impl CcpState {
                             self.optparams.chain_reply(msg, ccp_conn, connected, hb, shared);
                         }
                         "60" => self.handle_commission_report(&parsed, shared),
+                        // An order preset asked for an order placed with no
+                        // time in force (ibx#660); not the logon's list.
+                        "194" if parsed.get(&8166).is_some_and(|k| k == "G") => {
+                            super::order_builder::preset_reply(context, &parsed);
+                        }
                         // The combo multiplier and the leg confirmation of
                         // a combo set-up (ibx#470).
                         "36" | "7" => {

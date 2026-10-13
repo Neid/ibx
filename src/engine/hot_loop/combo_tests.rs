@@ -58,7 +58,7 @@ fn combo_frame(f: &[(u32, String)]) -> bool {
         Some("c") => tag(f, 320).is_some_and(|id| matches!(label(id),
             "SecDefReqMsgReqByConid" | "Query ICS typeReqByConid" | "EComboReqByConid"
             | "SmartComboEComboValidationProcessorReqByConid" | "FixSecDefReqBySymbol")),
-        Some("U") => matches!(tag(f, 6040), Some("36" | "7")),
+        Some("U") => matches!(tag(f, 6040), Some("36" | "7" | "193")),
         Some("D" | "G" | "F") => true,
         _ => false,
     }
@@ -79,7 +79,7 @@ fn assert_same(ours: &[(u32, String)], theirs: &[(u32, String)]) {
         let mut plain = Vec::new();
         let mut attrs = Vec::new();
         for (t, v) in session.apply(f) {
-            let v = if t == 320 { label(&v).to_string() } else { v };
+            let v = if matches!(t, 320 | 6556) { label(&v).to_string() } else { v };
             if is_attribute(t) { attrs.push((t, v)); } else { plain.push((t, v)); }
         }
         attrs.sort();
@@ -212,8 +212,10 @@ impl Session {
                 if !combo_frame(f) { continue; }
                 let ours = self.next_sent();
                 assert_same(&ours, f);
-                if let (Some(theirs), Some(mine)) = (tag(f, 320), tag(&ours, 320)) {
-                    self.ids.insert(theirs.to_string(), mine.to_string());
+                for t in [320, 6556] {
+                    if let (Some(theirs), Some(mine)) = (tag(f, t), tag(&ours, t)) {
+                        self.ids.insert(theirs.to_string(), mine.to_string());
+                    }
                 }
                 if let (Some(theirs), Some(mine)) = (tag(f, 11), tag(&ours, 11)) {
                     let base = |s: &str| s.split('.').next().unwrap().to_string();
@@ -225,6 +227,7 @@ impl Session {
                 Some("d") => tag(f, 320).is_some_and(|id| self.ids.contains_key(id)),
                 Some("U") => match tag(f, 6040) {
                     Some("36" | "7") => tag(f, 320).is_some_and(|id| self.ids.contains_key(id)),
+                    Some("194") => tag(f, 6556).is_some_and(|id| self.ids.contains_key(id)),
                     Some("60") => true,
                     _ => false,
                 },
@@ -235,7 +238,7 @@ impl Session {
             let mut fields = f.clone();
             for (t, v) in fields.iter_mut() {
                 match *t {
-                    320 => if let Some(mine) = self.ids.get(v.as_str()) { *v = mine.clone(); },
+                    320 | 6556 => if let Some(mine) = self.ids.get(v.as_str()) { *v = mine.clone(); },
                     11 | 41 => {
                         let (base, ver) = v.split_once('.').unwrap_or((v.as_str(), ""));
                         if let Some(mine) = self.ids.get(base) { *v = format!("{mine}.{ver}"); }
@@ -349,6 +352,8 @@ fn combo_fill_session_is_the_captured_one() {
 fn combo_symbol_refusal_then_order_modify_and_cancel_are_the_captured_ones() {
     let first = fixture("20260926/i105_combo_stock_smart.jsonl");
     let mut s = Session::new();
+    // The session of the capture had the combo preset already (ibx#660).
+    s.engine.context.order_presets.insert("COMB".into(), None);
     s.client.place_order(23, &spy_qqq("SPY,QQQ"), &combo_lmt("BUY", -23.15)).unwrap();
     s.run();
     s.play(&first, is("c", "SecDefReqMsgReqByConid"), |_| false);
@@ -394,6 +399,8 @@ fn combo_leg_prices_are_the_captured_ones() {
     let first = fixture("20260926/i105_combo_stock_smart.jsonl");
     let frames = fixture("20260926b/i105_combo_leg_prices.jsonl");
     let mut s = Session::new();
+    // The session of the capture had the combo preset already (ibx#660).
+    s.engine.context.order_presets.insert("COMB".into(), None);
     // The session's set-up, as in the capture's session.
     s.client.place_order(23, &spy_qqq("SPY,QQQ"), &combo_lmt("BUY", -23.15)).unwrap();
     s.run();
@@ -555,6 +562,8 @@ fn modify_of_the_first_combo_order_of_a_session_goes_out() {
     let first = fixture("20260926/i105_combo_stock_smart.jsonl");
     let reports = fixture("20260926b/i105_combo_stock_smart.jsonl");
     let mut s = Session::new();
+    // The session of the capture had the combo preset already (ibx#660).
+    s.engine.context.order_presets.insert("COMB".into(), None);
     let mut order = combo_lmt("BUY", -50.00);
     s.client.place_order(28, &spy_qqq("QQQ,SPY"), &order).unwrap();
     s.run();

@@ -451,7 +451,7 @@ fn cancel_tick_by_tick_unknown_req_id_no_panic() {
 fn place_order_market() {
     let (client, rx, shared) = test_client();
     shared.market.set_instrument_count(1);
-    let order = Order { action: "BUY".into(), total_quantity: 100.0, order_type: "MKT".into(), ..Default::default() };
+    let order = Order { action: "BUY".into(), total_quantity: 100.0, tif: "DAY".into(), order_type: "MKT".into(), ..Default::default() };
     client.place_order(1, &spy(), &order).unwrap();
 
     let cmd = rx.try_recv().unwrap();
@@ -466,7 +466,7 @@ fn place_order_limit() {
     let (client, rx, shared) = test_client();
     shared.market.set_instrument_count(1);
     let order = Order {
-        action: "BUY".into(), total_quantity: 50.0, order_type: "LMT".into(),
+        action: "BUY".into(), total_quantity: 50.0, tif: "DAY".into(), order_type: "LMT".into(),
         lmt_price: 150.25, ..Default::default()
     };
     client.place_order(1, &spy(), &order).unwrap();
@@ -488,7 +488,7 @@ fn place_order_trailing_stop_carries_initial_trigger() {
     let (client, rx, shared) = test_client();
     shared.market.set_instrument_count(1);
     let order = Order {
-        action: "SELL".into(), total_quantity: 1.0, order_type: "TRAIL".into(),
+        action: "SELL".into(), total_quantity: 1.0, tif: "DAY".into(), order_type: "TRAIL".into(),
         aux_price: 0.50,             // trail amount
         trail_stop_price: 10.00,     // initial stop trigger
         ..Default::default()
@@ -509,7 +509,7 @@ fn place_order_trailing_stop_without_trigger_is_unset() {
     let (client, rx, shared) = test_client();
     shared.market.set_instrument_count(1);
     let order = Order {
-        action: "SELL".into(), total_quantity: 1.0, order_type: "TRAIL".into(),
+        action: "SELL".into(), total_quantity: 1.0, tif: "DAY".into(), order_type: "TRAIL".into(),
         aux_price: 0.50, ..Default::default()
     };
     client.place_order(1, &spy(), &order).unwrap();
@@ -528,7 +528,7 @@ fn place_order_adjustable_trail_carries_trailing_amount_and_unit() {
     let (client, rx, shared) = test_client();
     shared.market.set_instrument_count(1);
     let order = Order {
-        action: "SELL".into(), total_quantity: 1.0, order_type: "STP".into(),
+        action: "SELL".into(), total_quantity: 1.0, tif: "DAY".into(), order_type: "STP".into(),
         aux_price: 11.00,                          // base stop price
         adjusted_order_type: "TRAIL".into(),
         trigger_price: 11.00,
@@ -600,7 +600,7 @@ fn place_order_adjustable_trail_percent_unit_passes_through() {
     let (client, rx, shared) = test_client();
     shared.market.set_instrument_count(1);
     let order = Order {
-        action: "SELL".into(), total_quantity: 1.0, order_type: "STP".into(),
+        action: "SELL".into(), total_quantity: 1.0, tif: "DAY".into(), order_type: "STP".into(),
         aux_price: 11.00,
         adjusted_order_type: "TRAIL".into(),
         adjusted_trailing_amount: 1.00,            // 1.00%
@@ -729,8 +729,9 @@ fn place_order_trailing_amount_with_oca_uses_submit_ex() {
 }
 
 #[test]
-fn place_order_empty_tif_stays_plain() {
-    // tif "" is DAY (the official API default) — no extended routing.
+fn place_order_empty_tif_takes_the_preset() {
+    // ibx#660: tif "" takes the account's order preset, which the engine
+    // reads: the order rides the extended path, marked for it; DAY does not.
     let (client, rx, shared) = test_client();
     shared.market.set_instrument_count(1);
     let order = Order {
@@ -738,6 +739,14 @@ fn place_order_empty_tif_stays_plain() {
         aux_price: 240.0, ..Default::default()
     };
     client.place_order(1, &spy(), &order).unwrap();
+    match rx.try_recv().unwrap() {
+        ControlCommand::Order(OrderRequest::SubmitEx { tif, attrs, .. }) => {
+            assert_eq!(tif, b'0');
+            assert!(attrs.tif_preset);
+        }
+        cmd => panic!("expected SubmitEx, got {:?}", cmd),
+    }
+    client.place_order(2, &spy(), &Order { tif: "DAY".into(), ..order }).unwrap();
     assert!(matches!(rx.try_recv().unwrap(),
         ControlCommand::Order(OrderRequest::SubmitStop { .. })));
 }
@@ -954,7 +963,7 @@ fn place_order_stop() {
     let (client, rx, shared) = test_client();
     shared.market.set_instrument_count(1);
     let order = Order {
-        action: "SELL".into(), total_quantity: 100.0, order_type: "STP".into(),
+        action: "SELL".into(), total_quantity: 100.0, tif: "DAY".into(), order_type: "STP".into(),
         aux_price: 145.0, ..Default::default()
     };
     client.place_order(1, &spy(), &order).unwrap();
@@ -974,7 +983,7 @@ fn place_order_stop_limit() {
     let (client, rx, shared) = test_client();
     shared.market.set_instrument_count(1);
     let order = Order {
-        action: "SELL".into(), total_quantity: 100.0, order_type: "STP LMT".into(),
+        action: "SELL".into(), total_quantity: 100.0, tif: "DAY".into(), order_type: "STP LMT".into(),
         lmt_price: 144.0, aux_price: 145.0, ..Default::default()
     };
     client.place_order(1, &spy(), &order).unwrap();
@@ -994,7 +1003,7 @@ fn place_order_trailing_stop_amount() {
     let (client, rx, shared) = test_client();
     shared.market.set_instrument_count(1);
     let order = Order {
-        action: "SELL".into(), total_quantity: 100.0, order_type: "TRAIL".into(),
+        action: "SELL".into(), total_quantity: 100.0, tif: "DAY".into(), order_type: "TRAIL".into(),
         aux_price: 2.0, ..Default::default()
     };
     client.place_order(1, &spy(), &order).unwrap();
@@ -1013,7 +1022,7 @@ fn place_order_trailing_stop_percent() {
     let (client, rx, shared) = test_client();
     shared.market.set_instrument_count(1);
     let order = Order {
-        action: "SELL".into(), total_quantity: 100.0, order_type: "TRAIL".into(),
+        action: "SELL".into(), total_quantity: 100.0, tif: "DAY".into(), order_type: "TRAIL".into(),
         trailing_percent: 5.0, ..Default::default()
     };
     client.place_order(1, &spy(), &order).unwrap();
@@ -1032,7 +1041,7 @@ fn place_order_trailing_stop_limit() {
     let (client, rx, shared) = test_client();
     shared.market.set_instrument_count(1);
     let order = Order {
-        action: "SELL".into(), total_quantity: 100.0, order_type: "TRAIL LIMIT".into(),
+        action: "SELL".into(), total_quantity: 100.0, tif: "DAY".into(), order_type: "TRAIL LIMIT".into(),
         lmt_price: 148.0, aux_price: 2.0, trail_stop_price: 150.0, ..Default::default()
     };
     client.place_order(1, &spy(), &order).unwrap();
@@ -1475,7 +1484,7 @@ fn place_order_moc() {
     let (client, rx, shared) = test_client();
     shared.market.set_instrument_count(1);
     let order = Order {
-        action: "BUY".into(), total_quantity: 100.0, order_type: "MOC".into(), ..Default::default()
+        action: "BUY".into(), total_quantity: 100.0, tif: "DAY".into(), order_type: "MOC".into(), ..Default::default()
     };
     client.place_order(1, &spy(), &order).unwrap();
 
@@ -1488,7 +1497,7 @@ fn place_order_loc() {
     let (client, rx, shared) = test_client();
     shared.market.set_instrument_count(1);
     let order = Order {
-        action: "BUY".into(), total_quantity: 100.0, order_type: "LOC".into(),
+        action: "BUY".into(), total_quantity: 100.0, tif: "DAY".into(), order_type: "LOC".into(),
         lmt_price: 150.0, ..Default::default()
     };
     client.place_order(1, &spy(), &order).unwrap();
@@ -1502,7 +1511,7 @@ fn place_order_mit() {
     let (client, rx, shared) = test_client();
     shared.market.set_instrument_count(1);
     let order = Order {
-        action: "BUY".into(), total_quantity: 100.0, order_type: "MIT".into(),
+        action: "BUY".into(), total_quantity: 100.0, tif: "DAY".into(), order_type: "MIT".into(),
         aux_price: 148.0, ..Default::default()
     };
     client.place_order(1, &spy(), &order).unwrap();
@@ -1516,7 +1525,7 @@ fn place_order_lit() {
     let (client, rx, shared) = test_client();
     shared.market.set_instrument_count(1);
     let order = Order {
-        action: "BUY".into(), total_quantity: 100.0, order_type: "LIT".into(),
+        action: "BUY".into(), total_quantity: 100.0, tif: "DAY".into(), order_type: "LIT".into(),
         lmt_price: 150.0, aux_price: 148.0, ..Default::default()
     };
     client.place_order(1, &spy(), &order).unwrap();
@@ -1530,7 +1539,7 @@ fn place_order_mtl() {
     let (client, rx, shared) = test_client();
     shared.market.set_instrument_count(1);
     let order = Order {
-        action: "BUY".into(), total_quantity: 100.0, order_type: "MTL".into(), ..Default::default()
+        action: "BUY".into(), total_quantity: 100.0, tif: "DAY".into(), order_type: "MTL".into(), ..Default::default()
     };
     client.place_order(1, &spy(), &order).unwrap();
 
@@ -1543,7 +1552,7 @@ fn place_order_mkt_prt() {
     let (client, rx, shared) = test_client();
     shared.market.set_instrument_count(1);
     let order = Order {
-        action: "BUY".into(), total_quantity: 100.0, order_type: "MKT PRT".into(), ..Default::default()
+        action: "BUY".into(), total_quantity: 100.0, tif: "DAY".into(), order_type: "MKT PRT".into(), ..Default::default()
     };
     client.place_order(1, &spy(), &order).unwrap();
 
@@ -1556,7 +1565,7 @@ fn place_order_stp_prt() {
     let (client, rx, shared) = test_client();
     shared.market.set_instrument_count(1);
     let order = Order {
-        action: "SELL".into(), total_quantity: 100.0, order_type: "STP PRT".into(),
+        action: "SELL".into(), total_quantity: 100.0, tif: "DAY".into(), order_type: "STP PRT".into(),
         aux_price: 145.0, ..Default::default()
     };
     client.place_order(1, &spy(), &order).unwrap();
@@ -1570,7 +1579,7 @@ fn place_order_rel() {
     let (client, rx, shared) = test_client();
     shared.market.set_instrument_count(1);
     let order = Order {
-        action: "BUY".into(), total_quantity: 100.0, order_type: "REL".into(),
+        action: "BUY".into(), total_quantity: 100.0, tif: "DAY".into(), order_type: "REL".into(),
         aux_price: 0.10, ..Default::default()
     };
     client.place_order(1, &spy(), &order).unwrap();
@@ -1584,7 +1593,7 @@ fn place_order_peg_mkt() {
     let (client, rx, shared) = test_client();
     shared.market.set_instrument_count(1);
     let order = Order {
-        action: "BUY".into(), total_quantity: 100.0, order_type: "PEG MKT".into(),
+        action: "BUY".into(), total_quantity: 100.0, tif: "DAY".into(), order_type: "PEG MKT".into(),
         aux_price: 0.05, ..Default::default()
     };
     client.place_order(1, &spy(), &order).unwrap();
@@ -1598,7 +1607,7 @@ fn place_order_peg_mid() {
     let (client, rx, shared) = test_client();
     shared.market.set_instrument_count(1);
     let order = Order {
-        action: "BUY".into(), total_quantity: 100.0, order_type: "PEG MID".into(),
+        action: "BUY".into(), total_quantity: 100.0, tif: "DAY".into(), order_type: "PEG MID".into(),
         aux_price: 0.02, ..Default::default()
     };
     client.place_order(1, &spy(), &order).unwrap();
@@ -1612,7 +1621,7 @@ fn place_order_midprice() {
     let (client, rx, shared) = test_client();
     shared.market.set_instrument_count(1);
     let order = Order {
-        action: "BUY".into(), total_quantity: 100.0, order_type: "MIDPRICE".into(),
+        action: "BUY".into(), total_quantity: 100.0, tif: "DAY".into(), order_type: "MIDPRICE".into(),
         lmt_price: 150.0, ..Default::default()
     };
     client.place_order(1, &spy(), &order).unwrap();
@@ -1626,7 +1635,7 @@ fn place_order_snap_mkt() {
     let (client, rx, shared) = test_client();
     shared.market.set_instrument_count(1);
     let order = Order {
-        action: "BUY".into(), total_quantity: 100.0, order_type: "SNAP MKT".into(), ..Default::default()
+        action: "BUY".into(), total_quantity: 100.0, tif: "DAY".into(), order_type: "SNAP MKT".into(), ..Default::default()
     };
     client.place_order(1, &spy(), &order).unwrap();
 
@@ -1639,7 +1648,7 @@ fn place_order_snap_mid() {
     let (client, rx, shared) = test_client();
     shared.market.set_instrument_count(1);
     let order = Order {
-        action: "BUY".into(), total_quantity: 100.0, order_type: "SNAP MID".into(), ..Default::default()
+        action: "BUY".into(), total_quantity: 100.0, tif: "DAY".into(), order_type: "SNAP MID".into(), ..Default::default()
     };
     client.place_order(1, &spy(), &order).unwrap();
 
@@ -1652,7 +1661,7 @@ fn place_order_snap_pri() {
     let (client, rx, shared) = test_client();
     shared.market.set_instrument_count(1);
     let order = Order {
-        action: "BUY".into(), total_quantity: 100.0, order_type: "SNAP PRI".into(), ..Default::default()
+        action: "BUY".into(), total_quantity: 100.0, tif: "DAY".into(), order_type: "SNAP PRI".into(), ..Default::default()
     };
     client.place_order(1, &spy(), &order).unwrap();
 
@@ -1665,7 +1674,7 @@ fn place_order_box_top() {
     let (client, rx, shared) = test_client();
     shared.market.set_instrument_count(1);
     let order = Order {
-        action: "BUY".into(), total_quantity: 100.0, order_type: "BOX TOP".into(), ..Default::default()
+        action: "BUY".into(), total_quantity: 100.0, tif: "DAY".into(), order_type: "BOX TOP".into(), ..Default::default()
     };
     client.place_order(1, &spy(), &order).unwrap();
 
@@ -1678,7 +1687,7 @@ fn place_order_sell_side() {
     let (client, rx, shared) = test_client();
     shared.market.set_instrument_count(1);
     let order = Order {
-        action: "SELL".into(), total_quantity: 50.0, order_type: "MKT".into(), ..Default::default()
+        action: "SELL".into(), total_quantity: 50.0, tif: "DAY".into(), order_type: "MKT".into(), ..Default::default()
     };
     client.place_order(1, &spy(), &order).unwrap();
 
@@ -1696,7 +1705,7 @@ fn place_order_short_sell_side() {
     let (client, rx, shared) = test_client();
     shared.market.set_instrument_count(1);
     let order = Order {
-        action: "SSHORT".into(), total_quantity: 50.0, order_type: "MKT".into(), ..Default::default()
+        action: "SSHORT".into(), total_quantity: 50.0, tif: "DAY".into(), order_type: "MKT".into(), ..Default::default()
     };
     client.place_order(1, &spy(), &order).unwrap();
 
@@ -2082,7 +2091,7 @@ fn stp_order_with_valid_aux_price_succeeds() {
     let (client, rx, shared) = test_client();
     shared.market.set_instrument_count(1);
     let order = Order {
-        action: "SELL".into(), total_quantity: 100.0, order_type: "STP".into(),
+        action: "SELL".into(), total_quantity: 100.0, tif: "DAY".into(), order_type: "STP".into(),
         aux_price: 145.0, ..Default::default()
     };
     client.place_order(1, &spy(), &order).unwrap();
@@ -2121,7 +2130,7 @@ fn trail_order_with_trailing_percent_succeeds() {
     let (client, rx, shared) = test_client();
     shared.market.set_instrument_count(1);
     let order = Order {
-        action: "SELL".into(), total_quantity: 100.0, order_type: "TRAIL".into(),
+        action: "SELL".into(), total_quantity: 100.0, tif: "DAY".into(), order_type: "TRAIL".into(),
         trailing_percent: 5.0, ..Default::default()
     };
     client.place_order(1, &spy(), &order).unwrap();
@@ -4335,7 +4344,7 @@ fn percent_trail_rounds_to_basis_points() {
     let (client, rx, shared) = test_client();
     shared.market.set_instrument_count(1);
     let order = Order {
-        action: "SELL".into(), total_quantity: 1.0, order_type: "TRAIL".into(),
+        action: "SELL".into(), total_quantity: 1.0, tif: "DAY".into(), order_type: "TRAIL".into(),
         trailing_percent: 1.15, ..Default::default()
     };
     client.place_order(91, &spy(), &order).unwrap();
@@ -5151,6 +5160,20 @@ fn a_refused_pending_order_is_listed_with_its_status_only() {
     client.req_open_orders(&mut w);
     client.process_msgs(&mut w);
     assert_eq!(w.events, ["order_status:62:ApiPending:0:0:0"]);
+}
+
+// ibx#660 (the reference 10.51 at level 214, 13/10/2026): an order placed
+// with no time in force holds the one of the account's order preset once
+// notice 10349 named it.
+#[test]
+fn the_preset_time_in_force_is_the_orders() {
+    let (client, _rx, shared) = test_client();
+    placed_order(&client, &shared, 63);
+    shared.orders.push_order_error(63, 10349, "Order TIF was set to GTC based on order preset.".into());
+    let mut w = StatusRecorder::default();
+    client.process_msgs(&mut w);
+    let tif = client.core.open_orders.lock().unwrap().get(&63).map(|o| o.order.tif.clone());
+    assert_eq!(tif.as_deref(), Some("GTC"));
 }
 
 #[test]
@@ -7515,10 +7538,10 @@ fn contract_details_of_an_unset_contract() {
 fn an_order_with_unset_fields_goes_out_and_shows_as_the_reference() {
     let (client, rx, shared) = test_client();
     shared.market.set_instrument_count(1);
-    let order = Order { action: "BUY".into(), total_quantity: 1.0, order_type: "MKT".into(), ..Default::default() };
+    let order = Order { action: "BUY".into(), total_quantity: 1.0, tif: "DAY".into(), order_type: "MKT".into(), ..Default::default() };
     client.place_order(5, &spy(), &order).unwrap();
     assert!(matches!(rx.try_recv().unwrap(), ControlCommand::Order(OrderRequest::SubmitMarket { order_id: 5, qty: 1, .. })));
-    let lmt = Order { action: "BUY".into(), total_quantity: 1.0, order_type: "LMT".into(), lmt_price: 1.0, ..Default::default() };
+    let lmt = Order { action: "BUY".into(), total_quantity: 1.0, tif: "DAY".into(), order_type: "LMT".into(), lmt_price: 1.0, ..Default::default() };
     client.place_order(6, &spy(), &lmt).unwrap();
     match rx.try_recv().unwrap() {
         ControlCommand::Order(OrderRequest::SubmitLimit { order_id: 6, price, .. }) => assert_eq!(price, PRICE_SCALE),

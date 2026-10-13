@@ -4015,6 +4015,14 @@ impl ClientCore {
         if code == 2109 && message.contains("'Outside Regular Trading Hours'") {
             self.rth_dropped.lock().unwrap().insert(order_id);
         }
+        // Placed with no time in force: the order holds the one of the
+        // account's order preset (ibx#660).
+        if code == 10349
+            && let Some(tif) = message.strip_prefix("Order TIF was set to ").and_then(|m| m.split(' ').next())
+            && let Some(o) = self.open_orders.lock().unwrap().get_mut(&order_id)
+        {
+            o.order.tif = tif.to_string();
+        }
         // The redirect precaution discards the order (ibx#486).
         // So does the precaution of routeMarketableToBbo (ibx#608).
         if matches!(code, 10311 | 10329 | 10353) {
@@ -6453,9 +6461,10 @@ impl ClientCore {
         // Every order type must carry extended attributes and a non-DAY tif
         // when the caller sets them — dropping them silently produced
         // unlinked, immediate-DAY bracket children (ibx#224). An empty tif
-        // is treated as DAY, matching the official API default.
+        // takes the account's order preset, which the engine reads
+        // (ibx#660), so it rides the extended path too.
         let extended = order.has_extended_attrs()
-            || !matches!(order.tif.as_str(), "" | "DAY")
+            || order.tif != "DAY"
             || algo.is_some()
             || combo.is_some();
         let attrs = || crate::types::OrderAttrs { algo: algo.clone(), combo: combo.clone(), ..order.attrs() };
@@ -8025,7 +8034,7 @@ mod tests {
     // ibx#413: a snap order takes its offset from auxPrice, 0 when unset.
     #[test]
     fn snap_orders_take_the_offset_from_aux_price() {
-        let snap = |aux_price: f64| ApiOrder { order_type: "SNAP MKT".into(), aux_price, ..lmt(0.0) };
+        let snap = |aux_price: f64| ApiOrder { order_type: "SNAP MKT".into(), aux_price, tif: "DAY".into(), ..lmt(0.0) };
         let offset = |o: &ApiOrder| match ClientCore::build_order_request(o, 1, 0) {
             Ok(ControlCommand::Order(OrderRequest::SubmitSnapMkt { offset, .. })) => offset,
             other => panic!("unexpected {other:?}"),
