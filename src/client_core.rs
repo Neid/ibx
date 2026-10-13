@@ -1320,6 +1320,9 @@ pub struct ClientCore {
     /// Orders that went out without outside RTH (warning 2109): their
     /// openOrder shows it off, as the reference's order record (ibx#486).
     rth_dropped: Mutex<HashSet<OrderId>>,
+    /// AccuDistr orders with post-only whose first openOrder was given
+    /// (ibx#622).
+    post_only_shown: Mutex<HashSet<OrderId>>,
     /// Orders the redirect precaution discarded (10311, 10329), until
     /// their Cancelled status (ibx#486).
     discarded: Mutex<HashSet<OrderId>>,
@@ -1830,6 +1833,7 @@ impl ClientCore {
             executions: Mutex::new(Vec::new()),
             client_id: AtomicI64::new(0),
             rth_dropped: Mutex::new(HashSet::new()),
+            post_only_shown: Mutex::new(HashSet::new()),
             discarded: Mutex::new(HashSet::new()),
             last_reports: Mutex::new(HashMap::new()),
             order_commissions: Mutex::new(HashMap::new()),
@@ -3873,6 +3877,15 @@ impl ClientCore {
                 if flags & crate::bridge::DROPPED_IGNORE_OPEN_AUCTION != 0 { order.ignore_open_auction = false; }
                 if flags & crate::bridge::DROPPED_DEACTIVATE != 0 { order.deactivate = false; }
                 if flags & crate::bridge::DROPPED_SEEK_PRICE_IMPROVEMENT != 0 { order.seek_price_improvement = false; }
+                // Post-only is not sent with AccuDistr (ibx#607): the first
+                // openOrder shows it as placed, the next ones as the server
+                // has the order, without it (the reference 10.51, paper,
+                // pre-market 12/10 and 13/10/2026; ibx#622).
+                if order.post_only && order.algo_strategy.eq_ignore_ascii_case("AccuDistr")
+                    && !self.post_only_shown.lock().unwrap().insert(order_id)
+                {
+                    order.post_only = false;
+                }
                 let modified = self.modified_orders.lock().unwrap().contains(&order_id);
                 session_order_fields(&mut order, &shared.reference.user_name(), modified);
                 (t.contract, order, t.last_fill_price, client_id)

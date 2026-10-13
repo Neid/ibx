@@ -7474,6 +7474,25 @@ fn an_order_with_unset_fields_goes_out_and_shows_as_the_reference() {
     assert_eq!((o.min_qty, o.trailing_percent, o.cash_qty, o.filled_quantity), (i32::MAX, f64::MAX, f64::MAX, 0.0));
 }
 
+// ibx#622 (the reference 10.51, paper, pre-market 12/10 and 13/10/2026):
+// an AccuDistr order with post-only, which is not sent with it, shows
+// postOnly on its first openOrder and not on the next ones; another
+// post-only order keeps it.
+#[test]
+fn an_accu_distr_order_shows_post_only_on_its_first_open_order_only() {
+    let (client, _rx, shared) = test_client();
+    shared.market.set_instrument_count(1);
+    let base = Order { action: "BUY".into(), total_quantity: 1.0, order_type: "LMT".into(), lmt_price: 1.0,
+        post_only: true, outside_rth: true, ..Default::default() };
+    let accu = Order { algo_strategy: "AccuDistr".into(),
+        algo_params: vec![TagValue { tag: "componentSize".into(), value: "1".into() }], ..base.clone() };
+    client.place_order(5, &spy(), &accu).unwrap();
+    client.place_order(6, &spy(), &base).unwrap();
+    let post_only = |id| client.core.order_view(id, &client.shared, "Submitted").expect("tracked").order.post_only;
+    assert_eq!([post_only(5), post_only(5), post_only(5)], [true, false, false]);
+    assert_eq!([post_only(6), post_only(6)], [true, true]);
+}
+
 // ibx#420: reqManagedAccts answers every account of the logon's account
 // list, in logon order, comma separated (the protobuf form of the
 // reference's MANAGED_ACCTS at server version 214); the logon account
