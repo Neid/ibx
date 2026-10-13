@@ -1103,9 +1103,16 @@ impl HotLoop {
     }
 
     /// The round lot of a contract's depth sizes: its round lot when the
-    /// session counts in round lots, as its top of book (#451).
+    /// session counts in round lots and the server sends lots, as its top
+    /// of book (#451); 1 when the sizes come in shares, as with the mark
+    /// of the reference 10.51 (ibx#663; observed 13/10/2026, AAPL book in
+    /// shares on the reference, multiplied by its lot on ibx).
     fn depth_lot(&self, con_id: i64) -> i64 {
-        if self.context.scale_us_lots { self.context.round_lots.get(&con_id).copied().unwrap_or(1) } else { 1 }
+        if self.context.scale_us_lots {
+            self.context.market.size_lot(self.context.round_lots.get(&con_id).copied().unwrap_or(1))
+        } else {
+            1
+        }
     }
 
     /// The farm of the top-of-book route of a contract on an exchange
@@ -3957,6 +3964,19 @@ mod tests {
         let errors = shared.reference.drain_historical_errors();
         assert_eq!(errors.len(), 1);
         assert_eq!((errors[0].0, errors[0].1), (3, 162));
+    }
+
+    // ibx#663: the book's sizes follow the top of book's: in shares with
+    // the 10.51 mark, in the contract's lot in the 10.40 form.
+    #[test]
+    fn depth_sizes_take_the_lot_only_in_the_lot_form() {
+        let shared = Arc::new(SharedState::new());
+        let mut engine = HotLoop::new(shared, None, None);
+        engine.set_scale_us_lots(true);
+        engine.context.round_lots.insert(265598, 40);
+        assert_eq!(engine.depth_lot(265598), 1);
+        engine.set_lot_sizes(true);
+        assert_eq!(engine.depth_lot(265598), 40);
     }
 
     #[test]
