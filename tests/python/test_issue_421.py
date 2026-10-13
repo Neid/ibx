@@ -44,6 +44,7 @@ def connected(features="APIELOG,SECDEFTA", offset=None, years=199, cutoff=None, 
 def test_current_time_adds_the_logon_offset():
     c, w = connected(offset=60_000)
     c.req_current_time()
+    c._test_dispatch_once()
     (kind, t), = w.events
     assert kind == "time"
     assert abs(t - int(time.time()) - 60) <= 1

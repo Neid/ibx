@@ -79,13 +79,16 @@ def test_order_ids_are_the_highest_used_plus_one():
     next_order_id reserves the id it gives."""
     c, w = connected()
     c.req_ids()
+    c._test_dispatch_once()
     c._test_note_reported_order_id(0, 68)
     c._test_note_reported_order_id(5, 500)
     c.req_ids()
+    c._test_dispatch_once()
     assert [e for e in w.events if e[0] == "next_valid_id"] == [("next_valid_id", 1), ("next_valid_id", 69)]
     assert (c.next_order_id(), c.next_order_id()) == (69, 70)
     w.events.clear()
     c.req_ids()
+    c._test_dispatch_once()
     assert w.events == [("next_valid_id", 69)]
 
 

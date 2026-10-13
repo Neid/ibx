@@ -35,15 +35,19 @@ def refusal(cls, cause):
 def test_query_gives_the_seven_groups():
     c, w = connected()
     c.query_display_groups(1)
+    c._test_dispatch_once()
     assert w.events == [("list", 1, "1|2|3|4|5|6|7")]
 
 
 def test_subscribe_answers_none_at_once_and_refuses_bad_input():
     c, w = connected()
     c.subscribe_to_group_events(2, 1)
+    c._test_dispatch_once()
     for group in (9, 0, 8, -1):
         c.subscribe_to_group_events(3, group)
+        c._test_dispatch_once()
     c.subscribe_to_group_events(2, 1)
+    c._test_dispatch_once()
     assert w.events == [
         ("updated", 2, "none"),
         refusal("bX", "Invalid window group ID=9"),
@@ -57,13 +61,20 @@ def test_subscribe_answers_none_at_once_and_refuses_bad_input():
 def test_update_needs_a_subscription_and_a_contract():
     c, w = connected()
     c.update_display_group(8, "265598@SMART")
+    c._test_dispatch_once()
     c.subscribe_to_group_events(2, 1)
+    c._test_dispatch_once()
     w.events.clear()
     c.update_display_group(2, "none")
+    c._test_dispatch_once()
     c.update_display_group(2, "abc@SMART")
+    c._test_dispatch_once()
     c.update_display_group(2, "0@SMART")
+    c._test_dispatch_once()
     c.update_display_group(2, "265598@SMART|foo=1")
+    c._test_dispatch_once()
     c.update_display_group(2, "265598@SMART|action=Foo")
+    c._test_dispatch_once()
     assert w.events == [
         refusal("bZ", "Request with ID=2 failed with invalid contract info=abc@SMART, expected format 'contractId@exchange'"),
         refusal("bZ", "Request with ID=2 failed with invalid contract info=0@SMART: conid or excahge are missing, "
@@ -74,6 +85,7 @@ def test_update_needs_a_subscription_and_a_contract():
     w.events.clear()
     # A valid update gives nothing at once.
     c.update_display_group(2, "265598@SMART")
+    c._test_dispatch_once()
     assert w.events == []
 
 
@@ -86,9 +98,13 @@ def test_update_without_subscription_is_refused():
 def test_unsubscribe_of_an_unknown_request_id_is_refused():
     c, w = connected()
     c.unsubscribe_from_group_events(9)
+    c._test_dispatch_once()
     c.subscribe_to_group_events(2, 1)
+    c._test_dispatch_once()
     c.unsubscribe_from_group_events(2)
+    c._test_dispatch_once()
     c.unsubscribe_from_group_events(2)
+    c._test_dispatch_once()
     assert w.events == [
         refusal("bY", "Subscription for Group Events with request ID=9 wasn't found."),
         ("updated", 2, "none"),

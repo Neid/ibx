@@ -196,15 +196,19 @@ fn req_ids_calls_wrapper() {
     let (client, rx, shared) = test_client();
     let mut w = RecordingWrapper::default();
     client.req_ids(&mut w);
+    client.process_msgs(&mut w);
     assert_eq!(w.events, ["next_valid_id:1"]);
     shared.orders.note_reported_order_id(0, 68);
     client.req_ids(&mut w);
+    client.process_msgs(&mut w);
     client.req_ids(&mut w);
+    client.process_msgs(&mut w);
     shared.market.set_instrument_count(1);
     let lmt = Order { action: "BUY".into(), total_quantity: 1.0, order_type: "LMT".into(), lmt_price: 1.0, ..Default::default() };
     client.place_order(80, &spy(), &lmt).unwrap();
     while rx.try_recv().is_ok() {}
     client.req_ids(&mut w);
+    client.process_msgs(&mut w);
     assert_eq!(w.events, ["next_valid_id:1", "next_valid_id:69", "next_valid_id:69", "next_valid_id:81"]);
     assert_eq!(client.next_order_id(), 81);
 }
@@ -2544,6 +2548,7 @@ fn req_positions_delivers_via_wrapper() {
     shared.portfolio.set_position_info(PositionInfo { con_id: 756733, position_fixed: (-50) as i64 * crate::types::QTY_SCALE, avg_cost: 400 * PRICE_SCALE, ..Default::default() });
     let mut w = RecordingWrapper::default();
     client.req_positions(&mut w);
+    client.process_msgs(&mut w);
     let positions: Vec<_> = w.events.iter().filter(|e| e.starts_with("position:")).collect();
     assert_eq!(positions.len(), 2);
     assert!(w.events.last().unwrap() == "position_end");
@@ -2555,6 +2560,7 @@ fn req_positions_empty_still_calls_position_end() {
     shared.portfolio.set_account_download_complete();
     let mut w = RecordingWrapper::default();
     client.req_positions(&mut w);
+    client.process_msgs(&mut w);
     assert_eq!(w.events, vec!["position_end"]);
 }
 
@@ -3526,8 +3532,11 @@ fn req_market_rule_answers_known_rules_and_refuses_others() {
     ]);
     let mut w = RecordingWrapper::default();
     client.req_market_rule(109, &mut w);
+    client.process_msgs(&mut w);
     client.req_market_rule(999999, &mut w);
+    client.process_msgs(&mut w);
     client.req_market_rule(5, &mut w);
+    client.process_msgs(&mut w);
     assert_eq!(w.events, vec![
         "market_rule:109:2".to_string(),
         "error:-1:322:Error processing request.-'cd' : cause - Market rule with id = 999999 is missing".to_string(),
@@ -3544,6 +3553,7 @@ fn an_error_answered_by_the_client_goes_to_the_event_channel() {
     shared.attach_event_channel(&tx);
     let mut w = RecordingWrapper::default();
     client.req_market_rule(999999, &mut w);
+    client.process_msgs(&mut w);
     assert_eq!(w.events.len(), 1);
     match events.try_recv() {
         Ok(crate::bridge::Event::Error { req_id: -1, code: 322, message }) => assert!(message.ends_with("999999 is missing")),
@@ -4790,6 +4800,7 @@ fn commission_report_comes_from_the_commission_frame() {
 
     let mut w = RecordingWrapper::default();
     client.req_executions(1, &crate::api::types::ExecutionFilter::default(), &mut w);
+    client.process_msgs(&mut w);
     assert_eq!(w.events, [
         "exec_details:1:BOT:100",
         "commission:0000e0d5.6ab5f36f.01.01:1.0003:USD",
@@ -4838,6 +4849,7 @@ fn an_untracked_execution_is_returned_by_req_executions_only() {
 
     let mut w = RecordingWrapper::default();
     client.req_executions(1, &crate::api::types::ExecutionFilter::default(), &mut w);
+    client.process_msgs(&mut w);
     assert_eq!(w.events, [
         "exec_details:1:BOT:100",
         "commission:0000e0d5.6ab5f36f.01.01:1.0003:USD",
@@ -4877,6 +4889,7 @@ fn req_executions_without_a_commission_report_sends_the_execution_only() {
     client.process_msgs(&mut RecordingWrapper::default());
     let mut w = RecordingWrapper::default();
     client.req_executions(1, &crate::api::types::ExecutionFilter::default(), &mut w);
+    client.process_msgs(&mut w);
     assert_eq!(w.events, ["exec_details:1:BOT:100", "exec_details_end:1"]);
 }
 
@@ -4910,6 +4923,7 @@ fn req_executions_sends_executions_then_reports_with_no_lock_held() {
     }
     let mut w = Reentrant { core: &client.core, events: Vec::new() };
     client.req_executions(1, &crate::api::types::ExecutionFilter::default(), &mut w);
+    client.process_msgs(&mut w);
     assert_eq!(w.events, [
         "exec:0000e0d5.6ab5f36f.01.01:true",
         "exec:0000e0d5.6ab5f370.01.01:true",
@@ -4986,6 +5000,7 @@ fn exec_details_of_an_own_order_takes_the_tracked_order_ref() {
 fn filter_count(client: &EClient, filter: crate::api::types::ExecutionFilter) -> usize {
     let mut w = ExecRecorder::default();
     client.req_executions(3, &filter, &mut w);
+    client.process_msgs(&mut w);
     w.execs.len()
 }
 
@@ -5354,6 +5369,7 @@ fn req_positions_sends_a_row_on_each_change() {
     shared.portfolio.set_account_download_complete();
     let mut w = RecordingWrapper::default();
     client.req_positions(&mut w);
+    client.process_msgs(&mut w);
     assert_eq!(w.events, vec!["position_end"]);
 
     shared.portfolio.set_position_info(aapl_position(100, 33625 * PRICE_SCALE / 100));
@@ -5471,6 +5487,7 @@ fn a_key_also_in_the_ledger_is_a_ledger_key() {
     });
     let mut w = MultiRec::default();
     client.req_account_updates_multi(9002, "", "", true, &mut w);
+    client.process_msgs(&mut w);
     assert_eq!(w.events, ["acct:9002::AccruedCash:1893.5:USD", "acct_end:9002"]);
 }
 
@@ -5480,8 +5497,10 @@ fn account_updates_multi_carries_its_request_id_and_model_code() {
     seed_multi_account(&shared);
     let mut w = MultiRec::default();
     client.req_account_updates_multi(9001, "", "Core", false, &mut w);
+    client.process_msgs(&mut w);
     client.req_account_updates_multi(9002, "", "", true, &mut w);
     client.req_account_updates_multi(9001, "", "", false, &mut w);
+    client.process_msgs(&mut w);
     assert_eq!(w.events, [
         "acct:9001:Core:NetLiquidation:953633.06:USD",
         "acct:9001:Core:CashBalance:899133.4993:BASE",
@@ -5512,6 +5531,7 @@ fn positions_multi_carries_its_request_id_and_updates() {
     shared.portfolio.set_position_info(aapl_position(100, 336 * PRICE_SCALE));
     let mut w = MultiRec::default();
     client.req_positions_multi(9003, "", "Core", &mut w);
+    client.process_msgs(&mut w);
     assert_eq!(w.events, ["pos:9003:Core:265598:100", "pos_end:9003"]);
 
     shared.portfolio.set_position_info(aapl_position(101, 336 * PRICE_SCALE));
@@ -5741,6 +5761,7 @@ fn a_forgotten_order_leaves_without_callbacks() {
     client.process_msgs(&mut w);
     assert!(w.events.is_empty(), "no callback: {:?}", w.events);
     client.req_open_orders(&mut w);
+    client.process_msgs(&mut w);
     assert_eq!(w.events, vec!["open_order_end".to_string()]);
 }
 
@@ -5757,8 +5778,11 @@ fn open_order_requests_wait_for_the_order_replay() {
     shared.orders.set_open_orders_held(true);
     let mut w = RecordingWrapper::default();
     client.req_open_orders(&mut w);
+    client.process_msgs(&mut w);
     client.req_open_orders(&mut w);
+    client.process_msgs(&mut w);
     client.req_all_open_orders(&mut w);
+    client.process_msgs(&mut w);
     client.process_msgs(&mut w);
     assert!(w.events.is_empty(), "no answer during the outage: {:?}", w.events);
 
@@ -5783,6 +5807,7 @@ fn open_order_requests_wait_for_the_order_replay() {
     // Answered at once again when the link is up.
     let mut w = RecordingWrapper::default();
     client.req_open_orders(&mut w);
+    client.process_msgs(&mut w);
     assert_eq!(w.events.last().map(String::as_str), Some("open_order_end"));
     client.process_msgs(&mut w);
     assert_eq!(w.events.iter().filter(|e| *e == "open_order_end").count(), 1);
@@ -5851,6 +5876,7 @@ fn an_execution_of_another_clients_order_gives_no_callback() {
     assert!(w.events.iter().all(|e| !e.starts_with("exec") && !e.starts_with("commission")), "{:?}", w.events);
     let mut w = RecordingWrapper::default();
     client.req_executions(4, &Default::default(), &mut w);
+    client.process_msgs(&mut w);
     assert!(w.events.iter().any(|e| e.starts_with("exec_details")), "{:?}", w.events);
 }
 
@@ -6732,6 +6758,7 @@ fn req_current_time_adds_the_logon_clock_offset() {
     shared.reference.clock().set(60_000);
     let mut w = Time::default();
     client.req_current_time(&mut w);
+    client.process_msgs(&mut w);
     let local = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64;
     assert_eq!(w.0.len(), 1);
     assert!((w.0[0] - local - 60).abs() <= 1, "{} vs local {}", w.0[0], local);
@@ -6750,6 +6777,7 @@ fn req_current_time_in_millis_adds_the_logon_clock_offset() {
     shared.reference.clock().set(60_000);
     let mut w = Time::default();
     client.req_current_time_in_millis(&mut w);
+    client.process_msgs(&mut w);
     let local = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as i64;
     assert_eq!(w.0.len(), 1);
     assert!((w.0[0] - local - 60_000).abs() <= 1_000, "{} vs local {}", w.0[0], local);
@@ -7379,10 +7407,13 @@ fn managed_accounts_are_the_logon_account_list() {
     let (client, _rx, shared) = test_client();
     let mut w = Accounts::default();
     client.req_managed_accts(&mut w);
+    client.process_msgs(&mut w);
     shared.reference.set_managed_accounts(crate::control::logon::managed_accounts("DUXXXXXX2/{alias},DUXXXXXX1/{alias}"));
     client.req_managed_accts(&mut w);
+    client.process_msgs(&mut w);
     shared.reference.set_managed_accounts(crate::control::logon::managed_accounts("DUXXXXXXX"));
     client.req_managed_accts(&mut w);
+    client.process_msgs(&mut w);
     assert_eq!(w.0, ["DU123", "DUXXXXXX2,DUXXXXXX1", "DUXXXXXXX"]);
 }
 
@@ -7471,12 +7502,17 @@ fn display_group_requests_as_the_reference() {
     let mut w = RecordingWrapper::default();
 
     client.query_display_groups(1, &mut w);
+    client.process_msgs(&mut w);
     client.subscribe_to_group_events(2, 1, &mut w);
+    client.process_msgs(&mut w);
     for group in [9, 0, 8, -1] {
         client.subscribe_to_group_events(3, group, &mut w);
+        client.process_msgs(&mut w);
     }
     client.subscribe_to_group_events(2, 1, &mut w);
+    client.process_msgs(&mut w);
     client.subscribe_to_group_events(7, 1, &mut w);
+    client.process_msgs(&mut w);
     assert_eq!(w.events, [
         "display_group_list:1:1|2|3|4|5|6|7".to_string(),
         "display_group_updated:2:none".to_string(),
@@ -7520,4 +7556,31 @@ fn display_group_requests_as_the_reference() {
         &refusal("bZ", "Request with ID=2 failed since request ID wasn't found."),
     ]);
     assert!(!w.events.iter().any(|e| e.starts_with("display_group")), "{:?}", w.events);
+}
+
+// ibx#532: the answers of different queues come in the order they were
+// written, and an answer the client makes itself after the answers
+// written before it, never inside the request.
+#[test]
+fn answers_come_in_the_order_written_across_queues_and_after_them_the_clients_own() {
+    #[derive(Default)]
+    struct Seen(Vec<String>);
+    impl Wrapper for Seen {
+        fn error(&mut self, req_id: i64, code: i64, _msg: &str, _json: &str) { self.0.push(format!("error {req_id} {code}")); }
+        fn contract_details_end(&mut self, req_id: i64) { self.0.push(format!("end {req_id}")); }
+        fn current_time(&mut self, _time: i64) { self.0.push("time".into()); }
+        fn news_providers(&mut self, _providers: &[crate::types::NewsProvider]) { self.0.push("providers".into()); }
+    }
+    let (client, _rx, shared) = test_client();
+    let mut w = Seen::default();
+    shared.reference.push_contract_details_end(1);
+    shared.reference.push_historical_error(2, 162, "x".into());
+    shared.orders.push_order_error(3, 200, "y".into());
+    shared.reference.push_contract_details_end(4);
+    client.req_current_time(&mut w);
+    assert!(w.0.is_empty(), "never inside the request: {:?}", w.0);
+    shared.push_connection_notice(1100, "z".into());
+    client.req_news_providers(&mut w);
+    client.process_msgs(&mut w);
+    assert_eq!(w.0, ["end 1", "error 2 162", "error 3 200", "end 4", "time", "error -1 1100", "providers"]);
 }

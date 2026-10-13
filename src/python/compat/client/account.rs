@@ -126,6 +126,8 @@ impl EClient {
         // A subscription, as the reference (ibx#477): the snapshot and
         // position_end once the data is in, then a row on each change.
         self.core.subscribe_positions();
+        // From the event loop, at its place among the answers (ibx#532).
+        if self.later(|this, py| { let shared = this.shared_state()?; this.dispatch_positions(py, &shared) }) { return Ok(()); }
         self.dispatch_positions(py, &shared)
     }
 
@@ -184,6 +186,8 @@ impl EClient {
             shared.orders.push_order_error(req_id, code, message);
             return Ok(());
         }
+        // From the event loop, at its place among the answers (ibx#532).
+        if self.later(|this, py| { let shared = this.shared_state()?; this.dispatch_multi(py, &shared) }) { return Ok(()); }
         self.dispatch_multi(py, &shared)
     }
 
@@ -212,6 +216,8 @@ impl EClient {
             return Ok(());
         }
         self.core.subscribe_positions_multi(req_id, account, model_code);
+        // From the event loop, at its place among the answers (ibx#532).
+        if self.later(|this, py| { let shared = this.shared_state()?; this.dispatch_multi(py, &shared) }) { return Ok(()); }
         self.dispatch_multi(py, &shared)
     }
 

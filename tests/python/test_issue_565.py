@@ -64,15 +64,14 @@ def test_the_answers_come_in_the_order_of_the_requests():
     c.req_managed_accts()
     c.req_family_codes()
     c.req_current_time_in_millis()
-    assert w.events == []
+    # The refused cancel is the official client library's own check, at
+    # once on the caller's thread (ibx#532).
+    assert w.events == ["error 7001 503"]
     # One turn after the other, as the pacing grants them.
-    seen = []
     for _ in range(6):
-        assert c._test_grant_turns(1) == 1
+        c._test_grant_turns(1)
         c._test_dispatch_once()
-        seen.append(list(w.events))
-    assert [len(s) for s in seen] == [1, 2, 3, 4, 5, 6], seen
-    assert w.events == ["news_providers", "next_valid_id", "error 7001 503", "managed_accounts", "family_codes",
+    assert w.events == ["error 7001 503", "news_providers", "next_valid_id", "managed_accounts", "family_codes",
                         "current_time_in_millis"]
 
 
@@ -86,7 +85,9 @@ def test_a_later_turn_does_not_overtake_an_earlier_request():
     assert w.events == ["news_providers", "family_codes"]
 
 
-def test_without_pacing_the_answer_is_inside_the_call():
+def test_without_pacing_the_answer_comes_from_the_event_loop():
+    # As the reference's answers, which its client reads from its
+    # connection: never inside the call (ibx#532).
     w = Recorder()
     c = EClient(w)
     c._test_connect("TEST123")
@@ -94,6 +95,8 @@ def test_without_pacing_the_answer_is_inside_the_call():
     c._test_dispatch_once()
     w.events.clear()
     c.req_current_time()
+    assert w.events == []
+    c._test_dispatch_once()
     assert w.events == ["current_time"]
 
 

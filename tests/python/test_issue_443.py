@@ -36,6 +36,8 @@ def requests(c):
     c.req_wsh_event_data(2, data)
     c.cancel_wsh_meta_data(1)
     c.cancel_wsh_event_data(2)
+    # The answers come from the event loop (ibx#532).
+    c._test_dispatch_once()
 
 
 def test_no_source_is_not_allowed():
@@ -67,6 +69,7 @@ def test_subscribed_source_gets_the_failed_request_errors():
 def test_event_data_request_without_its_argument():
     c, w = connected([], [])
     c.req_wsh_event_data(3)
+    c._test_dispatch_once()
     assert w.events == [("error", 3, 10276, "News feed is not allowed.")]
 
 

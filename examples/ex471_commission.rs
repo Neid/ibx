@@ -103,10 +103,13 @@ fn main() {
 
     println!("\n=== req_executions");
     client.req_executions(9, &ExecutionFilter::default(), &mut w);
+    client.process_msgs(&mut w);
     println!("\n=== req_executions side=BUY");
     client.req_executions(10, &ExecutionFilter { side: "BUY".into(), ..Default::default() }, &mut w);
+    client.process_msgs(&mut w);
     println!("\n=== req_executions side=SELL");
     client.req_executions(11, &ExecutionFilter { side: "SELL".into(), ..Default::default() }, &mut w);
+    client.process_msgs(&mut w);
 
     let st = s.lock().unwrap();
     let matched = st.execs.iter().filter(|e| st.reports.iter().any(|(r, _, _)| r == *e)).count();

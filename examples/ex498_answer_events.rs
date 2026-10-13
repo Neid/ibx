@@ -36,7 +36,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     client.req_historical_ticks(5, &aapl, "20261009 10:00:00 US/Eastern", "", 10, "TRADES", true, false, &[])?;
     client.req_scanner_parameters()?;
     client.req_account_summary(6, "All", "NetLiquidation");
-    // Answered by the client itself: its error has no queue.
+    // Answered by the client itself, from process_msgs at its place (ibx#532).
     client.req_market_rule(999_999, &mut Quiet);
 
     let expected = [

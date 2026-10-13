@@ -133,6 +133,7 @@ fn global_cancel_reaches_orders_from_an_earlier_session() {
     // The listing only (the replay's reports gave openOrder already).
     probe.state.lock().unwrap().open.clear();
     client.req_all_open_orders(&mut probe);
+    client.process_msgs(&mut probe);
     let open = probe.state.lock().unwrap().open.clone();
     println!("  session 2: {} open order(s) listed: {:?}", open.len(), open);
     let listed: Vec<i64> = open.iter().map(|&(_, p)| p).collect();

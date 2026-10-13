@@ -50,6 +50,7 @@ def connected(offset=None):
 def test_current_time_in_millis_adds_the_logon_offset():
     c, w = connected(offset=60_000)
     c.req_current_time_in_millis()
+    c._test_dispatch_once()
     (kind, t), = w.events
     assert kind == "millis" and isinstance(t, int)
     assert abs(t - int(time.time() * 1000) - 60_000) <= 1_000

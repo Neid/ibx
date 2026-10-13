@@ -155,6 +155,7 @@ pub fn epoch_text(secs: i64, buf: &mut [u8; 24]) -> &str {
 }
 
 mod md_stream;
+pub(crate) mod inbox;
 pub use md_stream::{MdOut, StreamState};
 
 /// Security types and exchanges whose bid and ask auto-execution comes
@@ -1215,6 +1216,9 @@ pub struct ClientCore {
     md_joins_waiting: std::sync::atomic::AtomicUsize,
     /// The dispatch's list of market data callbacks, kept between calls.
     pub md_out: Mutex<Vec<MdOut>>,
+    /// The answers taken from the session's queues and not given yet,
+    /// given in the order they were written (ibx#532).
+    pub(crate) inbox: Mutex<inbox::Inbox>,
     /// The news provider key of each market data request with the news
     /// tick (ibx#444, ibx#458).
     pub md_news: Mutex<HashMap<i64, String>>,
@@ -1782,6 +1786,7 @@ impl ClientCore {
             md_reader: Mutex::new(md_stream::MdReader::new()),
             md_joins_waiting: std::sync::atomic::AtomicUsize::new(0),
             md_out: Mutex::new(Vec::with_capacity(64)),
+            inbox: Mutex::new(inbox::Inbox::default()),
             md_news: Mutex::new(HashMap::new()),
             md_top_off: Mutex::new(HashSet::new()),
             md_generic: Mutex::new(HashMap::new()),

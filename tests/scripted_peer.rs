@@ -175,6 +175,7 @@ fn an_order_of_an_earlier_session_keeps_its_order_id() {
     let (client, mut ccp, stop_tx, handle) = session(&shared);
     let mut ids = NextIds::default();
     client.req_ids(&mut ids);
+    client.process_msgs(&mut ids);
     let id = client.next_order_id();
     assert_eq!((ids.0.as_slice(), id), ([1].as_slice(), 1), "a client with no orders starts at 1");
     let spy = Contract {
@@ -189,6 +190,7 @@ fn an_order_of_an_earlier_session_keeps_its_order_id() {
     let is_order = |m: &Vec<u8>| parse_fields(m).iter().any(|(t, v)| *t == 35 && v == "D");
     let sent = ccp.messages_until(Duration::from_secs(5), |ms| ms.iter().any(is_order));
     client.req_ids(&mut ids);
+    client.process_msgs(&mut ids);
     assert_eq!(ids.0, [1, 2], "the placed id counts");
     stop_tx.send(ControlCommand::Shutdown).unwrap();
     handle.join().unwrap();
@@ -220,9 +222,11 @@ fn an_order_of_an_earlier_session_keeps_its_order_id() {
     assert_eq!(listing.open, [(id, perm)], "the replayed report: its order id and its permId");
     let mut ids = NextIds::default();
     client.req_ids(&mut ids);
+    client.process_msgs(&mut ids);
     assert_eq!((ids.0.as_slice(), client.next_order_id()), ([2].as_slice(), 2), "above the replayed order's id");
     listing.open.clear();
     client.req_all_open_orders(&mut listing);
+    client.process_msgs(&mut listing);
     let deadline = std::time::Instant::now() + Duration::from_secs(5);
     while !listing.end && std::time::Instant::now() < deadline {
         client.process_msgs(&mut listing);

@@ -70,7 +70,9 @@ def test_fa_on_non_fa_session_gives_321():
     c, w = make_client()
     c._test_connect()
     c.request_fa(1)
+    c._test_dispatch_once()
     c.replace_fa(5, 1, "<ListOfGroups/>")
+    c._test_dispatch_once()
     assert w.errors == [
         (2147483647, 321, "Error validating request.-'b9' : cause - FA data operations ignored for non FA customers."),
         (5, 321, "Error validating request.-'b1' : cause - FA data operations ignored for non FA customers."),
@@ -155,6 +157,7 @@ def test_req_smart_components_unknown_code_is_refused():
     c = EClient(w)
     c._test_connect()
     c.req_smart_components(1, "a]AMEX")
+    c._test_dispatch_once()
     assert w.req_id is None
     assert w.errors == [(1, 321, "Error validating request.-'V' : cause - Invalid BBO exchange/security type code")]
 
@@ -184,6 +187,7 @@ def test_req_soft_dollar_tiers_fires_callback():
     c = EClient(w)
     c._test_connect()
     c.req_soft_dollar_tiers(42)
+    c._test_dispatch_once()
     assert w.req_id == 42
     assert len(w.tiers) == 0  # Paper accounts return empty
 
@@ -211,6 +215,7 @@ def test_req_family_codes_fires_callback():
     c = EClient(w)
     c._test_connect()
     c.req_family_codes()
+    c._test_dispatch_once()
     # The callback fires with a list; a test connection has no server data.
     assert w.codes == []
 
@@ -302,6 +307,7 @@ def test_req_user_info_fires_callback():
     c = EClient(w)
     c._test_connect()
     c.req_user_info(7)
+    c._test_dispatch_once()
     assert w.req_id == 7
     assert w.white_branding_id == ""  # Empty on paper
 

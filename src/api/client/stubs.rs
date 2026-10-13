@@ -8,7 +8,7 @@ use super::EClient;
 
 impl EClient {
     /// The error of a refused display group request (ibx#424).
-    fn display_group_refused(&self, wrapper: &mut impl Wrapper, text: &str) {
+    fn display_group_refused(&self, wrapper: &mut (impl Wrapper + ?Sized), text: &str) {
         let (id, code) = crate::client_core::DISPLAY_GROUP_REFUSAL;
         self.local_error(wrapper, id, code, text);
     }
@@ -20,15 +20,16 @@ impl EClient {
     /// BBO exchange that market data made known (the `bboExchange` of
     /// `tick_req_params`); an unknown one gives error 321. When the map has
     /// not come yet, the answer comes from `process_msgs`, within 2 s.
-    pub fn req_smart_components(&self, req_id: i64, bbo_exchange: &str, wrapper: &mut impl Wrapper) {
+    pub fn req_smart_components(&self, req_id: i64, bbo_exchange: &str, _wrapper: &mut impl Wrapper) {
         // One API request for the pacing, whatever it sends (ibx#565).
         let _request = crate::engine::park::one_request();
         // Answered here: after the requests made before it (ibx#561).
         self.shared.command_clock().take_turn();
         if !crate::client_core::ClientCore::ids_fit("req_smart_components", &[req_id]) { return; }
         match self.core.req_smart_components(req_id, bbo_exchange, &self.shared) {
-            Some(Ok(components)) => wrapper.smart_components(req_id, &components),
-            Some(Err((code, msg))) => self.local_error(wrapper, req_id, code, &msg),
+            // Given by `process_msgs` at its place among the answers (ibx#532).
+            Some(Ok(components)) => self.later(move |_, wrapper| wrapper.smart_components(req_id, &components)),
+            Some(Err((code, msg))) => self.later(move |this, wrapper| this.local_error(wrapper, req_id, code, &msg)),
             None => {}
         }
     }
@@ -37,13 +38,13 @@ impl EClient {
 
     /// Request available news providers. Matches `reqNewsProviders` in C++.
     /// Gateway-local — returns provider list from init data.
-    pub fn req_news_providers(&self, wrapper: &mut impl Wrapper) {
+    pub fn req_news_providers(&self, _wrapper: &mut impl Wrapper) {
         // One API request for the pacing, whatever it sends (ibx#565).
         let _request = crate::engine::park::one_request();
         // Answered here: after the requests made before it (ibx#561).
         self.shared.command_clock().take_turn();
-        let providers = self.shared.reference.news_providers();
-        wrapper.news_providers(&providers);
+        // Given by `process_msgs` at its place among the answers (ibx#532).
+        self.later(|this, wrapper| wrapper.news_providers(&this.shared.reference.news_providers()));
     }
 
     // ── Server Time ──
@@ -51,25 +52,27 @@ impl EClient {
     /// Request current server time. Matches `reqCurrentTime` in C++.
     /// Answered locally, as the reference: the local clock plus the
     /// offset to the server clock of the logon (ibx#421).
-    pub fn req_current_time(&self, wrapper: &mut impl Wrapper) {
+    pub fn req_current_time(&self, _wrapper: &mut impl Wrapper) {
         // One API request for the pacing, whatever it sends (ibx#565).
         let _request = crate::engine::park::one_request();
         // Paced like every request: on the reference a current time
         // request made in a burst was answered at its turn (run of
         // 10/10/2026, ibx#561).
         self.shared.command_clock().take_turn();
-        wrapper.current_time(self.shared.reference.server_time_secs());
+        // Given by `process_msgs` at its place among the answers (ibx#532).
+        self.later(|this, wrapper| wrapper.current_time(this.shared.reference.server_time_secs()));
     }
 
     /// Request current server time in milliseconds. Matches
     /// `reqCurrentTimeInMillis` in C++. Answered locally from the clock of
     /// `req_current_time` (ibx#516).
-    pub fn req_current_time_in_millis(&self, wrapper: &mut impl Wrapper) {
+    pub fn req_current_time_in_millis(&self, _wrapper: &mut impl Wrapper) {
         // One API request for the pacing, whatever it sends (ibx#565).
         let _request = crate::engine::park::one_request();
         // As `req_current_time` (ibx#561).
         self.shared.command_clock().take_turn();
-        wrapper.current_time_in_millis(self.shared.reference.server_time_millis());
+        // Given by `process_msgs` at its place among the answers (ibx#532).
+        self.later(|this, wrapper| wrapper.current_time_in_millis(this.shared.reference.server_time_millis()));
     }
 
     // ── Requests a session of the reference does not have (ibx#516) ──
@@ -159,32 +162,36 @@ impl EClient {
 
     /// Query display groups. Matches `queryDisplayGroups` in C++.
     /// Gateway-local, as the reference (ibx#424): the fixed list of groups.
-    pub fn query_display_groups(&self, req_id: i64, wrapper: &mut impl Wrapper) {
+    pub fn query_display_groups(&self, req_id: i64, _wrapper: &mut impl Wrapper) {
         // One API request for the pacing, whatever it sends (ibx#565).
         let _request = crate::engine::park::one_request();
         // Answered here: after the requests made before it (ibx#561).
         self.shared.command_clock().take_turn();
         if !crate::client_core::ClientCore::ids_fit("query_display_groups", &[req_id]) { return; }
-        match crate::client_core::ClientCore::query_display_groups(req_id) {
+        let answer = crate::client_core::ClientCore::query_display_groups(req_id);
+        // Given by `process_msgs` at its place among the answers (ibx#532).
+        self.later(move |this, wrapper| match answer {
             Ok(groups) => wrapper.display_group_list(req_id, groups),
-            Err(text) => self.display_group_refused(wrapper, &text),
-        }
+            Err(text) => this.display_group_refused(wrapper, &text),
+        });
     }
 
     /// Subscribe to display group events. Matches `subscribeToGroupEvents`
     /// in C++. Gateway-local, as the reference (ibx#424): the contract of
     /// the group at once, `none` since no group has one; error 321 for a
     /// group outside 1 to 7 or a request id already subscribed.
-    pub fn subscribe_to_group_events(&self, req_id: i64, group_id: i32, wrapper: &mut impl Wrapper) {
+    pub fn subscribe_to_group_events(&self, req_id: i64, group_id: i32, _wrapper: &mut impl Wrapper) {
         // One API request for the pacing, whatever it sends (ibx#565).
         let _request = crate::engine::park::one_request();
         // Answered here: after the requests made before it (ibx#561).
         self.shared.command_clock().take_turn();
         if !crate::client_core::ClientCore::ids_fit("subscribe_to_group_events", &[req_id]) { return; }
-        match self.core.subscribe_to_group_events(req_id, group_id) {
+        let answer = self.core.subscribe_to_group_events(req_id, group_id);
+        // Given by `process_msgs` at its place among the answers (ibx#532).
+        self.later(move |this, wrapper| match answer {
             Ok(contract_info) => wrapper.display_group_updated(req_id, contract_info),
-            Err(text) => self.display_group_refused(wrapper, &text),
-        }
+            Err(text) => this.display_group_refused(wrapper, &text),
+        });
     }
 
     /// Unsubscribe from display group events. Matches
@@ -227,27 +234,27 @@ impl EClient {
     /// Request soft dollar tiers. Matches `reqSoftDollarTiers` in C++.
     /// Gateway-local — returns tiers parsed from CCP logon tag 6522, none
     /// when the logon has no tiers (ibx#480).
-    pub fn req_soft_dollar_tiers(&self, req_id: i64, wrapper: &mut impl Wrapper) {
+    pub fn req_soft_dollar_tiers(&self, req_id: i64, _wrapper: &mut impl Wrapper) {
         // One API request for the pacing, whatever it sends (ibx#565).
         let _request = crate::engine::park::one_request();
         // Answered here: after the requests made before it (ibx#561).
         self.shared.command_clock().take_turn();
         if !crate::client_core::ClientCore::ids_fit("req_soft_dollar_tiers", &[req_id]) { return; }
-        let tiers = self.shared.reference.soft_dollar_tiers();
-        wrapper.soft_dollar_tiers(req_id, &tiers);
+        // Given by `process_msgs` at its place among the answers (ibx#532).
+        self.later(move |this, wrapper| wrapper.soft_dollar_tiers(req_id, &this.shared.reference.soft_dollar_tiers()));
     }
 
     // ── Family Codes ──
 
     /// Request family codes. Matches `reqFamilyCodes` in C++.
     /// Gateway-local — returns codes parsed from CCP logon tag 6823.
-    pub fn req_family_codes(&self, wrapper: &mut impl Wrapper) {
+    pub fn req_family_codes(&self, _wrapper: &mut impl Wrapper) {
         // One API request for the pacing, whatever it sends (ibx#565).
         let _request = crate::engine::park::one_request();
         // Answered here: after the requests made before it (ibx#561).
         self.shared.command_clock().take_turn();
-        let codes = self.shared.reference.family_codes();
-        wrapper.family_codes(&codes);
+        // Given by `process_msgs` at its place among the answers (ibx#532).
+        self.later(|this, wrapper| wrapper.family_codes(&this.shared.reference.family_codes()));
     }
 
     // ── Server Log Level ──
@@ -271,14 +278,14 @@ impl EClient {
 
     /// Request user info. Matches `reqUserInfo` in C++.
     /// Gateway-local — returns whiteBrandingId from CCP logon.
-    pub fn req_user_info(&self, req_id: i64, wrapper: &mut impl Wrapper) {
+    pub fn req_user_info(&self, req_id: i64, _wrapper: &mut impl Wrapper) {
         // One API request for the pacing, whatever it sends (ibx#565).
         let _request = crate::engine::park::one_request();
         // Answered here: after the requests made before it (ibx#561).
         self.shared.command_clock().take_turn();
         if !crate::client_core::ClientCore::ids_fit("req_user_info", &[req_id]) { return; }
-        let id = self.shared.reference.white_branding_id();
-        wrapper.user_info(req_id, &id);
+        // Given by `process_msgs` at its place among the answers (ibx#532).
+        self.later(move |this, wrapper| wrapper.user_info(req_id, &this.shared.reference.white_branding_id()));
     }
 
     // ── WSH ──

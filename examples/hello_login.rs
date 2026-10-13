@@ -29,6 +29,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut wrapper = LoginWrapper::default();
     client.req_ids(&mut wrapper);
+    client.process_msgs(&mut wrapper);
 
     let next_id = wrapper.next_id.ok_or("did not receive next_valid_id")?;
     println!("logged in. account = {}, next_valid_id = {next_id}", client.account_id);

@@ -14,9 +14,9 @@ impl EClient {
     /// A subscription, as the reference (ibx#477): the snapshot and
     /// `position_end` once the position data is in, then one `position` row
     /// each time a position or its average cost changes, until
-    /// `cancel_positions`. What is ready now is sent through `wrapper`; the
-    /// rest comes through `process_msgs`. No wait in the caller's thread.
-    pub fn req_positions(&self, wrapper: &mut impl Wrapper) {
+    /// `cancel_positions`. Everything comes through `process_msgs`
+    /// (ibx#532). No wait in the caller's thread.
+    pub fn req_positions(&self, _wrapper: &mut impl Wrapper) {
         // One API request for the pacing, whatever it sends (ibx#565).
         let _request = crate::engine::park::one_request();
         // Answered here: after the requests made before it (ibx#561).
@@ -31,11 +31,12 @@ impl EClient {
             Ok(None) => {}
         }
         self.core.subscribe_positions();
-        self.dispatch_positions(wrapper);
+        // Given by `process_msgs` at its place among the answers (ibx#532).
+        self.later(|this, wrapper| this.dispatch_positions(wrapper));
     }
 
     /// Position rows of a running req_positions (ibx#477).
-    pub(crate) fn dispatch_positions(&self, wrapper: &mut impl Wrapper) {
+    pub(crate) fn dispatch_positions(&self, wrapper: &mut (impl Wrapper + ?Sized)) {
         let Some(batch) = self.core.prepare_positions(&self.shared, &self.account_id) else { return };
         for pi in &batch.rows {
             let ac = self.core.position_contract(pi.con_id, &self.shared);
@@ -165,12 +166,13 @@ impl EClient {
     /// Every account of the logon's account list, in logon order, comma
     /// separated, as the reference (ibx#420); the logon account when the
     /// logon had no list.
-    pub fn req_managed_accts(&self, wrapper: &mut impl Wrapper) {
+    pub fn req_managed_accts(&self, _wrapper: &mut impl Wrapper) {
         // One API request for the pacing, whatever it sends (ibx#565).
         let _request = crate::engine::park::one_request();
         // Answered here: after the requests made before it (ibx#561).
         self.shared.command_clock().take_turn();
-        wrapper.managed_accounts(&self.shared.reference.managed_accounts_text(&self.account_id));
+        // Given by `process_msgs` at its place among the answers (ibx#532).
+        self.later(|this, wrapper| wrapper.managed_accounts(&this.shared.reference.managed_accounts_text(&this.account_id)));
     }
 
     /// Request account updates for multiple accounts/models. Matches `reqAccountUpdatesMulti` in C++.
@@ -180,20 +182,20 @@ impl EClient {
     /// each through `account_update_multi` with the request id and model
     /// code, then `account_update_multi_end`; then the rows that change,
     /// until `cancel_account_updates_multi`. A request id already running
-    /// gives error 322. What is ready is sent through `wrapper` at once; the
-    /// rest comes through `process_msgs`.
+    /// gives error 322. Everything comes through `process_msgs` (ibx#532).
     pub fn req_account_updates_multi(
         &self, req_id: i64, account: &str, model_code: &str, ledger_and_nlv: bool,
-        wrapper: &mut impl Wrapper,
+        _wrapper: &mut impl Wrapper,
     ) {
         // One API request for the pacing, whatever it sends (ibx#565).
         let _request = crate::engine::park::one_request();
         if !crate::client_core::ClientCore::ids_fit("req_account_updates_multi", &[req_id]) { return; }
+        // Given by `process_msgs` at its place among the answers (ibx#532).
         if let Err((code, message)) = self.core.subscribe_account_multi(req_id, account, model_code, ledger_and_nlv) {
-            self.local_error(wrapper, req_id, code, &message);
+            self.later(move |this, wrapper| this.local_error(wrapper, req_id, code, &message));
             return;
         }
-        self.dispatch_multi(wrapper);
+        self.later(|this, wrapper| this.dispatch_multi(wrapper));
     }
 
     /// Cancel multi-account updates. Matches `cancelAccountUpdatesMulti` in C++.
@@ -212,7 +214,7 @@ impl EClient {
     /// `cancel_positions_multi`.
     pub fn req_positions_multi(
         &self, req_id: i64, account: &str, model_code: &str,
-        wrapper: &mut impl Wrapper,
+        _wrapper: &mut impl Wrapper,
     ) {
         // One API request for the pacing, whatever it sends (ibx#565).
         let _request = crate::engine::park::one_request();
@@ -225,7 +227,8 @@ impl EClient {
             return;
         }
         self.core.subscribe_positions_multi(req_id, account, model_code);
-        self.dispatch_multi(wrapper);
+        // Given by `process_msgs` at its place among the answers (ibx#532).
+        self.later(|this, wrapper| this.dispatch_multi(wrapper));
     }
 
     /// Cancel multi-account positions. Matches `cancelPositionsMulti` in C++.
@@ -237,7 +240,7 @@ impl EClient {
     }
 
     /// Rows of the running multi-account requests (ibx#476).
-    pub(crate) fn dispatch_multi(&self, wrapper: &mut impl Wrapper) {
+    pub(crate) fn dispatch_multi(&self, wrapper: &mut (impl Wrapper + ?Sized)) {
         for batch in self.core.prepare_account_multi(&self.shared) {
             let account = if batch.account.is_empty() { self.account_id.as_str() } else { batch.account.as_str() };
             for row in &batch.rows {

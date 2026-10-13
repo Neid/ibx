@@ -534,6 +534,7 @@ fn account_req_positions_reflects_fills() {
     // before the account download is complete.
     let mut w = RecordingWrapper::default();
     client.req_positions(&mut w);
+    client.process_msgs(&mut w);
     assert!(w.events.is_empty(), "{:?}", w.events);
 
     shared.portfolio.set_account_download_complete();
@@ -967,6 +968,7 @@ fn req_completed_orders_drains_and_dispatches() {
 
     let mut w = RecordingWrapper::default();
     client.req_completed_orders(&mut w);
+    client.process_msgs(&mut w);
 
     assert_eq!(w.events.iter().filter(|e| *e == "completed_order").count(), 2);
     assert!(w.events.iter().any(|e| e == "completed_orders_end"));
@@ -974,6 +976,7 @@ fn req_completed_orders_drains_and_dispatches() {
     // Second call should return empty (already drained)
     w.events.clear();
     client.req_completed_orders(&mut w);
+    client.process_msgs(&mut w);
     assert_eq!(w.events.iter().filter(|e| *e == "completed_order").count(), 0);
     assert!(w.events.iter().any(|e| e == "completed_orders_end"));
 }
@@ -983,6 +986,7 @@ fn req_completed_orders_empty_still_fires_end() {
     let (client, _rx, _shared) = test_client();
     let mut w = RecordingWrapper::default();
     client.req_completed_orders(&mut w);
+    client.process_msgs(&mut w);
     assert_eq!(w.events, vec!["completed_orders_end"]);
 }
 

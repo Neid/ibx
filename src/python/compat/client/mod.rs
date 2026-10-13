@@ -69,8 +69,18 @@ pub struct EClient {
     /// disconnect() (ibx#426).
     pub(crate) connection_time: Mutex<Option<String>>,
     /// Requests the client answers itself, each waiting for its turn among
-    /// the paced requests; the event loop answers them (ibx#565).
-    pub(crate) local_calls: Mutex<std::collections::VecDeque<(crossbeam_channel::Receiver<()>, LocalCall)>>,
+    /// the paced requests; the event loop answers them (ibx#565), at their
+    /// place among the answers (ibx#532).
+    pub(crate) local_calls: Mutex<std::collections::VecDeque<PendingCall>>,
+}
+
+/// A request the client answers itself: its turn when the requests are
+/// paced, and once the turn has come its place among the answers of the
+/// session (ibx#532).
+pub(crate) struct PendingCall {
+    ticket: Option<crossbeam_channel::Receiver<()>>,
+    at: Option<u64>,
+    call: LocalCall,
 }
 
 /// A request the client answers itself, to run when its turn has come.
@@ -353,48 +363,67 @@ impl EClient {
     }
 
     /// Clone the shared state Arc, or return "Not connected".
-    /// A request the client answers itself (ibx#561, ibx#565): on a paced
-    /// session the call returns at once and `call` runs from the event
-    /// loop when the turn of the request has come, as the reference
-    /// answers from its reader thread. True when the answer was put off;
-    /// false when the caller answers now (no pacing, or this is the event
-    /// loop answering).
+    /// A request the client answers itself (ibx#561, ibx#565, ibx#532):
+    /// the call returns at once and `call` runs from the event loop, as the
+    /// reference answers from its reader thread: after the answers written
+    /// before the request's turn (its turn among the paced requests, or at
+    /// once when they are not paced). True when the answer was put off;
+    /// false when the caller answers now (the event loop answering, or not
+    /// connected).
     pub(crate) fn later(&self, call: impl for<'py> FnOnce(&EClient, Python<'py>) -> PyResult<()> + Send + 'static) -> bool {
         if ANSWERING.with(|a| a.get()) {
             return false;
         }
         let Ok(shared) = self.shared_state() else { return false };
-        match shared.command_clock().turn_ticket() {
-            Some(ticket) => {
-                self.local_calls.lock().unwrap().push_back((ticket, Box::new(call)));
-                true
+        let (ticket, at) = match shared.command_clock().turn_ticket() {
+            Some(ticket) => (Some(ticket), None),
+            None => (None, Some(shared.answer_stamp())),
+        };
+        self.local_calls.lock().unwrap().push_back(PendingCall { ticket, at, call: Box::new(call) });
+        shared.notify();
+        true
+    }
+
+    /// The requests whose turn has come, in the order they were made, each
+    /// with its place among the answers. Called by the event loop before
+    /// it reads the answer clock, so that these places are below it.
+    pub(crate) fn ready_local_calls(&self, shared: &SharedState) -> std::collections::VecDeque<(u64, LocalCall)> {
+        let mut calls = self.local_calls.lock().unwrap();
+        let mut ready = std::collections::VecDeque::new();
+        while let Some(front) = calls.front_mut() {
+            if front.at.is_none() {
+                // The turn has come, or the engine stopped.
+                if front.ticket.as_ref().is_some_and(|t| matches!(t.try_recv(), Err(crossbeam_channel::TryRecvError::Empty))) {
+                    break;
+                }
+                front.at = Some(shared.answer_stamp());
             }
-            None => false,
+            let call = calls.pop_front().unwrap();
+            ready.push_back((call.at.unwrap_or(0), call.call));
+        }
+        ready
+    }
+
+    /// Requests a pass did not answer (an interrupt in a callback): first
+    /// again, with their places.
+    pub(crate) fn put_back_local_calls(&self, left: std::collections::VecDeque<(u64, LocalCall)>) {
+        if left.is_empty() {
+            return;
+        }
+        let mut calls = self.local_calls.lock().unwrap();
+        for (at, call) in left.into_iter().rev() {
+            calls.push_front(PendingCall { ticket: None, at: Some(at), call });
         }
     }
 
-    /// Answer the requests whose turn has come, in the order they were
-    /// made. Called by the event loop.
-    pub(crate) fn answer_local_calls(&self, py: Python<'_>) -> PyResult<()> {
-        loop {
-            let call = {
-                let mut calls = self.local_calls.lock().unwrap();
-                match calls.front() {
-                    // The turn has come, or the engine stopped.
-                    Some((ticket, _)) if !matches!(ticket.try_recv(), Err(crossbeam_channel::TryRecvError::Empty)) => {
-                        calls.pop_front().map(|(_, call)| call)
-                    }
-                    _ => None,
-                }
-            };
-            let Some(call) = call else { return Ok(()) };
-            // Its turn has come: what it sends now is not paced again.
-            let _answering = crate::engine::park::not_a_request();
-            ANSWERING.with(|a| a.set(true));
-            let done = call(self, py);
-            ANSWERING.with(|a| a.set(false));
-            done?;
-        }
+    /// Answer a request whose turn has come. Called by the event loop.
+    pub(crate) fn answer_local_call(&self, py: Python<'_>, call: LocalCall) -> PyResult<()> {
+        // Its turn has come: what it sends now is not paced again.
+        let _answering = crate::engine::park::not_a_request();
+        ANSWERING.with(|a| a.set(true));
+        let done = call(self, py);
+        ANSWERING.with(|a| a.set(false));
+        done
     }
 
     pub(crate) fn shared_state(&self) -> PyResult<Arc<SharedState>> {

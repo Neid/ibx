@@ -156,7 +156,13 @@ pub struct EClient {
     pub(crate) token_type: String,
     /// Connection time, fixed when the session started (ibx#426).
     pub(crate) connection_time: String,
+    /// The answers this client makes itself, each with its place among
+    /// the session's answers; `process_msgs` gives them there (ibx#532).
+    pub(crate) local: Mutex<std::collections::VecDeque<(u64, LocalAnswer)>>,
 }
+
+/// An answer the client makes itself (ibx#532).
+pub(crate) type LocalAnswer = Box<dyn FnOnce(&EClient, &mut dyn crate::api::wrapper::Wrapper) + Send>;
 
 impl Drop for EClient {
     fn drop(&mut self) {
@@ -205,10 +211,19 @@ impl EClient {
         Ok((client, event_rx))
     }
 
+    /// An answer this client makes itself, given by `process_msgs` after
+    /// the answers written before it, as the reference's answers come
+    /// from its connection: never inside the request (ibx#532).
+    pub(crate) fn later(&self, answer: impl FnOnce(&EClient, &mut dyn crate::api::wrapper::Wrapper) + Send + 'static) {
+        let at = self.shared.answer_stamp();
+        self.local.lock().unwrap().push_back((at, Box::new(answer)));
+        self.shared.notify();
+    }
+
     /// An error this client answers itself, with no queue behind it: to
     /// the wrapper, and to the event channel when one is attached
     /// (ibx#498).
-    pub(crate) fn local_error(&self, wrapper: &mut impl crate::api::wrapper::Wrapper, req_id: i64, code: i64, text: &str) {
+    pub(crate) fn local_error(&self, wrapper: &mut (impl crate::api::wrapper::Wrapper + ?Sized), req_id: i64, code: i64, text: &str) {
         wrapper.error(req_id, code, text, "");
         self.shared.emit_error(req_id, code, text);
     }
@@ -261,6 +276,7 @@ impl EClient {
             session_token_bytes,
             token_type,
             connection_time: crate::client_core::connection_time_now(),
+            local: Mutex::new(std::collections::VecDeque::new()),
         })
     }
 
@@ -283,6 +299,7 @@ impl EClient {
             session_token_bytes: Vec::new(),
             token_type: String::new(),
             connection_time: crate::client_core::connection_time_now(),
+            local: Mutex::new(std::collections::VecDeque::new()),
         }
     }
 

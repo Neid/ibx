@@ -97,6 +97,73 @@ pub struct ComboView {
     pub leg_prices: Vec<f64>,
 }
 
+/// An answer queue whose items keep the place they were written in among
+/// all the answers of the session (ibx#532): each item takes the next
+/// count of the session's answer clock when it is written, under the
+/// queue's lock. A client gives the answers of all its queues in that
+/// order, as the reference gives the messages of its one connection.
+pub struct SeqQueue<T> {
+    items: Mutex<Vec<(u64, T)>>,
+    clock: Arc<AtomicU64>,
+}
+
+impl<T> SeqQueue<T> {
+    fn new(clock: &Arc<AtomicU64>) -> Self {
+        Self { items: Mutex::new(Vec::new()), clock: clock.clone() }
+    }
+
+    #[inline]
+    fn push(&self, item: T) {
+        let mut items = self.items.lock().unwrap();
+        let at = self.clock.fetch_add(1, Ordering::Relaxed);
+        items.push((at, item));
+    }
+
+    /// The items, without their place.
+    fn drain(&self) -> Vec<T> {
+        self.items.lock().unwrap().drain(..).map(|(_, item)| item).collect()
+    }
+
+    /// The items with their place in the session's answers.
+    pub fn drain_stamped(&self) -> Vec<(u64, T)> {
+        std::mem::take(&mut *self.items.lock().unwrap())
+    }
+
+    /// The items with their place, moved into `into`: both keep their
+    /// buffers.
+    pub fn drain_into(&self, into: &mut std::collections::VecDeque<(u64, T)>) {
+        let mut items = self.items.lock().unwrap();
+        if !items.is_empty() {
+            into.extend(items.drain(..));
+        }
+    }
+
+    fn retain(&self, mut keep: impl FnMut(&T) -> bool) {
+        self.items.lock().unwrap().retain(|(_, item)| keep(item));
+    }
+
+    /// Take the items `take` maps to a value; the others stay, in order.
+    fn take_some<U>(&self, mut take: impl FnMut(T) -> Result<U, T>) -> Vec<U> {
+        let mut items = self.items.lock().unwrap();
+        let mut out = Vec::new();
+        let mut kept = Vec::with_capacity(items.len());
+        for (at, item) in items.drain(..) {
+            match take(item) {
+                Ok(value) => out.push(value),
+                Err(item) => kept.push((at, item)),
+            }
+        }
+        *items = kept;
+        out
+    }
+}
+
+/// The session's answer clock (ibx#532): the next count an answer takes,
+/// shared by every answer queue and by the answers a client makes itself.
+pub fn answer_clock() -> Arc<AtomicU64> {
+    Arc::new(AtomicU64::new(1))
+}
+
 /// The event channel as the queues of errors and answers see it (ibx#498):
 /// unset, and free, until a channel is attached.
 #[derive(Default)]
@@ -628,12 +695,12 @@ pub struct MarketDataState {
     pub md_events: crate::md_events::MdQueue,
     /// InstrumentId counter — set by hot loop on RegisterInstrument.
     instrument_count: AtomicU64,
-    tbt_trades: Mutex<Vec<TbtTrade>>,
-    tbt_quotes: Mutex<Vec<TbtQuote>>,
-    tbt_mid_points: Mutex<Vec<TbtMidPoint>>,
-    real_time_bars: Mutex<Vec<(ReqId, RealTimeBar)>>,
-    depth_updates: Mutex<Vec<DepthUpdate>>,
-    tick_news: Mutex<Vec<TickNews>>,
+    pub(crate) tbt_trades: SeqQueue<TbtTrade>,
+    pub(crate) tbt_quotes: SeqQueue<TbtQuote>,
+    pub(crate) tbt_mid_points: SeqQueue<TbtMidPoint>,
+    pub(crate) real_time_bars: SeqQueue<(ReqId, RealTimeBar)>,
+    pub(crate) depth_updates: SeqQueue<DepthUpdate>,
+    pub(crate) tick_news: SeqQueue<TickNews>,
     /// The API ticks of generic tick blocks (ibx#450), with their place in
     /// `md_events`.
     generic_ticks: Mutex<Vec<GenericTicks>>,
@@ -651,7 +718,7 @@ pub struct MarketDataState {
     snapshot_acks: Mutex<Vec<TickReqParams>>,
     /// Tick-by-tick requests that ended with an error: the request, the
     /// code and the whole text (ibx#455).
-    tbt_errors: Mutex<Vec<(ReqId, i32, String)>>,
+    pub(crate) tbt_errors: SeqQueue<(ReqId, i32, String)>,
     error_tap: ErrorTap,
 }
 
@@ -722,17 +789,17 @@ impl MdReject {
 }
 
 impl MarketDataState {
-    fn new() -> Self {
+    fn new(stamp: &Arc<AtomicU64>) -> Self {
         Self {
             quotes: Box::new(std::array::from_fn(|_| SeqQuote::new())),
             md_events: crate::md_events::MdQueue::new(),
             instrument_count: AtomicU64::new(0),
-            tbt_trades: Mutex::new(Vec::with_capacity(256)),
-            tbt_quotes: Mutex::new(Vec::with_capacity(256)),
-            tbt_mid_points: Mutex::new(Vec::with_capacity(64)),
-            real_time_bars: Mutex::new(Vec::with_capacity(64)),
-            depth_updates: Mutex::new(Vec::with_capacity(64)),
-            tick_news: Mutex::new(Vec::with_capacity(32)),
+            tbt_trades: SeqQueue::new(&stamp),
+            tbt_quotes: SeqQueue::new(&stamp),
+            tbt_mid_points: SeqQueue::new(&stamp),
+            real_time_bars: SeqQueue::new(&stamp),
+            depth_updates: SeqQueue::new(&stamp),
+            tick_news: SeqQueue::new(&stamp),
             generic_ticks: Mutex::new(Vec::new()),
             news_bulletins: Mutex::new(BulletinStore::default()),
             md_rejects: Mutex::new(Vec::new()),
@@ -740,7 +807,7 @@ impl MarketDataState {
             md_resolved: Mutex::new(Vec::new()),
             tick_req_params: Mutex::new(Vec::new()),
             snapshot_acks: Mutex::new(Vec::new()),
-            tbt_errors: Mutex::new(Vec::new()),
+            tbt_errors: SeqQueue::new(&stamp),
             error_tap: ErrorTap::default(),
         }
     }
@@ -748,12 +815,12 @@ impl MarketDataState {
     #[doc(hidden)] pub fn push_tbt_error(&self, req_id: ReqId, code: i32, text: String) {
         if self.error_tap.defer(ErrorQueue::TickByTick, req_id, code as i64, &text) { return; }
         let event = self.error_tap.event(req_id, code as i64, &text);
-        self.tbt_errors.lock().unwrap().push((req_id, code, text));
+        self.tbt_errors.push((req_id, code, text));
         self.error_tap.send(event);
     }
 
     pub fn drain_tbt_errors(&self) -> Vec<(ReqId, i32, String)> {
-        self.tbt_errors.lock().unwrap().drain(..).collect()
+        self.tbt_errors.drain()
     }
 
     #[doc(hidden)] pub fn push_tick_req_params(&self, params: TickReqParams) {
@@ -841,27 +908,27 @@ impl MarketDataState {
     }
 
     pub fn drain_tbt_trades(&self) -> Vec<TbtTrade> {
-        self.tbt_trades.lock().unwrap().drain(..).collect()
+        self.tbt_trades.drain()
     }
 
     pub fn drain_tbt_quotes(&self) -> Vec<TbtQuote> {
-        self.tbt_quotes.lock().unwrap().drain(..).collect()
+        self.tbt_quotes.drain()
     }
 
     pub fn drain_tbt_mid_points(&self) -> Vec<TbtMidPoint> {
-        self.tbt_mid_points.lock().unwrap().drain(..).collect()
+        self.tbt_mid_points.drain()
     }
 
     pub fn drain_real_time_bars(&self) -> Vec<(ReqId, RealTimeBar)> {
-        self.real_time_bars.lock().unwrap().drain(..).collect()
+        self.real_time_bars.drain()
     }
 
     pub fn drain_depth_updates(&self) -> Vec<DepthUpdate> {
-        self.depth_updates.lock().unwrap().drain(..).collect()
+        self.depth_updates.drain()
     }
 
     pub fn drain_tick_news(&self) -> Vec<TickNews> {
-        self.tick_news.lock().unwrap().drain(..).collect()
+        self.tick_news.drain()
     }
 
     /// The generic tick blocks decoded before queue position `head`
@@ -904,31 +971,31 @@ impl MarketDataState {
     }
 
     #[doc(hidden)] pub fn push_tbt_trade(&self, trade: TbtTrade) {
-        self.tbt_trades.lock().unwrap().push(trade);
+        self.tbt_trades.push(trade);
     }
 
     #[doc(hidden)] pub fn push_tbt_quote(&self, quote: TbtQuote) {
-        self.tbt_quotes.lock().unwrap().push(quote);
+        self.tbt_quotes.push(quote);
     }
 
     #[doc(hidden)] pub fn push_tbt_mid_point(&self, mid: TbtMidPoint) {
-        self.tbt_mid_points.lock().unwrap().push(mid);
+        self.tbt_mid_points.push(mid);
     }
 
 
     #[doc(hidden)] pub fn push_real_time_bar(&self, req_id: ReqId, bar: RealTimeBar) {
         let copy = self.error_tap.copy(&bar);
-        self.real_time_bars.lock().unwrap().push((req_id, bar));
+        self.real_time_bars.push((req_id, bar));
         self.error_tap.emit(copy.map(|bar| Event::RealTimeBar { req_id, bar }));
     }
 
     #[doc(hidden)] pub fn push_depth_update(&self, update: DepthUpdate) {
-        self.depth_updates.lock().unwrap().push(update);
+        self.depth_updates.push(update);
     }
 
     /// Remove all buffered depth updates for a given req_id (called on cancel).
     #[doc(hidden)] pub fn purge_depth_updates(&self, req_id: ReqId) {
-        self.depth_updates.lock().unwrap().retain(|u| u.req_id != req_id);
+        self.depth_updates.retain(|u| u.req_id != req_id);
     }
 
     #[doc(hidden)] pub fn push_generic_ticks(&self, ticks: GenericTicks) {
@@ -936,7 +1003,7 @@ impl MarketDataState {
     }
 
     #[doc(hidden)] pub fn push_tick_news(&self, news: TickNews) {
-        self.tick_news.lock().unwrap().push(news);
+        self.tick_news.push(news);
     }
 
     /// Store a bulletin received today (local day) (ibx#461).
@@ -987,30 +1054,25 @@ pub const DROPPED_SEEK_PRICE_IMPROVEMENT: u8 = 8;
 
 pub struct OrderState {
     /// Fills with what the report says about each execution.
-    fills: Mutex<Vec<(Fill, FillExec)>>,
+    pub(crate) fills: SeqQueue<(Fill, FillExec)>,
     /// Commission reports from the server's commission frame (ibx#471).
-    commission_reports: Mutex<Vec<api::CommissionAndFeesReport>>,
+    pub(crate) commission_reports: SeqQueue<api::CommissionAndFeesReport>,
     /// Executions of orders the engine does not track, for the execution
     /// store only: no live fill callback without a known order (ibx#314).
-    untracked_executions: Mutex<Vec<(api::Contract, api::Execution, FillExec)>>,
-    /// With the place of each among the statuses and the notices
-    /// (`order_report_seq`).
-    order_updates: Mutex<Vec<(u64, OrderUpdate)>>,
-    /// Counts the statuses and the notices as they are written, so that
-    /// the client gives them in that order (ibx#532).
-    order_report_seq: AtomicU64,
+    pub(crate) untracked_executions: SeqQueue<(api::Contract, api::Execution, FillExec)>,
+    /// The order statuses and the notices of a server report given after
+    /// the status of that report (the reject 201, the cancel 202, ibx#486),
+    /// in the order they were written (ibx#532).
+    pub(crate) order_reports: SeqQueue<OrderReport>,
     cancel_rejects: Mutex<Vec<CancelReject>>,
     /// Errors raised before sending: (request or order id as the API gives
     /// it, -1 for none; code; message) (ibx#349, ibx#285).
-    order_errors: Mutex<Vec<(i64, i64, String)>>,
-    /// Notices of a server report given after the status of that report:
-    /// the reject 201 and the cancel 202 (ibx#486).
-    order_notices: Mutex<Vec<(u64, (i64, i64, String))>>,
+    pub(crate) order_errors: SeqQueue<(i64, i64, String)>,
     /// The flags the engine dropped from an order before sending it, as
     /// `DROPPED_*` bits: the order's openOrder shows them off (ibx#607).
     dropped_flags: Mutex<HashMap<i64, u8>>,
     error_tap: ErrorTap,
-    what_if_responses: Mutex<Vec<WhatIfResponse>>,
+    pub(crate) what_if_responses: SeqQueue<WhatIfResponse>,
     completed_orders: Mutex<Vec<CompletedOrder>>,
     /// Enriched order info from CCP exec reports (order_id -> RichOrderInfo).
     order_cache: Mutex<HashMap<OrderId, RichOrderInfo>>,
@@ -1024,7 +1086,7 @@ pub struct OrderState {
     combo_views: Mutex<HashMap<OrderId, ComboView>>,
     /// Orders the engine dropped with no status for the client: filled
     /// while the auth link was lost (ibx#251).
-    forgotten_orders: Mutex<Vec<OrderId>>,
+    pub(crate) forgotten_orders: SeqQueue<OrderId>,
     /// The API order id of an order of another session whose id differs
     /// from the engine's key: the report's 6121, 0 when it has none.
     api_order_ids: Mutex<HashMap<OrderId, OrderId>>,
@@ -1040,25 +1102,23 @@ pub struct OrderState {
 }
 
 impl OrderState {
-    fn new() -> Self {
+    fn new(stamp: &Arc<AtomicU64>) -> Self {
         Self {
             combo_views: Mutex::new(HashMap::new()),
-            fills: Mutex::new(Vec::with_capacity(64)),
-            commission_reports: Mutex::new(Vec::with_capacity(64)),
-            untracked_executions: Mutex::new(Vec::new()),
-            order_updates: Mutex::new(Vec::with_capacity(64)),
-            order_report_seq: AtomicU64::new(0),
+            fills: SeqQueue::new(&stamp),
+            commission_reports: SeqQueue::new(&stamp),
+            untracked_executions: SeqQueue::new(&stamp),
+            order_reports: SeqQueue::new(stamp),
             cancel_rejects: Mutex::new(Vec::with_capacity(16)),
-            order_errors: Mutex::new(Vec::new()),
-            order_notices: Mutex::new(Vec::new()),
+            order_errors: SeqQueue::new(&stamp),
             dropped_flags: Mutex::new(HashMap::new()),
             error_tap: ErrorTap::default(),
-            what_if_responses: Mutex::new(Vec::with_capacity(8)),
+            what_if_responses: SeqQueue::new(&stamp),
             completed_orders: Mutex::new(Vec::with_capacity(64)),
             order_cache: Mutex::new(HashMap::new()),
             open_orders_held: AtomicBool::new(false),
             login_orders_end: AtomicBool::new(false),
-            forgotten_orders: Mutex::new(Vec::new()),
+            forgotten_orders: SeqQueue::new(&stamp),
             api_order_ids: Mutex::new(HashMap::new()),
             book_seqs: Mutex::new(HashMap::new()),
             book_peak: std::sync::atomic::AtomicUsize::new(0),
@@ -1148,57 +1208,45 @@ impl OrderState {
     }
 
     pub fn drain_fills(&self) -> Vec<Fill> {
-        self.fills.lock().unwrap().drain(..).map(|(fill, _)| fill).collect()
+        self.fills.drain().into_iter().map(|(fill, _)| fill).collect()
     }
 
     /// Fills with their execution details (empty when injected without).
     pub fn drain_fills_with_exec(&self) -> Vec<(Fill, FillExec)> {
-        self.fills.lock().unwrap().drain(..).collect()
+        self.fills.drain()
     }
 
     /// Executions of untracked orders, to store for `req_executions`
     /// (ibx#314).
     pub fn drain_untracked_executions(&self) -> Vec<(api::Contract, api::Execution, FillExec)> {
-        self.untracked_executions.lock().unwrap().drain(..).collect()
+        self.untracked_executions.drain()
     }
 
     pub fn drain_commission_reports(&self) -> Vec<api::CommissionAndFeesReport> {
-        self.commission_reports.lock().unwrap().drain(..).collect()
+        self.commission_reports.drain()
     }
 
+    /// The order statuses written; the notices stay.
     pub fn drain_order_updates(&self) -> Vec<OrderUpdate> {
-        self.order_updates.lock().unwrap().drain(..).map(|(_, update)| update).collect()
+        self.order_reports.take_some(|r| match r {
+            OrderReport::Update(update) => Ok(update),
+            notice => Err(notice),
+        })
     }
 
     /// The order statuses and the notices that follow a status (201, 202,
-    /// 161), in the order they were written (ibx#532). The two were read
-    /// one queue after the other: a notice written while the statuses were
-    /// being given came out before the status written just before it (a
-    /// 202 before its Cancelled, paper 11/10/2026), and the statuses of
-    /// several orders came before all their notices.
-    ///
-    /// The notices are taken first: every status written before one of
-    /// them is then in its queue.
+    /// 161), in the order they were written (ibx#532). They were once two
+    /// queues read one after the other: a notice written while the statuses
+    /// were being given came out before the status written just before it
+    /// (a 202 before its Cancelled, paper 11/10/2026).
     pub fn drain_order_reports(&self) -> Vec<OrderReport> {
-        let notices: Vec<_> = self.order_notices.lock().unwrap().drain(..).collect();
-        let updates: Vec<_> = self.order_updates.lock().unwrap().drain(..).collect();
-        let mut out = Vec::with_capacity(notices.len() + updates.len());
-        let (mut notices, mut updates) = (notices.into_iter().peekable(), updates.into_iter().peekable());
-        loop {
-            let notice_next = match (notices.peek(), updates.peek()) {
-                (Some((n, _)), Some((u, _))) => n < u,
-                (Some(_), None) => true,
-                (None, Some(_)) => false,
-                (None, None) => break,
-            };
-            if notice_next {
-                let (_, (order_id, code, message)) = notices.next().unwrap();
-                out.push(OrderReport::Notice(order_id, code, message));
-            } else {
-                out.push(OrderReport::Update(updates.next().unwrap().1));
-            }
-        }
-        out
+        self.order_reports.drain()
+    }
+
+    /// [`drain_order_reports`](Self::drain_order_reports) with their place
+    /// among all the answers.
+    pub fn drain_order_reports_stamped(&self) -> Vec<(u64, OrderReport)> {
+        self.order_reports.drain_stamped()
     }
 
     pub fn drain_cancel_rejects(&self) -> Vec<CancelReject> {
@@ -1218,16 +1266,19 @@ impl OrderState {
 
     /// Order errors raised before anything was sent: (order id, code, message).
     pub fn drain_order_errors(&self) -> Vec<(i64, i64, String)> {
-        self.order_errors.lock().unwrap().drain(..).collect()
+        self.order_errors.drain()
     }
 
     /// The notices to give after the order statuses (ibx#486).
     pub fn drain_order_notices(&self) -> Vec<(i64, i64, String)> {
-        self.order_notices.lock().unwrap().drain(..).map(|(_, notice)| notice).collect()
+        self.order_reports.take_some(|r| match r {
+            OrderReport::Notice(order_id, code, message) => Ok((order_id, code, message)),
+            update => Err(update),
+        })
     }
 
     pub fn drain_what_if_responses(&self) -> Vec<WhatIfResponse> {
-        self.what_if_responses.lock().unwrap().drain(..).collect()
+        self.what_if_responses.drain()
     }
 
     pub fn drain_completed_orders(&self) -> Vec<CompletedOrder> {
@@ -1276,37 +1327,36 @@ impl OrderState {
     // ── Hot-loop-side writers ──
 
     #[doc(hidden)] pub fn push_fill(&self, fill: Fill) {
-        self.fills.lock().unwrap().push((fill, FillExec::default()));
+        self.fills.push((fill, FillExec::default()));
     }
 
     #[doc(hidden)] pub fn push_fill_with_exec(&self, fill: Fill, exec: FillExec) {
-        self.fills.lock().unwrap().push((fill, exec));
+        self.fills.push((fill, exec));
     }
 
     /// An order the client no longer knows, with no callback (ibx#251).
     #[doc(hidden)] pub fn push_forgotten_order(&self, order_id: OrderId) {
-        self.forgotten_orders.lock().unwrap().push(order_id);
+        self.forgotten_orders.push(order_id);
     }
 
     /// The orders the engine dropped with no status since the last call
     /// (ibx#251).
     pub fn drain_forgotten_orders(&self) -> Vec<OrderId> {
-        std::mem::take(&mut *self.forgotten_orders.lock().unwrap())
+        self.forgotten_orders.drain()
     }
 
     #[doc(hidden)] pub fn push_untracked_execution(&self, contract: api::Contract, execution: api::Execution, exec: FillExec) {
-        self.untracked_executions.lock().unwrap().push((contract, execution, exec));
+        self.untracked_executions.push((contract, execution, exec));
     }
 
     #[doc(hidden)] pub fn push_commission_report(&self, report: api::CommissionAndFeesReport) {
         let copy = self.error_tap.copy(&report);
-        self.commission_reports.lock().unwrap().push(report);
+        self.commission_reports.push(report);
         self.error_tap.emit(copy.map(|report| Event::CommissionReport(report)));
     }
 
     #[doc(hidden)] pub fn push_order_update(&self, update: OrderUpdate) {
-        let mut updates = self.order_updates.lock().unwrap();
-        updates.push((self.order_report_seq.fetch_add(1, Ordering::Relaxed), update));
+        self.order_reports.push(OrderReport::Update(update));
     }
 
     #[doc(hidden)] pub fn push_cancel_reject(&self, reject: CancelReject) {
@@ -1316,7 +1366,7 @@ impl OrderState {
     #[doc(hidden)] pub fn push_order_error(&self, order_id: i64, code: i64, message: String) {
         if self.error_tap.defer(ErrorQueue::Order, order_id, code, &message) { return; }
         let event = self.error_tap.event(order_id, code, &message);
-        self.order_errors.lock().unwrap().push((order_id, code, message));
+        self.order_errors.push((order_id, code, message));
         self.error_tap.send(event);
     }
 
@@ -1326,14 +1376,13 @@ impl OrderState {
         if self.error_tap.defer(ErrorQueue::OrderNotice, order_id, code, &message) { return; }
         let event = self.error_tap.event(order_id, code, &message);
         {
-            let mut notices = self.order_notices.lock().unwrap();
-            notices.push((self.order_report_seq.fetch_add(1, Ordering::Relaxed), (order_id, code, message)));
+            self.order_reports.push(OrderReport::Notice(order_id, code, message));
         }
         self.error_tap.send(event);
     }
 
     #[doc(hidden)] pub fn push_what_if(&self, response: WhatIfResponse) {
-        self.what_if_responses.lock().unwrap().push(response);
+        self.what_if_responses.push(response);
     }
 
     #[doc(hidden)] pub fn push_completed_order(&self, order: CompletedOrder) {
@@ -1364,28 +1413,28 @@ pub enum ExchangeMapState {
 
 /// Historical data, contract definitions, scanners, news archives, market rules, contract cache.
 pub struct ReferenceState {
-    historical_data: Mutex<Vec<(ReqId, HistoricalResponse)>>,
+    pub(crate) historical_data: SeqQueue<(ReqId, HistoricalResponse)>,
     /// Bars of keepUpToDate requests, the whole current bar each time
     /// (ibx#429), for historicalDataUpdate.
-    historical_updates: Mutex<Vec<(ReqId, HistoricalBar)>>,
-    head_timestamps: Mutex<Vec<(ReqId, HeadTimestampResponse)>>,
-    contract_details: Mutex<Vec<(ReqId, ContractDefinition)>>,
-    contract_details_end: Mutex<Vec<ReqId>>,
-    matching_symbols: Mutex<Vec<(ReqId, Vec<SymbolMatch>)>>,
+    pub(crate) historical_updates: SeqQueue<(ReqId, HistoricalBar)>,
+    pub(crate) head_timestamps: SeqQueue<(ReqId, HeadTimestampResponse)>,
+    pub(crate) contract_details: SeqQueue<(ReqId, ContractDefinition)>,
+    pub(crate) contract_details_end: SeqQueue<ReqId>,
+    pub(crate) matching_symbols: SeqQueue<(ReqId, Vec<SymbolMatch>)>,
     /// Option chain answers (ibx#440): the rows of a request, then its end.
-    option_chains: Mutex<Vec<(ReqId, Vec<crate::control::optparams::OptionChain>)>>,
+    pub(crate) option_chains: SeqQueue<(ReqId, Vec<crate::control::optparams::OptionChain>)>,
     scanner_params: Mutex<Vec<String>>,
-    scanner_data: Mutex<Vec<(ReqId, ScannerResult)>>,
-    historical_news: Mutex<Vec<(ReqId, Vec<NewsHeadline>, bool)>>,
-    news_articles: Mutex<Vec<(ReqId, i32, String)>>,
-    fundamental_data: Mutex<Vec<(ReqId, String)>>,
-    option_computations: Mutex<Vec<crate::control::optcalc::OptionComputation>>,
-    histogram_data: Mutex<Vec<(ReqId, Vec<HistogramEntry>)>>,
-    historical_ticks: Mutex<Vec<(ReqId, HistoricalTickData, String, bool)>>,
-    historical_schedules: Mutex<Vec<(ReqId, HistoricalScheduleResponse)>>,
+    pub(crate) scanner_data: SeqQueue<(ReqId, ScannerResult)>,
+    pub(crate) historical_news: SeqQueue<(ReqId, Vec<NewsHeadline>, bool)>,
+    pub(crate) news_articles: SeqQueue<(ReqId, i32, String)>,
+    pub(crate) fundamental_data: SeqQueue<(ReqId, String)>,
+    pub(crate) option_computations: SeqQueue<crate::control::optcalc::OptionComputation>,
+    pub(crate) histogram_data: SeqQueue<(ReqId, Vec<HistogramEntry>)>,
+    pub(crate) historical_ticks: SeqQueue<(ReqId, HistoricalTickData, String, bool)>,
+    pub(crate) historical_schedules: SeqQueue<(ReqId, HistoricalScheduleResponse)>,
     /// Errors surfaced by HMDS for in-flight reference queries (req_id, code, message).
     /// Drained by the dispatcher and forwarded to `Wrapper::error`. ibx#186.
-    historical_errors: Mutex<Vec<(ReqId, i32, String)>>,
+    pub(crate) historical_errors: SeqQueue<(ReqId, i32, String)>,
     error_tap: ErrorTap,
     market_rules: Mutex<Vec<MarketRule>>,
     depth_exchanges_cache: Mutex<Vec<DepthMktDataDescription>>,
@@ -1487,24 +1536,24 @@ pub struct ReferenceState {
 }
 
 impl ReferenceState {
-    fn new() -> Self {
+    fn new(stamp: &Arc<AtomicU64>) -> Self {
         Self {
-            historical_data: Mutex::new(Vec::with_capacity(16)),
-            historical_updates: Mutex::new(Vec::with_capacity(16)),
-            head_timestamps: Mutex::new(Vec::with_capacity(8)),
-            contract_details: Mutex::new(Vec::with_capacity(16)),
-            contract_details_end: Mutex::new(Vec::with_capacity(8)),
-            matching_symbols: Mutex::new(Vec::with_capacity(8)),
+            historical_data: SeqQueue::new(&stamp),
+            historical_updates: SeqQueue::new(&stamp),
+            head_timestamps: SeqQueue::new(&stamp),
+            contract_details: SeqQueue::new(&stamp),
+            contract_details_end: SeqQueue::new(&stamp),
+            matching_symbols: SeqQueue::new(&stamp),
             scanner_params: Mutex::new(Vec::new()),
-            scanner_data: Mutex::new(Vec::with_capacity(8)),
-            historical_news: Mutex::new(Vec::with_capacity(8)),
-            news_articles: Mutex::new(Vec::with_capacity(8)),
-            fundamental_data: Mutex::new(Vec::with_capacity(4)),
-            option_computations: Mutex::new(Vec::new()),
-            histogram_data: Mutex::new(Vec::with_capacity(4)),
-            historical_ticks: Mutex::new(Vec::with_capacity(4)),
-            historical_schedules: Mutex::new(Vec::with_capacity(4)),
-            historical_errors: Mutex::new(Vec::with_capacity(4)),
+            scanner_data: SeqQueue::new(&stamp),
+            historical_news: SeqQueue::new(&stamp),
+            news_articles: SeqQueue::new(&stamp),
+            fundamental_data: SeqQueue::new(&stamp),
+            option_computations: SeqQueue::new(&stamp),
+            histogram_data: SeqQueue::new(&stamp),
+            historical_ticks: SeqQueue::new(&stamp),
+            historical_schedules: SeqQueue::new(&stamp),
+            historical_errors: SeqQueue::new(&stamp),
             error_tap: ErrorTap::default(),
             market_rules: Mutex::new(Vec::new()),
             depth_exchanges_cache: Mutex::new(Vec::new()),
@@ -1547,43 +1596,43 @@ impl ReferenceState {
             bond_api: AtomicBool::new(false),
             ev_api: AtomicBool::new(false),
             md_entry_marks: Arc::new(AtomicU8::new(0)),
-            option_chains: Mutex::new(Vec::new()),
+            option_chains: SeqQueue::new(&stamp),
         }
     }
 
     pub fn drain_historical_data(&self) -> Vec<(ReqId, HistoricalResponse)> {
-        self.historical_data.lock().unwrap().drain(..).collect()
+        self.historical_data.drain()
     }
 
     pub fn drain_historical_updates(&self) -> Vec<(ReqId, HistoricalBar)> {
-        self.historical_updates.lock().unwrap().drain(..).collect()
+        self.historical_updates.drain()
     }
 
     pub fn drain_head_timestamps(&self) -> Vec<(ReqId, HeadTimestampResponse)> {
-        self.head_timestamps.lock().unwrap().drain(..).collect()
+        self.head_timestamps.drain()
     }
 
     pub fn drain_contract_details(&self) -> Vec<(ReqId, ContractDefinition)> {
-        self.contract_details.lock().unwrap().drain(..).collect()
+        self.contract_details.drain()
     }
 
     pub fn drain_contract_details_end(&self) -> Vec<ReqId> {
-        self.contract_details_end.lock().unwrap().drain(..).collect()
+        self.contract_details_end.drain()
     }
 
     pub fn drain_matching_symbols(&self) -> Vec<(ReqId, Vec<SymbolMatch>)> {
-        self.matching_symbols.lock().unwrap().drain(..).collect()
+        self.matching_symbols.drain()
     }
 
     /// Option chain answers (ibx#440): the rows of each request, for one
     /// SECURITY_DEFINITION_OPTION_PARAMETER each, then its end.
     pub fn drain_option_chains(&self) -> Vec<(ReqId, Vec<crate::control::optparams::OptionChain>)> {
-        self.option_chains.lock().unwrap().drain(..).collect()
+        self.option_chains.drain()
     }
 
     #[doc(hidden)] pub fn push_option_chains(&self, req_id: ReqId, rows: Vec<crate::control::optparams::OptionChain>) {
         let copy = self.error_tap.copy(&rows);
-        self.option_chains.lock().unwrap().push((req_id, rows));
+        self.option_chains.push((req_id, rows));
         self.error_tap.emit(copy.map(|chains| Event::OptionChains { req_id, chains }));
     }
 
@@ -1592,40 +1641,40 @@ impl ReferenceState {
     }
 
     pub fn drain_scanner_data(&self) -> Vec<(ReqId, ScannerResult)> {
-        self.scanner_data.lock().unwrap().drain(..).collect()
+        self.scanner_data.drain()
     }
 
     pub fn drain_historical_news(&self) -> Vec<(ReqId, Vec<NewsHeadline>, bool)> {
-        self.historical_news.lock().unwrap().drain(..).collect()
+        self.historical_news.drain()
     }
 
     pub fn drain_news_articles(&self) -> Vec<(ReqId, i32, String)> {
-        self.news_articles.lock().unwrap().drain(..).collect()
+        self.news_articles.drain()
     }
 
     pub fn drain_fundamental_data(&self) -> Vec<(ReqId, String)> {
-        self.fundamental_data.lock().unwrap().drain(..).collect()
+        self.fundamental_data.drain()
     }
 
     /// Answers of option calculations, in arrival order.
     pub fn drain_option_computations(&self) -> Vec<crate::control::optcalc::OptionComputation> {
-        self.option_computations.lock().unwrap().drain(..).collect()
+        self.option_computations.drain()
     }
 
     pub fn drain_histogram_data(&self) -> Vec<(ReqId, Vec<HistogramEntry>)> {
-        self.histogram_data.lock().unwrap().drain(..).collect()
+        self.histogram_data.drain()
     }
 
     pub fn drain_historical_ticks(&self) -> Vec<(ReqId, HistoricalTickData, String, bool)> {
-        self.historical_ticks.lock().unwrap().drain(..).collect()
+        self.historical_ticks.drain()
     }
 
     pub fn drain_historical_schedules(&self) -> Vec<(ReqId, HistoricalScheduleResponse)> {
-        self.historical_schedules.lock().unwrap().drain(..).collect()
+        self.historical_schedules.drain()
     }
 
     pub fn drain_historical_errors(&self) -> Vec<(ReqId, i32, String)> {
-        self.historical_errors.lock().unwrap().drain(..).collect()
+        self.historical_errors.drain()
     }
 
     /// Get cached market rules.
@@ -1670,35 +1719,35 @@ impl ReferenceState {
     // ── Hot-loop-side writers ──
 
     #[doc(hidden)] pub fn push_historical_data(&self, req_id: ReqId, response: HistoricalResponse) {
-        self.historical_data.lock().unwrap().push((req_id, response));
+        self.historical_data.push((req_id, response));
     }
 
     #[doc(hidden)] pub fn push_historical_update(&self, req_id: ReqId, bar: HistoricalBar) {
         let copy = self.error_tap.copy(&bar);
-        self.historical_updates.lock().unwrap().push((req_id, bar));
+        self.historical_updates.push((req_id, bar));
         self.error_tap.emit(copy.map(|bar| Event::HistoricalUpdate { req_id, bar }));
     }
 
     /// Drop the updates of a request not delivered yet: none goes out
     /// after its cancel (ibx#429).
     #[doc(hidden)] pub fn purge_historical_updates(&self, req_id: ReqId) {
-        self.historical_updates.lock().unwrap().retain(|(r, _)| *r != req_id);
+        self.historical_updates.retain(|(r, _)| *r != req_id);
     }
 
     #[doc(hidden)] pub fn push_head_timestamp(&self, req_id: ReqId, response: HeadTimestampResponse) {
-        self.head_timestamps.lock().unwrap().push((req_id, response));
+        self.head_timestamps.push((req_id, response));
     }
 
     #[doc(hidden)] pub fn push_contract_details(&self, req_id: ReqId, def: ContractDefinition) {
-        self.contract_details.lock().unwrap().push((req_id, def));
+        self.contract_details.push((req_id, def));
     }
 
     #[doc(hidden)] pub fn push_contract_details_end(&self, req_id: ReqId) {
-        self.contract_details_end.lock().unwrap().push(req_id);
+        self.contract_details_end.push(req_id);
     }
 
     #[doc(hidden)] pub fn push_matching_symbols(&self, req_id: ReqId, matches: Vec<SymbolMatch>) {
-        self.matching_symbols.lock().unwrap().push((req_id, matches));
+        self.matching_symbols.push((req_id, matches));
     }
 
     #[doc(hidden)] pub fn push_scanner_params(&self, xml: String) {
@@ -1709,61 +1758,61 @@ impl ReferenceState {
 
     #[doc(hidden)] pub fn push_scanner_data(&self, req_id: ReqId, result: ScannerResult) {
         let copy = self.error_tap.copy(&result);
-        self.scanner_data.lock().unwrap().push((req_id, result));
+        self.scanner_data.push((req_id, result));
         self.error_tap.emit(copy.map(|result| Event::ScannerData { req_id, result }));
     }
 
     /// Drop the queued results of a cancelled scanner (ibx#457).
     #[doc(hidden)] pub fn discard_scanner_data(&self, req_id: ReqId) {
-        self.scanner_data.lock().unwrap().retain(|(r, _)| *r != req_id);
+        self.scanner_data.retain(|(r, _)| *r != req_id);
     }
 
     #[doc(hidden)] pub fn push_historical_news(&self, req_id: ReqId, headlines: Vec<NewsHeadline>, has_more: bool) {
         let copy = self.error_tap.copy(&headlines);
-        self.historical_news.lock().unwrap().push((req_id, headlines, has_more));
+        self.historical_news.push((req_id, headlines, has_more));
         self.error_tap.emit(copy.map(|headlines| Event::HistoricalNews { req_id, headlines, has_more }));
     }
 
     #[doc(hidden)] pub fn push_news_article(&self, req_id: ReqId, article_type: i32, article_text: String) {
         let copy = self.error_tap.copy(&article_text);
-        self.news_articles.lock().unwrap().push((req_id, article_type, article_text));
+        self.news_articles.push((req_id, article_type, article_text));
         self.error_tap.emit(copy.map(|text| Event::NewsArticle { req_id, article_type, text }));
     }
 
     #[doc(hidden)] pub fn push_option_computation(&self, answer: crate::control::optcalc::OptionComputation) {
         let copy = self.error_tap.copy(&answer);
-        self.option_computations.lock().unwrap().push(answer);
+        self.option_computations.push(answer);
         self.error_tap.emit(copy.map(|answer| Event::OptionComputation(answer)));
     }
 
     #[doc(hidden)] pub fn push_fundamental_data(&self, req_id: ReqId, data: String) {
         let copy = self.error_tap.copy(&data);
-        self.fundamental_data.lock().unwrap().push((req_id, data));
+        self.fundamental_data.push((req_id, data));
         self.error_tap.emit(copy.map(|data| Event::FundamentalData { req_id, data }));
     }
 
     #[doc(hidden)] pub fn push_histogram_data(&self, req_id: ReqId, entries: Vec<HistogramEntry>) {
         let copy = self.error_tap.copy(&entries);
-        self.histogram_data.lock().unwrap().push((req_id, entries));
+        self.histogram_data.push((req_id, entries));
         self.error_tap.emit(copy.map(|entries| Event::HistogramData { req_id, entries }));
     }
 
     #[doc(hidden)] pub fn push_historical_ticks(&self, req_id: ReqId, data: HistoricalTickData, what_to_show: String, done: bool) {
         let copy = self.error_tap.copy(&data).zip(self.error_tap.copy(&what_to_show));
-        self.historical_ticks.lock().unwrap().push((req_id, data, what_to_show, done));
+        self.historical_ticks.push((req_id, data, what_to_show, done));
         self.error_tap.emit(copy.map(|(data, what_to_show)| Event::HistoricalTicks { req_id, data, what_to_show, done }));
     }
 
     #[doc(hidden)] pub fn push_historical_schedule(&self, req_id: ReqId, response: HistoricalScheduleResponse) {
         let copy = self.error_tap.copy(&response);
-        self.historical_schedules.lock().unwrap().push((req_id, response));
+        self.historical_schedules.push((req_id, response));
         self.error_tap.emit(copy.map(|data| Event::HistoricalSchedule { req_id, data }));
     }
 
     #[doc(hidden)] pub fn push_historical_error(&self, req_id: ReqId, code: i32, message: String) {
         if self.error_tap.defer(ErrorQueue::Historical, req_id, code as i64, &message) { return; }
         let event = self.error_tap.event(req_id, code as i64, &message);
-        self.historical_errors.lock().unwrap().push((req_id, code, message));
+        self.historical_errors.push((req_id, code, message));
         self.error_tap.send(event);
     }
 
@@ -2545,27 +2594,32 @@ pub struct SharedState {
     connection_lost: AtomicBool,
     /// Link status messages for every client, as errors with id -1: link
     /// lost / restored and farm broken (ibx#399). (code, message).
-    connection_notices: Mutex<Vec<(i64, String)>>,
+    pub(crate) connection_notices: SeqQueue<(i64, String)>,
     error_tap: ErrorTap,
     /// Notifier for waking consumers (e.g. Python event loop) when data arrives.
     notifier: Arc<Notifier>,
     /// Commands sent to the engine and handled by it (ibx#529).
     clock: Arc<CommandClock>,
+    /// The count of the answers written, which orders them for the
+    /// clients (ibx#532).
+    answer_clock: Arc<AtomicU64>,
 }
 
 impl SharedState {
     pub fn new() -> Self {
+        let stamp = answer_clock();
         let shared = Self {
-            market: MarketDataState::new(),
-            orders: OrderState::new(),
-            reference: ReferenceState::new(),
+            market: MarketDataState::new(&stamp),
+            orders: OrderState::new(&stamp),
+            reference: ReferenceState::new(&stamp),
             portfolio: PortfolioState::new(),
             ccp_rtt_ns: AtomicU64::new(0),
             connection_lost: AtomicBool::new(false),
-            connection_notices: Mutex::new(Vec::new()),
+            connection_notices: SeqQueue::new(&stamp),
             error_tap: ErrorTap::default(),
             notifier: Arc::new(Notifier::default()),
             clock: Arc::new(CommandClock::default()),
+            answer_clock: stamp,
         };
         for tap in [&shared.market.error_tap, &shared.orders.error_tap, &shared.reference.error_tap, &shared.error_tap] {
             tap.wakes(&shared.notifier);
@@ -2578,6 +2632,20 @@ impl SharedState {
     #[doc(hidden)]
     pub fn command_clock(&self) -> &Arc<CommandClock> {
         &self.clock
+    }
+
+    /// The next count of the answer clock (ibx#532): the place of an
+    /// answer a client makes itself among the answers written.
+    #[doc(hidden)]
+    pub fn answer_stamp(&self) -> u64 {
+        self.answer_clock.fetch_add(1, Ordering::Relaxed)
+    }
+
+    /// The count the next answer will take: every answer written before
+    /// has a smaller one (ibx#532).
+    #[doc(hidden)]
+    pub fn answers_written(&self) -> u64 {
+        self.answer_clock.load(Ordering::Relaxed)
     }
 
     /// Signal that the session is over. Hot-loop side (ibx#242).
@@ -2618,14 +2686,14 @@ impl SharedState {
     pub fn push_connection_notice(&self, code: i64, message: String) {
         if self.error_tap.defer(ErrorQueue::Connection, -1, code, &message) { return; }
         let event = self.error_tap.event(-1, code, &message);
-        self.connection_notices.lock().unwrap().push((code, message));
+        self.connection_notices.push((code, message));
         self.error_tap.send(event);
         self.notify();
     }
 
     /// Link status messages since the last call: (code, message), in order.
     pub fn drain_connection_notices(&self) -> Vec<(i64, String)> {
-        std::mem::take(&mut *self.connection_notices.lock().unwrap())
+        self.connection_notices.drain()
     }
 
     /// Record an auth-connection RTT sample (ibx#158). Hot-loop side.

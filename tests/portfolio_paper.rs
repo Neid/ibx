@@ -216,6 +216,7 @@ fn eclient_delivers_update_portfolio() {
     let seen = Arc::new(Mutex::new(Seen::default()));
     let mut probe = Probe(seen.clone());
     client.req_positions(&mut probe);
+    client.process_msgs(&mut probe);
     client.req_account_updates(true, "");
     let listed: Vec<i64> = seen.lock().unwrap().positions.clone();
     println!("  {} position(s) listed", listed.len());

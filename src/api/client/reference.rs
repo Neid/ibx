@@ -181,15 +181,17 @@ impl EClient {
     /// Answered from the rules of the definition replies received; an id
     /// not received, or a rule with no price increments, gives 322
     /// (ibx#437).
-    pub fn req_market_rule(&self, market_rule_id: i32, wrapper: &mut impl crate::api::wrapper::Wrapper) {
+    pub fn req_market_rule(&self, market_rule_id: i32, _wrapper: &mut impl crate::api::wrapper::Wrapper) {
         // One API request for the pacing, whatever it sends (ibx#565).
         let _request = crate::engine::park::one_request();
-        match crate::client_core::market_rule_answer(self.shared.reference.market_rule(market_rule_id), market_rule_id) {
+        let answer = crate::client_core::market_rule_answer(self.shared.reference.market_rule(market_rule_id), market_rule_id);
+        // Given by `process_msgs` at its place among the answers (ibx#532).
+        self.later(move |this, wrapper| match answer {
             Ok(increments) => wrapper.market_rule(market_rule_id as i64, &increments.iter()
                 .map(|pi| crate::api::types::PriceIncrement { low_edge: pi.low_edge, increment: pi.increment })
                 .collect::<Vec<_>>()),
-            Err((code, message)) => self.local_error(wrapper, -1, code, &message),
-        }
+            Err((code, message)) => this.local_error(wrapper, -1, code, &message),
+        });
     }
 
     // ── News Bulletins ──

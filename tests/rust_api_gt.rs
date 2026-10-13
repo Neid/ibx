@@ -600,6 +600,7 @@ fn api_gt_suite() {
         print!("  req_positions... ");
         wrapper.drain();
         client.req_positions(&mut wrapper);
+        client.process_msgs(&mut wrapper);
         let cbs = wrapper.drain();
 
         let has_end = cbs.iter().any(|c| matches!(c, Cb::PositionEnd));
@@ -691,6 +692,7 @@ fn api_gt_suite() {
         for _ in 0..5 {
             poll(&client, &mut wrapper, Duration::from_millis(500));
             client.req_completed_orders(&mut wrapper);
+            client.process_msgs(&mut wrapper);
             if wrapper.events.lock().unwrap().iter().any(|c| matches!(c, Cb::CompletedOrder { .. })) {
                 break;
             }
@@ -1361,6 +1363,7 @@ fn api_gt_suite() {
         print!("  req_smart_components... ");
         wrapper.drain();
         client.req_smart_components(900, "XYZ", &mut wrapper);
+        client.process_msgs(&mut wrapper);
         let cbs = wrapper.drain();
         let refused = cbs.iter().any(|c| matches!(c, Cb::Error { req_id: 900, code: 321, msg }
             if msg == "Error validating request.-'V' : cause - Invalid BBO exchange/security type code"));
@@ -1378,6 +1381,7 @@ fn api_gt_suite() {
         print!("  req_news_providers... ");
         wrapper.drain();
         client.req_news_providers(&mut wrapper);
+        client.process_msgs(&mut wrapper);
         let cbs = wrapper.drain();
         let np: Vec<_> = cbs.iter().filter_map(|c| if let Cb::NewsProviders { count, .. } = c { Some(*count) } else { None }).collect();
         if np.is_empty() || np[0] == 0 {
@@ -1394,6 +1398,7 @@ fn api_gt_suite() {
         print!("  req_current_time... ");
         wrapper.drain();
         client.req_current_time(&mut wrapper);
+        client.process_msgs(&mut wrapper);
         let cbs = wrapper.drain();
         let ct: Vec<_> = cbs.iter().filter_map(|c| if let Cb::CurrentTime { time, .. } = c { Some(*time) } else { None }).collect();
         if ct.is_empty() {
@@ -1419,6 +1424,7 @@ fn api_gt_suite() {
         print!("  req_soft_dollar_tiers... ");
         wrapper.drain();
         client.req_soft_dollar_tiers(901, &mut wrapper);
+        client.process_msgs(&mut wrapper);
         let cbs = wrapper.drain();
         let sdt: Vec<_> = cbs.iter().filter_map(|c| if let Cb::SoftDollarTiers { count, .. } = c { Some(*count) } else { None }).collect();
         if sdt.is_empty() || sdt[0] == 0 {
@@ -1435,6 +1441,7 @@ fn api_gt_suite() {
         print!("  req_family_codes... ");
         wrapper.drain();
         client.req_family_codes(&mut wrapper);
+        client.process_msgs(&mut wrapper);
         let cbs = wrapper.drain();
         let fc: Vec<_> = cbs.iter().filter_map(|c| if let Cb::FamilyCodes { count, .. } = c { Some(*count) } else { None }).collect();
         if fc.is_empty() {
@@ -1452,6 +1459,7 @@ fn api_gt_suite() {
         print!("  req_user_info... ");
         wrapper.drain();
         client.req_user_info(902, &mut wrapper);
+        client.process_msgs(&mut wrapper);
         let cbs = wrapper.drain();
         let ui: Vec<_> = cbs.iter().filter_map(|c| if let Cb::UserInfo { req_id, white_branding_id, .. } = c { Some((*req_id, white_branding_id.clone())) } else { None }).collect();
         if ui.is_empty() {

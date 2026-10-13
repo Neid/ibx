@@ -176,7 +176,8 @@ impl EClient {
         // One API request for the pacing, whatever it sends (ibx#565).
         let _request = crate::engine::park::one_request();
         if let Some(r) = self.not_connected(req_id) { return r; }
-        if self.later(move |this, py| this.cancel_contract_data(py, req_id)) { return Ok(()); }
+        // The official client library's own check, on the caller's thread
+        // before anything is sent: never put off (ibx#532).
         let (code, text) = crate::client_core::CANCEL_CONTRACT_DATA_UNSUPPORTED;
         self.wrapper.call_method1(py, "error", (req_id, code, text, ""))?;
         Ok(())
@@ -188,7 +189,8 @@ impl EClient {
         // One API request for the pacing, whatever it sends (ibx#565).
         let _request = crate::engine::park::one_request();
         if let Some(r) = self.not_connected(req_id) { return r; }
-        if self.later(move |this, py| this.cancel_historical_ticks(py, req_id)) { return Ok(()); }
+        // The official client library's own check, on the caller's thread
+        // before anything is sent: never put off (ibx#532).
         let (code, text) = crate::client_core::CANCEL_HISTORICAL_TICKS_UNSUPPORTED;
         self.wrapper.call_method1(py, "error", (req_id, code, text, ""))?;
         Ok(())

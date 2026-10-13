@@ -215,13 +215,15 @@ impl EClient {
     /// sessions count as far as the server's replays of the logon show them
     /// (orders with the client's id); right after the connect the answer
     /// waits for the order replay of the logon. Nothing is reserved.
-    pub fn req_ids(&self, wrapper: &mut impl Wrapper) {
+    pub fn req_ids(&self, _wrapper: &mut impl Wrapper) {
         // One API request for the pacing, whatever it sends (ibx#565).
         let _request = crate::engine::park::one_request();
         // Answered here: after the requests made before it (ibx#561).
         self.shared.command_clock().take_turn();
         ClientCore::wait_order_replay(&self.shared);
-        wrapper.next_valid_id(self.core.next_valid_id(&self.shared));
+        let id = self.core.next_valid_id(&self.shared);
+        // Given by `process_msgs` at its place among the answers (ibx#532).
+        self.later(move |_, wrapper| wrapper.next_valid_id(id));
     }
 
     /// The next order id for a new order: the next valid id (see
@@ -239,7 +241,7 @@ impl EClient {
     /// Before the order replay of the logon has ended, and while the auth
     /// link is lost, the request is answered only after the order replay,
     /// from `process_msgs` (ibx#251).
-    pub fn req_open_orders(&self, wrapper: &mut impl Wrapper) {
+    pub fn req_open_orders(&self, _wrapper: &mut impl Wrapper) {
         // One API request for the pacing, whatever it sends (ibx#565).
         let _request = crate::engine::park::one_request();
         // Answered here: after the requests made before it (ibx#561).
@@ -247,14 +249,15 @@ impl EClient {
         if self.core.hold_open_orders(crate::client_core::OpenOrdersRequest::Open, &self.shared) {
             return;
         }
-        self.answer_open_orders(wrapper, crate::client_core::OpenOrdersRequest::Open);
+        // Given by `process_msgs` at its place among the answers (ibx#532).
+        self.later(|this, wrapper| this.answer_open_orders(wrapper, crate::client_core::OpenOrdersRequest::Open));
     }
 
     /// Request all open orders. Matches `reqAllOpenOrders` in C++.
     ///
     /// Held like [`req_open_orders`](Self::req_open_orders) until the order
     /// replay (ibx#251).
-    pub fn req_all_open_orders(&self, wrapper: &mut impl Wrapper) {
+    pub fn req_all_open_orders(&self, _wrapper: &mut impl Wrapper) {
         // One API request for the pacing, whatever it sends (ibx#565).
         let _request = crate::engine::park::one_request();
         // Answered here: after the requests made before it (ibx#561).
@@ -262,13 +265,14 @@ impl EClient {
         if self.core.hold_open_orders(crate::client_core::OpenOrdersRequest::All, &self.shared) {
             return;
         }
-        self.answer_open_orders(wrapper, crate::client_core::OpenOrdersRequest::All);
+        // Given by `process_msgs` at its place among the answers (ibx#532).
+        self.later(|this, wrapper| this.answer_open_orders(wrapper, crate::client_core::OpenOrdersRequest::All));
     }
 
     /// The open orders, each with its status, then the end of the list
     /// (`jextend.dL.b(pe, int, String, String, String)@41-46`: OPEN_ORDER
     /// then ORDER_STATUS).
-    pub(crate) fn answer_open_orders(&self, wrapper: &mut impl Wrapper, request: crate::client_core::OpenOrdersRequest) {
+    pub(crate) fn answer_open_orders(&self, wrapper: &mut (impl Wrapper + ?Sized), request: crate::client_core::OpenOrdersRequest) {
         for (order_id, tracked, client_id) in self.core.open_orders_listing(&self.shared, request) {
             let state = crate::api::types::OrderState {
                 status: tracked.status.clone(),
@@ -287,12 +291,18 @@ impl EClient {
     // ── Completed Orders ──
 
     /// Request completed orders. Matches `reqCompletedOrders` in C++.
-    /// Immediately delivers all archived completed orders, then calls `completed_orders_end`.
-    pub fn req_completed_orders(&self, wrapper: &mut impl Wrapper) {
+    /// Delivers all archived completed orders, then calls
+    /// `completed_orders_end`, through `process_msgs` (ibx#532).
+    pub fn req_completed_orders(&self, _wrapper: &mut impl Wrapper) {
         // One API request for the pacing, whatever it sends (ibx#565).
         let _request = crate::engine::park::one_request();
         // Answered here: after the requests made before it (ibx#561).
         self.shared.command_clock().take_turn();
+        // Given by `process_msgs` at its place among the answers (ibx#532).
+        self.later(|this, wrapper| this.answer_completed_orders(wrapper));
+    }
+
+    fn answer_completed_orders(&self, wrapper: &mut dyn Wrapper) {
         for order in self.shared.orders.drain_completed_orders() {
             let status_str = crate::client_core::order_status_str(order.status);
             if let Some(info) = self.shared.orders.get_order_info(order.order_id) {
@@ -336,7 +346,7 @@ impl EClient {
     /// Request execution reports. Matches `reqExecutions` in C++.
     /// Replays stored executions (optionally filtered), firing `exec_details` +
     /// `commission_and_fees_report` for each, then `exec_details_end`.
-    pub fn req_executions(&self, req_id: i64, filter: &ExecutionFilter, wrapper: &mut impl Wrapper) {
+    pub fn req_executions(&self, req_id: i64, filter: &ExecutionFilter, _wrapper: &mut impl Wrapper) {
         // One API request for the pacing, whatever it sends (ibx#565).
         let _request = crate::engine::park::one_request();
         // Answered here: after the requests made before it (ibx#561).
@@ -345,6 +355,8 @@ impl EClient {
         // No lock is held during the callbacks (ibx#265). As the reference:
         // every execution, then the commission reports, then the end.
         let execs = self.core.matching_executions(filter);
+        // Given by `process_msgs` at its place among the answers (ibx#532).
+        self.later(move |_, wrapper| {
         for se in &execs {
             wrapper.exec_details(req_id, &se.contract, &se.execution);
         }
@@ -352,6 +364,7 @@ impl EClient {
             wrapper.commission_and_fees_report(report);
         }
         wrapper.exec_details_end(req_id);
+        });
     }
 }
 
