@@ -1957,7 +1957,11 @@ impl HotLoop {
                             con_id, symbol, exchange, sec_type, last_trade_date, strike, right, multiplier,
                             instrument: id, mode_9887, snapshot,
                         };
-                        farm::fill_from_definition(&self.context, &mut sub);
+                        // Its type for the routing too: the request's
+                        // parameters name the option's exchange code (ibx#671).
+                        if farm::fill_from_definition(&self.context, &mut sub) && !sub.sec_type.is_empty() {
+                            self.context.market.set_routing(id, &sub.sec_type, "");
+                        }
                         if con_id == 0 {
                             self.lookup_md_contract(sub, String::new(), filters);
                         } else if mode_9887 == 0 && self.joins_top(id, snapshot) {

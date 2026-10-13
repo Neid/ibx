@@ -215,7 +215,9 @@ fn release_lot_parked(context: &mut Context, con_id: i64, lot: i64) {
     // A lookup made for the route alone leaves the sizes as on the wire.
     let lot = if context.scale_us_lots { lot } else { 1 };
     for mut sub in ready {
-        fill_from_definition(context, &mut sub);
+        if fill_from_definition(context, &mut sub) && !sub.sec_type.is_empty() {
+            context.market.set_routing(sub.instrument, &sub.sec_type, "");
+        }
         context.market.set_round_lot(sub.instrument, lot);
         context.lot_ready.push(sub);
     }
@@ -1079,7 +1081,9 @@ impl FarmState {
         }
         context.market.seed_kept(instrument, &kept);
         let q = context.quote(instrument);
-        let auto = context.market.marks(instrument).auto_word();
+        // The kept bid and ask carry no auto-execution: a snapshot given
+        // them shows false (ibx#671; the reference 10.51, 13/10/2026).
+        let auto = 0;
         let queue = &shared.market.md_events;
         // The last trade's exchange the contract kept is not given again
         // for a trade on the same exchange (the recording of 28/09/2026: no

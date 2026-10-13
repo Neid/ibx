@@ -288,6 +288,11 @@ impl Out<'_> {
     }
 }
 
+/// A last price the reference gives: above 0, or with a size (ibx#671).
+fn last_valid(fields: &[i64; field::COUNT]) -> bool {
+    fields[field::LAST] > 0 || fields[field::LAST_SIZE] != 0
+}
+
 /// A stream's step: the fields that changed, in the sender's order, then
 /// the halted state while it is pending.
 fn stream_pass(st: &mut StreamState, m: &Mirror, pass: Pass, out: &mut Out) {
@@ -344,6 +349,10 @@ fn stream_pass(st: &mut StreamState, m: &Mirror, pass: Pass, out: &mut Out) {
             // delayed data: 66 and 69, 67 and 70, 68 and 71, once each).
             field::BID => { out.price(TICK_BID, idx, bid_auto); out.size(TICK_BID_SIZE, field::BID_SIZE); if delayed { todo[field::BID_SIZE] = false; } }
             field::ASK => { out.price(TICK_ASK, idx, ask_auto); out.size(TICK_ASK_SIZE, field::ASK_SIZE); if delayed { todo[field::ASK_SIZE] = false; } }
+            // No trade: a last of -1 with no size is not given; the size
+            // goes on its own (ibx#671; the reference 10.51, an option with
+            // no trade, 13/10/2026).
+            field::LAST if !last_valid(fields) => {}
             field::LAST => { out.price(TICK_LAST, idx, false); out.size(TICK_LAST_SIZE, field::LAST_SIZE); if delayed { todo[field::LAST_SIZE] = false; } }
             field::BID_SIZE => out.size(TICK_BID_SIZE, idx),
             field::ASK_SIZE => out.size(TICK_ASK_SIZE, idx),
@@ -407,7 +416,7 @@ fn snapshot_pass(snap: &mut PlainSnapshot, m: &Mirror, pass: Pass, out: &mut Out
             out.size(st, size);
         }
     }
-    if has(field::LAST) && snap.take(out.api(TICK_LAST)) {
+    if has(field::LAST) && last_valid(&f) && snap.take(out.api(TICK_LAST)) {
         out.price(TICK_LAST, field::LAST, false);
         out.size(TICK_LAST_SIZE, field::LAST_SIZE);
     }
@@ -1056,6 +1065,17 @@ mod tests {
             "price:1:1:99", "size:1:0:1",
         ]);
         assert!(poll(&core, &shared).is_empty());
+    }
+
+    // ibx#671 (the reference 10.51, 13/10/2026, an option with no trade
+    // today): a last of -1 with no size gives no last price, its size once.
+    #[test]
+    fn a_last_of_minus_one_without_size_is_not_given() {
+        let (core, shared) = (ClientCore::new(), SharedState::new());
+        assert!(core.attach_md_request(&shared, 1, 5, false, "OPT", "SMART", None, false, false));
+        let q = Quote { last: -PRICE_SCALE, ..Default::default() };
+        shared.market.push_test_message(5, &q, &TestMessage { steps: Some(&[MdStep::Last]), sizes_seen: true, ..Default::default() });
+        assert_eq!(poll(&core, &shared), ["mdt:1:1", "size:1:5:0"]);
     }
 
     // ibx#640 (the reference 10.51, SPX on CBOE, 13/10/2026, regular
