@@ -1674,6 +1674,35 @@ fn is_given(v: f64) -> bool {
 /// usePriceMgmtAlgo as openOrder reports it (ibx#492): 0 or 1, never
 /// unset, as the reference; the value the server's report gives, else the
 /// caller's, unset read as 0.
+/// The auto cancel date of a GTC order, from the server's report (ibx#546;
+/// the reference 10.51, paper 13/10/2026: `20270331-20:00:00` given as
+/// '20270331 22:00:00 CET'): the time in the machine's zone, then the
+/// zone's standard short name, or its daylight name when the standard one
+/// is GMT and the time is not on GMT.
+fn reported_auto_cancel_date(order: &mut ApiOrder, reported: Option<&ApiOrder>) {
+    if let Some(raw) = reported.map(|r| r.auto_cancel_date.as_str()).filter(|r| !r.is_empty()) {
+        order.auto_cancel_date = auto_cancel_date_view(raw, &crate::gateway::machine_tz()).unwrap_or_else(|| raw.to_string());
+    }
+}
+
+pub(crate) fn auto_cancel_date_view(raw: &str, tz: &jiff::tz::TimeZone) -> Option<String> {
+    let at = jiff::civil::DateTime::strptime("%Y%m%d-%H:%M:%S", raw).ok()?.to_zoned(jiff::tz::TimeZone::UTC).ok()?.timestamp();
+    let local = at.to_zoned(tz.clone());
+    let year = local.year();
+    let standard = [1, 7].iter()
+        .filter_map(|&m| jiff::civil::date(year, m, 1).to_zoned(tz.clone()).ok())
+        .map(|z| tz.to_offset_info(z.timestamp()))
+        .find(|info| !info.dst().is_dst())
+        .map(|info| info.abbreviation().to_string())
+        .unwrap_or_else(|| tz.to_offset_info(at).abbreviation().to_string());
+    let label = if standard == "GMT" && local.offset().seconds() != 0 {
+        tz.to_offset_info(at).abbreviation().to_string()
+    } else {
+        standard
+    };
+    Some(format!("{} {}", local.strftime("%Y%m%d %H:%M:%S"), label))
+}
+
 fn reported_price_mgmt(order: &mut ApiOrder, reported: Option<&ApiOrder>) {
     order.use_price_mgmt_algo = match reported {
         Some(r) => r.use_price_mgmt_algo,
@@ -3874,6 +3903,7 @@ impl ClientCore {
                     reported_trail_limit(&mut order, &i.order);
                 }
                 reported_price_mgmt(&mut order, info.as_ref().map(|i| &i.order));
+                reported_auto_cancel_date(&mut order, info.as_ref().map(|i| &i.order));
                 // The order of this client carries its client id, as the
                 // reference's openOrder (ibx#486).
                 let client_id = self.client_id.load(Ordering::Relaxed);
@@ -4322,6 +4352,7 @@ impl ClientCore {
                         if !info.order.oca_group.is_empty() { order.oca_group = info.order.oca_group.clone(); }
                     }
                     reported_price_mgmt(&mut order, info.as_ref().map(|i| &i.order));
+                    reported_auto_cancel_date(&mut order, info.as_ref().map(|i| &i.order));
                     let modified = self.modified_orders.lock().unwrap().contains(&oid);
                     session_order_fields(&mut order, &shared.reference.user_name(), modified);
                     placed_contract(&mut contract, &o.contract.exchange, shared);
@@ -6623,6 +6654,19 @@ impl ClientCore {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ibx#546: the auto cancel date of a GTC order as the reference shows
+    // it (paper 13/10/2026, a machine in Paris: '20270331 22:00:00 CET'):
+    // the zone's standard name, its daylight name only for a zone on GMT.
+    #[test]
+    fn auto_cancel_date_in_the_machine_zone() {
+        let tz = |n: &str| jiff::tz::TimeZone::get(n).unwrap();
+        assert_eq!(auto_cancel_date_view("20270331-20:00:00", &tz("Europe/Paris")).as_deref(), Some("20270331 22:00:00 CET"));
+        assert_eq!(auto_cancel_date_view("20270131-20:00:00", &tz("Europe/Paris")).as_deref(), Some("20270131 21:00:00 CET"));
+        assert_eq!(auto_cancel_date_view("20270630-20:00:00", &tz("Europe/London")).as_deref(), Some("20270630 21:00:00 BST"));
+        assert_eq!(auto_cancel_date_view("20270630-20:00:00", &tz("America/New_York")).as_deref(), Some("20270630 16:00:00 EST"));
+        assert_eq!(auto_cancel_date_view("not a date", &tz("Europe/Paris")), None);
+    }
 
     // ibx#616: below session level 225 the odd-lot quotes (787) are
     // refused with 10367, also in a list with other ticks; a list the

@@ -1959,7 +1959,10 @@ impl CcpState {
             let outside_rth = parsed.get(&6433).is_some_and(|s| s == "1")
                 || shared.orders.get_order_info(clord_id).is_some_and(|i| i.order.outside_rth);
             let clearing_intent = parsed.get(&6419).cloned().unwrap_or_default();
-            let auto_cancel_date = parsed.get(&6596).cloned().unwrap_or_default();
+            // Kept when a later report leaves it out (ibx#546).
+            let auto_cancel_date = parsed.get(&6596).cloned()
+                .or_else(|| shared.orders.get_order_info(clord_id).map(|i| i.order.auto_cancel_date).filter(|d| !d.is_empty()))
+                .unwrap_or_default();
             let exec_exchange = parsed.get(&30).cloned().unwrap_or_default();
             let transact_time = parsed.get(&60).cloned().unwrap_or_default();
             let avg_px: f64 = parsed.get(&6).and_then(|s| s.parse().ok()).unwrap_or(0.0);
@@ -2075,8 +2078,12 @@ impl CcpState {
             };
             let algo_strategy = parsed.get(&847).cloned().unwrap_or_default();
             // The price management flag the server echoes, 0 without it
-            // (ibx#492).
-            let use_price_mgmt_algo: i32 = i32::from(parsed.get(&8339).is_some_and(|v| v == "1"));
+            // (ibx#492); a report that leaves it out (a fill) keeps the
+            // order's, as the reference shows the order it holds (ibx#546).
+            let use_price_mgmt_algo: i32 = match parsed.get(&8339) {
+                Some(v) => i32::from(v == "1"),
+                None => shared.orders.get_order_info(clord_id).map_or(0, |i| i.order.use_price_mgmt_algo),
+            };
             let trail_stop_price: f64 = parsed.get(&6117)
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(f64::MAX);

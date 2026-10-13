@@ -464,8 +464,8 @@ class TestSessionFeatures:
 
         # A stock limit order with the value unset carries the price
         # management flag, as the reference, and reads it back (ibx#492).
-        assert o.use_price_mgmt_algo is True, \
-            f"Expected use_price_mgmt_algo True for a stock LMT, got {o.use_price_mgmt_algo}"
+        assert o.use_price_mgmt_algo == 1 and type(o.use_price_mgmt_algo) is int, \
+            f"Expected use_price_mgmt_algo 1 for a stock LMT (the reference's integer, ibx#546), got {o.use_price_mgmt_algo!r}"
 
         # 6 constant fields (defaults)
         assert o.adjusted_order_type == "", \

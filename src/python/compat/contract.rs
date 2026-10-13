@@ -535,9 +535,10 @@ pub struct Order {
     pub submitter: String,
     #[pyo3(get, set)]
     pub trail_stop_price: f64,
-    /// None when unset, as the API (ibx#492).
+    /// None when unset, as the API (ibx#492); the value the caller set,
+    /// or the 0/1 of the reference's openOrder (ibx#546).
     #[pyo3(get, set)]
-    pub use_price_mgmt_algo: Option<bool>,
+    pub use_price_mgmt_algo: Option<BoolOrInt>,
     #[pyo3(get, set)]
     pub volatility: f64,
     #[pyo3(get, set)]
@@ -1510,9 +1511,9 @@ impl Order {
     #[setter(triggerPrice)]
     fn set_trigger_price_alias(&mut self, v: f64) { self.trigger_price = v; }
     #[getter(usePriceMgmtAlgo)]
-    fn get_use_price_mgmt_algo_alias(&self) -> Option<bool> { self.use_price_mgmt_algo }
+    fn get_use_price_mgmt_algo_alias(&self) -> Option<BoolOrInt> { self.use_price_mgmt_algo }
     #[setter(usePriceMgmtAlgo)]
-    fn set_use_price_mgmt_algo_alias(&mut self, v: Option<bool>) { self.use_price_mgmt_algo = v; }
+    fn set_use_price_mgmt_algo_alias(&mut self, v: Option<BoolOrInt>) { self.use_price_mgmt_algo = v; }
     #[getter(volatilityType)]
     fn get_volatility_type_alias(&self) -> i32 { self.volatility_type }
     #[setter(volatilityType)]
@@ -1844,7 +1845,7 @@ impl Order {
             smart_combo_routing_params,
             order_misc_options,
             // None is the API's unset value (ibx#492).
-            use_price_mgmt_algo: self.use_price_mgmt_algo.map_or(i32::MAX, i32::from),
+            use_price_mgmt_algo: self.use_price_mgmt_algo.map_or(i32::MAX, |v| i32::from(v.is_on())),
             route_marketable_to_bbo: self.route_marketable_to_bbo.is_some_and(BoolOrInt::is_on),
             seek_price_improvement: self.seek_price_improvement.is_some_and(BoolOrInt::is_on),
             ..Default::default()
@@ -2016,7 +2017,9 @@ impl Order {
             order_misc_options: tag_values(&o.order_misc_options)?,
             order_combo_legs: list_or_none(py, legs)?,
             conditions: conditions_to_py(py, &o.conditions)?,
-            use_price_mgmt_algo: (o.use_price_mgmt_algo != i32::MAX).then_some(o.use_price_mgmt_algo != 0),
+            // The reference's openOrder gives it as 0 or 1 (ibx#546, paper
+            // 13/10/2026).
+            use_price_mgmt_algo: (o.use_price_mgmt_algo != i32::MAX).then_some(BoolOrInt::Int(i64::from(o.use_price_mgmt_algo != 0))),
             // The reference's openOrder gives both, as 0 or 1 (ibx#608,
             // paper 12/10/2026).
             route_marketable_to_bbo: Some(BoolOrInt::Int(o.route_marketable_to_bbo as i64)),

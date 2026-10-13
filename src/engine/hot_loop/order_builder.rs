@@ -2798,8 +2798,23 @@ fn definition<'a>(
     hb: &mut HeartbeatState,
     instrument: crate::types::InstrumentId,
 ) -> Definition<'a> {
+    definition_on(context, conn, hb, instrument, None)
+}
+
+/// [`definition`] on another exchange than the order's (`on`), BEST for
+/// the contract's SMART definition.
+fn definition_on<'a>(
+    context: &'a mut Context,
+    conn: &mut Connection,
+    hb: &mut HeartbeatState,
+    instrument: crate::types::InstrumentId,
+    on: Option<&str>,
+) -> Definition<'a> {
     let Some(con_id) = context.market.con_id(instrument) else { return Definition::NoContract };
-    let (_, destination) = context.market.order_routing(instrument);
+    let destination = match on {
+        Some(exchange) => exchange.to_string(),
+        None => context.market.order_routing(instrument).1,
+    };
     let key = (con_id, destination);
     if !context.rth_types.contains_key(&key) {
         if !context.rth_lookups.iter().any(|(_, k, _)| *k == key) {
@@ -3008,7 +3023,18 @@ fn price_mgmt_flag(
     if !pm::allowed(context.price_mgmt_exclusions.as_ref(), &exchange, &sec_type, smart) {
         return Some(false);
     }
-    match definition(context, conn, hb, instrument) {
+    let (own, smart) = match definition(context, conn, hb, instrument) {
+        Definition::NoContract => return Some(false),
+        Definition::Waiting => return None,
+        Definition::Known(types, exchange) => (types.price_chk, types.smart && exchange != "BEST"),
+    };
+    if own || !smart {
+        return Some(own);
+    }
+    // A directed order whose exchange's list lacks the key takes the
+    // contract's SMART definition (ibx#546; code read; observed 13/10/2026,
+    // regular hours, paper: the flag on orders for ARCA and FOXRIVER).
+    match definition_on(context, conn, hb, instrument, Some("BEST")) {
         Definition::NoContract => Some(false),
         Definition::Waiting => None,
         Definition::Known(types, _) => Some(types.price_chk),
@@ -7901,6 +7927,22 @@ mod tests {
         context.rth_types.insert((265598, "BEST".to_string()), crate::engine::outside_rth::RthTypes {
             sec_type: "STK".into(), types_known: true, price_chk: true, ..Default::default()
         });
+    }
+
+    // ibx#546: an order directed to ARCA, whose list there lacks the price
+    // check key, carries the flag from the contract's SMART definition,
+    // as the reference sent it (paper, 13/10/2026).
+    #[test]
+    fn a_directed_order_takes_the_flag_of_the_smart_definition() {
+        let (frames, _) = session_frames(|c| {
+            price_mgmt_session(c);
+            c.market.set_routing(0, "STK", "ARCA");
+            c.bypass_redirect_warning = true;
+            c.rth_types.insert((265598, "ARCA".to_string()), crate::engine::outside_rth::RthTypes {
+                sec_type: "STK".into(), types_known: true, price_chk: false, smart: true, ..Default::default()
+            });
+        }, vec![limit_ex(1, Side::Buy, 230 * P, priced(None))], 1);
+        assert_eq!((tag(&frames[0], 100), tag(&frames[0], 8339)), (Some("ARCA"), Some("1")));
     }
 
     fn priced(value: Option<bool>) -> crate::types::OrderAttrs {
