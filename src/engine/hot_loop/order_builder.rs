@@ -3020,6 +3020,7 @@ pub(crate) fn rth_definition_reply(context: &mut Context, req_id: &str, msg: &[u
         def.as_ref().map(|d| d.currency.as_str()).unwrap_or(""),
     );
     types.smart = tags.get(&6046).is_some_and(|v| v.split(',').any(|e| e == "BEST" || e == "SMART"));
+    types.under_sec_type = tags.get(&310).cloned().unwrap_or_default();
     types.valid_exchanges = tags.get(&6046).map(|v| v.split(',')
         .map(|e| if e == "BEST" { "SMART".to_string() } else { e.to_string() }).collect());
     log::info!("Outside RTH definition for con_id {} on {}: {:?}", key.0, key.1, types);

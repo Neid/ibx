@@ -64,6 +64,9 @@ pub(crate) struct RthTypes {
     /// The contract's valid exchanges, BEST named SMART; None when the
     /// definition has no list (ibx#630).
     pub valid_exchanges: Option<Vec<String>>,
+    /// The security type of the contract's underlying (tag 310), for a CFD
+    /// (ibx#619).
+    pub under_sec_type: String,
 }
 
 impl RthTypes {
@@ -145,10 +148,15 @@ impl RthKind {
 pub(crate) fn outside_rth_applies(kind: RthKind, tif: u8, exchange: &str, types: &RthTypes) -> bool {
     // A4: a market-like type is regular-hours only on a US stock or
     // warrant, a USD option, or a contract with the RTH4MKT token.
+    // A CFD on a US stock too (ibx#619; the reference 10.51, paper,
+    // pre-market 13/10/2026: the AAPL CFD stop loses outside RTH and allow
+    // pre-open with 2109). The reference reads the market type of the
+    // underlying's definition; ibx takes a stock underlying of a USD CFD.
     let forced_rth = kind.market_like
         && ((types.sec_type == "STK" && types.market_type == "USSTK")
             || (types.sec_type == "WAR" && types.market_type == "USWAR")
             || (matches!(types.sec_type.as_str(), "OPT" | "FOP" | "IOPT") && types.currency == "USD")
+            || (types.sec_type == "CFD" && types.under_sec_type == "STK" && types.currency == "USD")
             || types.rth4mkt);
     if forced_rth { return false; }
     // A6: the exchange list allows outside RTH (RTH token and a time in
@@ -332,6 +340,27 @@ mod tests {
         for (label, kind, tif, exch, keep) in cases {
             assert_eq!(outside_rth_applies(kind, tif, exch, &t), keep, "{label}");
         }
+    }
+
+    // ibx#619 (the reference 10.51, paper, pre-market 13/10/2026, the
+    // lists of `.tmp/619/gateway_L.log`): the AAPL CFD stop loses outside
+    // RTH and allow pre-open, its limit keeps them; the MES future's list
+    // has no pre-open key, so its stop loses allow pre-open.
+    #[test]
+    fn a_cfd_on_a_us_stock_and_a_future_as_the_reference() {
+        let tokens = |list: &str| list.split(',').map(String::from).collect::<Vec<_>>();
+        let mut cfd = RthTypes::from_definition(&tokens("ACTIVETIM/1,PREOPGRTH/1,RTH/1,STP/1,LMT/3"), "", "CFD", "USD");
+        cfd.under_sec_type = "STK".into();
+        let stop = RthKind::of(&OrderKind::Stop { stop_price: 1 });
+        let lmt = RthKind::of(&OrderKind::Limit { price: 1 });
+        assert!(!outside_rth_applies(stop, b'0', "BEST", &cfd));
+        assert!(!open_flag_applies(stop, b'0', "BEST", &cfd, cfd.pre_open));
+        assert!(open_flag_applies(lmt, b'0', "BEST", &cfd, cfd.pre_open));
+        // A CFD whose underlying is not a stock is not forced.
+        let index_cfd = RthTypes { under_sec_type: "IND".into(), ..cfd.clone() };
+        assert!(outside_rth_applies(stop, b'0', "BEST", &index_cfd));
+        let fut = RthTypes::from_definition(&tokens("ACTIVETIM/1,LTH/1,STP/1,LMT/3"), "USFUT", "FUT", "USD");
+        assert!(!open_flag_applies(stop, b'0', "CME", &fut, fut.pre_open));
     }
 
     // Parts of the rule not captured on paper, from the code read.
