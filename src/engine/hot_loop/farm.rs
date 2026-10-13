@@ -1275,6 +1275,7 @@ impl FarmState {
         let ctx = crate::control::generic_values::DecodeCtx {
             min_tick: context.market.min_tick(instrument), now_ms,
             round_lot: context.market.round_lot(instrument), entry_min_tick,
+            rt_in_shares: !context.market.lot_sizes(),
         };
         let rec = self.generic_records.entry(instrument).or_default();
         let ticks = crate::control::generic_values::decode(code, payload, rec, ctx);
@@ -2745,7 +2746,7 @@ fn generic_entry(e: &GenericEntry, subscribe: bool) -> Vec<(u32, String)> {
         (6008, e.con_id.clone()),
         (207, e.exchange.clone()),
         (167, e.sec_type.clone()),
-        (264, e.code.to_string()),
+        (264, crate::control::generic_values::wire_code(e.code).to_string()),
     ];
     if subscribe {
         tags.push((6088, "Socket".into()));

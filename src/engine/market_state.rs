@@ -238,6 +238,11 @@ impl MarketState {
         self.lot_sizes = on;
     }
 
+    /// The server's sizes come in round lots (the 10.40 form).
+    pub fn lot_sizes(&self) -> bool {
+        self.lot_sizes
+    }
+
     /// The round lot the sizes of the server are counted in: the
     /// instrument's in the 10.40 form, 1 when they come in shares.
     #[inline(always)]

@@ -265,6 +265,9 @@ pub struct DecodeCtx {
     /// The price tick of the tick's own entry (the third field of its
     /// acknowledgement): the slow mark price is scaled by it.
     pub entry_min_tick: f64,
+    /// The real-time volume comes in shares and is given in round lots
+    /// (the 10.51 form asked as 765, ibx#642); false in the 10.40 lot form.
+    pub rt_in_shares: bool,
 }
 
 /// sqrt(252): a daily volatility to an annual one (`optionmodel.O.b`).
@@ -551,7 +554,13 @@ fn rt_volume(rec: &mut GenericRecord, trade: bool, value: f64, volume: i64, coun
     // Wrapping, as the count: a bad frame must not stop the farm handler.
     let d_vol = volume.wrapping_sub(pvol);
     let d_value = value - pv;
-    if d_count == 0 && d_vol == 0 && d_value == 0.0 {
+    // The real-time volume is asked in its share form (ibx#642): the
+    // price comes from the shares traded, an odd lot included, and the
+    // size and volume are given in round lots, truncated; with a lot
+    // above 1 every block gives a string (`generictick.aD`, code read;
+    // observed 13/10/2026, MSFT, round lot 40, on the reference 10.51).
+    let lot = if trade || !ctx.rt_in_shares { 1 } else { ctx.round_lot.max(1) };
+    if lot == 1 && d_count == 0 && d_vol == 0 && d_value == 0.0 {
         return None;
     }
     let px = if d_vol == 0 { None } else { Some(round_to_tick(d_value / d_vol as f64, ctx.min_tick)) };
@@ -560,9 +569,19 @@ fn rt_volume(rec: &mut GenericRecord, trade: bool, value: f64, volume: i64, coun
     let text = |v: f64| rule_price_text(v, decimals);
     Some(format!(
         "{};{};{};{};{};{}",
-        px.map(text).unwrap_or_default(), decimal16(d_vol), ctx.now_ms, decimal16(volume),
+        px.map(text).unwrap_or_default(), decimal16(d_vol / lot), ctx.now_ms, decimal16(volume / lot),
         vwap.map(text).unwrap_or_default(), d_count < 2,
     ))
+}
+
+/// The code a generic tick is asked under on the wire: the reference 10.51
+/// asks the real-time volume (233) in its share form, 765 (ibx#641,
+/// observed 13/10/2026 on MSFT, regular hours).
+pub fn wire_code(code: i32) -> i32 {
+    match code {
+        RT_VOLUME => 765,
+        other => other,
+    }
 }
 
 fn round_to_tick(v: f64, tick: f64) -> f64 {
@@ -760,7 +779,7 @@ mod tests {
         (0..s.len()).step_by(2).map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap()).collect()
     }
 
-    const CTX: DecodeCtx = DecodeCtx { min_tick: 0.01, now_ms: 1791219886917, round_lot: 40, entry_min_tick: 0.001 };
+    const CTX: DecodeCtx = DecodeCtx { min_tick: 0.01, now_ms: 1791219886917, round_lot: 40, entry_min_tick: 0.001, rt_in_shares: false };
 
     // AAPL, 07/10/2026 (b4_generic_rest, frames 37, 333 and 258): the mark
     // price, the slow mark price (a block without a length, price tick
@@ -829,7 +848,10 @@ mod tests {
     fn blocks_of_the_first_frame() {
         let mut rec = GenericRecord::default();
         let d = |code, h: &str, rec: &mut GenericRecord| decode(code, &hex(h), rec, CTX);
-        assert!(d(233, "4196af335ee3acb3000000000004589c000672c400000000", &mut rec).is_empty());
+        // The real-time volume of this 10.40 recording came in its lot form
+        // (the share form is #642's test).
+        let lots = |code, h: &str, rec: &mut GenericRecord| decode(code, &hex(h), rec, CTX);
+        assert!(lots(233, "4196af335ee3acb3000000000004589c000672c400000000", &mut rec).is_empty());
         assert!(d(375, "41910c15a777b785000000000003441d0001648d00000000", &mut rec).is_empty());
         assert_eq!(d(456, "00000018312e30362c312e312c32303236313130392c302e32372c34", &mut rec),
             vec![GenTick::Text(59, "1.06,1.10,20261109,0.27".into())]);
@@ -848,19 +870,36 @@ mod tests {
         assert_eq!(d(318, "00000000000000000800000100000000", &mut rec), vec![GenTick::Price(57, 0.0)]);
         assert_eq!(d(512, "3f8dc2be5611848d000000016ac32ef8", &mut rec), vec![GenTick::Generic(23, 0.23068199851119725)]);
         // Frame 9129: what traded since, then the shortable shares alone.
-        assert_eq!(d(233, "4196af870119def300000000000458ac000672ce00000000", &mut rec),
+        assert_eq!(lots(233, "4196af870119def300000000000458ac000672ce00000000", &mut rec),
             vec![GenTick::Text(48, "334.53;16.0000000000000000;1791219886917;284844.0000000000000000;334.04434805;false".into())]);
         assert_eq!(rule_price_text(334.5, tick_decimals(0.01)), "334.50");
         assert_eq!(d(375, "41910c599b4f1068000000000003442a0001649200000000", &mut rec),
             vec![GenTick::Text(77, "334.54;13.0000000000000000;1791219886917;214058.0000000000000000;334.04736486;false".into())]);
         assert_eq!(d(236, "000000030b566f1e", &mut rec), vec![GenTick::Size(89, 190213918.0)]);
         // Frames 9160 and 9213: one trade; a count change with no volume.
-        assert_eq!(d(233, "4196af8c3b48ec3a00000000000458ad000672cf00000000", &mut rec),
+        assert_eq!(lots(233, "4196af8c3b48ec3a00000000000458ad000672cf00000000", &mut rec),
             vec![GenTick::Text(48, "334.55;1.0000000000000000;1791219886917;284845.0000000000000000;334.04434981;true".into())]);
-        assert!(d(233, "4196af9175813e2500000000000458ae000672d200000000", &mut rec).len() == 1);
-        assert!(d(233, "4196af96afb29db400000000000458af000672d500000000", &mut rec).len() == 1);
-        assert_eq!(d(233, "4196af96afb29db400000000000458af000672d700000000", &mut rec),
+        assert!(lots(233, "4196af9175813e2500000000000458ae000672d200000000", &mut rec).len() == 1);
+        assert!(lots(233, "4196af96afb29db400000000000458af000672d500000000", &mut rec).len() == 1);
+        assert_eq!(lots(233, "4196af96afb29db400000000000458af000672d700000000", &mut rec),
             vec![GenTick::Text(48, ";0E-16;1791219886917;284847.0000000000000000;334.04435337;false".into())]);
+    }
+
+    // ibx#642: the real-time volume in its share form (asked as 765), two
+    // blocks of MSFT (round lot 40) of the reference 10.51's run of
+    // 13/10/2026, regular hours: one share traded, so the size is 0 lots
+    // and the price is that share's, as the reference gave it
+    // ('549.66;0E-16;...;151145...;548.54166701;false').
+    #[test]
+    fn rt_volume_in_shares() {
+        let mut rec = GenericRecord::default();
+        let ctx = DecodeCtx { min_tick: 0.01, now_ms: 1791900393444, round_lot: 40, entry_min_tick: 0.01, rt_in_shares: true };
+        assert!(decode(RT_VOLUME, &hex("41e8b57e9b1c8ac300000000005c407600024a1600000000"), &mut rec, ctx).is_empty());
+        assert_eq!(decode(RT_VOLUME, &hex("41e8b57edfd1930500000000005c407700024a1a00000000"), &mut rec, ctx),
+            vec![GenTick::Text(48, "549.66;0E-16;1791900393444;151145.0000000000000000;548.54166701;false".into())]);
+        // With a lot above 1, a block with no change gives a string too.
+        assert_eq!(decode(RT_VOLUME, &hex("41e8b57edfd1930500000000005c407700024a1a00000000"), &mut rec, ctx).len(), 1);
+        assert_eq!((wire_code(RT_VOLUME), wire_code(RT_TRADE_VOLUME)), (765, RT_TRADE_VOLUME));
     }
 
     #[test]
