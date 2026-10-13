@@ -3363,6 +3363,12 @@ fn redirect_precaution(
     if sec_type != "STK" || matches!(exchange.as_str(), "" | "SMART" | "IBDESK" | "ZERO") {
         return None;
     }
+    // An algo provider's destination goes through SMART: no precaution
+    // (ibx#505; observed 13/10/2026, regular hours, reference 10.51 with
+    // the precaution on: FOXRIVER sent, ARCA discarded with 10311).
+    if context.algo_providers.iter().any(|p| p.eq_ignore_ascii_case(&exchange)) {
+        return None;
+    }
     match definition(context, conn, hb, instrument) {
         Definition::NoContract => None,
         Definition::Waiting => Some(false),
@@ -4508,6 +4514,7 @@ mod tests {
         let run = |exchange: &str, smart: bool, bypass: bool| {
             let mut context = Context::new();
             context.bypass_redirect_warning = bypass;
+            context.algo_providers = vec!["FOXRIVER".into()];
             let id = context.market.register(265598);
             context.market.set_symbol(id, "AAPL".into());
             context.market.set_routing(id, "STK", exchange);
@@ -4539,6 +4546,9 @@ mod tests {
         assert!(sent && errors.is_empty() && statuses.is_empty(), "bypassed");
         let (sent, errors, ..) = run("ISLAND", false, false);
         assert!(sent && errors.is_empty(), "a contract that does not trade on SMART");
+        // ibx#505: an algo provider's destination goes through SMART.
+        let (sent, errors, ..) = run("FOXRIVER", true, false);
+        assert!(sent && errors.is_empty(), "an algo provider");
     }
 
     // ibx#486: an order on a contract given without a conId waits for the
