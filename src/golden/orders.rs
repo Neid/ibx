@@ -72,6 +72,11 @@ pub(crate) fn replay_orders(fx: &Fixture) -> OrderReplay {
     let recs = at_their_effect(&fx.recs);
     let fx = &Fixture { header: fx.header.clone(), recs };
     let mut s = Session::new().in_zone(&fx.header);
+    // A recording of 10.40 follows its order rules (ibx#660); one with no
+    // version is from before 10.51.
+    if fx.header.get("gateway_version").and_then(|v| v.as_i64()).is_none_or(|v| v < 10500) {
+        s.shared.reference.set_order_rules_10_40(true);
+    }
     if let Some(start) = fx.recs.iter().find(|r| r.msg == "START_API") {
         // The client id of the recorded session, on the wire (6119) and in
         // the callbacks, as a client connected with it.
@@ -342,7 +347,8 @@ fn time_conditions_refused_by_the_server() {
 // OVERNIGHT time in force (28/09/2026, i196_overnight): the order and the
 // refused change of its price (462 for the time in force the modify
 // restates), Cancelled then 202. Up to the order on the OVERNIGHT
-// exchange (see `overnight_directed_order`).
+// exchange (see `overnight_directed_order`). In the 10.40 form: the 10.51
+// reference refuses that time in force with 10052 (ibx#660).
 #[test]
 fn overnight_time_in_force_on_smart() {
     replay_and_compare("orders_i196_overnight", |r| r.seq < 1237, KNOWN, &[]);

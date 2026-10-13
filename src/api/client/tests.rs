@@ -4199,6 +4199,8 @@ fn modify_must_restate_the_held_overnight_time_in_force() {
     ];
     for (tif, include_overnight, held, text) in cases {
         let (client, rx, shared) = test_client();
+        // The 10.40 form: 10.51 refuses these times in force (ibx#660).
+        shared.reference.set_order_rules_10_40(true);
         shared.market.set_instrument_count(1);
         client.place_order(72, &spy(), &lmt(tif, include_overnight, 600.0)).unwrap();
         while rx.try_recv().is_ok() {}
@@ -4214,6 +4216,40 @@ fn modify_must_restate_the_held_overnight_time_in_force() {
         assert!(rx.try_iter().any(|c| matches!(c, ControlCommand::Order(OrderRequest::Modify { order_id: 72, .. }))), "{tif}");
         assert!(shared.orders.drain_order_errors().is_empty());
     }
+}
+
+// ibx#660 (the reference 10.51, paper, 13/10/2026, client at level 214):
+// the overnight times in force are refused with 10052 at once, nothing
+// sent; the cancel then gives 10147.
+#[test]
+fn overnight_times_in_force_are_refused() {
+    for tif in ["OVERNIGHT", "OVERNIGHT + DAY"] {
+        let (client, rx, shared) = test_client();
+        shared.market.set_instrument_count(1);
+        let order = Order {
+            action: "BUY".into(), total_quantity: 1.0, order_type: "LMT".into(), lmt_price: 100.0,
+            tif: tif.into(), ..Default::default()
+        };
+        client.place_order(74, &spy(), &order).unwrap();
+        assert!(rx.try_recv().is_err(), "{tif}: nothing sent");
+        assert_eq!(shared.orders.drain_order_errors(), [(74, 10052, format!("Invalid time in force:{tif}"))]);
+    }
+}
+
+// ibx#660 (the reference 10.51, paper, 13/10/2026): a Minutes time in
+// force goes out with its own code, which the server judges (it rejected
+// it with 201 on a SMART stock); ibx refused it locally.
+#[test]
+fn minutes_time_in_force_goes_out() {
+    let (client, rx, shared) = test_client();
+    shared.market.set_instrument_count(1);
+    let order = Order {
+        action: "BUY".into(), total_quantity: 1.0, order_type: "LMT".into(), lmt_price: 100.0,
+        tif: "Minutes".into(), ..Default::default()
+    };
+    client.place_order(75, &spy(), &order).unwrap();
+    assert!(matches!(rx.try_recv().unwrap(), ControlCommand::Order(OrderRequest::SubmitLimitEx { tif: b'p', .. })));
+    assert!(shared.orders.drain_order_errors().is_empty());
 }
 
 // The reference checks the side before the order type (from the code

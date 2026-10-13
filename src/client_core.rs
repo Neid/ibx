@@ -4065,6 +4065,11 @@ impl ClientCore {
                 }
             }
         }
+        // An overnight order on a contract without overnight trading: the
+        // order is gone, its cancel 10147 (ibx#660).
+        if code == crate::engine::hot_loop::order_builder::OVERNIGHT_NOT_SUPPORTED.0 {
+            self.open_orders.lock().unwrap().remove(&order_id);
+        }
         // The redirect precaution discards the order (ibx#486).
         // So does the precaution of routeMarketableToBbo (ibx#608).
         if matches!(code, 10311 | 10329 | 10353) {
@@ -5001,6 +5006,16 @@ impl ClientCore {
         None
     }
 
+    /// The overnight times in force, no longer taken from an API client
+    /// in 10.51 (ibx#660; the reference 10.51, paper, 13/10/2026, client
+    /// at level 214: 10052 at once for OVERNIGHT and for OVERNIGHT + DAY,
+    /// nothing sent). The 10.40 form took them (ibx#467).
+    pub fn overnight_tif_refusal(order: &ApiOrder, reference: &crate::bridge::ReferenceState) -> Option<(i64, String)> {
+        let overnight = order.tif.eq_ignore_ascii_case(TIF_OVERNIGHT) || order.tif.eq_ignore_ascii_case(TIF_OVERNIGHT_DAY);
+        (overnight && !reference.order_rules_10_40())
+            .then(|| (10052, format!("Invalid time in force:{}", order.tif)))
+    }
+
     /// The time in force the reference sends for an API value it does not
     /// send as such: GTX and NMIN go out as GTC and read back as GTC
     /// (captured 28/09/2026, ibx#307).
@@ -5020,11 +5035,13 @@ impl ClientCore {
 
         // An unrecognized tif would otherwise be sent as DAY silently.
         match order.tif.as_str() {
-            "" | "DAY" | "GTC" | "IOC" | "FOK" | "OPG" | "GTD" | "DTC" | "AUC"
+            // Minutes goes out as the reference sends it; the server decides
+            // (ibx#660; paper 13/10/2026: rejected on a SMART stock, 201).
+            "" | "DAY" | "GTC" | "IOC" | "FOK" | "OPG" | "GTD" | "DTC" | "AUC" | "Minutes"
             | TIF_OVERNIGHT | TIF_OVERNIGHT_DAY => {}
             other => {
                 return Err(format!(
-                    "Unsupported tif '{}': use DAY, GTC, IOC, FOK, OPG, GTD, DTC, AUC, OVERNIGHT or OVERNIGHT + DAY",
+                    "Unsupported tif '{}': use DAY, GTC, IOC, FOK, OPG, GTD, DTC, AUC, Minutes, OVERNIGHT or OVERNIGHT + DAY",
                     other
                 ));
             }
@@ -6158,6 +6175,7 @@ impl ClientCore {
         let refusal = Self::refusal_before_sending_for(order, exchange, account_pending)
             .or_else(|| Self::account_config_refusal(order, shared.reference.account_features().as_deref(), account))
             .or_else(|| Self::open_flags_refusal(order, exchange))
+            .or_else(|| Self::overnight_tif_refusal(order, &shared.reference))
             .or_else(|| Self::order_id_refusal(order_id))
             .or_else(|| self.refusal_for_order_id(order_id, order, shared));
         if refusal.is_some() {

@@ -439,6 +439,8 @@ impl Order {
             // (ibx#467).
             "DTC" => crate::types::TIF_DTC,
             "AUC" => b'8',
+            // Its own code on the wire, as the reference (ibx#660).
+            "Minutes" => b'p',
             // The overnight values keep their own codes; both go out as
             // DAY (ibx#467).
             "OVERNIGHT" => b'j',

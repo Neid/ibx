@@ -258,6 +258,13 @@ fn send_orders(
                 continue;
             }
         }
+        // An overnight order on a contract that has no overnight trading
+        // (ibx#660).
+        match overnight_refusal(&order_req, context, conn, hb, shared) {
+            Some(false) => { context.rth_parked.push(rewrap(order_req)); continue; }
+            Some(true) => continue,
+            None => {}
+        }
         // A pegged or protection type the contract's list does not allow
         // on the order's exchange is refused, as the reference (ibx#414,
         // ibx#493).
@@ -3542,6 +3549,49 @@ fn invalid_exchange_refusal(
     }
 }
 
+/// An overnight order (includeOvernight, or the OVERNIGHT or IBEOS
+/// exchange) on a contract whose valid exchanges have no overnight one,
+/// or no SMART, BEST or ZERO: 10362 and nothing sent, the order gone (its
+/// cancel 10147), as the reference 10.51 (ibx#660; paper, 13/10/2026, an
+/// AAPL option with includeOvernight, after the contract's lookup).
+fn overnight_refusal(
+    req: &OrderRequest,
+    context: &mut Context,
+    conn: &mut Connection,
+    hb: &mut HeartbeatState,
+    shared: &Arc<SharedState>,
+) -> Option<bool> {
+    if req.combo().is_some() || matches!(req, OrderRequest::SubmitBracket { .. } | OrderRequest::CancelAll { .. }) {
+        return None;
+    }
+    req.new_order_qty()?;
+    let instrument = req.instrument()?;
+    let exchange = context.market.exchange(instrument).to_ascii_uppercase();
+    let include = req.new_order_side().and_then(|(_, attrs)| attrs).is_some_and(|a| a.include_overnight);
+    if !include && !matches!(exchange.as_str(), "OVERNIGHT" | "IBEOS") {
+        return None;
+    }
+    match definition(context, conn, hb, instrument) {
+        Definition::NoContract => None,
+        Definition::Waiting => Some(false),
+        Definition::Known(types, _) => {
+            let valid = types.valid_exchanges.as_ref()?;
+            let has = |names: &[&str]| valid.iter().any(|e| names.iter().any(|n| e.eq_ignore_ascii_case(n)));
+            if has(&["OVERNIGHT", "IBEOS"]) && has(&["SMART", "BEST", "ZERO"]) {
+                return None;
+            }
+            let oid = req.order_id();
+            log::warn!("Order {} refused: its contract has no overnight trading", oid);
+            shared.orders.push_order_error(oid, OVERNIGHT_NOT_SUPPORTED.0, OVERNIGHT_NOT_SUPPORTED.1.to_string());
+            Some(true)
+        }
+    }
+}
+
+/// Code and text of the refusal of an overnight order (the reference
+/// 10.51, paper 13/10/2026; with its final period).
+pub(crate) const OVERNIGHT_NOT_SUPPORTED: (i64, &str) = (10362, "OVERNIGHT order is not supported.");
+
 /// The reference's precaution for API orders with routeMarketableToBbo
 /// (ibx#608; code read on 10.51, the order checks of the confirmation;
 /// paper 12/10/2026, on LMT and MKT): with the setting "Bypass Route
@@ -4360,6 +4410,38 @@ mod tests {
         drain_and_send_orders(&mut conn, &mut context, "DU1", &mut HeartbeatState::new(), false, &shared);
         // Every message sent, its fields one after the other.
         peer.messages().iter().flat_map(|m| crate::test_support::parse_fields(m)).collect()
+    }
+
+    // ibx#660 (the reference 10.51, paper, 13/10/2026): includeOvernight on
+    // a contract whose valid exchanges have no overnight one is refused
+    // with 10362, nothing sent; with one, the order goes out.
+    #[test]
+    fn include_overnight_needs_an_overnight_exchange() {
+        let order = OrderRequest::SubmitLimitEx {
+            order_id: FIRST, instrument: 0, side: Side::Buy, qty: 1, price: 100 * crate::types::PRICE_SCALE,
+            tif: b'0', attrs: crate::types::OrderAttrs { include_overnight: true, ..Default::default() },
+        };
+        let with = |valid: &'static [&'static str]| move |c: &mut Context| {
+            for exch in ["BEST", "ISLAND"] {
+                c.rth_types.get_mut(&(265598, exch.to_string())).unwrap().valid_exchanges =
+                    Some(valid.iter().map(|e| e.to_string()).collect());
+            }
+        };
+        let tags = wire_tags_with(with(&["SMART", "CBOE", "AMEX"]), order.clone());
+        assert!(tags.is_empty(), "nothing sent: {tags:?}");
+        let tags = wire_tags_with(with(&["SMART", "NASDAQ", "OVERNIGHT"]), order);
+        assert!(tags.contains(&(35, "D".to_string())), "{tags:?}");
+    }
+
+    // ibx#660 (the reference 10.51, paper, 13/10/2026): a Minutes order
+    // goes out with time in force p.
+    #[test]
+    fn minutes_time_in_force_is_p_on_the_wire() {
+        let tags = wire_tags(OrderRequest::SubmitLimitEx {
+            order_id: FIRST, instrument: 0, side: Side::Buy, qty: 1, price: 100 * crate::types::PRICE_SCALE,
+            tif: b'p', attrs: crate::types::OrderAttrs::default(),
+        });
+        assert!(tags.contains(&(59, "p".to_string())), "{tags:?}");
     }
 
     // ibx#665: what the client read for after the contract's lookup is

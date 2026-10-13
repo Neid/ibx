@@ -1539,6 +1539,9 @@ pub struct ReferenceState {
     algo_providers: Mutex<Vec<String>>,
     /// The API client id the new orders carry (ibx#466); 0 until set.
     api_client_id: std::sync::atomic::AtomicI64,
+    /// The order rules of the reference 10.40, for the replays of its
+    /// recordings: the overnight times in force taken (ibx#660).
+    order_rules_10_40: std::sync::atomic::AtomicBool,
     /// User name of the session: the submitter of the orders it places (ibx#519).
     user_name: Mutex<String>,
     /// The algo definitions the server sent (ibx#263).
@@ -1628,6 +1631,7 @@ impl ReferenceState {
             smart_combo_con_ids: Mutex::new(HashMap::new()),
             algo_providers: Mutex::new(Vec::new()),
             api_client_id: std::sync::atomic::AtomicI64::new(0),
+            order_rules_10_40: std::sync::atomic::AtomicBool::new(false),
             user_name: Mutex::new(String::new()),
             algo_definitions: Mutex::new(Default::default()),
             tick_by_tick_limit: AtomicU64::new(u64::MAX),
@@ -2297,6 +2301,16 @@ impl ReferenceState {
 
     #[doc(hidden)] pub fn set_api_client_id(&self, client_id: i64) {
         self.api_client_id.store(client_id, Ordering::Relaxed);
+    }
+
+    /// The order rules of the reference 10.40, for the replays of its
+    /// recordings (ibx#660).
+    #[doc(hidden)] pub fn set_order_rules_10_40(&self, on: bool) {
+        self.order_rules_10_40.store(on, Ordering::Relaxed);
+    }
+
+    pub fn order_rules_10_40(&self) -> bool {
+        self.order_rules_10_40.load(Ordering::Relaxed)
     }
 
     /// The smart combo conId of a currency, from logon tag 6611 (ibx#470);
