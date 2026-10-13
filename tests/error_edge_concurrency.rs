@@ -108,9 +108,11 @@ fn place_order_unsupported_order_type_returns_error() {
     assert!(result.unwrap_err().contains("Unsupported order type"));
 }
 
+// Since ibx#622 an algo outside ibx's list is sent with its parameters as
+// given, as the reference sends it.
 #[test]
-fn place_order_unsupported_algo_returns_error() {
-    let (client, _rx, shared) = test_client();
+fn place_order_unknown_algo_is_sent() {
+    let (client, rx, shared) = test_client();
     shared.market.set_instrument_count(1);
     let order = Order {
         action: "BUY".into(), total_quantity: 100.0,
@@ -118,9 +120,8 @@ fn place_order_unsupported_algo_returns_error() {
         algo_strategy: "unknown_algo".into(),
         ..Default::default()
     };
-    let result = client.place_order(1, &spy(), &order);
-    assert!(result.is_err());
-    assert!(result.unwrap_err().contains("Unsupported algo"));
+    client.place_order(1, &spy(), &order).unwrap();
+    assert!(rx.try_iter().next().is_some(), "the order goes to the engine");
 }
 
 // A contract without a conId gets a slot of its own for the order, which
