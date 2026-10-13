@@ -955,16 +955,22 @@ pub fn parse_size_increments(data: &[u8]) -> Vec<PriceIncrement> {
     out
 }
 
+/// Whether a definition is the one of a US stock or US warrant: the
+/// contracts counted in round lots (ibx#287) and whose regulatory snapshot
+/// is marked for odd-lot quotes (ibx#648).
+pub fn is_us_stock_or_warrant(data: &[u8]) -> bool {
+    let tags = fix::fix_parse(data);
+    let sec_type = tags.get(&TAG_SECURITY_TYPE).map(String::as_str).unwrap_or("");
+    let market_type = tags.get(&TAG_IB_MARKET_TYPE).map(String::as_str).unwrap_or("");
+    matches!((sec_type, market_type), ("CS" | "STK", "USSTK") | ("WAR", "USWAR"))
+}
+
 /// Round lot of a contract's market data sizes (ibx#287), from its
 /// definition, as the reference: a US stock or US warrant counts in the
 /// integer part of its smallest size increment, 100 when that is missing
 /// or below 1; any other contract in 1.
 pub fn round_lot_from_secdef(data: &[u8]) -> i64 {
-    let tags = fix::fix_parse(data);
-    let sec_type = tags.get(&TAG_SECURITY_TYPE).map(String::as_str).unwrap_or("");
-    let market_type = tags.get(&TAG_IB_MARKET_TYPE).map(String::as_str).unwrap_or("");
-    let us = matches!((sec_type, market_type), ("CS" | "STK", "USSTK") | ("WAR", "USWAR"));
-    if !us {
+    if !is_us_stock_or_warrant(data) {
         return 1;
     }
     parse_size_increments(data)

@@ -111,6 +111,17 @@ fn tick_callbacks_do_not_depend_on_when_the_client_reads() {
     assert!(ticks_read_once_as_the_reference("l1_aapl_preopen_delayed", Some(22599), &[9001]) > 30);
 }
 
+/// A 10.40 market data message in the 10.51 form: the mark 1 at the end
+/// of each bid/ask and last entry (ibx#648).
+fn with_entry_marks(msg: &str) -> String {
+    let mut out: Vec<String> = Vec::new();
+    for (i, entry) in msg.split("|262=").enumerate() {
+        let marked = i > 0 && entry.split('|').any(|f| f == "264=442" || f == "264=443");
+        out.push(if marked { format!("{entry}|9839=1") } else { entry.to_string() });
+    }
+    out.join("|262=")
+}
+
 /// The market data messages and contract lookups ibx wrote, against the
 /// reference's: (ours, theirs) for 35=V, then for 35=c.
 fn requests_of(name: &str, until: Option<u64>, skip: &[u64]) -> [(Vec<String>, Vec<String>); 2] {
@@ -118,8 +129,12 @@ fn requests_of(name: &str, until: Option<u64>, skip: &[u64]) -> [(Vec<String>, V
     let r = super::replay::replay_market_data_without(&fx, "usfarm", MD_CALLBACKS, until, skip);
     let (v, c) = super::replay::request_messages(&r.session, &["V"], &["c"]);
     let theirs = |t: &str| r.requests_theirs.iter().filter(|m| m.starts_with(t)).cloned().collect::<Vec<_>>();
-    // Market data of contracts the reference asked on this farm only.
-    let farm_v = theirs("35=V");
+    // Market data of contracts the reference asked on this farm only. The
+    // recordings are of the reference 10.40; 10.51, which ibx copies, ends
+    // each bid/ask and last entry with its mark (ibx#648; 1 and 1 for a
+    // session without extra price precision, as the replay's). Until they
+    // are made again on 10.51 (ibx#604), they are read in the 10.51 form.
+    let farm_v: Vec<String> = theirs("35=V").iter().map(|m| with_entry_marks(m)).collect();
     let on_farm = |m: &String| farm_v.iter().any(|t| t.split('|').find(|f| f.starts_with("6008=")) == m.split('|').find(|f| f.starts_with("6008=")));
     [(v.into_iter().filter(on_farm).collect(), farm_v.clone()), (c, theirs("35=c"))]
 }

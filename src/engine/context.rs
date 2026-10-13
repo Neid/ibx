@@ -285,6 +285,9 @@ pub struct Context {
     pub(crate) price_mgmt_send: bool,
     /// Round lot by conId, once its definition was read (ibx#287).
     pub(crate) round_lots: HashMap<i64, i64>,
+    /// The conIds of US stocks and warrants among the definitions read
+    /// (ibx#648).
+    pub(crate) us_lots: std::collections::HashSet<i64>,
     /// Requests waiting for their contract's definition, by conId, and the
     /// ones whose definition came, to be handled again (ibx#404).
     pub(crate) def_parked: Vec<(i64, crate::types::ControlCommand)>,
@@ -393,6 +396,7 @@ impl Context {
             price_mgmt_exclusions: None,
             price_mgmt_send: false,
             round_lots: HashMap::new(),
+            us_lots: std::collections::HashSet::new(),
             agg_groups: HashMap::new(),
             listing_exchanges: HashMap::new(),
             option_terms: HashMap::new(),

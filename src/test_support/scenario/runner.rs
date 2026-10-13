@@ -112,6 +112,27 @@ fn tag(f: &Fields, t: u32) -> Option<&str> {
     f.iter().find(|(k, _)| *k == t).map(|(_, v)| v.as_str())
 }
 
+/// A 10.40 market data request in the 10.51 form: the mark 1 at the end
+/// of each bid/ask and last entry, before the trailer (ibx#648).
+fn with_entry_marks(fields: Fields) -> Fields {
+    let mut out: Fields = Vec::with_capacity(fields.len() + 2);
+    let mut in_pair = false;
+    for (t, v) in fields {
+        if (t == 262 || t == 10) && in_pair {
+            out.push((9839, "1".to_string()));
+            in_pair = false;
+        }
+        if t == 264 && (v == "442" || v == "443") {
+            in_pair = true;
+        }
+        out.push((t, v));
+    }
+    if in_pair {
+        out.push((9839, "1".to_string()));
+    }
+    out
+}
+
 fn msg_type(f: &Fields) -> &str {
     tag(f, 35).unwrap_or("")
 }
@@ -913,6 +934,14 @@ impl Run<'_> {
                         *v = v.replacen(base(v), mine, 1);
                     }
                 }
+            }
+            // The recordings are of the reference 10.40; 10.51, which ibx
+            // copies, ends each bid/ask and last entry of a market data
+            // request with its mark (ibx#648; 1 and 1, the replay's session
+            // having no extra price precision). Read in the 10.51 form until
+            // the recordings are made again on 10.51 (ibx#604).
+            if kd == MARKET_DATA && msg_type(&b) == "V" {
+                b = with_entry_marks(b);
             }
             (self.opts.frame_mask)(&mut a);
             (self.opts.frame_mask)(&mut b);

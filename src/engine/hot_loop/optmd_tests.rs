@@ -109,6 +109,9 @@ fn close(a: f64, b: f64, tol: f64) -> bool {
 #[test]
 fn an_option_stream_as_the_reference() {
     let shared = Arc::new(SharedState::new());
+    // The features of the paper account of the recording: the last entries
+    // are marked 2 (ibx#648).
+    shared.reference.set_api_features(crate::control::logon::ApiFeatures::parse("ODDLOTBIDASK,PRCEXTRAPREC"));
     let mut engine = HotLoop::new(shared.clone(), None, None);
     engine.set_farm_name("usfarm".into());
     let (client, mut farm_side) = crate::protocol::connection::mem_pair();
@@ -127,8 +130,8 @@ fn an_option_stream_as_the_reference() {
     // option's greeks (the reference's first four messages, 20:40:53.6).
     let msgs = sent(&mut farm_side);
     assert_eq!(msgs.len(), 4, "{msgs:#?}");
-    assert!(msgs[0].ends_with("|263=1|146=2|262=1|6008=692808239|207=BEST|167=OPT|264=442|6088=Socket|9830=1|262=2|6008=692808239|207=BEST|167=OPT|264=443|6088=Socket|9830=1"), "{}", msgs[0]);
-    assert!(msgs[1].ends_with("|263=1|146=2|262=3|6008=265598|207=BEST|167=CS|264=442|262=4|6008=265598|207=BEST|167=CS|264=443"), "{}", msgs[1]);
+    assert!(msgs[0].ends_with("|263=1|146=2|262=1|6008=692808239|207=BEST|167=OPT|264=442|6088=Socket|9830=1|9839=1|262=2|6008=692808239|207=BEST|167=OPT|264=443|6088=Socket|9830=1|9839=2"), "{}", msgs[0]);
+    assert!(msgs[1].ends_with("|263=1|146=2|262=3|6008=265598|207=BEST|167=CS|264=442|9839=1|262=4|6008=265598|207=BEST|167=CS|264=443|9839=2"), "{}", msgs[1]);
     assert!(msgs[2].ends_with("|263=1|146=1|262=5|6008=265598|207=IBVOL|167=CS|264=687"), "{}", msgs[2]);
     assert!(msgs[3].ends_with("|263=1|146=2|262=6|6008=692808239|207=IBVOL|167=OPT|264=732|262=7|6008=692808239|207=IBVOL|167=OPT|264=733"), "{}", msgs[3]);
 
@@ -206,7 +209,7 @@ fn an_option_stream_as_the_reference() {
     assert_eq!(msgs.len(), 5, "{msgs:#?}");
     assert!(msgs[0].ends_with("|263=2|146=1|262=8|6008=265598|207=BEST|167=CS|264=398"), "{}", msgs[0]);
     assert!(msgs[1].contains("|263=2|146=2|262=1|6008=692808239|207=BEST|167=OPT|264=442|"), "{}", msgs[1]);
-    assert!(msgs[2].ends_with("|263=2|146=2|262=3|6008=265598|207=BEST|167=CS|264=442|262=4|6008=265598|207=BEST|167=CS|264=443"), "{}", msgs[2]);
+    assert!(msgs[2].ends_with("|263=2|146=2|262=3|6008=265598|207=BEST|167=CS|264=442|9839=1|262=4|6008=265598|207=BEST|167=CS|264=443|9839=2"), "{}", msgs[2]);
     let codes: Vec<&str> = msgs[3].split('|').filter_map(|f| f.strip_prefix("264=")).collect();
     assert_eq!(codes, ["737", "736", "735", "734", "733", "732", "398"]);
     assert!(msgs[4].ends_with("|263=2|146=1|262=5|6008=265598|207=IBVOL|167=CS|264=687"), "{}", msgs[4]);

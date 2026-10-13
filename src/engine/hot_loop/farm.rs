@@ -35,6 +35,25 @@ pub(crate) struct MdSubscribe {
     pub(crate) snapshot: bool,
 }
 
+/// The mark the reference writes last in an entry of a market data
+/// request or cancel (ibx#648; the reference 10.51, 12/10/2026, and its
+/// writer read): 1 on the bid/ask, last, book and regulatory snapshot
+/// entries; 2 instead on the last entry when the session has extra price
+/// precision, and on the regulatory snapshot of a US stock or warrant when
+/// it has odd-lot quotes. None on the generic and news entries. `marks`:
+/// bits of `logon::ENTRY_*`.
+pub(crate) fn entry_mark(req_type: &str, marks: u8, us_lot: bool) -> Option<&'static str> {
+    use crate::control::logon::{ENTRY_EXTRA_PRECISION, ENTRY_ODD_LOT};
+    match req_type {
+        "442" | "0" => Some("1"),
+        "443" if marks & ENTRY_EXTRA_PRECISION != 0 => Some("2"),
+        "443" => Some("1"),
+        "624" if us_lot && marks & ENTRY_ODD_LOT != 0 => Some("2"),
+        "624" => Some("1"),
+        _ => None,
+    }
+}
+
 /// How long a subscription waits for the definition its round lot needs;
 /// then it goes out with sizes as on the wire.
 pub(crate) const LOT_LOOKUP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
@@ -57,6 +76,9 @@ pub(crate) fn round_lot_reply(context: &mut Context, req_id: &str, msg: &[u8]) -
 /// aggregate group (-1 when absent), its SMART component exchanges, its
 /// valid exchanges and its description in depth refusals.
 pub(crate) fn note_definition(context: &mut Context, con_id: i64, msg: &[u8]) {
+    if crate::control::contracts::is_us_stock_or_warrant(msg) {
+        context.us_lots.insert(con_id);
+    }
     let group = crate::control::contracts::agg_group_from_secdef(msg).unwrap_or(-1);
     context.agg_groups.insert(con_id, group);
     if let Some(listing) = crate::protocol::fix::fix_parse(msg).get(&crate::control::contracts::TAG_IB_PRIMARY_EXCHANGE)
@@ -567,9 +589,23 @@ pub(crate) struct FarmState {
     pub(crate) con_params: std::collections::HashMap<i64, (f64, String, i64)>,
     /// The option models of the options' market data (ibx#502).
     pub(crate) optmd: super::optmd::OptMd,
+    /// The logon features that change the entries (ibx#648), shared with
+    /// the session's reference state.
+    pub(crate) entry_marks: std::sync::Arc<std::sync::atomic::AtomicU8>,
 }
 
 impl FarmState {
+    /// Take the session's handle of the logon features that change the
+    /// entries (ibx#648), for the requests and for the option models.
+    pub(crate) fn set_entry_marks(&mut self, marks: std::sync::Arc<std::sync::atomic::AtomicU8>) {
+        self.optmd.entry_marks = marks.clone();
+        self.entry_marks = marks;
+    }
+
+    fn marks(&self) -> u8 {
+        self.entry_marks.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
     pub(crate) fn new() -> Self {
         Self {
             next_md_req_id: 1,
@@ -603,6 +639,7 @@ impl FarmState {
             top_confirmed: Vec::new(),
             con_params: std::collections::HashMap::new(),
             optmd: super::optmd::OptMd::default(),
+            entry_marks: Default::default(),
         }
     }
 
@@ -1654,6 +1691,7 @@ impl FarmState {
 
         let ids: Vec<String> = entries.iter().map(|(r, ..)| r.to_string()).collect();
         let mode_str = mode_9887.to_string();
+        let marks = self.marks();
         let frozen_mode = mode_9887 == crate::types::MarketDataModes::entry_mode(true, false)
             || mode_9887 == crate::types::MarketDataModes::entry_mode(true, true);
         let ts = chrono_free_timestamp();
@@ -1676,6 +1714,7 @@ impl FarmState {
             if !sub.snapshot && !frozen_mode { tags.push((6088, "Socket")); }
             if !realtime { tags.push((9887, &mode_str)); }
             tags.push((9830, "1"));
+            if let Some(mark) = entry_mark(req_type, marks, false) { tags.push((9839, mark)); }
         }
         if sink.send_comp(&tags) {
             log::info!("Sent 35=V {} (9887={}) on farm {}: con_id={} {} {} ids={},{}",
@@ -1690,7 +1729,8 @@ impl FarmState {
     /// Regulatory snapshot request (ibx#446): one entry with action
     /// SNAPSHOT and request type 624, flagged for an API client, without
     /// the streaming-client mark.
-    pub(crate) fn subscribe_snapshot(&mut self, sub: &MdSubscribe, farm: FarmId, sink: &mut dyn FixSink, hb: &mut HeartbeatState) {
+    /// `us_lot`: the contract is a US stock or warrant, by its definition.
+    pub(crate) fn subscribe_snapshot(&mut self, sub: &MdSubscribe, us_lot: bool, farm: FarmId, sink: &mut dyn FixSink, hb: &mut HeartbeatState) {
         if sub.con_id <= 0 {
             log::error!("Regulatory snapshot for instrument {} without a conId: not sent", sub.instrument);
             return;
@@ -1715,6 +1755,7 @@ impl FarmState {
             (167, sec_type),
             (264, "624"),
             (9830, "1"),
+            (9839, entry_mark("624", self.marks(), us_lot).unwrap_or("1")),
         ];
         if sink.send_comp(&tags) {
             log::info!("Sent 35=V regulatory snapshot on farm {}: con_id={} {} {} id={}", farm, sub.con_id, exchange, sec_type, id);
@@ -1886,6 +1927,7 @@ impl FarmState {
     /// The cancels of an instrument's top-of-book entries on the wire,
     /// which are forgotten; the subscription itself is left as it is.
     fn cancel_top_entries(&mut self, instrument: InstrumentId) -> Vec<(FarmId, Vec<(u32, String)>)> {
+        let marks = self.marks();
         let reqs = match self.instrument_md_reqs.iter()
             .position(|(id, _)| *id == instrument)
         {
@@ -1928,6 +1970,9 @@ impl FarmState {
                     msg.push((9887, e.mode_9887.to_string()));
                 }
                 msg.push((9830, "1".into()));
+                if let Some(mark) = entry_mark(e.req_type, marks, false) {
+                    msg.push((9839, mark.into()));
+                }
             }
             out.push((farm, msg));
         }
@@ -2131,6 +2176,7 @@ impl FarmState {
     /// request has on the wire is shared, not sent (#452): the indexes of
     /// those come back too.
     fn depth_messages(&mut self, idx: usize, only_farm: Option<FarmId>) -> (Vec<(FarmId, Vec<(u32, String)>)>, Vec<usize>) {
+        let marks = self.marks();
         let mut joined = Vec::new();
         let mut sent: Vec<usize> = Vec::new();
         for ei in 0..self.depth_reqs[idx].entries.len() {
@@ -2192,6 +2238,9 @@ impl FarmState {
                     msg.push((6088, "Socket".into()));
                 }
                 msg.push((9830, "1".into()));
+                if let Some(mark) = entry_mark(e.req_type, marks, false) {
+                    msg.push((9839, mark.into()));
+                }
             }
             out.push((farm, msg));
         }
@@ -2204,7 +2253,7 @@ impl FarmState {
     /// The cancel of some entries, as they were sent: the top-of-book
     /// entries in one message per farm, then each book in a message of its
     /// own, as the reference cancels them (#452).
-    fn depth_cancels(entries: &[&DepthEntry]) -> Vec<(FarmId, Vec<(u32, String)>)> {
+    fn depth_cancels(entries: &[&DepthEntry], marks: u8) -> Vec<(FarmId, Vec<(u32, String)>)> {
         let mut groups: Vec<(FarmId, Vec<&DepthEntry>)> = Vec::new();
         for e in entries.iter().filter(|e| e.req_type != "0") {
             match groups.iter_mut().find(|(f, _)| *f == e.farm) {
@@ -2228,6 +2277,9 @@ impl FarmState {
                 msg.push((167, e.sec_type.clone()));
                 msg.push((264, e.req_type.to_string()));
                 msg.push((9830, "1".into()));
+                if let Some(mark) = entry_mark(e.req_type, marks, false) {
+                    msg.push((9839, mark.into()));
+                }
             }
             out.push((farm, msg));
         }
@@ -2264,7 +2316,7 @@ impl FarmState {
         let pos = self.depth_reqs.iter().position(|r| r.req_id == req_id)?;
         let req = self.depth_reqs.remove(pos);
         let live: Vec<&DepthEntry> = req.entries.iter().filter(|e| e.live && !self.depth_wire_used(e.farm, e.farm_req)).collect();
-        Some(Self::depth_cancels(&live))
+        Some(Self::depth_cancels(&live, self.marks()))
     }
 
     /// A farm's connection was lost: its depth entries are no longer on the
@@ -2423,7 +2475,7 @@ impl FarmState {
             let (code, text) = depth_refusal(needs_api_subscription, &req.refusal_suffix);
             shared.orders.push_order_error(req.req_id, code, text);
             let live: Vec<&DepthEntry> = req.entries.iter().filter(|e| e.live && !self.depth_wire_used(e.farm, e.farm_req)).collect();
-            for (_, msg) in Self::depth_cancels(&live) {
+            for (_, msg) in Self::depth_cancels(&live, self.marks()) {
                 let fields: Vec<(u32, &str)> = msg.iter().map(|(t, v)| (*t, v.as_str())).collect();
                 farm_conn.send_comp(&fields);
             }
@@ -2487,7 +2539,7 @@ impl FarmState {
         self.depth_hits = hits;
         if !cancels.is_empty() {
             let refs: Vec<&DepthEntry> = cancels.iter().collect();
-            for (_, msg) in Self::depth_cancels(&refs) {
+            for (_, msg) in Self::depth_cancels(&refs, self.marks()) {
                 let fields: Vec<(u32, &str)> = msg.iter().map(|(t, v)| (*t, v.as_str())).collect();
                 farm_conn.send_comp(&fields);
             }
@@ -3371,6 +3423,32 @@ mod tests {
         assert!(parse_exchange_map("").is_empty());
     }
 
+    // ibx#648: the mark of each entry, by its type and the logon's
+    // features, as the reference 10.51 writes it (its writer read; the
+    // recording of 12/10/2026 has 1 on the bid/ask and 2 on the last entry
+    // of a session with extra price precision, none on the generic ones).
+    #[test]
+    fn entry_marks_by_type_and_features() {
+        use crate::control::logon::{ENTRY_EXTRA_PRECISION as X, ENTRY_ODD_LOT as O};
+        for marks in [0, X, O, X | O] {
+            assert_eq!(entry_mark("442", marks, true), Some("1"));
+            assert_eq!(entry_mark("0", marks, true), Some("1"));
+            assert_eq!(entry_mark("443", marks, true), Some(if marks & X != 0 { "2" } else { "1" }));
+            assert_eq!(entry_mark("624", marks, true), Some(if marks & O != 0 { "2" } else { "1" }));
+            assert_eq!(entry_mark("624", marks, false), Some("1"));
+            for generic in ["398", "626", "687", "732", "787", "292", "403", "317"] {
+                assert_eq!(entry_mark(generic, marks, true), None, "{generic}");
+            }
+        }
+        // The engine reads the features of the session's logon, also when
+        // they come after it started.
+        let shared = std::sync::Arc::new(SharedState::new());
+        let engine = super::super::HotLoop::new(shared.clone(), None, None);
+        assert_eq!(engine.farm.marks(), 0);
+        shared.reference.set_api_features(crate::control::logon::ApiFeatures::parse("A,PRCEXTRAPREC,B"));
+        assert_eq!(engine.farm.marks(), X);
+    }
+
     // ibx#446: the regulatory snapshot asks one entry with action SNAPSHOT
     // and type 624, without the streaming mark; its ack goes to the fetcher
     // and never gives tickReqParams.
@@ -3387,10 +3465,12 @@ mod tests {
         };
         let mut sink = RecordingSink(Vec::new());
         let mut hb = HeartbeatState::new();
-        farm.subscribe_snapshot(&sub, PRIMARY_MD, &mut sink, &mut hb);
+        farm.subscribe_snapshot(&sub, true, PRIMARY_MD, &mut sink, &mut hb);
         let msg = &sink.0[0];
         let tags: Vec<u32> = msg.iter().map(|(t, _)| *t).collect();
-        assert_eq!(tags, vec![35, 52, 263, 146, 262, 6008, 207, 167, 264, 9830]);
+        // The entry mark last: 1 without odd-lot quotes (ibx#648).
+        assert_eq!(tags, vec![35, 52, 263, 146, 262, 6008, 207, 167, 264, 9830, 9839]);
+        assert_eq!(msg.last().unwrap().1, "1");
         let value = |t: u32| msg.iter().find(|(x, _)| *x == t).map(|(_, v)| v.clone()).unwrap();
         assert_eq!((value(263), value(146), value(207), value(167), value(264), value(9830)),
             ("3".into(), "1".into(), "BEST".into(), "CS".into(), "624".into(), "1".into()));
@@ -3481,8 +3561,10 @@ mod tests {
         };
         let (a, b) = (farm.next_md_req_id - 2, farm.next_md_req_id - 1);
         // Captured: 35=V|263=3|146=2|262=5|6008=265598|207=BEST|167=CS|264=442|9830=1|262=6|...|264=443|9830=1
+        // (10.40); 10.51 ends each entry with its mark, 1 and 1 without
+        // extra price precision (ibx#648).
         assert_eq!(body(&sink.0[0]), format!(
-            "35=V|263=3|146=2|262={a}|6008=265598|207=BEST|167=CS|264=442|9830=1|262={b}|6008=265598|207=BEST|167=CS|264=443|9830=1|"));
+            "35=V|263=3|146=2|262={a}|6008=265598|207=BEST|167=CS|264=442|9830=1|9839=1|262={b}|6008=265598|207=BEST|167=CS|264=443|9830=1|9839=1|"));
         for r in [a, b] {
             let ack = format!("8=O\x0135=Q\x0154,{r},0.01,0,3,9c,,1,1");
             farm.handle_subscription_ack(ack.as_bytes(), &mut None::<Connection>, &mut context, &shared, &mut HeartbeatState::new());
@@ -3494,7 +3576,7 @@ mod tests {
         // Captured cancel of a snapshot: 263=2 with the same entries.
         let cancel = farm.unsubscribe_top(id);
         assert_eq!(body(&cancel[0].1), format!(
-            "35=V|263=2|146=2|262={a}|6008=265598|207=BEST|167=CS|264=442|9830=1|262={b}|6008=265598|207=BEST|167=CS|264=443|9830=1|"));
+            "35=V|263=2|146=2|262={a}|6008=265598|207=BEST|167=CS|264=442|9830=1|9839=1|262={b}|6008=265598|207=BEST|167=CS|264=443|9830=1|9839=1|"));
         // A stream keeps the streaming mark and the subscribe action.
         let mut sink = RecordingSink(Vec::new());
         farm.subscribe_top(&MdSubscribe { snapshot: false, ..sub }, PRIMARY_MD, &mut sink, &mut hb);

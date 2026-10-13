@@ -10,7 +10,7 @@
 //! - The HotLoop pushes to SharedState sub-containers directly.
 //! - External callers read snapshots and poll events without blocking the hot loop.
 
-use std::sync::atomic::{fence, AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{fence, AtomicBool, AtomicU32, AtomicU64, AtomicU8, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Instant;
 
@@ -1481,6 +1481,9 @@ pub struct ReferenceState {
     /// BONDAPI and EVAPI of the logon (ibx#436).
     bond_api: AtomicBool,
     ev_api: AtomicBool,
+    /// The logon features that change the entries of a market data
+    /// request (ibx#648), shared with the engine's request writers.
+    md_entry_marks: Arc<AtomicU8>,
 }
 
 impl ReferenceState {
@@ -1543,6 +1546,7 @@ impl ReferenceState {
             island_to_nasdaq: AtomicBool::new(false),
             bond_api: AtomicBool::new(false),
             ev_api: AtomicBool::new(false),
+            md_entry_marks: Arc::new(AtomicU8::new(0)),
             option_chains: Mutex::new(Vec::new()),
         }
     }
@@ -2099,6 +2103,13 @@ impl ReferenceState {
         self.island_to_nasdaq.store(features.island_to_nasdaq, Ordering::Relaxed);
         self.bond_api.store(features.bond_api, Ordering::Relaxed);
         self.ev_api.store(features.ev_api, Ordering::Relaxed);
+        self.md_entry_marks.store(features.entry_marks(), Ordering::Relaxed);
+    }
+
+    /// The logon features that change the entries of a market data
+    /// request (ibx#648): the engine keeps this handle.
+    pub(crate) fn md_entry_marks(&self) -> Arc<AtomicU8> {
+        self.md_entry_marks.clone()
     }
 
     /// The feature list of the logon, as it came: a comma list, empty

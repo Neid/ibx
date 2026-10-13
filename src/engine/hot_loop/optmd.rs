@@ -131,6 +131,8 @@ pub(crate) struct OptMd {
     /// Messages made away from the loop's send points, sent at its next
     /// service.
     pub(crate) outbox: Vec<(FarmId, Vec<(u32, String)>)>,
+    /// The logon features that change the entries (ibx#648).
+    pub(crate) entry_marks: std::sync::Arc<std::sync::atomic::AtomicU8>,
 }
 
 /// A price of `magnitude` ticks: divided by the ticks per unit when the
@@ -158,8 +160,9 @@ fn head(action: &str, n: usize) -> Vec<(u32, String)> {
 }
 
 /// A message of entries, as the reference writes the model's: no API
-/// source; the API mark only on the model's own pair of the option.
-fn message(action: &str, entries: &[&ModelEntry]) -> Vec<(u32, String)> {
+/// source; the API mark only on the model's own pair of the option; the
+/// entry mark on both pairs (ibx#648).
+fn message(action: &str, entries: &[&ModelEntry], marks: u8) -> Vec<(u32, String)> {
     let mut msg = head(action, entries.len());
     for e in entries {
         msg.extend([
@@ -171,6 +174,11 @@ fn message(action: &str, entries: &[&ModelEntry]) -> Vec<(u32, String)> {
         ]);
         if !e.under && matches!(e.code, 442 | 443) {
             msg.push((9830, "1".into()));
+        }
+        if matches!(e.code, 442 | 443) {
+            if let Some(mark) = super::farm::entry_mark(&e.code.to_string(), marks, false) {
+                msg.push((9839, mark.into()));
+            }
         }
     }
     msg
@@ -243,7 +251,7 @@ impl OptMd {
             groups.push(vec![(market::MODEL_PARAMS, true)]);
             groups.push(vec![(market::GREEKS, false), (market::GREEKS_CLOSE, false)]);
         }
-        let out = Self::send_groups(&mut model, &groups, next_id);
+        let out = Self::send_groups(&mut model, &groups, next_id, self.entry_marks.load(std::sync::atomic::Ordering::Relaxed));
         log::info!("Option model of instrument {} (con_id {}): started on farms {} and {}{}",
             instrument, con_id, opt_farm, under_farm, if snapshot { ", for a snapshot" } else { "" });
         self.models.push(model);
@@ -252,7 +260,7 @@ impl OptMd {
 
     /// Give request ids to the entries of each group and build its
     /// message.
-    fn send_groups(model: &mut OptionModel, groups: &[Vec<(i32, bool)>], next_id: &mut u32) -> Vec<(FarmId, Vec<(u32, String)>)> {
+    fn send_groups(model: &mut OptionModel, groups: &[Vec<(i32, bool)>], next_id: &mut u32, marks: u8) -> Vec<(FarmId, Vec<(u32, String)>)> {
         let mut out = Vec::new();
         for g in groups {
             let mut idx = Vec::new();
@@ -268,20 +276,20 @@ impl OptMd {
             }
             let farm = model.entries[idx[0]].farm;
             let es: Vec<&ModelEntry> = idx.iter().map(|&i| &model.entries[i]).collect();
-            out.push((farm, message("1", &es)));
+            out.push((farm, message("1", &es, marks)));
         }
         out
     }
 
     /// The cancels of groups of sent entries, the entries forgotten.
-    fn cancel_groups(model: &OptionModel, groups: &[Vec<(i32, bool)>]) -> Vec<(FarmId, Vec<(u32, String)>)> {
+    fn cancel_groups(model: &OptionModel, groups: &[Vec<(i32, bool)>], marks: u8) -> Vec<(FarmId, Vec<(u32, String)>)> {
         let mut out = Vec::new();
         for g in groups {
             let es: Vec<&ModelEntry> = g.iter()
                 .filter_map(|&(code, under)| model.entry(code, under).filter(|e| e.farm_req != 0))
                 .collect();
             if let Some(first) = es.first() {
-                out.push((first.farm, message("2", &es)));
+                out.push((first.farm, message("2", &es, marks)));
             }
         }
         out
@@ -293,6 +301,7 @@ impl OptMd {
         self.starting.retain(|s| s.instrument != instrument);
         let Some(pos) = self.models.iter().position(|m| m.instrument == instrument) else { return (Vec::new(), Vec::new()) };
         let m = self.models.remove(pos);
+        let marks = self.entry_marks.load(std::sync::atomic::Ordering::Relaxed);
         let status = super::farm::MARKET_DATA_STATUS;
         let vols_desc = vec![
             (market::LAST_VOL, false), (market::BID_ASK_VOL, false), (market::MID_VOL, false), (market::MODEL_VOL, false),
@@ -306,13 +315,13 @@ impl OptMd {
                 vec![(442, false), (443, false)],
                 vec![(442, true), (443, true)],
                 last,
-            ]);
+            ], marks);
             (pre, Vec::new())
         } else {
-            let pre = Self::cancel_groups(&m, &[vec![(status, true)]]);
+            let pre = Self::cancel_groups(&m, &[vec![(status, true)]], marks);
             let mut opt = vols_desc;
             opt.extend([(market::GREEKS_CLOSE, false), (market::GREEKS, false), (status, false)]);
-            let post = Self::cancel_groups(&m, &[vec![(442, true), (443, true)], opt, vec![(market::MODEL_PARAMS, true)]]);
+            let post = Self::cancel_groups(&m, &[vec![(442, true), (443, true)], opt, vec![(market::MODEL_PARAMS, true)]], marks);
             (pre, post)
         }
     }
@@ -331,7 +340,7 @@ impl OptMd {
             let m = self.models.remove(i);
             let live: Vec<&ModelEntry> = m.entries.iter().filter(|e| e.farm != farm && e.farm_req != 0).collect();
             if let Some(first) = live.first() {
-                out.push((first.farm, message("2", &live)));
+                out.push((first.farm, message("2", &live, self.entry_marks.load(std::sync::atomic::Ordering::Relaxed))));
             }
             log::info!("Option model of instrument {}: farm {} lost, stopped until it is back", m.instrument, farm);
             self.starting.push(Starting {
@@ -399,6 +408,7 @@ impl OptMd {
     /// entries and the volatilities (`next_id` numbers them).
     pub(crate) fn block(&mut self, farm: FarmId, tag: u32, code: i32, payload: &[u8], now: Instant, next_id: &mut u32) {
         let mut released = Vec::new();
+        let marks = self.entry_marks.load(std::sync::atomic::Ordering::Relaxed);
         for m in &mut self.models {
             if !m.entries.iter().any(|e| e.farm == farm && e.tag == Some(tag) && e.code == code) {
                 continue;
@@ -435,7 +445,7 @@ impl OptMd {
                                 vec![(status, true)],
                                 vec![(status, false), (market::MODEL_VOL, false), (market::MID_VOL, false),
                                     (market::BID_ASK_VOL, false), (market::LAST_VOL, false)],
-                            ], next_id));
+                            ], next_id, marks));
                         }
                     }
                 }

@@ -193,7 +193,18 @@ pub struct ApiFeatures {
     pub bond_api: bool,
     /// EVAPI: contract rows carry the EV rule (`jfix.s.v()`, ibx#436).
     pub ev_api: bool,
+    /// PRCEXTRAPREC: the last entry of a market data request is marked 2
+    /// (ibx#648).
+    pub extra_price_precision: bool,
+    /// ODDLOTBIDASK: the regulatory snapshot of a US stock or warrant is
+    /// marked 2 (ibx#648).
+    pub odd_lot_bid_ask: bool,
 }
+
+/// Bits of the market data entry marks (ibx#648): PRCEXTRAPREC.
+pub const ENTRY_EXTRA_PRECISION: u8 = 1;
+/// ODDLOTBIDASK.
+pub const ENTRY_ODD_LOT: u8 = 2;
 
 impl ApiFeatures {
     pub fn parse(features: &str) -> Self {
@@ -205,7 +216,15 @@ impl ApiFeatures {
             island_to_nasdaq: has_feature(features, "ISLAND2NASDAQ"),
             bond_api: has_feature(features, "BONDAPI"),
             ev_api: has_feature(features, "EVAPI"),
+            extra_price_precision: has_feature(features, "PRCEXTRAPREC"),
+            odd_lot_bid_ask: has_feature(features, "ODDLOTBIDASK"),
         }
+    }
+
+    /// The features that change the entries of a market data request, as
+    /// bits (ibx#648).
+    pub fn entry_marks(&self) -> u8 {
+        (if self.extra_price_precision { ENTRY_EXTRA_PRECISION } else { 0 }) | (if self.odd_lot_bid_ask { ENTRY_ODD_LOT } else { 0 })
     }
 }
 
@@ -424,10 +443,14 @@ mod tests {
     fn api_features_of_the_feature_list() {
         let f = ApiFeatures::parse("1DAYSORDER,APIELOG,ISLAND2NASDAQ,SECDEFTA,SCALEUSLOT");
         assert_eq!(f, ApiFeatures { deny_api: false, matching_symbols: true, nightly: false,
-            no_magnifier_fix: false, island_to_nasdaq: true, bond_api: false, ev_api: false });
-        let f = ApiFeatures::parse("DENYAPI,NIGHTLY,SECDEFTA:x,NOMAGNFIX,BONDAPI,EVAPI");
+            no_magnifier_fix: false, island_to_nasdaq: true, bond_api: false, ev_api: false,
+            extra_price_precision: false, odd_lot_bid_ask: false });
+        assert_eq!(f.entry_marks(), 0);
+        let f = ApiFeatures::parse("DENYAPI,NIGHTLY,SECDEFTA:x,NOMAGNFIX,BONDAPI,EVAPI,ODDLOTBIDASK,PRCEXTRAPREC");
         assert_eq!(f, ApiFeatures { deny_api: true, matching_symbols: false, nightly: true,
-            no_magnifier_fix: true, island_to_nasdaq: false, bond_api: true, ev_api: true });
+            no_magnifier_fix: true, island_to_nasdaq: false, bond_api: true, ev_api: true,
+            extra_price_precision: true, odd_lot_bid_ask: true });
+        assert_eq!(f.entry_marks(), ENTRY_EXTRA_PRECISION | ENTRY_ODD_LOT);
     }
 
     #[test]

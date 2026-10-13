@@ -166,6 +166,7 @@ impl HotLoop {
         if let Some(tx) = &event_tx {
             shared.attach_event_channel(tx);
         }
+        let entry_marks = shared.reference.md_entry_marks();
         Self {
             shared,
             event_tx,
@@ -185,7 +186,11 @@ impl HotLoop {
             pace_clock: None,
             md_slots_told: Vec::new(),
             pacer: None,
-            farm: FarmState::new(),
+            farm: {
+                let mut farm = FarmState::new();
+                farm.set_entry_marks(entry_marks);
+                farm
+            },
             ccp: CcpState::new(),
             hmds: HmdsState::new(),
             pool: FarmPool::new(Instant::now()),
@@ -1940,6 +1945,8 @@ impl HotLoop {
                             con_id, symbol, exchange, sec_type, last_trade_date: String::new(), strike: 0.0,
                             right: String::new(), multiplier: String::new(), instrument: id, mode_9887: 0, snapshot: false,
                         };
+                        // A US stock or warrant, when its definition was read (ibx#648).
+                        let us_lot = self.context.us_lots.contains(&con_id);
                         if let Some(farm_id) = self.md_target(&sub) {
                             if let Some(f) = self.pool.get_mut(farm_id) {
                                 f.note_request(Instant::now());
@@ -1947,9 +1954,9 @@ impl HotLoop {
                             if self.md_pass.on {
                                 let now = self.pace_now();
                                 let mut sink = crate::engine::md_pass::HoldSink { farm: farm_id, pass: &mut self.md_pass, now };
-                                self.farm.subscribe_snapshot(&sub, farm_id, &mut sink, &mut self.hb);
+                                self.farm.subscribe_snapshot(&sub, us_lot, farm_id, &mut sink, &mut self.hb);
                             } else if let Some(sink) = farm_sink!(self, farm_id) {
-                                self.farm.subscribe_snapshot(&sub, farm_id, sink, &mut self.hb);
+                                self.farm.subscribe_snapshot(&sub, us_lot, farm_id, sink, &mut self.hb);
                             }
                         }
                     }
@@ -5665,7 +5672,9 @@ mod tests {
             let first = farm_messages_sent(&mut s1);
             assert_eq!(first.len(), 1);
             assert!(first[0].contains("264=442|") && first[0].contains("264=443|"), "{}", first[0]);
-            assert!(!first[0].contains("9839=") && !first[0].contains("9887="), "{}", first[0]);
+            // The entry marks of the reference 10.51 (ibx#648), no delayed mode.
+            assert!(first[0].contains("264=442|6088=Socket|9830=1|9839=1|") && first[0].contains("264=443|6088=Socket|9830=1|9839=1|"), "{}", first[0]);
+            assert!(!first[0].contains("9887="), "{}", first[0]);
             let ids: Vec<String> = engine.farm.md_req_to_instrument.iter().map(|(r, _)| r.to_string()).collect();
 
             let reject = crate::protocol::fix::fix_build(&[(35, "3"), (45, "0"),
@@ -5771,7 +5780,8 @@ mod routing_tests {
         assert!(msgs[1].contains("|207=FXSUBPIP|167=CASH|264=442|"), "{}", msgs[1]);
         assert!(msgs[1].contains("|207=IDEALPRO|167=CASH|264=443|"), "{}", msgs[1]);
         assert!(msgs[2].contains("|207=BEST|167=CS|264=442|"), "{}", msgs[2]);
-        assert!(msgs.iter().all(|m| !m.contains("|9839=")));
+        // Every bid/ask and last entry ends with its mark (ibx#648).
+        assert!(msgs.iter().all(|m| m.matches("|9830=1|9839=1|").count() == m.matches("|264=44").count()), "{msgs:?}");
     }
 
     // #445: the cancel repeats the entries of the subscribe in one message
@@ -5787,7 +5797,7 @@ mod routing_tests {
         engine.route_md_cancel(s.instrument);
         let msgs = sent(&mut farm_side);
         assert_eq!(msgs.len(), 1, "{msgs:?}");
-        let want = format!("|263=2|146=2|262={}|6008=815824267|207=CME|167=FUT|264=442|9830=1|262={}|6008=815824267|207=CME|167=FUT|264=443|9830=1|",
+        let want = format!("|263=2|146=2|262={}|6008=815824267|207=CME|167=FUT|264=442|9830=1|9839=1|262={}|6008=815824267|207=CME|167=FUT|264=443|9830=1|9839=1|",
             first, first + 1);
         assert!(msgs[0].contains(&want), "{}\nwant {}", msgs[0], want);
         assert!(!msgs[0].contains("6088"), "{}", msgs[0]);
@@ -7778,7 +7788,7 @@ mod frozen_tests {
         let live = frozen_option(&mut engine, &tx);
         assert_eq!(sent(&mut farm_side), [
             format!("35=V|263=1|146=1|262=1{PAIR}398|"),
-            format!("35=V|263=1|146=2|262=2{PAIR}442|6088=Socket|9830=1|262=3{PAIR}443|6088=Socket|9830=1|"),
+            format!("35=V|263=1|146=2|262=2{PAIR}442|6088=Socket|9830=1|9839=1|262=3{PAIR}443|6088=Socket|9830=1|9839=1|"),
         ]);
 
         // Frame 183: the status ack; frame 185: status 1, before the pair's acks.
@@ -7789,7 +7799,7 @@ mod frozen_tests {
         assert_ne!(frozen, live);
         assert_eq!(shared.market.drain_md_rejects(), [MdReject::Frozen { instrument: live, frozen }]);
         assert_eq!(sent(&mut farm_side), [
-            format!("35=V|263=1|146=2|262=4{PAIR}442|9887=2|9830=1|262=5{PAIR}443|9887=2|9830=1|"),
+            format!("35=V|263=1|146=2|262=4{PAIR}442|9887=2|9830=1|9839=1|262=5{PAIR}443|9887=2|9830=1|9839=1|"),
         ]);
         // The same status again changes nothing.
         engine.inject_farm_message(&status_frame(1));
@@ -7819,8 +7829,8 @@ mod frozen_tests {
         tx.send(ControlCommand::Unsubscribe { instrument: frozen }).unwrap();
         engine.poll_once();
         assert_eq!(sent(&mut farm_side), [
-            format!("35=V|263=2|146=2|262=4{PAIR}442|9887=2|9830=1|262=5{PAIR}443|9887=2|9830=1|"),
-            format!("35=V|263=2|146=2|262=2{PAIR}442|9830=1|262=3{PAIR}443|9830=1|"),
+            format!("35=V|263=2|146=2|262=4{PAIR}442|9887=2|9830=1|9839=1|262=5{PAIR}443|9887=2|9830=1|9839=1|"),
+            format!("35=V|263=2|146=2|262=2{PAIR}442|9830=1|9839=1|262=3{PAIR}443|9830=1|9839=1|"),
             format!("35=V|263=2|146=1|262=1{PAIR}398|"),
         ]);
         assert!(engine.farm.status.is_empty());
@@ -7853,7 +7863,7 @@ mod frozen_tests {
         tx.send(ControlCommand::Unsubscribe { instrument: frozen }).unwrap();
         engine.poll_once();
         assert_eq!(sent(&mut farm_side), [
-            format!("35=V|263=2|146=2|262=4{PAIR}442|9887=2|9830=1|262=5{PAIR}443|9887=2|9830=1|"),
+            format!("35=V|263=2|146=2|262=4{PAIR}442|9887=2|9830=1|9839=1|262=5{PAIR}443|9887=2|9830=1|9839=1|"),
         ]);
         assert_eq!(engine.farm.status.len(), 1);
         assert_eq!(engine.context.market.con_id(live), Some(OPT));
@@ -7862,7 +7872,7 @@ mod frozen_tests {
         tx.send(ControlCommand::Unsubscribe { instrument: live }).unwrap();
         engine.poll_once();
         assert_eq!(sent(&mut farm_side), [
-            format!("35=V|263=2|146=2|262=2{PAIR}442|9830=1|262=3{PAIR}443|9830=1|"),
+            format!("35=V|263=2|146=2|262=2{PAIR}442|9830=1|9839=1|262=3{PAIR}443|9830=1|9839=1|"),
             format!("35=V|263=2|146=1|262=1{PAIR}398|"),
         ]);
     }
