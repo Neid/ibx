@@ -256,7 +256,9 @@ impl EClient {
         // An empty exchange is refused by the engine, as the reference
         // refuses it (#452).
         let exchange = contract.exchange.clone();
-        let sec_type = if contract.sec_type.is_empty() { "STK".to_string() } else { contract.sec_type.clone() };
+        // A contract given by its conId alone keeps no type: the engine
+        // takes its definition's (ibx#678).
+        let sec_type = if contract.sec_type.is_empty() && contract.con_id == 0 { "STK".to_string() } else { contract.sec_type.clone() };
         let tx = self.tx()?;
         // A contract with no conId is looked up first (ibx#643): the
         // reference serves the book of a stock given by symbol.

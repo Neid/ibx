@@ -306,6 +306,9 @@ pub struct Context {
     pub(crate) def_kinds: HashMap<i64, (String, String)>,
     /// The logon's algo providers (ibx#505).
     pub(crate) algo_providers: Vec<String>,
+    /// Depth requests refused with 10092: their cancel answers nothing
+    /// (ibx#678).
+    pub(crate) depth_unsupported: std::collections::HashSet<ReqId>,
     /// Aggregate group by conId, once its definition was read (#445).
     pub(crate) agg_groups: HashMap<i64, i32>,
     /// SMART component exchanges by conId, once its definition was read
@@ -412,6 +415,7 @@ impl Context {
             option_terms: HashMap::new(),
             def_kinds: HashMap::new(),
             algo_providers: Vec::new(),
+            depth_unsupported: std::collections::HashSet::new(),
             def_parked: Vec::new(),
             def_ready: Vec::new(),
             smart_components: HashMap::new(),

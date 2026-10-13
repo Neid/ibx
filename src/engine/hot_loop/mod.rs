@@ -1054,6 +1054,12 @@ impl HotLoop {
         if !contracts.contains(&con_id) && contracts.len() >= self.depth_limit {
             return refuse(&self.shared, 309, format!("Max number ({}) of market depth requests has been reached", self.depth_limit));
         }
+        // A contract given by its conId alone takes the type of its
+        // definition (ibx#678, the rule of #643).
+        let sec_type = match self.context.def_kinds.get(&con_id) {
+            Some((kind, _)) if sec_type.is_empty() => kind.clone(),
+            _ => sec_type,
+        };
         let st = if sec_type.is_empty() { "STK".to_string() } else { sec_type.clone() };
         // The reference knows the contract (its SMART components, listing
         // exchange, aggregate group) first: wait for its definition.
@@ -1078,6 +1084,9 @@ impl HotLoop {
             return self.gather_depth_components(req_id, con_id, st, num_rows, valid);
         }
         let Some(farm_id) = self.depth_route(con_id, &exchange, &st) else {
+            // Its cancel answers nothing (ibx#678; the reference 10.51,
+            // 13/10/2026: no 310 after 10092).
+            self.context.depth_unsupported.insert(req_id);
             return refuse(&self.shared, 10092, "Deep market data is not supported for this combination of security type/exchange".into());
         };
         if is_smart_depth {
@@ -2394,6 +2403,9 @@ impl HotLoop {
                     if let Some(pos) = self.context.depth_gathers.iter().position(|g| g.req_id == req_id) {
                         self.context.depth_gathers.remove(pos);
                         self.shared.market.purge_depth_updates(req_id);
+                        continue;
+                    }
+                    if self.context.depth_unsupported.remove(&req_id) {
                         continue;
                     }
                     match self.farm.stop_depth(req_id) {
@@ -7126,6 +7138,9 @@ mod depth_tests {
         tx.send(depth(7, 9999, "NASDAQ", "STK", 5, false)).unwrap();
         tx.send(depth(8, 4391, "MEMX", "STK", 5, false)).unwrap();
         tx.send(ControlCommand::UnsubscribeDepth { req_id: 77 }).unwrap();
+        // The cancel of a request refused with 10092 answers nothing
+        // (ibx#678).
+        tx.send(ControlCommand::UnsubscribeDepth { req_id: 8 }).unwrap();
         engine.poll_once();
         assert_eq!(errors(&shared), [
             "1:321:Error validating request.-'bR' : cause - Please enter exchange.",
@@ -7170,6 +7185,18 @@ mod depth_tests {
                 Management choose Market Data Subscription Manager and/or availability of delayed data.".to_string(),
             "10:310:Can't find the subscribed market depth with tickerId:10".to_string(),
         ]);
+    }
+
+    // ibx#678: a future given by its conId alone (no type) takes the type
+    // of its definition: its book goes to the futures farm, as the
+    // reference's (354 on paper, 13/10/2026).
+    #[test]
+    fn a_con_id_alone_takes_the_definitions_type_for_depth() {
+        let (mut engine, _shared, _side, tx) = engine();
+        engine.context.def_kinds.insert(815824267, ("FUT".into(), "MES".into()));
+        tx.send(depth(11, 815824267, "CME", "", 5, false)).unwrap();
+        engine.poll_once();
+        assert!(engine.pool.find("usfuture").is_some(), "the future's book farm");
     }
 
     // #452: SmartDepth takes the contract's valid exchanges: each is looked
