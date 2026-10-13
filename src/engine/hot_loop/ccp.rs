@@ -405,6 +405,9 @@ pub(crate) struct CcpState {
     /// schedule lists a few days only (how long the reference keeps one
     /// is not known).
     pub(crate) schedules: std::collections::HashMap<String, (jiff::civil::Date, Option<crate::control::contracts::ContractSchedule>)>,
+    /// The contracts of orders waiting for the zone of their trading
+    /// hours, by schedule key (ibx#636).
+    pub(crate) order_zone_waits: Vec<(String, i64)>,
     /// Counter for internal schedule subscribe req IDs.
     pub(crate) next_schedule_sub_id: u32,
     /// Fan-out state for by-symbol lookups: the records wait for the
@@ -794,6 +797,7 @@ impl CcpState {
             ccp_sign_key: Vec::new(),
             ccp_sign_iv: std::sync::Mutex::new(Vec::new()),
             pending_schedule_pair: Vec::new(),
+            order_zone_waits: Vec::new(),
             schedules: std::collections::HashMap::new(),
             next_schedule_sub_id: 1,
             pending_fanout: Vec::new(),
@@ -2650,6 +2654,32 @@ impl CcpState {
     /// Match a schedule reply to the rows waiting for its join key and
     /// emit them with the schedule merged. One reply serves every row that
     /// waits for that key.
+    /// The trading hours of an order's contract, asked once per schedule
+    /// key and session after the order's definition came, as the reference
+    /// does for every API order (ibx#636; code read on 10.51 and 10.40, the
+    /// request seen 9 to 18 ms after the order's lookup, paper 12/10/2026).
+    /// The order does not wait for them; their zone is kept for the
+    /// contract, and the order's start time is shown in it (#598).
+    fn ask_order_schedule(&mut self, msg: &[u8], shared: &SharedState, ccp_conn: &mut Option<Connection>, hb: &mut HeartbeatState) {
+        let Some(def) = crate::control::contracts::parse_secdef_records(msg).unwrap_or_default().into_iter().next() else { return };
+        if def.join_key.is_empty() || def.con_id == 0 {
+            return;
+        }
+        if let Some((_, known)) = self.schedules.get(&def.join_key).filter(|(day, _)| *day == utc_day()) {
+            if let Some(zone) = known.as_ref().map(|s| s.timezone.as_str()).filter(|z| !z.is_empty()) {
+                shared.reference.cache_time_zone_id(def.con_id, zone);
+            }
+            return;
+        }
+        let asked = self.order_zone_waits.iter().any(|(k, _)| *k == def.join_key)
+            || self.pending_schedule_pair.iter().any(|p| !p.ready && p.join_key == def.join_key);
+        self.order_zone_waits.push((def.join_key.clone(), def.con_id));
+        if !asked {
+            log::info!("Trading hours of con_id {} asked for its orders ({})", def.con_id, def.join_key);
+            self.send_schedule_subscribe(&def.join_key, ccp_conn, hb);
+        }
+    }
+
     fn handle_schedule_reply(
         &mut self,
         msg: &[u8],
@@ -2662,6 +2692,13 @@ impl CcpState {
             None => return,
         };
         let sched = crate::control::contracts::parse_schedule_response(msg);
+        // The orders' contracts get the zone (ibx#636).
+        let zone = sched.as_ref().map(|s| s.timezone.clone()).filter(|z| !z.is_empty());
+        self.order_zone_waits.retain(|(key, con_id)| {
+            if *key != join_key { return true; }
+            if let Some(zone) = &zone { shared.reference.cache_time_zone_id(*con_id, zone); }
+            false
+        });
         let waited = self.pending_schedule_pair.iter().any(|p| !p.ready && p.join_key == join_key);
         // Kept for the session: the next row with this key does not wait.
         self.schedules.insert(join_key.clone(), (utc_day(), sched.clone()));
@@ -2940,6 +2977,7 @@ impl CcpState {
             };
             if super::order_builder::rth_definition_reply(context, rid, msg) {
                 keep_zone(shared);
+                self.ask_order_schedule(msg, shared, ccp_conn, hb);
                 return;
             }
             // Asked for the contract of an order given without a conId
@@ -2949,6 +2987,7 @@ impl CcpState {
                     self.cache_definition(def, shared);
                 }
                 keep_zone(shared);
+                self.ask_order_schedule(msg, shared, ccp_conn, hb);
                 return;
             }
             // Asked for a round lot (ibx#287): not a user reply.
@@ -5808,6 +5847,34 @@ mod tests {
     // replies interleave and whose rows share a schedule key: each request
     // gets its own row only, then its end. The reply to the conId lookup
     // lists the contract once per exchange; it is still one row.
+    // ibx#636: after an order's definition, its trading hours are asked
+    // once per schedule key and session, without holding the order; their
+    // zone becomes the contract's (the reference 10.51, paper 12/10/2026:
+    // one request for five AAPL orders, its answer in US/Eastern).
+    #[test]
+    fn an_orders_definition_asks_its_trading_hours_once() {
+        let (mut ccp, _context, shared) = u186_test_state();
+        let (client, mut server) = socket_pair();
+        let mut conn = Some(Connection::new_mem(client));
+        let mut hb = HeartbeatState::new();
+        let key = "1/STK/NASDAQ#LITE";
+        let def = pipe_msg(&format!("35=d|43=N|320=ord1|322=*|323=4|{}6008=265598|6046=BEST,NASDAQ,",
+            listing("AAPL", "265598", "BEST", key, "26")));
+        ccp.ask_order_schedule(&def, &shared, &mut conn, &mut hb);
+        ccp.ask_order_schedule(&def, &shared, &mut conn, &mut hb);
+        let sent: Vec<String> = ccp_messages_sent(&mut server).into_iter().filter(|m| m.contains("6040=106")).collect();
+        assert_eq!(sent.len(), 1, "one request for the key: {sent:?}");
+        assert!(sent[0].contains(&format!("6256={key}")), "{}", sent[0]);
+        assert_eq!(shared.reference.time_zone_id(265598), None, "the order does not wait for it");
+        let schedule = pipe_msg(&format!("35=U|6040=107|6256={key}|6734=US/Eastern|6840=0"));
+        ccp.handle_schedule_reply(&schedule, &shared, &None);
+        assert_eq!(shared.reference.time_zone_id(265598).as_deref(), Some("US/Eastern"));
+        assert!(ccp.order_zone_waits.is_empty());
+        // Known for the session: the next order asks nothing.
+        ccp.ask_order_schedule(&def, &shared, &mut conn, &mut hb);
+        assert!(ccp_messages_sent(&mut server).iter().all(|m| !m.contains("6040=106")));
+    }
+
     #[test]
     fn concurrent_lookups_sharing_a_schedule_key_keep_their_own_rows() {
         let (mut ccp, mut context, shared) = u186_test_state();
