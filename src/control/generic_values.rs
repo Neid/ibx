@@ -548,7 +548,8 @@ fn rt_volume(rec: &mut GenericRecord, trade: bool, value: f64, volume: i64, coun
     let prev = slot.replace((value, volume, count));
     let (pv, pvol, pcount) = prev?;
     let d_count = count.wrapping_sub(pcount);
-    let d_vol = volume - pvol;
+    // Wrapping, as the count: a bad frame must not stop the farm handler.
+    let d_vol = volume.wrapping_sub(pvol);
     let d_value = value - pv;
     if d_count == 0 && d_vol == 0 && d_value == 0.0 {
         return None;

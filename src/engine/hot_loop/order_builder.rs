@@ -3851,6 +3851,16 @@ fn algo_fields(algo: &crate::types::OrderAlgo) -> Fields {
             fields.push((5958, "adaptivePriority".to_string()));
             fields.push((5960, priority.as_str().to_string()));
         }
+        // Another strategy: its pairs as given, already in the
+        // reference's order (ibx#622).
+        OrderAlgo::Params(AlgoParams::Other { strategy, params }) => {
+            fields.push((847, strategy.clone()));
+            fields.push((5957, params.len().to_string()));
+            for (key, value) in params {
+                fields.push((5958, key.clone()));
+                fields.push((5960, value.clone()));
+            }
+        }
         OrderAlgo::Params(params) => {
             let (algo_name, param_strs) = build_algo_tags(params);
             // Tag 849 (maxPctVol) for algos that use it, only when it was
@@ -3933,6 +3943,7 @@ fn build_algo_tags(algo: &AlgoParams) -> (&'static str, Vec<String>) {
                 "endTime".into(), end_time.clone(),
             ])
         }
+        AlgoParams::Other { .. } => unreachable!("written by algo_fields"),
     }
 }
 
@@ -6930,6 +6941,49 @@ mod tests {
         // price management flag.
         let trail: Vec<(u32, &str)> = trail.iter().map(|(t, v)| (*t, v.as_str())).collect();
         assert!(crate::engine::price_mgmt::excluded_frame(&trail));
+    }
+
+    // ibx#622 (paper 12/10/2026, .tmp/607 case b): an AccuDistr order
+    // goes out with its parameters as given, in the reference's order, and
+    // the algo block of the reference's recording.
+    #[test]
+    fn an_algo_outside_the_list_is_sent_as_the_reference_writes_it() {
+        use crate::api::types::TagValue;
+        use crate::types::{OrderAlgo, OrderAttrs, OrderKind as K};
+        let given = [("componentSize", "1"), ("timeBetweenOrders", "60"), ("randomizeTime20", "0"),
+            ("randomizeSize55", "0"), ("unset", "")];
+        let params: Vec<TagValue> = given.iter()
+            .map(|(t, v)| TagValue { tag: t.to_string(), value: v.to_string() }).collect();
+        let algo = crate::api::client::parse_algo_params("AccuDistr", &params).unwrap();
+        let attrs = OrderAttrs { algo: Some(OrderAlgo::Params(algo)), ..Default::default() };
+        let tags = wire_tags(OrderRequest::SubmitEx {
+            order_id: 5, instrument: 0, side: Side::Buy, qty: 1, kind: K::Limit { price: px(1.0) }, tif: b'0', attrs });
+        let block: Vec<String> = tags.iter()
+            .filter(|(t, _)| matches!(t, 847 | 849 | 5957 | 5958 | 5960))
+            .map(|(t, v)| format!("{t}={v}")).collect();
+        assert_eq!(block.join("|"), "847=AccuDistr|5957=4|5958=timeBetweenOrders|5960=60|5958=randomizeSize55|5960=0\
+            |5958=componentSize|5960=1|5958=randomizeTime20|5960=0");
+        assert_eq!((tag(&tags, 40), tag(&tags, 18)), (Some("2"), Some("e")));
+    }
+
+    // ibx#622: the reference's parameter order fits every algo block of
+    // its recordings, and keeps the given order within a bin.
+    #[test]
+    fn the_reference_param_order_fits_its_recordings() {
+        let order = |keys: &[&str]| {
+            let mut pairs: Vec<(String, String)> = keys.iter().map(|k| (k.to_string(), String::new())).collect();
+            crate::types::reference_param_order(&mut pairs);
+            pairs.into_iter().map(|(k, _)| k).collect::<Vec<_>>()
+        };
+        assert_eq!(order(&["allowPastEndTime", "noTakeLiq"]), ["noTakeLiq", "allowPastEndTime"]);
+        assert_eq!(order(&["forceCompletion", "allowPastEndTime", "riskAversion"]),
+            ["riskAversion", "allowPastEndTime", "forceCompletion"]);
+        assert_eq!(order(&["pctVol", "noTakeLiq"]), ["noTakeLiq", "pctVol"]);
+        assert_eq!(order(&["displaySize", "allowPastEndTime"]), ["allowPastEndTime", "displaySize"]);
+        assert_eq!(order(&["endTime", "startTime"]), ["startTime", "endTime"]);
+        // maxPctVol and endTime share a bin: the given order is kept.
+        assert_eq!(order(&["endTime", "maxPctVol"]), ["endTime", "maxPctVol"]);
+        assert_eq!(order(&["maxPctVol", "endTime"]), ["maxPctVol", "endTime"]);
     }
 
     // ibx#263 (captured 23/09/2026, ib-agent#192 A2a and A2b, and

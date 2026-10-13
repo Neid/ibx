@@ -746,6 +746,29 @@ pub enum AlgoParams {
         start_time: String,
         end_time: String,
     },
+    /// Any other strategy (AccuDistr, ...), sent with its parameters as
+    /// given (ibx#622): the server's algo definitions check them first.
+    /// The pairs are kept in the order the reference writes them
+    /// (`reference_param_order`), the ones with no value left out.
+    Other {
+        strategy: String,
+        params: Vec<(String, String)>,
+    },
+}
+
+/// The order in which the reference writes an algo's parameters (ibx#622):
+/// it keeps them in a concurrent hash map of 32 bins (64 from 24 entries
+/// on), so they come by bin, the bin taken from the low bits of the
+/// spread string hash, and in the given order within a bin. Fits every
+/// algo block of the reference's recordings (Vwap, Twap, ArrivalPx,
+/// ClosePx, DarkIce, PctVol, AccuDistr; paper, 12/10/2026 and earlier).
+pub fn reference_param_order(params: &mut [(String, String)]) {
+    let mask: u32 = if params.len() >= 24 { 63 } else { 31 };
+    // A stable sort: the given order stays within a bin.
+    params.sort_by_cached_key(|(key, _)| {
+        let h = key.encode_utf16().fold(0u32, |h, c| h.wrapping_mul(31).wrapping_add(c as u32));
+        (h ^ (h >> 16)) & mask
+    });
 }
 
 /// The order-type-specific part of an extended order submission: which

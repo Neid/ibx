@@ -142,8 +142,19 @@ fn parse_algo_pct_vol() {
 }
 
 #[test]
-fn parse_algo_unsupported() {
-    assert!(parse_algo_params("unknown", &[]).is_err());
+fn parse_algo_outside_the_list_goes_as_given() {
+    // ibx#622: no local refusal; the server's algo definitions check it.
+    let params = vec![
+        TagValue { tag: "timeBetweenOrders".into(), value: "60".into() },
+        TagValue { tag: "componentSize".into(), value: "1".into() },
+    ];
+    match parse_algo_params("AccuDistr", &params).unwrap() {
+        AlgoParams::Other { strategy, params } => {
+            assert_eq!(strategy, "AccuDistr");
+            assert_eq!(params, [("timeBetweenOrders".to_string(), "60".to_string()), ("componentSize".to_string(), "1".to_string())]);
+        }
+        other => panic!("wrong variant {other:?}"),
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -4411,6 +4422,38 @@ fn algo_refusals_of_20261002_through_place_order() {
     client.place_order(85, &spy(), &order).unwrap();
     assert!(rx.try_recv().is_err());
     assert_eq!(shared.orders.drain_order_errors().iter().map(|e| e.1).collect::<Vec<_>>(), [110]);
+}
+
+// ibx#622 (paper 12/10/2026, .tmp/607 cases b and E): an AccuDistr order
+// is sent with its parameters; one with a parameter the definitions do
+// not have is refused with 443 and nothing is sent, as the reference.
+#[test]
+fn accu_distr_through_place_order() {
+    let place = |id: i64, params: &[(&str, &str)]| {
+        let (client, rx, shared) = test_client();
+        shared.market.set_instrument_count(1);
+        shared.reference.add_algo_definitions(include_str!("../../../tests/fixtures/algo/IBALGO-AE-20261002.xml"));
+        shared.reference.add_algo_definitions(include_str!("../../../tests/fixtures/algo/IBALGO-AL-STK-20261002.xml"));
+        let order = Order {
+            action: "BUY".into(), total_quantity: 1.0, order_type: "LMT".into(), lmt_price: 1.0,
+            algo_strategy: "AccuDistr".into(),
+            algo_params: params.iter().map(|(t, v)| TagValue { tag: t.to_string(), value: v.to_string() }).collect(),
+            ..Default::default()
+        };
+        client.place_order(id, &spy(), &order).unwrap();
+        let mut w = RecordingWrapper::default();
+        client.process_msgs(&mut w);
+        (rx.try_iter().collect::<Vec<_>>(), w.events)
+    };
+    let (sent, events) = place(90, &[("componentSize", "1"), ("timeBetweenOrders", "60"),
+        ("randomizeTime20", "0"), ("randomizeSize55", "0")]);
+    assert!(sent.iter().any(|cmd| matches!(cmd, ControlCommand::Order(OrderRequest::SubmitLimitEx {
+        attrs: crate::types::OrderAttrs { algo: Some(crate::types::OrderAlgo::Params(AlgoParams::Other { .. })), .. }, .. }))),
+        "{sent:?}");
+    assert!(!events.iter().any(|e| e.starts_with("error:90")), "{events:?}");
+    let (sent, events) = place(91, &[("componentSize", "1"), ("giveUp", "1")]);
+    assert!(!sent.iter().any(|cmd| matches!(cmd, ControlCommand::Order(_))), "{sent:?}");
+    assert!(events.contains(&"error:91:443:Order processing failed. Unknown algo attribute:giveUp".to_string()), "{events:?}");
 }
 
 // ibx#416, captured 02/10/2026 (b1_416_time_condition): a time condition

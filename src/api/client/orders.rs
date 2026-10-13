@@ -437,6 +437,17 @@ pub fn parse_algo_params(strategy: &str, params: &[TagValue]) -> Result<AlgoPara
             start_time: get("startTime"),
             end_time: get("endTime"),
         }),
-        _ => Err(format!("Unsupported algo strategy: '{}'", strategy)),
+        // Another strategy goes out as given, as the reference sends it
+        // (ibx#622, AccuDistr accepted on paper 12/10/2026); the
+        // definitions check refused it before if the server does not
+        // know it (439) or one of its parameters (443).
+        _ => {
+            let mut pairs: Vec<(String, String)> = params.iter()
+                .filter(|tv| !tv.value.is_empty())
+                .map(|tv| (tv.tag.clone(), tv.value.clone()))
+                .collect();
+            crate::types::reference_param_order(&mut pairs);
+            Ok(AlgoParams::Other { strategy: strategy.to_string(), params: pairs })
+        }
     }
 }
