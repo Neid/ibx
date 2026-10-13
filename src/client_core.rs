@@ -3490,7 +3490,7 @@ impl ClientCore {
             // (ibx#616, code read 13/10/2026).
             let mdoff = generic_tick_list.split(',').any(|t| t.trim().eq_ignore_ascii_case("mdoff"));
             if ticks.iter().any(|t| t.code == generic_tick::ODD_LOT) && (!ODD_LOT_QUOTES || mdoff) {
-                return Some((10367, "Requesting \"Odd Lot Bid/Ask Quotes\" generic tick 787 is not allowed".to_string()));
+                return Some((10367, "Requesting \"Odd Lot Bid/Ask Quotes\" generic tick 787 is not allowed.".to_string()));
             }
             return None;
         }
@@ -6674,7 +6674,9 @@ mod tests {
     #[test]
     fn odd_lot_quotes_are_refused_below_level_225() {
         let core = ClientCore::new();
-        let refused = Some((10367, "Requesting \"Odd Lot Bid/Ask Quotes\" generic tick 787 is not allowed".to_string()));
+        // The text as the reference 10.51 gave it to a client at level 214
+        // (paper, 13/10/2026, regular hours), with its final period.
+        let refused = Some((10367, "Requesting \"Odd Lot Bid/Ask Quotes\" generic tick 787 is not allowed.".to_string()));
         assert_eq!(core.generic_tick_list_refusal("787", false, "STK"), refused);
         assert_eq!(core.generic_tick_list_refusal("233,787", false, "STK"), refused);
         assert_eq!(core.generic_tick_list_refusal("787", true, "STK"), None, "not checked on a snapshot");

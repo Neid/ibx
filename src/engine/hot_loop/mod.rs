@@ -269,6 +269,7 @@ impl HotLoop {
     /// entries had no mark; by default they come in shares (ibx#663).
     pub fn set_lot_sizes(&mut self, on: bool) {
         self.context.market.set_lot_sizes(on);
+        self.hmds.form_10_40 = on;
     }
 
     /// The logon's price management feature and exclusion list (ibx#492).

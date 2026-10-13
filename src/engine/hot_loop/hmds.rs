@@ -24,6 +24,9 @@ const HISTORICAL_TICKS_ERROR: &str = "Failed to request historical ticks";
 const HISTOGRAM_ERROR: &str = "Failed to request histogram data";
 
 pub(crate) struct HmdsState {
+    /// The 10.40 forms (replays of its recordings): a bar of quotes gives
+    /// -1 for its volume and average price (ibx#679).
+    pub(crate) form_10_40: bool,
     pub(crate) next_tbt_req_id: u32,
     /// Tick-by-tick streams (ibx#404), one per contract, type and size
     /// filter, in the order they were made (ibx#455).
@@ -468,6 +471,7 @@ impl BarRequestInfo {
 impl HmdsState {
     pub(crate) fn new() -> Self {
         Self {
+            form_10_40: false,
             next_tbt_req_id: 1,
             tbt_subscriptions: Vec::new(),
             tbt_ended: Vec::new(),
@@ -1169,8 +1173,10 @@ impl HmdsState {
             let subs: Vec<(ReqId, f64)> = self.rtbar_subs.iter()
                 .filter(|s| farm == super::pool::PRIMARY_HMDS && s.ticker_id == Some(ticker_id))
                 .map(|s| (s.req_id, s.min_tick)).collect();
-            // A bar of quotes has no volume, average price or trade count:
-            // -1 each (captured 05/10/2026, MIDPOINT).
+            // A bar of quotes has no volume or average price, unset, and a
+            // trade count of -1 (the reference 10.51 to a client at level
+            // 214, 13/10/2026, MIDPOINT; the reference 10.40 gave -1 each,
+            // 05/10/2026; ibx#679).
             let trades = self.rtbar_subs.iter().find(|s| s.ticker_id == Some(ticker_id))
                 .is_none_or(|s| matches!(s.data, "Last" | "AggLast"));
             let live_tick = self.live_bars.iter()
@@ -1186,7 +1192,8 @@ impl HmdsState {
                 if let Some(mut bar) = crate::control::historical::decode_bar_payload(payload, min_tick) {
                     bar.timestamp = timestamp;
                     if !trades {
-                        (bar.volume, bar.wap, bar.count) = (-1.0, -1.0, -1);
+                        let none = if self.form_10_40 { -1.0 } else { f64::MAX };
+                        (bar.volume, bar.wap, bar.count) = (none, none, -1);
                     }
                     for &(req_id, _) in &subs {
                         shared.market.push_real_time_bar(req_id, bar);
@@ -3168,6 +3175,25 @@ pub(crate) mod tests {
         let got: Vec<(ReqId, u32)> = bars.iter().map(|(r, b)| (*r, b.timestamp)).collect();
         assert_eq!(got, vec![(11, 100), (12, 105)]);
         assert!((bars[0].1.close - 150.0).abs() < 1e-9, "{:?}", bars[0].1);
+    }
+
+    // ibx#679: a bar of quotes (MIDPOINT) has its volume and average price
+    // unset and a count of -1, as the reference 10.51 gives it to a client
+    // at level 214 (13/10/2026); -1 each in the 10.40 form.
+    #[test]
+    fn a_bar_of_quotes_has_no_volume_or_average() {
+        for (form_10_40, none) in [(false, f64::MAX), (true, -1.0)] {
+            let mut hmds = HmdsState::new();
+            hmds.form_10_40 = form_10_40;
+            let shared = SharedState::new();
+            let mut hb = HeartbeatState::new();
+            let mut conn: Option<Connection> = None;
+            hmds.rtbar_subs.push(RtBarSub { data: "Midpoint", ..rt_sub("rt_1", 11, Some(5)) });
+            let payload = single_price_payload(15000, 100);
+            hmds.process_hmds_message(&rtbar_frame(&[(5, 100, &payload)]), &mut conn, &shared, &None, &mut hb);
+            let bars = shared.market.drain_real_time_bars();
+            assert_eq!((bars[0].1.volume, bars[0].1.wap, bars[0].1.count), (none, none, -1));
+        }
     }
 
     /// Payload of a bar with one trade, at `low_ticks` price increments
