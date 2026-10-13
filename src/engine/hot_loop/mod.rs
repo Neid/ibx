@@ -2153,6 +2153,25 @@ impl HotLoop {
                     self.ccp.start_contract_resolve(req_id, lookup, *request, &mut self.ccp_conn, &mut self.hb);
                 }
                 ControlCommand::FetchHistorical { req_id, con_id, symbol, sec_type, exchange, end_date_time, duration, bar_size, what_to_show, use_rth, keep_up_to_date, include_expired, format_date } => {
+                    // A contract given by its conId alone takes the type of
+                    // its definition, which it waits for when not known
+                    // (ibx#643's rule; the reference 10.51 served an option
+                    // and a future so, 13/10/2026, regular hours).
+                    let sec_type = match self.context.def_kinds.get(&con_id) {
+                        Some((kind, _)) if sec_type.is_empty() => kind.clone(),
+                        _ => sec_type,
+                    };
+                    // Once: a definition that never came leaves the group
+                    // set (-1) and the request goes as it is.
+                    if sec_type.is_empty() && con_id > 0 && !self.context.agg_groups.contains_key(&con_id)
+                        && self.ask_definition(con_id, &exchange)
+                    {
+                        self.context.def_parked.push((con_id, ControlCommand::FetchHistorical {
+                            req_id, con_id, symbol, sec_type, exchange, end_date_time, duration, bar_size,
+                            what_to_show, use_rth, keep_up_to_date, include_expired, format_date,
+                        }));
+                        continue;
+                    }
                     // A SMART route needs the contract's aggregate group
                     // (#445): the request waits for the definition. A
                     // keepUpToDate request goes the same way, to the farm of
@@ -6997,6 +7016,27 @@ mod bars_routing_tests {
         tx.send(ControlCommand::CancelHistorical { req_id: 1 }).unwrap();
         engine.poll_once();
         assert_eq!(engine.pool.get(day).unwrap().queued(), 2, "the cancel goes to the same farm");
+    }
+
+    // ibx#643: bars of a contract given by its conId alone take the type of
+    // its definition (the reference 10.51 served an option and a future so,
+    // 13/10/2026); without it they were routed as a stock (162).
+    #[test]
+    fn bars_of_a_con_id_alone_take_the_definitions_type() {
+        let shared = Arc::new(SharedState::new());
+        let mut engine = HotLoop::new(shared.clone(), None, None);
+        let (client, _server) = crate::protocol::connection::mem_pair();
+        engine.hmds_conn = Some(Connection::new_mem(client));
+        engine.set_routing_table(TableKind::Historical,
+            "IDEALPRO,CASH,DayChart|Bar5Sec,4,*,ndc1.example,4000,cashhmds");
+        engine.context.def_kinds.insert(12087792, ("CASH".into(), "EUR".into()));
+        let (tx, rx) = crossbeam_channel::bounded(8);
+        engine.set_control_rx(rx);
+        tx.send(bars(1, 12087792, "IDEALPRO", "", "1 hour")).unwrap();
+        engine.poll_once();
+        let day = engine.pool.find("cashhmds").expect("day charts farm");
+        assert_eq!(engine.pool.get(day).unwrap().queued(), 1);
+        assert!(shared.reference.drain_historical_errors().is_empty());
     }
 }
 
