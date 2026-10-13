@@ -3242,8 +3242,10 @@ fn api_sizes_are_wire_sizes_times_the_round_lot() {
     let mut ms = MarketState::new();
     let id = ms.register(265598);
     ms.set_round_lot(id, 40);
+    // The 10.40 form: sizes in round lots (ibx#663).
+    ms.set_lot_sizes(true);
     for (tick_type, magnitude) in [(td::O_BID_SIZE, 57), (td::O_ASK_SIZE, 1), (td::O_LAST_SIZE, 2), (td::O_VOLUME, 1466)] {
-        ms.apply_tick(id, 0, false, &RawTick { server_tag: 1, tick_type, magnitude, stats_block: false, first: true });
+        ms.apply_tick(id, 0, false, &RawTick { server_tag: 1, tick_type, magnitude, stats_block: false, first: true, scale: 0 });
     }
     shared.market.push_test_message(id, ms.quote(id), &Default::default());
     client.core.req_to_instrument.lock().unwrap().insert(1, id);

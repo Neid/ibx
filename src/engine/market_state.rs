@@ -188,6 +188,10 @@ pub struct MarketState {
     /// Write counter of `kept`: the entry with the smallest stamp is the
     /// oldest, overwritten when the table is full.
     kept_clock: u64,
+    /// The server sends the sizes in round lots (the 10.40 form, replays of
+    /// its recordings); false: in shares, as with the entry mark ibx writes
+    /// since #648 (ibx#663).
+    lot_sizes: bool,
 }
 
 /// The terms of an option contract its orders carry, as the reference
@@ -225,7 +229,20 @@ impl MarketState {
             option_terms: std::array::from_fn(|_| None),
             kept: [KeptQuote::default(); KEPT_QUOTES],
             kept_clock: 0,
+            lot_sizes: false,
         }
+    }
+
+    /// The sizes come in round lots (the 10.40 form) or in shares (ibx#663).
+    pub fn set_lot_sizes(&mut self, on: bool) {
+        self.lot_sizes = on;
+    }
+
+    /// The round lot the sizes of the server are counted in: the
+    /// instrument's in the 10.40 form, 1 when they come in shares.
+    #[inline(always)]
+    pub fn size_lot(&self, round_lot: i64) -> i64 {
+        if self.lot_sizes { round_lot.max(1) } else { 1 }
     }
 
     /// Keep a contract's last bid and ask (ibx#508): in its own entry, else
@@ -660,8 +677,15 @@ impl MarketState {
         }
         let i = id as usize;
         let mts = price_tick;
-        let sizes = size_tick * self.round_lots[i];
-        let m = tick.magnitude;
+        // In shares, or in round lots in the 10.40 form (ibx#663).
+        let lot = self.round_lots[i];
+        let sizes = size_tick * if self.lot_sizes { lot } else { 1 };
+        // Decimal places of the value (the 10.51 form's extended entries).
+        let m = if tick.scale == 0 || tick.tick_type == td::O_VOLUME {
+            tick.magnitude
+        } else {
+            tick.magnitude / 10i64.pow(tick.scale.min(18) as u32)
+        };
         let q = &mut self.quotes[i];
         match tick.tick_type {
             td::O_BID_PRICE => set(&mut q.bid, m.checked_mul(mts)),
@@ -682,6 +706,15 @@ impl MarketState {
             td::O_LAST_SIZE => {
                 set(&mut q.last_size, m.checked_mul(sizes));
                 self.marks[i].set_seen(SizeKind::Last);
+            }
+            // The 10.51 form gives the volume in shares with decimals; the
+            // client gets it in round lots, rounded down (the reference
+            // 10.51, paper, 13/10/2026: 64962.113269 shares of a lot of 40
+            // give 1624, eight of eight values floored).
+            td::O_VOLUME if tick.scale > 0 => {
+                let unit = 10i64.pow(tick.scale.min(18) as u32).saturating_mul(lot.max(1));
+                set(&mut q.volume, (m / unit).checked_mul(size_tick));
+                self.marks[i].set_seen(SizeKind::Volume);
             }
             td::O_VOLUME => {
                 set(&mut q.volume, m.checked_mul(size_tick));
@@ -1347,7 +1380,7 @@ mod tests {
     const CENT: i64 = PRICE_SCALE / 100;
 
     fn raw(tick_type: u64, magnitude: i64) -> RawTick {
-        RawTick { server_tag: 7, tick_type, magnitude, stats_block: false, first: true }
+        RawTick { server_tag: 7, tick_type, magnitude, stats_block: false, first: true, scale: 0 }
     }
 
     #[test]
@@ -1438,6 +1471,7 @@ mod tests {
         let id = ms.register(265598); // AAPL, round lot 40
         ms.set_size_min_tick(id, 1.0);
         ms.set_round_lot(id, 40);
+        ms.set_lot_sizes(true); // the 10.40 form (ibx#663)
         for t in [raw(4, 57), raw(5, 3), raw(6, 2), raw(10, 1466)] {
             ms.apply_tick(id, CENT, false, &t);
         }
@@ -1456,6 +1490,7 @@ mod tests {
         let mut ms = MarketState::new();
         let id = ms.register(265598);
         ms.set_round_lot(id, 40);
+        ms.set_lot_sizes(true); // the 10.40 form (ibx#663)
         ms.register_farm_tag_sized(0, 1101, id, 0.01, Some(0.01));
         ms.register_farm_tag_sized(0, 1101, id, 0.01, Some(1.0));
         ms.register_trade_tag_sized(0, 1098, id, 0.01, Some(0.5));
@@ -1484,6 +1519,7 @@ mod tests {
         let id = ms.register(1);
         ms.set_size_min_tick(id, 0.01);
         ms.set_round_lot(id, 100);
+        ms.set_lot_sizes(true); // the 10.40 form (ibx#663)
         ms.apply_tick(id, CENT, false, &raw(4, 5));
         ms.apply_tick(id, CENT, false, &raw(10, 250));
         assert_eq!(ms.quote(id).bid_size, 5 * QTY_SCALE); // 5 x 0.01 x 100

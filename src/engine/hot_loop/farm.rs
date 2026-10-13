@@ -3524,11 +3524,46 @@ mod tests {
     // reaches the API as 2280 with a round lot of 40; volume stays as on
     // the wire; the size increment of the ack and of the trade stream
     // setup multiplies every size.
+    // ibx#663: the 10.51 form, with the entry mark ibx writes since #648.
+    // MSFT's first data message of 13/10/2026 (reference 10.51, paper,
+    // pre-market, `.tmp/eth/wire_gw_P1.jsonl` seq 1104-1131), with its
+    // acknowledgement and trade setup: the sizes come in shares, the
+    // volume in shares with six decimals (an extended entry whose width
+    // byte also gives the decimals), the last entry's prices in millionths.
+    // The reference's callbacks of that moment: bid 541.70 x 40, ask
+    // 542.00 x 160, last 542.0 x 46, close 541.150024, volume 1624 (shares
+    // over the round lot of 40, rounded down).
+    #[test]
+    fn the_10_51_form_gives_shares_and_a_volume_in_round_lots() {
+        let shared = SharedState::new();
+        let mut farm = FarmState::new();
+        let mut context = Context::new();
+        let id = context.market.register(272093);
+        context.market.set_round_lot(id, 40);
+        farm.md_req_to_instrument.push((1, id));
+        farm.handle_subscription_ack(b"8=O35=Q405,1,0.01,0,3,9c,,1,1", &mut None::<Connection>, &mut context, &shared, &mut HeartbeatState::new());
+        farm.handle_ticker_setup(b"8=O35=L272093,1e-06,407,,1", &mut context);
+        const BODY: [u8; 85] = [0x02, 0x98, 0x00, 0x00, 0x01, 0x95, 0x06, 0x00, 0xd3, 0x9a, 0x24, 0x28, 0x0e, 0x00, 0xd3, 0xb8, 0x2d, 0x00, 0xa0, 0x3c, 0x0c, 0x85, 0x01, 0x00, 0x8d, 0x01, 0x00, 0x58, 0x00, 0x00, 0x00, 0x01, 0x97, 0x17, 0x20, 0x4e, 0x43, 0x80, 0x34, 0x2e, 0x6c, 0x00, 0xa7, 0x6a, 0xcd, 0xef, 0x3e, 0xac, 0x17, 0xd8, 0x03, 0x80, 0x00, 0x01, 0x97, 0x1f, 0x20, 0x41, 0x4b, 0x48, 0xa7, 0x01, 0x35, 0x28, 0x94, 0x44, 0x00, 0x4c, 0x00, 0xfc, 0x0a, 0x65, 0x0f, 0x20, 0x0b, 0x2e, 0xf5, 0x60, 0x00, 0x80, 0x00, 0x01, 0x97, 0xb0, 0x00];
+        let mut msg = b"8=O9=010535=P".to_vec();
+        msg.extend_from_slice(&BODY);
+        let mut ticks = Vec::new();
+        assert!(!crate::protocol::tick_decoder::decode_ticks_35p_into(&BODY, &mut ticks), "no block dropped");
+        farm.handle_tick_data(&msg, &mut context, &shared, &None);
+        let q = shared.market.quote(id);
+        let px = |cents: i64| cents * PRICE_SCALE / 100;
+        assert_eq!((q.bid, q.bid_size, q.ask, q.ask_size), (px(54170), 40 * QTY_SCALE, px(54200), 160 * QTY_SCALE));
+        assert_eq!((q.last, q.last_size), (px(54200), 46 * QTY_SCALE));
+        assert_eq!(q.close, 541_150_024 * PRICE_SCALE / 1_000_000);
+        assert_eq!(q.volume, 1624 * QTY_SCALE);
+    }
+
     #[test]
     fn sizes_use_the_size_increment_and_the_round_lot() {
         let shared = SharedState::new();
         let mut farm = FarmState::new();
         let mut context = Context::new();
+        // The 10.40 form: sizes in round lots (ibx#663).
+        context.market.set_lot_sizes(true);
         let id = context.market.register(265598);
         farm.md_req_to_instrument.push((5, id));
         farm.handle_subscription_ack(b"8=O\x0135=Q\x011101,5,0.01,0,3,9c,,1,1", &mut None::<Connection>, &mut context, &shared, &mut HeartbeatState::new());

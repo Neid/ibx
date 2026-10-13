@@ -92,6 +92,9 @@ impl Links {
         // The paper logon of the recordings (captures/0928, 28/09/2026):
         // features PRICEMGMT and SCALEUSLOT, 6247=demo, 8146 exclusions.
         engine.set_scale_us_lots(true);
+        // Recorded on the 10.40 gateway (tests/fixtures/gw1040), whose
+        // entries had no mark: sizes in round lots (ibx#663).
+        engine.set_lot_sizes(true);
         engine.set_user_book(true);
         engine.set_price_mgmt(true, Some("*/CMDTY;*/CRYPTO;*/FUND;*/IOPT;*/SLB"));
         // Its smart combo conIds (6611).

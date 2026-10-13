@@ -259,6 +259,12 @@ impl HotLoop {
         self.context.scale_us_lots = on;
     }
 
+    /// The server's sizes come in round lots, as in the 10.40 form, whose
+    /// entries had no mark; by default they come in shares (ibx#663).
+    pub fn set_lot_sizes(&mut self, on: bool) {
+        self.context.market.set_lot_sizes(on);
+    }
+
     /// The logon's price management feature and exclusion list (ibx#492).
     pub fn set_price_mgmt(&mut self, on: bool, exclusions: Option<&str>) {
         self.context.price_mgmt_feature = on;
@@ -739,7 +745,7 @@ impl HotLoop {
         // The underlying's bid and ask stay for its next request, as the
         // reference's record of the underlying keeps them (ibx#508).
         if let Some((con_id, wire, min_tick, size_tick, auto)) = self.farm.optmd.under_book(instrument) {
-            let lot = self.context.round_lots.get(&con_id).copied().unwrap_or(1);
+            let lot = self.context.market.size_lot(self.context.round_lots.get(&con_id).copied().unwrap_or(1));
             self.context.market.keep_quote(crate::engine::market_state::KeptQuote::from_wire(con_id, wire, min_tick, size_tick, lot, auto));
         }
         // The option model's cancels around the top of book's (ibx#502).

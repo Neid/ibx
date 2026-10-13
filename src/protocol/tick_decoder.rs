@@ -190,6 +190,9 @@ pub struct RawTick {
     pub stats_block: bool,
     /// The tick is the first of its block.
     pub first: bool,
+    /// Decimal places of the value (the 10.51 form's extended entries: the
+    /// volume in shares with six decimals), 0 for a whole value (ibx#663).
+    pub scale: u8,
 }
 
 /// Decode all ticks from a 35=P binary payload.
@@ -247,6 +250,11 @@ pub fn decode_ticks_35p_into(body: &[u8], ticks: &mut Vec<RawTick>) -> bool {
             }
             let tick_type;
             let byte_width;
+            // The extended entry's width byte: its low half is the width in
+            // bytes, its high half the decimal places of the value (the
+            // 10.51 form, ibx#663: the volume as 0x65, five bytes, six
+            // decimals; the 10.40 form wrote the width alone).
+            let mut scale = 0u8;
 
             let raw_tick_type = match reader.read_unsigned(5) {
                 Some(v) => v,
@@ -271,10 +279,12 @@ pub fn decode_ticks_35p_into(body: &[u8], ticks: &mut Vec<RawTick>) -> bool {
                     Some(v) => v,
                     None => { ticks.truncate(block_start); return true; }
                 };
-                byte_width = match reader.read_unsigned(8) {
+                let width_byte = match reader.read_unsigned(8) {
                     Some(v) => v,
                     None => { ticks.truncate(block_start); return true; }
                 };
+                byte_width = width_byte & 0x0F;
+                scale = (width_byte >> 4) as u8;
             } else {
                 tick_type = raw_tick_type;
                 byte_width = raw_width;
@@ -307,6 +317,7 @@ pub fn decode_ticks_35p_into(body: &[u8], ticks: &mut Vec<RawTick>) -> bool {
                 magnitude,
                 stats_block: stats_block || (tick_type == O_TIMESTAMP_BASE && prev_type == Some(O_CLOSE_PRICE)),
                 first: ticks.len() == block_start,
+                scale,
             });
             prev_type = Some(tick_type);
         }
