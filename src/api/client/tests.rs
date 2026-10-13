@@ -5137,6 +5137,22 @@ fn every_report_gives_open_order_then_order_status() {
     ]);
 }
 
+// ibx#682 (the reference 10.51, 13/10/2026): an order refused with 10043
+// and kept pending is listed by reqOpenOrders with its status only,
+// ApiPending.
+#[test]
+fn a_refused_pending_order_is_listed_with_its_status_only() {
+    let (client, _rx, shared) = test_client();
+    placed_order(&client, &shared, 62);
+    shared.orders.push_order_error(62, 10043, "Missing or invalid NonGuaranteed value.".into());
+    let mut w = StatusRecorder::default();
+    client.process_msgs(&mut w);
+    let mut w = StatusRecorder::default();
+    client.req_open_orders(&mut w);
+    client.process_msgs(&mut w);
+    assert_eq!(w.events, ["order_status:62:ApiPending:0:0:0"]);
+}
+
 #[test]
 fn a_cancel_gives_order_status_only() {
     let (client, _rx, shared) = test_client();

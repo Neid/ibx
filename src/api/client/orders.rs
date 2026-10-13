@@ -292,7 +292,11 @@ impl EClient {
                 status: tracked.status.clone(),
                 ..Default::default()
             };
-            wrapper.open_order(order_id, &tracked.contract, &tracked.order, &state);
+            // An order kept pending after a refusal: its status only
+            // (ibx#682).
+            if tracked.status != "ApiPending" {
+                wrapper.open_order(order_id, &tracked.contract, &tracked.order, &state);
+            }
             let why_held = self.core.why_held(&tracked.status, &tracked.order.order_type, tracked.order.parent_id);
             wrapper.order_status(
                 order_id, &tracked.status, tracked.filled, tracked.remaining, 0.0,

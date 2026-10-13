@@ -4030,6 +4030,15 @@ impl ClientCore {
         {
             o.status = UNSENT_STATUS.into();
         }
+        // Refused but kept in the reference's pending map (a combo with no
+        // NonGuaranteed value, ibx#677): listed as ApiPending, with its
+        // status only (ibx#682; the reference 10.51, 13/10/2026).
+        if matches!(code, 10043 | 10045)
+            && let Some(o) = self.open_orders.lock().unwrap().get_mut(&order_id)
+            && o.status == "PendingSubmit"
+        {
+            o.status = "ApiPending".into();
+        }
     }
 
     /// orderStatus whyHeld, as the reference's `jclient.pe.iK()`: only for

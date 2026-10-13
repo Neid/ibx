@@ -494,11 +494,15 @@ impl EClient {
             let mut state = super::super::contract::OrderState::default();
             state.status = tracked.status.clone();
             let state_py = Py::new(py, state)?.into_any();
-            self.wrapper.call_method(
-                py, "open_order",
-                (*order_id, &c_py, &o_py, &state_py),
-                None,
-            )?;
+            // An order kept pending after a refusal: its status only
+            // (ibx#682).
+            if tracked.status != "ApiPending" {
+                self.wrapper.call_method(
+                    py, "open_order",
+                    (*order_id, &c_py, &o_py, &state_py),
+                    None,
+                )?;
+            }
             let why_held = self.core.why_held(&tracked.status, &tracked.order.order_type, tracked.order.parent_id);
             self.wrapper.call_method(
                 py, "order_status",
