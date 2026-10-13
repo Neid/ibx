@@ -246,6 +246,8 @@ RUST_TO_PY_TYPE = {
     "&ExecutionFilter": "ExecutionFilter",
     "&mut impl Wrapper": "Wrapper",
     "InstrumentId": "int",
+    # The quantity arguments of the Python callbacks (ibx#592).
+    "Decimal": "Decimal",
 }
 
 # ── Fallback method descriptions ──

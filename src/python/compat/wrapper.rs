@@ -2,6 +2,10 @@
 
 use pyo3::prelude::*;
 
+/// A quantity argument: a `decimal.Decimal`, as the official library gives
+/// it (ibx#592).
+type Decimal = Py<PyAny>;
+
 /// ibapi-compatible EWrapper base class.
 /// Users subclass this in Python and override callbacks they care about.
 /// All methods are no-ops by default.
@@ -47,7 +51,7 @@ impl EWrapper {
 
     fn tick_price(&self, _req_id: i64, _tick_type: i32, _price: f64, _attrib: Py<PyAny>) {}
 
-    fn tick_size(&self, _req_id: i64, _tick_type: i32, _size: f64) {}
+    fn tick_size(&self, _req_id: i64, _tick_type: i32, _size: Decimal) {}
 
     fn tick_string(&self, _req_id: i64, _tick_type: i32, _value: &str) {}
 
@@ -60,7 +64,7 @@ impl EWrapper {
     // ── Orders ──
 
     fn order_status(
-        &self, _order_id: i64, _status: &str, _filled: f64, _remaining: f64,
+        &self, _order_id: i64, _status: &str, _filled: Decimal, _remaining: Decimal,
         _avg_fill_price: f64, _perm_id: i64, _parent_id: i64,
         _last_fill_price: f64, _client_id: i64, _why_held: &str, _mkt_cap_price: f64,
     ) {}
@@ -80,7 +84,7 @@ impl EWrapper {
     fn update_account_value(&self, _key: &str, _value: &str, _currency: &str, _account_name: &str) {}
 
     fn update_portfolio(
-        &self, _contract: Py<PyAny>, _position: f64, _market_price: f64,
+        &self, _contract: Py<PyAny>, _position: Decimal, _market_price: f64,
         _market_value: f64, _average_cost: f64, _unrealized_pnl: f64,
         _realized_pnl: f64, _account_name: &str,
     ) {}
@@ -93,14 +97,14 @@ impl EWrapper {
 
     fn account_summary_end(&self, _req_id: i64) {}
 
-    fn position(&self, _account: &str, _contract: Py<PyAny>, _pos: f64, _avg_cost: f64) {}
+    fn position(&self, _account: &str, _contract: Py<PyAny>, _pos: Decimal, _avg_cost: f64) {}
 
     fn position_end(&self) {}
 
     fn pnl(&self, _req_id: i64, _daily_pnl: f64, _unrealized_pnl: f64, _realized_pnl: f64) {}
 
     fn pnl_single(
-        &self, _req_id: i64, _pos: f64, _daily_pnl: f64,
+        &self, _req_id: i64, _pos: Decimal, _daily_pnl: f64,
         _unrealized_pnl: f64, _realized_pnl: f64, _value: f64,
     ) {}
 
@@ -126,12 +130,12 @@ impl EWrapper {
 
     fn tick_by_tick_all_last(
         &self, _req_id: i64, _tick_type: i32, _time: i64, _price: f64,
-        _size: f64, _tick_attrib_last: Py<PyAny>, _exchange: &str, _special_conditions: &str,
+        _size: Decimal, _tick_attrib_last: Py<PyAny>, _exchange: &str, _special_conditions: &str,
     ) {}
 
     fn tick_by_tick_bid_ask(
         &self, _req_id: i64, _time: i64, _bid_price: f64, _ask_price: f64,
-        _bid_size: f64, _ask_size: f64, _tick_attrib_bid_ask: Py<PyAny>,
+        _bid_size: Decimal, _ask_size: Decimal, _tick_attrib_bid_ask: Py<PyAny>,
     ) {}
 
     fn tick_by_tick_mid_point(&self, _req_id: i64, _time: i64, _mid_point: f64) {}
@@ -169,12 +173,12 @@ impl EWrapper {
 
     fn update_mkt_depth(
         &self, _req_id: i64, _position: i32, _operation: i32,
-        _side: i32, _price: f64, _size: f64,
+        _side: i32, _price: f64, _size: Decimal,
     ) {}
 
     fn update_mkt_depth_l2(
         &self, _req_id: i64, _position: i32, _market_maker: &str,
-        _operation: i32, _side: i32, _price: f64, _size: f64, _is_smart_depth: bool,
+        _operation: i32, _side: i32, _price: f64, _size: Decimal, _is_smart_depth: bool,
     ) {}
 
     // ── Market Depth (additional) ──
@@ -185,7 +189,7 @@ impl EWrapper {
 
     fn real_time_bar(
         &self, _req_id: i64, _date: i64, _open: f64, _high: f64,
-        _low: f64, _close: f64, _volume: f64, _wap: f64, _count: i32,
+        _low: f64, _close: f64, _volume: Decimal, _wap: Decimal, _count: i32,
     ) {}
 
     // ── Historical Ticks ──
@@ -227,7 +231,7 @@ impl EWrapper {
 
     // ── Multi-Account / Multi-Model ──
 
-    fn position_multi(&self, _req_id: i64, _account: &str, _model_code: &str, _contract: Py<PyAny>, _pos: f64, _avg_cost: f64) {}
+    fn position_multi(&self, _req_id: i64, _account: &str, _model_code: &str, _contract: Py<PyAny>, _pos: Decimal, _avg_cost: f64) {}
 
     fn position_multi_end(&self, _req_id: i64) {}
 

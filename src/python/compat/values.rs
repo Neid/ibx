@@ -10,14 +10,33 @@ pub const UNSET_DECIMAL_TEXT: &str = "170141183460469231731687303715884105727";
 /// The unset Decimal as a double (2**127), what `float(UNSET_DECIMAL)` gives.
 const UNSET_DECIMAL_F64: f64 = 170141183460469231731687303715884105727.0;
 
-fn decimal_class(py: Python<'_>) -> PyResult<Bound<'_, PyAny>> {
-    py.import("decimal")?.getattr("Decimal")
+/// `decimal.Decimal`, looked up once.
+static DECIMAL: pyo3::sync::PyOnceLock<Py<PyAny>> = pyo3::sync::PyOnceLock::new();
+
+fn decimal_class(py: Python<'_>) -> PyResult<&Bound<'_, PyAny>> {
+    Ok(DECIMAL.get_or_try_init(py, || py.import("decimal")?.getattr("Decimal").map(Bound::unbind))?.bind(py))
 }
 
 /// A quantity (the official API's Decimal) as a `decimal.Decimal`: ibx's
-/// unset quantity (`f64::MAX`) is the API's unset Decimal.
+/// unset quantity (`f64::MAX`) is the API's unset Decimal. A whole number
+/// has no decimal point ("100", as the server writes it).
 pub fn decimal_to_py(py: Python<'_>, v: f64) -> PyResult<Py<PyAny>> {
     let text = if v == f64::MAX { UNSET_DECIMAL_TEXT.to_string() } else { format!("{}", v) };
+    Ok(decimal_class(py)?.call1((text,))?.unbind())
+}
+
+/// A quantity kept in units of 1/10,000 (`QTY_SCALE`) as a
+/// `decimal.Decimal`, exactly: "100", "0.5", "-2.0001".
+pub fn decimal_fixed_to_py(py: Python<'_>, v: i64) -> PyResult<Py<PyAny>> {
+    let scale = crate::types::QTY_SCALE as i64;
+    let (whole, part) = (v / scale, (v % scale).unsigned_abs());
+    let sign = if v < 0 && whole == 0 { "-" } else { "" };
+    let text = if part == 0 {
+        format!("{whole}")
+    } else {
+        let digits = format!("{part:04}");
+        format!("{sign}{whole}.{}", digits.trim_end_matches('0'))
+    };
     Ok(decimal_class(py)?.call1((text,))?.unbind())
 }
 

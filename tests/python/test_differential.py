@@ -72,7 +72,25 @@ def test_data_callbacks_are_compared_by_the_kinds_of_rows():
     reference, ours = run(1, 111), run(1, 111)
     reference += [["tickPrice", 5, 2, 1.0, {}], ["tickPrice", 5, 2, 2.0, {}]]
     ours += [["tickSize", 5, 0, 3.0]]
-    assert kinds(d.compare(reference, ours)) == [("shape", "tickPrice", "5|2", ""), ("shape", "tickSize", "5|0", "")]
+    assert kinds(d.compare(reference, ours)) == [("shape", "tickPrice", "5|2", ""), ("shape", "tickSize", "5|0|size:type=float", "")]
+
+
+def test_the_type_of_a_quantity_is_compared():
+    # The official library gives Decimal quantities, which a callback log
+    # writes as text; a float is written as a number (ibx#592).
+    reference, ours = run(1, 111), run(1, 111)
+    ours[4][3:5] = [0.0, 1.0]
+    rows = d.compare(reference, ours)
+    assert kinds(rows) == [("field", "orderStatus", "{id+0}", "filled:type"), ("field", "orderStatus", "{id+0}", "remaining:type")]
+    assert (rows[0]["reference"], rows[0]["ibx"]) == ("Decimal", "float")
+    # In an object, and in the shape of a data row.
+    theirs, mine = run(1, 111), run(1, 111)
+    mine[3][3] = {**mine[3][3], "totalQuantity": 1.0}
+    assert [r["field"] for r in d.compare(theirs, mine)] == ["order.totalQuantity:type"]
+    reference, ours = run(1, 111), run(1, 111)
+    reference += [["tickSize", 5, 0, "3"]]
+    ours += [["tickSize", 5, 0, 3.0]]
+    assert kinds(d.compare(reference, ours)) == [("shape", "tickSize", "5|0|size:type=Decimal", ""), ("shape", "tickSize", "5|0|size:type=float", "")]
 
 
 def test_a_price_that_is_set_against_one_that_is_not():

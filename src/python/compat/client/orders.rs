@@ -490,7 +490,8 @@ impl EClient {
             let why_held = self.core.why_held(&tracked.status, &tracked.order.order_type, tracked.order.parent_id);
             self.wrapper.call_method(
                 py, "order_status",
-                (*order_id, tracked.status.as_str(), tracked.filled, tracked.remaining,
+                (*order_id, tracked.status.as_str(), crate::python::compat::values::decimal_to_py(py, tracked.filled)?,
+                 crate::python::compat::values::decimal_to_py(py, tracked.remaining)?,
                  0.0f64, tracked.order.perm_id, tracked.order.parent_id, tracked.last_fill_price, *client_id, why_held.as_str(), 0.0f64),
                 None,
             )?;

@@ -156,6 +156,51 @@ def _unset(name, index):
         return None
 
 
+def decimal_paths(name):
+    """The arguments, and the fields of the object arguments, that the official
+    library gives as Decimal (ibx#592): {argument: None or {field, ...}}."""
+    out = {}
+    try:
+        from decimal import Decimal
+    except ImportError:
+        return out
+    for p in _parameters(name):
+        if p.annotation is Decimal:
+            out[p.name] = None
+        elif inspect.isclass(p.annotation):
+            try:
+                fields = {k for k, x in vars(p.annotation()).items() if isinstance(x, Decimal)}
+            except Exception:
+                continue
+            if fields:
+                out[p.name] = fields
+    return out
+
+
+def logged_type(v):
+    """The type of a quantity as a callback log keeps it: a Decimal is
+    written as its text, a float as a number."""
+    if isinstance(v, str):
+        return "Decimal"
+    return type(v).__name__
+
+
+def quantity_types(name, names, args):
+    """{path + ':type': type} of the Decimal quantities of a callback."""
+    out = {}
+    paths = decimal_paths(name)
+    for arg_name, v in zip(names, args):
+        if arg_name not in paths or empty(v):
+            continue
+        if paths[arg_name] is None:
+            out[f"{arg_name}:type"] = logged_type(v)
+        elif isinstance(v, dict):
+            for field in sorted(paths[arg_name]):
+                if field in v and not empty(v[field]):
+                    out[f"{arg_name}.{field}:type"] = logged_type(v[field])
+    return out
+
+
 def completed(value, unset):
     """`value` with the fields it lacks taken from `unset`."""
     if not isinstance(value, dict) or not isinstance(unset, dict):
@@ -285,6 +330,8 @@ def comparable(call, session, strict_prices):
     raw_id = args[0] if args else None
     for i, (arg_name, v) in enumerate(zip(names, args)):
         flat(arg_name, completed(v, _unset(name, i)) if isinstance(v, dict) else v, fields)
+    # The type of the quantities, which the numbers hide (ibx#592).
+    fields.update(quantity_types(name, names, args))
     for path in list(fields):
         leaf = re.split(r"[.\]]", path)[-1] or path
         v = fields[path]
@@ -316,7 +363,12 @@ def comparable(call, session, strict_prices):
 
 def shape_of(call):
     name, args = call[0], call[1:]
-    return name, "|".join(str(args[i]) for i in SHAPE[name] if i < len(args))
+    key = "|".join(str(args[i]) for i in SHAPE[name] if i < len(args))
+    # The type of its quantities is part of a row's shape (ibx#592).
+    types = quantity_types(name, argument_names(name, len(args)), args)
+    if types:
+        key += "|" + ",".join(f"{k}={t}" for k, t in sorted(types.items()))
+    return name, key
 
 
 def listings_by_id(calls):

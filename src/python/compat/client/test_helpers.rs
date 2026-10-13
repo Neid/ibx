@@ -442,6 +442,32 @@ impl EClient {
         Ok(())
     }
 
+    /// Push a depth update (ibx#592).
+    #[doc(hidden)]
+    fn _test_push_depth(&self, req_id: ReqId, position: i32, side: i32, price: f64, size: f64, l2: bool) -> PyResult<()> {
+        self.shared_state()?.market.push_depth_update(DepthUpdate {
+            req_id, position, market_maker: String::new(), operation: 0, side, price, size, is_smart_depth: false, l2,
+        });
+        Ok(())
+    }
+
+    /// Push a histogram: (price, count) pairs (ibx#592).
+    #[doc(hidden)]
+    fn _test_push_histogram(&self, req_id: ReqId, entries: Vec<(f64, i64)>) -> PyResult<()> {
+        let entries = entries.into_iter().map(|(price, count)| crate::control::histogram::HistogramEntry { price, count }).collect();
+        self.shared_state()?.reference.push_histogram_data(req_id, entries);
+        Ok(())
+    }
+
+    /// Push a five-second bar (ibx#592).
+    #[doc(hidden)]
+    fn _test_push_real_time_bar(&self, req_id: ReqId, volume: f64, wap: f64, count: i32) -> PyResult<()> {
+        self.shared_state()?.market.push_real_time_bar(req_id, RealTimeBar {
+            timestamp: 1_760_000_000, open: 1.0, high: 2.0, low: 0.5, close: 1.5, volume, wap, count,
+        });
+        Ok(())
+    }
+
     /// Push historical data into SharedState, with the start and end of
     /// the request for historicalDataEnd (ibx#431).
     #[doc(hidden)]

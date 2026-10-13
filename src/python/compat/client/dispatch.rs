@@ -17,6 +17,8 @@ use super::{send_cmd, EClient};
 use super::super::contract::{Contract, ContractDescription, ContractDetails, BarData, CommissionAndFeesReport, DepthMktDataDescriptionPy, Execution, Order, OrderState};
 use super::super::tick_types::*;
 use super::super::super::types::{PRICE_SCALE_F, QTY_SCALE_F};
+// Quantities as the official library gives them: decimal.Decimal (ibx#592).
+use super::super::values::{decimal_fixed_to_py as qty_fixed, decimal_to_py as qty};
 
 /// Call a Python wrapper method. An `Exception` it raises is logged and
 /// dropped, so one failing callback does not stop the dispatch loop. Any
@@ -80,7 +82,7 @@ impl EClient {
                 let c_py = Py::new(py, Contract::from_api(py, &ac)?)?.into_any();
                 call_wrapper!(self.wrapper, py, "position_multi",
                     (req_id, account.as_str(), model_code.as_str(), &c_py,
-                     pi.position_fixed as f64 / QTY_SCALE_F, pi.avg_cost as f64 / PRICE_SCALE_F));
+                     qty_fixed(py, pi.position_fixed)?, pi.avg_cost as f64 / PRICE_SCALE_F));
             }
             if batch.end {
                 call_wrapper!(self.wrapper, py, "position_multi_end", (req_id,));
@@ -100,7 +102,7 @@ impl EClient {
             let ac = self.core.position_contract(pi.con_id, shared);
             let c_py = Py::new(py, Contract::from_api(py, &ac)?)?.into_any();
             call_wrapper!(self.wrapper, py, "position",
-                (account.as_str(), &c_py, pi.position_fixed as f64 / QTY_SCALE_F, pi.avg_cost as f64 / PRICE_SCALE_F));
+                (account.as_str(), &c_py, qty_fixed(py, pi.position_fixed)?, pi.avg_cost as f64 / PRICE_SCALE_F));
         }
         if batch.end {
             call_wrapper!(self.wrapper, py, "position_end", ());
@@ -165,7 +167,7 @@ impl EClient {
             self.send_open_order(py, order_id, v)?;
         }
         let (avg, last, mkt_cap) = crate::client_core::status_prices(r);
-        call_wrapper!(self.wrapper, py, "order_status", (order_id, r.status.as_str(), r.filled, r.remaining,
+        call_wrapper!(self.wrapper, py, "order_status", (order_id, r.status.as_str(), qty(py, r.filled)?, qty(py, r.remaining)?,
              avg, r.perm_id, r.parent_id, last, r.client_id, r.why_held.as_str(), mkt_cap));
         Ok(())
     }
@@ -325,7 +327,7 @@ impl EClient {
                 None => 0,
             };
             let why_held = self.core.why_held(status, view.as_ref().map_or("", |v| v.order.order_type.as_str()), parent_id);
-            call_wrapper!(self.wrapper, py, "order_status", (shown, status, cum_qty, remaining,
+            call_wrapper!(self.wrapper, py, "order_status", (shown, status, qty(py, cum_qty)?, qty(py, remaining)?,
                  avg_price, perm_id, parent_id, price, client_id, why_held.as_str(), 0.0f64));
             self.core.remember_report(fill.order_id, crate::client_core::OrderReport {
                 view, status: status.into(), filled: cum_qty, remaining, avg_fill_price: avg_price,
@@ -445,7 +447,7 @@ impl EClient {
                                     call_wrapper!(self.wrapper, py, "tick_price", (req_id, tick_type, price, &attrib_obj));
                                 }
                                 SnapshotTick::Size { tick_type, size } =>
-                                    call_wrapper!(self.wrapper, py, "tick_size", (req_id, tick_type, size)),
+                                    call_wrapper!(self.wrapper, py, "tick_size", (req_id, tick_type, qty(py, size)?)),
                                 SnapshotTick::Text { tick_type, value } =>
                                     call_wrapper!(self.wrapper, py, "tick_string", (req_id, tick_type, value.as_str())),
                             }
@@ -485,7 +487,7 @@ impl EClient {
                         call_wrapper!(self.wrapper, py, "tick_price", (req_id, tick_type, value, &attrib_obj));
                     }
                     MdTick::Size { tick_type, value } =>
-                        call_wrapper!(self.wrapper, py, "tick_size", (req_id, tick_type, value)),
+                        call_wrapper!(self.wrapper, py, "tick_size", (req_id, tick_type, qty(py, value)?)),
                     MdTick::Text { tick_type, value } =>
                         call_wrapper!(self.wrapper, py, "tick_string", (req_id, tick_type, value.as_str())),
                     MdTick::Time { tick_type, secs } => {
@@ -578,7 +580,7 @@ impl EClient {
         let tbt_trades = shared.market.drain_tbt_trades();
         for trade in tbt_trades {
             let price = trade.price as f64 / PRICE_SCALE_F;
-            let size = trade.size as f64;
+            let size = qty(py, trade.size as f64)?;
             let attrib = super::super::tick_types::TickAttribLast { past_limit: trade.past_limit, unreported: trade.unreported };
             let attrib_obj = Py::new(py, attrib)?.into_any();
             call_wrapper!(self.wrapper, py, "tick_by_tick_all_last", (trade.req_id, trade.tbt_type.api_tick_type(), trade.timestamp as i64, price, size,
@@ -592,7 +594,7 @@ impl EClient {
             let attrib_obj = Py::new(py, attrib)?.into_any();
             call_wrapper!(self.wrapper, py, "tick_by_tick_bid_ask", (quote.req_id, quote.timestamp as i64,
                  quote.bid as f64 / PRICE_SCALE_F, quote.ask as f64 / PRICE_SCALE_F,
-                 quote.bid_size as f64, quote.ask_size as f64, &attrib_obj));
+                 qty(py, quote.bid_size as f64)?, qty(py, quote.ask_size as f64)?, &attrib_obj));
         }
 
         // Drain TBT midpoints -> tickByTickMidPoint (ibx#404)
@@ -606,10 +608,10 @@ impl EClient {
         let depth_updates = shared.market.drain_depth_updates();
         for du in depth_updates {
             if !du.l2 {
-                call_wrapper!(self.wrapper, py, "update_mkt_depth", (du.req_id, du.position, du.operation, du.side, du.price, du.size));
+                call_wrapper!(self.wrapper, py, "update_mkt_depth", (du.req_id, du.position, du.operation, du.side, du.price, qty(py, du.size)?));
             } else {
                 call_wrapper!(self.wrapper, py, "update_mkt_depth_l2", (du.req_id, du.position, du.market_maker.as_str(),
-                     du.operation, du.side, du.price, du.size, du.is_smart_depth));
+                     du.operation, du.side, du.price, qty(py, du.size)?, du.is_smart_depth));
             }
         }
 
@@ -885,10 +887,12 @@ impl EClient {
         // Drain histogram data -> histogram_data
         let histograms = shared.reference.drain_histogram_data();
         for (req_id, entries) in histograms {
-            let tuples: Vec<Bound<'_, pyo3::types::PyTuple>> = entries.iter().map(|e| {
-                pyo3::types::PyTuple::new(py, &[e.price.into_pyobject(py).unwrap().into_any(), e.count.into_pyobject(py).unwrap().into_any()]).unwrap()
-            }).collect();
-            let py_list = pyo3::types::PyList::new(py, tuples)?;
+            // A list of HistogramData with a Decimal size, as the official
+            // library gives it (ibx#592).
+            let items = entries.iter()
+                .map(|e| Py::new(py, HistogramData { price: e.price, size: e.count as f64 }))
+                .collect::<PyResult<Vec<_>>>()?;
+            let py_list = pyo3::types::PyList::new(py, items)?;
             call_wrapper!(self.wrapper, py, "histogram_data", (req_id, py_list));
         }
 
@@ -899,7 +903,7 @@ impl EClient {
                 req_id,
                 bar.timestamp as i64,
                 bar.open, bar.high, bar.low, bar.close,
-                bar.volume, bar.wap, bar.count,
+                qty(py, bar.volume)?, qty(py, bar.wap)?, bar.count,
             ));
         }
 
@@ -943,7 +947,7 @@ impl EClient {
                 let c = crate::python::compat::contract::Contract::from_api(py, &ac)?;
                 let c_py = pyo3::Py::new(py, c)?.into_any();
                 call_wrapper!(self.wrapper, py, "update_portfolio",
-                    (&c_py, entry.position, entry.market_price, entry.market_value,
+                    (&c_py, qty(py, entry.position)?, entry.market_price, entry.market_value,
                      entry.avg_cost, entry.unrealized_pnl, entry.realized_pnl, account_name.as_str()));
                 call_wrapper!(self.wrapper, py, "update_account_time", (batch.time.as_str(),));
             }
@@ -972,7 +976,7 @@ impl EClient {
 
         // Per-position P&L dispatch (via ClientCore)
         for update in self.core.poll_pnl_single(shared) {
-            call_wrapper!(self.wrapper, py, "pnl_single", (update.req_id, update.pos, update.daily_pnl,
+            call_wrapper!(self.wrapper, py, "pnl_single", (update.req_id, qty(py, update.pos)?, update.daily_pnl,
                  update.unrealized_pnl, update.realized_pnl, update.value));
         }
 

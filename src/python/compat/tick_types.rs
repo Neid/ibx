@@ -275,6 +275,43 @@ impl TickTypeEnum {
     const LAST_EXCHANGE: i32 = TICK_LAST_EXCHANGE;
 }
 
+/// One price and its size of a histogram (the official `HistogramData`):
+/// the size is a Decimal, as there (ibx#592).
+#[pyclass(from_py_object)]
+#[derive(Clone)]
+pub struct HistogramData {
+    #[pyo3(get, set)]
+    pub price: f64,
+    pub size: f64,
+}
+
+#[pymethods]
+impl HistogramData {
+    #[new]
+    #[pyo3(signature = (price=0.0, size=None))]
+    fn new(price: f64, size: Option<&Bound<'_, PyAny>>) -> PyResult<Self> {
+        Ok(Self { price, size: size.map(decimal_from_py).transpose()?.unwrap_or(f64::MAX) })
+    }
+
+    #[getter(size)]
+    fn get_size(&self, py: Python<'_>) -> PyResult<Py<PyAny>> { decimal_to_py(py, self.size) }
+    #[setter(size)]
+    fn set_size(&mut self, v: &Bound<'_, PyAny>) -> PyResult<()> { self.size = decimal_from_py(v)?; Ok(()) }
+
+    /// As the official class prints it: the price with up to eight
+    /// decimals, the size as written, an unset size empty.
+    fn __str__(&self) -> String {
+        let price = format!("{:.8}", self.price);
+        let price = price.trim_end_matches('0').trim_end_matches('.');
+        let size = if self.size == f64::MAX { String::new() } else { format!("{}", self.size) };
+        format!("Price: {price}, Size: {size}")
+    }
+
+    fn __repr__(&self) -> String {
+        self.__str__()
+    }
+}
+
 /// Register tick type classes and constants on the module.
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<TickTypeEnum>()?;
@@ -284,6 +321,7 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<HistoricalTick>()?;
     m.add_class::<HistoricalTickLast>()?;
     m.add_class::<HistoricalTickBidAsk>()?;
+    m.add_class::<HistogramData>()?;
     Ok(())
 }
 
