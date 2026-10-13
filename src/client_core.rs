@@ -5385,6 +5385,18 @@ impl ClientCore {
         if divisor != 1 {
             return Err(refuse("Invalid leg ratio."));
         }
+        // The reference 10.51's rules for combos of more than two legs
+        // (ibx#660; code read, and observed 13/10/2026,
+        // regular hours, paper, a three-leg stock combo): non-guaranteed
+        // only on two SMART legs, and a limit type needs its price.
+        if non_guaranteed && (legs.len() != 2 || !smart) {
+            return Err(refuse("Non-guaranteed combo order is only supported for 2-leg SMART combos."));
+        }
+        let limit_type = matches!(order_type.as_str(),
+            "LMT" | "STP LMT" | "LIT" | "TRAIL LIMIT" | "TRAIL LIT" | "LOC");
+        if legs.len() > 2 && limit_type && order.lmt_price == f64::MAX {
+            return Err(refuse("Limit price is required for combo orders with more than 2 legs."));
+        }
         Ok(Some(ComboSpec {
             exchange: contract.exchange.clone(),
             currency: contract.currency.clone(),

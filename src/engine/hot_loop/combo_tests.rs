@@ -484,6 +484,14 @@ fn combo_refusals_before_sending() {
     let mut two_two = spy_qqq("QQQ,SPY");
     for l in two_two.combo_legs.iter_mut() { l.ratio = 2; }
     assert_eq!(place(&mut s, &two_two, &lmt), ["error 7 321 Error validating request.-'v' : cause - Invalid leg ratio."]);
+    // ibx#660, the reference 10.51 (13/10/2026): three legs.
+    let mut three = spy_qqq("QQQ,SPY,DIA");
+    three.combo_legs.push(leg(4_242, "BUY"));
+    assert_eq!(place(&mut s, &three, &lmt),
+        ["error 7 321 Error validating request.-'v' : cause - Non-guaranteed combo order is only supported for 2-leg SMART combos."]);
+    let no_price = ApiOrder { lmt_price: f64::MAX, smart_combo_routing_params: Vec::new(), ..lmt.clone() };
+    assert_eq!(place(&mut s, &three, &no_price),
+        ["error 7 321 Error validating request.-'v' : cause - Limit price is required for combo orders with more than 2 legs."]);
     s.assert_nothing_sent();
 }
 
