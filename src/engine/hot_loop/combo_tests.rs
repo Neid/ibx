@@ -458,6 +458,10 @@ fn combos_without_a_non_guaranteed_value() {
     s.engine.shared.reference.set_logon_features("REJGNONAT,PRICECHK");
     assert_eq!(place(&mut s, &spy_qqq("QQQ,SPY"), &bare),
         ["error 7 10043 Missing or invalid NonGuaranteed value. REL+MKT, LMT+MKT, and REL+LMT order of two legs can only be set as non-guaranteed."]);
+    s.assert_nothing_sent();
+    // A new session: the refused order stays pending under its id.
+    let mut s = Session::new();
+    s.engine.shared.reference.set_logon_features("REJGNONAT,PRICECHK");
     let mut three = spy_qqq("QQQ,SPY,DIA");
     three.combo_legs.push(leg(4_242, "BUY"));
     assert_eq!(place(&mut s, &three, &bare), ["error 7 10045 This combo order is not supported."]);

@@ -5456,21 +5456,6 @@ impl ClientCore {
         if legs.len() > 2 && limit_type && order.lmt_price == f64::MAX {
             return Err(refuse("Limit price is required for combo orders with more than 2 legs."));
         }
-        // A combo with no NonGuaranteed value at all (ibx#677; code read,
-        // and observed 13/10/2026 on paper, a two-leg stock combo): the
-        // two-leg order types that need it get 10043; on a session whose
-        // server routes no SMART combo as guaranteed (REJGNONAT), a SMART
-        // combo gets 10043 with two legs, 10045 with another number.
-        let tagged = order.smart_combo_routing_params.iter().any(|tv| combo_routing_tag(&tv.tag) == Some(6248));
-        if !tagged {
-            const MISSING: &str = "Missing or invalid NonGuaranteed value. REL+MKT, LMT+MKT, and REL+LMT order of two legs can only be set as non-guaranteed.";
-            if matches!(order_type.as_str(), "REL + MKT" | "LMT + MKT" | "REL + LMT" | "MIT") {
-                return Err((10043, MISSING.into()));
-            }
-            if smart && crate::control::logon::has_feature(&reference.logon_features(), "REJGNONAT") {
-                return Err(if legs.len() == 2 { (10043, MISSING.into()) } else { (10045, "This combo order is not supported.".into()) });
-            }
-        }
         Ok(Some(ComboSpec {
             exchange: contract.exchange.clone(),
             currency: contract.currency.clone(),

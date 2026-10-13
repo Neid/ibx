@@ -167,6 +167,28 @@ fn send_orders(
         let mut combo_track: Option<(crate::engine::combo::ComboOrder, crate::bridge::ComboView)> = None;
         if let Some(spec) = order_req.combo().cloned() {
             use crate::engine::combo::{self, Ready};
+            // A SMART combo with no NonGuaranteed value, on a
+            // session whose server routes no SMART combo as
+            // guaranteed (REJGNONAT): 10043 with two legs, 10045
+            // with another number; the order stays in the API
+            // pending map, its cancel ApiCancelled (ibx#677; code
+            // read; observed 13/10/2026, paper, a two-leg stock
+            // combo).
+            if spec.smart_con_id > 0 && !spec.routing_attrs.iter().any(|(tag, _)| *tag == 6248)
+                && crate::control::logon::has_feature(&shared.reference.logon_features(), "REJGNONAT")
+            {
+                let (code, message) = if spec.legs.len() == 2 {
+                    (10043, "Missing or invalid NonGuaranteed value. REL+MKT, LMT+MKT, and REL+LMT order of two legs can only be set as non-guaranteed.")
+                } else {
+                    (10045, "This combo order is not supported.")
+                };
+                log::warn!("Combo order {} refused: {} {}", oid, code, message);
+                shared.orders.push_order_error(oid, code, message.to_string());
+                if !what_if {
+                    context.api_pending.insert(oid, order_req);
+                }
+                continue;
+            }
             match context.combos.ready(oid, &spec, &chrono_free_timestamp()) {
                 Ready::Waiting(frames) => {
                     send_frames(conn, hb, &frames);
