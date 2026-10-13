@@ -355,6 +355,10 @@ fn pnl_account_refusal(class: &str, account: &str, own_account: &str) -> Result<
 /// levels are not implemented.
 pub const SERVER_VERSION: i32 = 214;
 
+/// Each account summary frame is given twice below the session level of
+/// the reference 10.51 (ibx#486, ibx#662).
+const SUMMARY_FRAMES_TWICE: bool = SERVER_VERSION < 225;
+
 /// Connection time of a session in the reference's form
 /// `yyyyMMdd HH:mm:ss {zone}`, local time of the machine (ibx#426). The zone
 /// is the machine zone of the session (`IBX_TZ` when set).
@@ -4797,7 +4801,13 @@ impl ClientCore {
                 }
                 batches.push(AccountSummaryBatch { req_id: req.req_id, account: None, rows: Vec::new(), end: true });
             }
-            out.extend(batches.iter().cloned());
+            // The reference 10.40 gives each frame twice (its listener is
+            // registered twice, ibx#486); the reference 10.51 gives it once
+            // (observed 13/10/2026, regular hours, paper, ibx#662), with
+            // the move to its session level (ibx#602).
+            if SUMMARY_FRAMES_TWICE {
+                out.extend(batches.iter().cloned());
+            }
             out.extend(batches);
         }
         out
