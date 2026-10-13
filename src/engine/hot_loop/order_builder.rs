@@ -195,11 +195,12 @@ fn send_orders(
                 }
             }
         }
-        // A contract other than a stock or a combo: its definition first,
-        // for the fields its order message carries (ibx#666).
+        // A contract other than a stock or a combo, or one given by its
+        // conId alone: its definition first, for the fields its order
+        // message carries (ibx#666).
         if let Some(instrument) = order_req.new_order_qty().and(order_req.instrument()).filter(|_| order_req.combo().is_none()) {
             let (sec_type, _) = context.market.order_routing(instrument);
-            if !matches!(sec_type.as_str(), "" | "STK" | "BAG")
+            if (!matches!(sec_type.as_str(), "" | "STK" | "BAG") || context.market.blank_symbol(instrument))
                 && matches!(definition(context, conn, hb, instrument), Definition::Waiting)
             {
                 context.rth_parked.push(rewrap(order_req));
@@ -2266,6 +2267,17 @@ fn in_reference_order(fields: &mut [(u32, &str)]) {
     // captured 28/09/2026).
     let touched = touched_type(fields) || matches!(field(fields, 40), Some("TMIT" | "TLIT"));
     fields.sort_by_key(|&(tag, _)| rank_in_frame(tag, touched));
+    // With no other order attribute, the price management flag comes
+    // before 6122 (the reference 10.51, paper, 13/10/2026: nine orders; a
+    // plain limit order "8339=1|6122=c", with a start time, an origin or
+    // the price-cap attribute "6122=c|...|8339=1").
+    let attributes = fields.iter().any(|&(tag, _)| (73..95).contains(&rank_in_frame(tag, touched)));
+    if !attributes
+        && let (Some(c), Some(p)) = (fields.iter().position(|&(t, _)| t == 6122), fields.iter().position(|&(t, _)| t == 8339))
+        && p > c
+    {
+        fields[c..=p].rotate_right(1);
+    }
 }
 
 /// The place of a field, the touched trigger of MIT and LIT among the
@@ -3052,6 +3064,16 @@ pub(crate) fn rth_definition_reply(context: &mut Context, req_id: &str, msg: &[u
     types.smart = tags.get(&6046).is_some_and(|v| v.split(',').any(|e| e == "BEST" || e == "SMART"));
     types.under_sec_type = tags.get(&310).cloned().unwrap_or_default();
     if let Some(d) = def.as_ref() {
+        // A contract given by its conId alone takes its symbol, security
+        // type and currency from its definition, as the reference resolves
+        // it (ibx#666; paper 13/10/2026: an MES future by conId and
+        // exchange went out as a stock with no symbol).
+        if let Some(id) = context.market.instrument_by_con_id(key.0).filter(|&id| context.market.blank_symbol(id)) {
+            let exchange = context.market.exchange(id).to_string();
+            context.market.set_symbol(id, d.symbol.clone());
+            context.market.set_routing(id, d.sec_type.to_api_str(), if exchange.is_empty() { "SMART" } else { &exchange });
+            context.market.set_currency(id, &d.currency);
+        }
         types.local_symbol = d.local_symbol.clone();
         types.contract_month = d.contract_month.clone();
         types.multiplier = format!("{:.2}", if d.multiplier > 0.0 { d.multiplier } else { 1.0 });
@@ -7831,7 +7853,9 @@ mod tests {
     // ibx#492, ib-agent captures/200 (28/09/2026): a stock limit order
     // with the value unset or on carries the flag, last of the attributes,
     // on the new order and on the replace; with the value off it
-    // has none, and the reference never writes it off.
+    // has none, and the reference never writes it off. With no other
+    // attribute, the reference 10.51 writes it before 6122 on a new order
+    // (paper, 13/10/2026, ibx#666; 10.40 wrote it after).
     #[test]
     fn a_stock_limit_carries_the_flag_unless_set_off() {
         for (value, on) in [(None, true), (Some(true), true), (Some(false), false)] {
@@ -7842,7 +7866,7 @@ mod tests {
             for f in &frames {
                 assert_eq!(tag(f, 8339), on.then_some("1"), "{value:?} {f:?}");
                 if on {
-                    let next = if tag(f, 35) == Some("D") { 6121 } else { 38 };
+                    let next = if tag(f, 35) == Some("D") { 6122 } else { 38 };
                     assert_eq!(pos(f, 8339) + 1, pos(f, next), "last of the attributes: {f:?}");
                 }
             }
@@ -7976,6 +8000,32 @@ mod tests {
     // (1 call), strike 202, 167=OPT, 231. Without them the server refused
     // the option's conId sent as a stock (201 "Contract does not match
     // supplied contract parameters", paper 03/10/2026).
+    // ibx#666 (paper, 13/10/2026): an order on a future given by its conId
+    // and exchange alone waits for the contract's definition, and goes out
+    // with its symbol, security type and fields, as the reference's message
+    // of the same future given by its description.
+    #[test]
+    fn an_order_given_by_con_id_alone_takes_its_contract_from_the_definition() {
+        let (client, mut server) = crate::protocol::connection::mem_pair();
+        let mut conn = Some(Connection::new_mem(client));
+        let shared = Arc::new(SharedState::new());
+        let mut context = Context::new();
+        context.market.register(815824257);
+        context.market.set_symbol(0, String::new());
+        context.market.set_routing(0, "", "CME");
+        context.pending_orders.push(OrderRequest::SubmitLimit { order_id: 7, instrument: 0, side: Side::Buy, qty: 1, price: 1000 * P });
+        let frames = drain_frames(&mut context, &shared, &mut conn, &mut server);
+        assert_eq!((frames.len(), tag(&frames[0], 35)), (1, Some("c")), "the definition first: {frames:?}");
+        let id = tag(&frames[0], 320).unwrap().to_string();
+        let reply = fix::fix_build(&[(35, "d"), (320, id.as_str()), (6008, "815824257"), (55, "MES"), (167, "FUT"),
+            (15, "USD"), (207, "CME"), (200, "202612"), (6035, "MESZ6"), (231, "5"), (6523, "USFUT"), (6431, "LMT/3,LTH/1")], 1);
+        assert!(rth_definition_reply(&mut context, &id, &reply));
+        let frames = drain_frames(&mut context, &shared, &mut conn, &mut server);
+        let order: Vec<String> = frames.iter().find(|f| tag(f, 35) == Some("D")).expect("sent").iter()
+            .filter(|(t, _)| matches!(t, 55 | 200 | 167 | 48 | 22 | 231 | 100 | 15)).map(|(t, v)| format!("{t}={v}")).collect();
+        assert_eq!(order.join("|"), "55=MES|200=202612|167=FUT|48=MESZ6|22=101|231=5.00|100=CME|15=USD");
+    }
+
     // ibx#666: the order messages of a future, a CFD and a forex pair, as
     // the reference 10.51 wrote them (paper, 13/10/2026, `.tmp/666`): the
     // contract month of a future after the symbol, the local symbol and

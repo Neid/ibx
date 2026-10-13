@@ -603,6 +603,12 @@ impl MarketState {
     }
 
     /// Get symbol name for an instrument. O(1) flat array lookup.
+    /// Whether an instrument was registered with an empty symbol: a
+    /// contract an order gives by its conId alone (ibx#666).
+    pub fn blank_symbol(&self, id: InstrumentId) -> bool {
+        self.symbols.get(id as usize).and_then(|s| s.as_deref()).is_some_and(str::is_empty)
+    }
+
     pub fn symbol(&self, id: InstrumentId) -> &str {
         self.symbols[id as usize].as_deref().unwrap_or("?")
     }
