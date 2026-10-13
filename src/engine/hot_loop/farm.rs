@@ -101,10 +101,31 @@ pub(crate) fn note_definition(context: &mut Context, con_id: i64, msg: &[u8]) {
         // An option's terms, for the option model of its market data
         // (ibx#502).
         let terms = super::optcalc::terms_of(def);
+        let sec_type = if terms.sec_type.is_empty() { def.sec_type.to_api_str().to_string() } else { terms.sec_type.clone() };
+        if !sec_type.is_empty() {
+            context.def_kinds.insert(con_id, (sec_type, def.symbol.clone()));
+        }
         if terms.is_option() || crate::control::optcalc::market::has_model(&terms.sec_type) {
             context.option_terms.insert(con_id, terms);
         }
     }
+}
+
+/// A market data request that gave its conId without a security type
+/// takes the type and symbol of the contract's definition, as the
+/// reference serves it from the contract it looked up (ibx#643; observed
+/// 12/10 and 13/10/2026, an option given by conId and exchange only).
+/// False when the definition is not known yet.
+pub(crate) fn fill_from_definition(context: &Context, sub: &mut MdSubscribe) -> bool {
+    if !sub.sec_type.is_empty() || sub.con_id <= 0 {
+        return true;
+    }
+    let Some((sec_type, symbol)) = context.def_kinds.get(&sub.con_id) else { return false };
+    sub.sec_type = sec_type.clone();
+    if sub.symbol.is_empty() {
+        sub.symbol = symbol.clone();
+    }
+    true
 }
 
 /// Lookups with no reply in time: the subscriptions go out with a round
@@ -193,7 +214,8 @@ fn release_lot_parked(context: &mut Context, con_id: i64, lot: i64) {
     context.lot_parked = parked;
     // A lookup made for the route alone leaves the sizes as on the wire.
     let lot = if context.scale_us_lots { lot } else { 1 };
-    for sub in ready {
+    for mut sub in ready {
+        fill_from_definition(context, &mut sub);
         context.market.set_round_lot(sub.instrument, lot);
         context.lot_ready.push(sub);
     }
@@ -2995,6 +3017,35 @@ mod tests {
         let mut msg = b"8=O\x019=0\x0135=P\x01".to_vec();
         msg.extend_from_slice(&body);
         msg
+    }
+
+    // ibx#643: a request that gives an option's conId alone waits for the
+    // definition, then goes out as an option with the definition's symbol.
+    #[test]
+    fn a_con_id_alone_takes_the_type_of_its_definition() {
+        let mut context = Context::new();
+        let id = context.market.register(9);
+        let sub = MdSubscribe {
+            con_id: 9, symbol: String::new(), exchange: "SMART".into(), sec_type: String::new(),
+            last_trade_date: String::new(), strike: 0.0, right: String::new(), multiplier: String::new(),
+            instrument: id, mode_9887: 0, snapshot: false,
+        };
+        let mut early = sub.clone();
+        assert!(!fill_from_definition(&context, &mut early), "not known before the definition");
+        assert!(early.sec_type.is_empty());
+        context.lot_parked.push(sub);
+        context.lot_lookups.push(("ibxlot0".into(), 9, Instant::now() + LOT_LOOKUP_TIMEOUT));
+        let msg = crate::control::contracts::tests::pipe_msg(
+            "35=d|320=ibxlot0|55=AAPL|167=OPT|207=BEST|6008=9|541=20261218|200=202612|201=1|202=340|231=100|15=USD");
+        assert!(round_lot_reply(&mut context, "ibxlot0", &msg));
+        assert_eq!(context.lot_ready.len(), 1);
+        assert_eq!((context.lot_ready[0].sec_type.as_str(), context.lot_ready[0].symbol.as_str()), ("OPT", "AAPL"));
+        // Known now: a later request with the conId alone takes it at once.
+        let mut later = MdSubscribe { instrument: id, ..context.lot_ready[0].clone() };
+        later.sec_type.clear();
+        later.symbol.clear();
+        assert!(fill_from_definition(&context, &mut later));
+        assert_eq!((later.sec_type.as_str(), later.symbol.as_str()), ("OPT", "AAPL"));
     }
 
     // ibx#448: a daily-stats block on the trade stream fills close, last

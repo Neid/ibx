@@ -2264,6 +2264,25 @@ fn historical_requests_without_con_id_ask_for_the_contract_first() {
     }
 }
 
+// ibx#643: a depth request by symbol is looked up first too, and the
+// lookup's conId reaches the depth request.
+#[test]
+fn depth_request_without_con_id_asks_for_the_contract_first() {
+    let (client, rx, _shared) = test_client();
+    let aapl = Contract { symbol: "AAPL".into(), sec_type: "STK".into(), exchange: "SMART".into(), currency: "USD".into(), ..Default::default() };
+    client.req_mkt_depth(9, &aapl, 5, true).unwrap();
+    match rx.try_recv().unwrap() {
+        ControlCommand::ResolveContract { req_id: 9, request, .. } => {
+            let resolved = crate::engine::hot_loop::ccp::request_with_con_id(*request, 265598);
+            assert!(matches!(resolved, ControlCommand::SubscribeDepth { con_id: 265598, num_rows: 5, is_smart_depth: true, .. }));
+        }
+        other => panic!("expected ResolveContract, got {:?}", other),
+    }
+    let by_id = Contract { con_id: 265598, exchange: "SMART".into(), ..Default::default() };
+    client.req_mkt_depth(10, &by_id, 5, true).unwrap();
+    assert!(matches!(rx.try_recv().unwrap(), ControlCommand::SubscribeDepth { req_id: 10, con_id: 265598, .. }));
+}
+
 #[test]
 fn req_historical_data_sends_include_expired() {
     let (client, rx, _shared) = test_client();

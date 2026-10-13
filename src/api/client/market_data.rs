@@ -262,14 +262,16 @@ impl EClient {
         // refuses it (#452).
         let exchange = contract.exchange.clone();
         let sec_type = if contract.sec_type.is_empty() { "STK".to_string() } else { contract.sec_type.clone() };
-        self.send(ControlCommand::SubscribeDepth {
+        // A contract with no conId is looked up first (ibx#643): the
+        // reference serves the book of a stock given by symbol.
+        self.send(crate::client_core::ClientCore::resolve_first(req_id, contract, ControlCommand::SubscribeDepth {
             req_id,
             con_id: contract.con_id,
             exchange,
             sec_type,
             num_rows,
             is_smart_depth,
-        })
+        }))
     }
 
     /// Cancel market depth. Matches `cancelMktDepth` in C++.

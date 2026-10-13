@@ -421,7 +421,10 @@ impl HotLoop {
             };
             self.context.market.set_round_lot(id, lot);
         }
-        if !lot_needed && !self.needs_agg_group(sub) {
+        // A conId given without its security type waits for the
+        // definition, which names it (ibx#643).
+        let kind_needed = sub.sec_type.is_empty() && sub.con_id > 0 && !self.context.def_kinds.contains_key(&sub.con_id);
+        if !lot_needed && !kind_needed && !self.needs_agg_group(sub) {
             return false;
         }
         if !self.ask_definition(sub.con_id, &sub.exchange) {
@@ -1937,10 +1940,11 @@ impl HotLoop {
                             last_trade_date_or_contract_month: last_trade_date.clone(), strike,
                             right: right.clone(), multiplier: multiplier.clone(), ..Default::default()
                         };
-                        let sub = farm::MdSubscribe {
+                        let mut sub = farm::MdSubscribe {
                             con_id, symbol, exchange, sec_type, last_trade_date, strike, right, multiplier,
                             instrument: id, mode_9887, snapshot,
                         };
+                        farm::fill_from_definition(&self.context, &mut sub);
                         if con_id == 0 {
                             self.lookup_md_contract(sub, String::new(), filters);
                         } else if mode_9887 == 0 && self.joins_top(id, snapshot) {

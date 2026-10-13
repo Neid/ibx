@@ -300,6 +300,12 @@ pub struct Context {
     /// The terms of the options whose definition was read, for the option
     /// model of their market data (ibx#502).
     pub(crate) option_terms: HashMap<i64, crate::control::optcalc::OptionTerms>,
+    /// API security type and symbol by conId, once its definition was
+    /// read: a market data request that gives the conId alone takes them
+    /// from it (ibx#643).
+    pub(crate) def_kinds: HashMap<i64, (String, String)>,
+    /// The logon's algo providers (ibx#505).
+    pub(crate) algo_providers: Vec<String>,
     /// Aggregate group by conId, once its definition was read (#445).
     pub(crate) agg_groups: HashMap<i64, i32>,
     /// SMART component exchanges by conId, once its definition was read
@@ -404,6 +410,8 @@ impl Context {
             agg_groups: HashMap::new(),
             listing_exchanges: HashMap::new(),
             option_terms: HashMap::new(),
+            def_kinds: HashMap::new(),
+            algo_providers: Vec::new(),
             def_parked: Vec::new(),
             def_ready: Vec::new(),
             smart_components: HashMap::new(),
