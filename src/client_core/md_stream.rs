@@ -73,6 +73,9 @@ pub struct StreamState {
     farm_auto: bool,
     /// `mdoff`: no top of book ticks.
     pub(crate) top_off: bool,
+    /// An index streamed in real time: the reference gives it from its
+    /// native top, with no bid, ask or sizes (ibx#640).
+    index_top: bool,
 }
 
 /// What a new request is.
@@ -81,6 +84,8 @@ pub(crate) struct NewRequest<'a> {
     pub snapshot: Option<&'a str>,
     pub top_off: bool,
     pub farm_auto: bool,
+    /// An index streamed in real time (ibx#640).
+    pub index_top: bool,
 }
 
 /// An instrument as the queued steps have it: the reference's record at
@@ -242,6 +247,17 @@ impl Out<'_> {
         self.push(MdTick::Price { tick_type, value: self.fields[idx] as f64 / PRICE_SCALE_F, can_auto_execute });
     }
 
+    /// A price or size the record does not have: unset (`f64::MAX`).
+    fn unset_price(&mut self, tick_type: i32) {
+        let tick_type = self.api(tick_type);
+        self.push(MdTick::Price { tick_type, value: f64::MAX, can_auto_execute: false });
+    }
+
+    fn unset_size(&mut self, tick_type: i32) {
+        let tick_type = self.api(tick_type);
+        self.push(MdTick::Size { tick_type, value: f64::MAX });
+    }
+
     fn size(&mut self, tick_type: i32, idx: usize) {
         let tick_type = self.api(tick_type);
         self.push(MdTick::Size { tick_type, value: self.fields[idx] as f64 / QTY_SCALE as f64 });
@@ -308,6 +324,19 @@ fn stream_pass(st: &mut StreamState, m: &Mirror, pass: Pass, out: &mut Out) {
     for &idx in if delayed { &STEP_ALL_DELAYED } else { &STEP_ALL } {
         if !todo[idx] {
             continue;
+        }
+        // An index from its native top (ibx#640; the reference 10.51, SPX
+        // on CBOE, 13/10/2026, regular hours): bid and ask unset with
+        // their sizes, the last with an unset size, no size or volume of
+        // its own; the rest as for any contract.
+        if st.index_top {
+            match idx {
+                field::BID => { out.unset_price(TICK_BID); out.unset_size(TICK_BID_SIZE); continue; }
+                field::ASK => { out.unset_price(TICK_ASK); out.unset_size(TICK_ASK_SIZE); continue; }
+                field::LAST => { out.price(TICK_LAST, idx, false); out.unset_size(TICK_LAST_SIZE); continue; }
+                field::BID_SIZE | field::ASK_SIZE | field::LAST_SIZE | field::VOLUME => continue,
+                _ => {}
+            }
         }
         match idx {
             // A price comes with its size; the delayed sender does not send
@@ -454,9 +483,10 @@ impl ClientCore {
         if waiting_join {
             self.md_joins_waiting.fetch_add(1, Ordering::AcqRel);
         }
-        let (top_off, farm_auto) = kind.map_or((old.top_off, old.farm_auto), |k| (k.top_off, k.farm_auto));
+        let (top_off, farm_auto, index_top) = kind.map_or((old.top_off, old.farm_auto, old.index_top),
+            |k| (k.top_off, k.farm_auto, k.index_top));
         streams.insert(req_id, StreamState {
-            start: head, waiting_join, delayed, top_off, farm_auto, mdt_done: old.mdt_done, ..StreamState::default()
+            start: head, waiting_join, delayed, top_off, farm_auto, index_top, mdt_done: old.mdt_done, ..StreamState::default()
         });
     }
 
@@ -1026,6 +1056,21 @@ mod tests {
             "price:1:1:99", "size:1:0:1",
         ]);
         assert!(poll(&core, &shared).is_empty());
+    }
+
+    // ibx#640 (the reference 10.51, SPX on CBOE, 13/10/2026, regular
+    // hours): an index stream gives bid and ask unset with unset sizes,
+    // its last with an unset size, and no size or volume of its own.
+    #[test]
+    fn an_index_stream_has_no_bid_ask_or_sizes() {
+        let (core, shared) = (ClientCore::new(), SharedState::new());
+        assert!(core.attach_md_request(&shared, 1, 5, false, "IND", "CBOE", None, false, false));
+        let q = Quote { bid: 7800 * PRICE_SCALE, ask: 7801 * PRICE_SCALE, bid_size: QTY_SCALE, ask_size: QTY_SCALE,
+            last: 7800 * PRICE_SCALE, last_size: QTY_SCALE, volume: 10 * QTY_SCALE, ..Default::default() };
+        shared.market.push_test_message(5, &q, &TestMessage { steps: Some(&[MdStep::Quote, MdStep::Last]), ..Default::default() });
+        let max = f64::MAX;
+        assert_eq!(poll(&core, &shared), ["mdt:1:1".to_string(), "price:1:4:7800".into(), format!("size:1:5:{max}"),
+            format!("price:1:1:{max}"), format!("size:1:0:{max}"), format!("price:1:2:{max}"), format!("size:1:3:{max}")]);
     }
 
     // ibx#495 (the reference 10.51, paper 12/10/2026, MSFT with generic

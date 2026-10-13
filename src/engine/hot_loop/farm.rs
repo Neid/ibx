@@ -1025,9 +1025,7 @@ impl FarmState {
         // acks.
         let size_min_tick = parts.get(8).and_then(|v| v.parse::<f64>().ok());
         context.market.register_farm_tag_sized(self.rx_farm, server_tag, instrument, min_tick, size_min_tick);
-        let bid_ask = self.instrument_md_reqs.iter().find(|(id, _)| *id == instrument)
-            .and_then(|(_, reqs)| reqs.iter().position(|r| *r == req_id))
-            .is_some_and(|p| p % 2 == 0);
+        let bid_ask = self.md_entries.iter().any(|e| e.req_id == req_id && e.req_type == "442");
         if bid_ask && min_tick.is_finite() && min_tick > 0.0 {
             context.market.set_min_tick(instrument, min_tick);
         }
@@ -1752,21 +1750,26 @@ impl FarmState {
                 sink.send_comp(&borrow_tags(&msg));
             }
         }
+        // An index streamed in real time gets the native top entry first,
+        // in the same request (ibx#640; observed 13/10/2026, SPX on CBOE,
+        // regular hours, reference 10.51).
+        let native_top = realtime && !sub.snapshot && sub.sec_type.eq_ignore_ascii_case("IND");
+        let native_id = native_top.then(|| {
+            let id = self.next_md_req_id;
+            self.next_md_req_id += 1;
+            id
+        });
         let bid_ask_id = self.next_md_req_id;
         let last_id = self.next_md_req_id + 1;
         self.next_md_req_id += 2;
 
-        self.md_req_to_instrument.push((bid_ask_id, instrument));
-        self.md_req_to_instrument.push((last_id, instrument));
-
+        let ids_new: Vec<u32> = native_id.into_iter().chain([bid_ask_id, last_id]).collect();
+        for &id in &ids_new {
+            self.md_req_to_instrument.push((id, instrument));
+        }
         match self.instrument_md_reqs.iter_mut().find(|(id, _)| *id == instrument) {
-            Some((_, reqs)) => {
-                reqs.push(bid_ask_id);
-                reqs.push(last_id);
-            }
-            None => {
-                self.instrument_md_reqs.push((instrument, vec![bid_ask_id, last_id]));
-            }
+            Some((_, reqs)) => reqs.extend(&ids_new),
+            None => self.instrument_md_reqs.push((instrument, ids_new.clone())),
         }
         if self.md_resub_info.iter().all(|(id, ..)| *id != instrument) {
             self.md_resub_info.push((instrument, sub.symbol.clone(), sub.exchange.clone(), sub.sec_type.clone(),
@@ -1776,11 +1779,10 @@ impl FarmState {
         let con_id_str = con_id.to_string();
         let exchange = routing_exchange(&sub.exchange, &sub.sec_type);
         let sec_type = fix_sec_type(&sub.sec_type);
-        let entries = [
-            (bid_ask_id, bid_ask_exchange(exchange, &sub.sec_type), "442"),
-            (last_id, exchange, "443"),
-        ];
-        for (req_id, exch, req_type) in entries {
+        let entries: Vec<(u32, &str, &str)> = native_id.map(|id| (id, exchange, NATIVE_TOP)).into_iter()
+            .chain([(bid_ask_id, bid_ask_exchange(exchange, &sub.sec_type), "442"), (last_id, exchange, "443")])
+            .collect();
+        for &(req_id, exch, req_type) in &entries {
             self.md_entries.push(MdEntry {
                 req_id, instrument, farm, con_id: con_id_str.clone(), exchange: exch.to_string(),
                 sec_type: sec_type.to_string(), req_type, mode_9887,
@@ -1799,7 +1801,7 @@ impl FarmState {
             (fix::TAG_MSG_TYPE, fix::MSG_MARKET_DATA_REQ),
             (fix::TAG_SENDING_TIME, &ts),
             (263, if sub.snapshot { "3" } else { "1" }),
-            (146, "2"),
+            (146, if native_id.is_some() { "3" } else { "2" }),
         ];
         for ((_, exch, req_type), id) in entries.iter().zip(&ids) {
             tags.push((262, id));
@@ -2044,7 +2046,9 @@ impl FarmState {
         // By request type, the newest entry first: a subscription asked
         // again with delayed data cancels its delayed and rejected entries
         // as 442 delayed, 442, 443 delayed, 443 (captured 05/10/2026).
-        entries.sort_by_key(|e| (e.req_type, std::cmp::Reverse(e.req_id)));
+        // An index's native top entry goes last (ibx#640, observed
+        // 13/10/2026: 442, 443, 403).
+        entries.sort_by_key(|e| (e.req_type == NATIVE_TOP, e.req_type, std::cmp::Reverse(e.req_id)));
 
         let mut out: Vec<(FarmId, Vec<(u32, String)>)> = Vec::new();
         let mut farms: Vec<FarmId> = entries.iter().map(|e| e.farm).collect();
@@ -2776,6 +2780,10 @@ fn status_message(e: &StatusEntry, subscribe: bool) -> Vec<(u32, String)> {
 fn borrow_tags(tags: &[(u32, String)]) -> Vec<(u32, &str)> {
     tags.iter().map(|(t, v)| (*t, v.as_str())).collect()
 }
+
+/// The request type of an index's native top entry (ibx#640): its last
+/// price, size and time, without the entry mark.
+pub(crate) const NATIVE_TOP: &str = "403";
 
 /// A generic tick entry as the reference writes it (captured 05/10/2026):
 /// `262|6008|207|167|264={code}|6088=Socket|9830=1`, the streaming-client

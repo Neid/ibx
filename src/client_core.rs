@@ -2263,6 +2263,7 @@ impl ClientCore {
         }
         let kind = md_stream::NewRequest {
             snapshot: snapshot.then_some(sec_type), top_off, farm_auto: auto_execution_from_farm(sec_type, exchange),
+            index_top: !snapshot && sec_type.eq_ignore_ascii_case("IND"),
         };
         if !self.join_md_observers(shared, req_id, instrument, had_data, Some(kind), None) {
             self.md_news.lock().unwrap().remove(&req_id);
