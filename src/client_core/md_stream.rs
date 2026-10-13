@@ -326,8 +326,23 @@ fn stream_pass(st: &mut StreamState, m: &Mirror, pass: Pass, out: &mut Out) {
     } else {
         (true, true)
     };
+    // A kept bid or ask of -1 (no quote when the contract was left) comes
+    // with an unset size and no auto-execution (ibx#647; the reference
+    // 10.51, paper, 13/10/2026 pre-market, two option streams).
+    let kept = matches!(pass, Pass::Step(MdStep::KeptQuote, _));
     for &idx in if delayed { &STEP_ALL_DELAYED } else { &STEP_ALL } {
         if !todo[idx] {
+            continue;
+        }
+        if kept && matches!(idx, field::BID | field::ASK) && fields[idx] < 0 {
+            let (pt, size_idx, size_tt) = if idx == field::BID {
+                (TICK_BID, field::BID_SIZE, TICK_BID_SIZE)
+            } else {
+                (TICK_ASK, field::ASK_SIZE, TICK_ASK_SIZE)
+            };
+            out.price(pt, idx, false);
+            out.unset_size(size_tt);
+            todo[size_idx] = false;
             continue;
         }
         // An index from its native top (ibx#640; the reference 10.51, SPX
@@ -437,7 +452,13 @@ fn snapshot_pass(snap: &mut PlainSnapshot, m: &Mirror, pass: Pass, out: &mut Out
             // Kept values carry no auto-execution for a snapshot (ibx#671;
             // the reference 10.51: false in a snapshot, true in a stream).
             out.price(pt, idx, !delayed && !kept && auto == Some(true));
-            out.size(st, size);
+            // A kept -1 has no size (ibx#647; the reference 10.51, paper,
+            // 12/10/2026 after hours, an option snapshot).
+            if kept && f[idx] < 0 {
+                out.unset_size(st);
+            } else {
+                out.size(st, size);
+            }
         }
     }
     if has(field::LAST) && last_valid(&f) && snap.take(out.api(TICK_LAST)) {

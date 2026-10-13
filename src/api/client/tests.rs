@@ -6773,6 +6773,32 @@ fn kept_bid_and_ask_auto_execution_stream_and_snapshot() {
     }
 }
 
+// ibx#647 (the reference 10.51, paper: option streams 13/10/2026
+// pre-market, an option snapshot 12/10/2026 after hours): a kept bid and
+// ask of -1 come with an unset size and without auto-execution, to a
+// stream and to a snapshot.
+#[test]
+fn kept_minus_one_has_no_size_and_no_auto_execution() {
+    for snapshot in [false, true] {
+        let (client, rx, shared) = test_client();
+        let engine = top_engine(rx);
+        let option = Contract { con_id: 900_000_001, symbol: "SPY".into(), sec_type: "OPT".into(),
+            exchange: "SMART".into(), ..Default::default() };
+        client.req_mkt_data(1, &option, "", snapshot, false).unwrap();
+        let s = crate::types::PRICE_SCALE;
+        let message = crate::md_events::TestMessage { steps: Some(&[crate::md_events::MdStep::KeptQuote]), auto_bits: Some(12), ..Default::default() };
+        shared.market.push_test_message(5, &crate::types::Quote { bid: -s, ask: -s, ..Default::default() }, &message);
+        let mut w = SeqRec::default();
+        client.process_msgs(&mut w);
+        let quote: Vec<&String> = w.events.iter().filter(|e| e.starts_with("price:1:1:") || e.starts_with("price:1:2:")
+            || e.starts_with("size:1:0:") || e.starts_with("size:1:3:")).collect();
+        let unset = |tt: i32| format!("size:1:{tt}:{}", f64::MAX);
+        assert_eq!(quote, [&"price:1:1:-1:-".to_string(), &unset(0), &"price:1:2:-1:-".to_string(), &unset(3)],
+            "snapshot {snapshot}: {:?}", w.events);
+        drop(engine);
+    }
+}
+
 // A snapshot that never completes ends 11 s after its start; a stream
 // never ends.
 #[test]

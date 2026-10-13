@@ -297,8 +297,10 @@ impl MarketState {
         let auto = QuoteMarks::from_auto_word(k.auto);
         if let Some(on) = auto.bid_auto() { m.set_bid_auto(on); }
         if let Some(on) = auto.ask_auto() { m.set_ask_auto(on); }
-        m.set_seen(SizeKind::Bid);
-        m.set_seen(SizeKind::Ask);
+        // A kept -1 has no size: the farm's first size, also 0, is then
+        // given (ibx#647; the reference 10.51, 13/10/2026 pre-market).
+        if k.bid > 0 { m.set_seen(SizeKind::Bid); }
+        if k.ask > 0 { m.set_seen(SizeKind::Ask); }
     }
 
     /// Register an IB contract, returns the assigned InstrumentId, or None
