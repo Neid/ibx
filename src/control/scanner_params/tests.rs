@@ -319,6 +319,13 @@ fn type_attribute_that_names_no_class_ends_the_class_level() {
     ));
     assert_eq!(body, wrap(&format!("{scan}{rest}")));
 
+    // So does an array without class, or of a class that is not one
+    // (ibx#599).
+    for array in ["<Array varName=\"columns\"/>", "<Array type=\"no.such\" varName=\"columns\"/>"] {
+        let body = body_of(&doc(&format!("<ScanTypeList><ScanType><scanCode>S</scanCode>{array}<MobileColumns/><settings>kept</settings></ScanType></ScanTypeList>")));
+        assert_eq!(body, wrap(&format!("{scan}{rest}")), "{array}");
+    }
+
     // A scalar type instead leaves that one member alone and goes on.
     let body = body_of(&doc(
         "<ScanTypeList><ScanType><scanCode>S</scanCode><Columns type=\"java.lang.String\">x</Columns><MobileColumns/></ScanType></ScanTypeList>",
@@ -437,8 +444,9 @@ fn refused_documents() {
         String::new(),
         "<r><p:InstrumentList/></r>".to_string(),
         doc("<InstrumentList><Instrument><name>&#1;</name></Instrument></InstrumentList>"),
-        // An array where an object is expected.
-        doc("<ScanTypeList><ScanType><Array varName=\"columns\"/></ScanType></ScanTypeList>"),
+        // An array of a class where an object is expected.
+        doc("<ScanTypeList><ScanType><Array type=\"java.lang.String\" varName=\"columns\"/></ScanType></ScanTypeList>"),
+        doc("<ScanTypeList><ScanType><Array type=\"scanner.Columns\" varName=\"columns\"/></ScanType></ScanTypeList>"),
         // An abstract member whose element names no class.
         doc("<FilterList><SimpleFilter><NoSuchField varName=\"field\"/></SimpleFilter></FilterList>"),
         // A default the model does not describe is left in place.

@@ -382,14 +382,67 @@ fn combo_field_without_values_is_refused() {
     assert!(Doc { ui_filters: &simple_filter("F", bare), ..Default::default() }.client("").is_some());
 }
 
+/// The codes, display names and default flags of the first combo of the
+/// filter list in a text written for a client in `year`.
+fn computed(value: &str, value1: &str, field: &str, year: i32) -> Option<Vec<(String, String, bool)>> {
+    let config = format!("<ConfigItem varName=\"config\"><ConfigItem><name>other</name></ConfigItem><ConfigItem name=\"values_generator\" value=\"{value}\" value1=\"{value1}\"/></ConfigItem>");
+    let doc = Doc { filters: Some(&simple_filter("F", &format!("{config}{field}"))), ..Default::default() };
+    let out = for_client_in(&doc.xml(), &session(""), year)?;
+    // The values of the combo; the same element also feeds another member.
+    let list = section(&out, "filterList");
+    let Some(start) = list.find("<ComboValues varName=\"values\"") else { return Some(Vec::new()) };
+    let open_end = start + list[start..].find('>').unwrap();
+    let list = if list[..open_end].ends_with('/') { "" } else { &list[open_end..open_end + list[open_end..].find("</ComboValues>").unwrap()] };
+    let member = |entry: &str, tag: &str| entry.split(&format!("<{tag}>")).nth(1).map(|rest| rest[..rest.find('<').unwrap()].to_string());
+    Some(
+        list.split("<ComboValue>")
+            .skip(1)
+            .map(|e| (member(e, "code").unwrap_or_default(), member(e, "displayName").unwrap_or_default(), member(e, "default").as_deref() == Some("true")))
+            .collect(),
+    )
+}
+
 #[test]
-fn computed_values_are_refused() {
-    let config = |name: &str| format!("<ConfigItem varName=\"config\"><ConfigItem><name>other</name></ConfigItem><ConfigItem><name>{name}</name><value>years</value><value1>3</value1></ConfigItem></ConfigItem>");
-    let with = |name: &str, field: &str| Doc { filters: Some(&simple_filter("F", &format!("{}{field}", config(name)))), ..Default::default() }.client("");
-    assert!(with("values_generator", COMBO).is_none());
-    assert!(with("values_generators", COMBO).is_some());
+fn computed_values_are_one_entry_per_year_up_to_last_year() {
+    let got = computed("years;2020;3Y", "Y; Year/ Years", COMBO, 2026).expect("refused");
+    let want: Vec<_> = (1..=6).rev().map(|n| (format!("{n}Y"), format!("{n} {}", if n > 1 { "Years" } else { "Year" }), n == 3)).collect();
+    assert_eq!(got, want);
+    // The year of the machine's clock decides.
+    assert_eq!(computed("years;2020;3Y", "Y; Year/ Years", COMBO, 2021).unwrap(), [("1Y".into(), "1 Year".into(), false)]);
+    // From this year or later: no entry at all.
+    assert_eq!(computed("years;2026;3Y", "Y; Year/ Years", COMBO, 2026).unwrap(), []);
+    // A second display text alone serves for one year and several.
+    let got = computed("years;2023;1M", "M;mo", COMBO, 2026).unwrap();
+    assert_eq!(got, [("3M".into(), "3mo".into(), false), ("2M".into(), "2mo".into(), false), ("1M".into(), "1mo".into(), true)]);
+}
+
+#[test]
+fn computed_values_left_as_they_are_or_refused() {
+    let first = vec![("v".to_string(), String::new(), false)];
+    for (value, value1) in [("years", "3"), ("months;2020;3Y", "Y; Y/ Ys"), ("years;20x;3Y", "Y; Y/ Ys"), ("years;2020;3Y", "Y"), ("years;2020;3Y", "")] {
+        assert_eq!(computed(value, value1, COMBO, 2026).as_ref(), Some(&first), "{value} {value1}");
+    }
     // Only a combo field has values to compute.
-    assert!(with("values_generator", "<AbstractField type=\"scanner.filter.StringField\" varName=\"field\"/>").is_some());
+    assert!(computed("years;2020;3Y", "Y; Y/ Ys", "<AbstractField type=\"scanner.filter.StringField\" varName=\"field\"/>", 2026).is_some());
+    // A value cut into nothing, and a combo without values, fail the reference.
+    assert!(computed(";", "Y; Y/ Ys", COMBO, 2026).is_none());
+    assert!(computed("years;2020;3Y", "Y; Y/ Ys", "<AbstractField type=\"scanner.filter.ComboField\" varName=\"field\"/>", 2026).is_none());
+    // A start year beyond what the reference's calendar holds.
+    assert!(computed("years;2147483647;3Y", "Y; Y/ Ys", COMBO, 2026).is_none());
+}
+
+#[test]
+fn computed_values_years_before_the_era_count_down_first() {
+    let codes = |value: &str| computed(value, "Y; Y/ Ys", COMBO, 5).unwrap().into_iter().map(|e| e.0).collect::<Vec<_>>();
+    assert_eq!(codes("years;1;x"), ["4Y", "3Y", "2Y", "1Y"]);
+    assert_eq!(codes("years;0;x"), ["4Y", "4Y", "3Y", "2Y", "1Y"]);
+    assert_eq!(codes("years;-2;x"), ["2Y", "3Y", "4Y", "4Y", "3Y", "2Y", "1Y"]);
+    // So far back that the calendar shows a year past this one.
+    assert_eq!(codes("years;-4;x"), Vec::<String>::new());
+    // Digits of another script, and a sign.
+    assert_eq!(codes("years;\u{FF13};x"), ["2Y", "1Y"]);
+    assert_eq!(codes("years;+3;x"), ["2Y", "1Y"]);
+    assert_eq!(codes("years;\u{0663}\u{0664};x").len(), 0);
 }
 
 #[test]
@@ -517,14 +570,89 @@ fn net_item_with_a_raw_counterpart_leaves() {
     assert_eq!(count(section(&out, "filterList"), "ConvertedComboField"), 1);
 }
 
+/// The scan codes left for a client when these net codes all name one
+/// raw scan type.
+fn kept_nets(nets: &[&str]) -> Vec<String> {
+    let mut scans = scan("<scanCode>RAW</scanCode>");
+    for code in nets {
+        scans += &scan(&format!("<scanCode>{code}</scanCode><rawScanCode>RAW</rawScanCode>"));
+    }
+    let out = Doc { scans: &scans, ..Default::default() }.text();
+    let list = section(&out, "scanTypeList");
+    list.lines().filter_map(|l| l.trim().strip_prefix("<scanCode>")?.strip_suffix("</scanCode>")).filter(|c| *c != "RAW").map(str::to_string).collect()
+}
+
 #[test]
-fn two_net_items_for_one_raw_item_are_refused() {
-    let raw = scan("<scanCode>RAW</scanCode>");
-    let net = |code: &str| scan(&format!("<scanCode>{code}</scanCode><rawScanCode>RAW</rawScanCode>"));
-    assert!(Doc { scans: &[raw.clone(), net("N1"), net("N2")].concat(), ..Default::default() }.client("").is_none());
+fn of_net_items_for_one_raw_item_the_last_of_the_hash_walk_leaves() {
+    // Buckets of 16: "N1" 3, "N2" 4, "B" 2, "C" 3. The walk goes by
+    // bucket, then in the order the keys were put.
+    assert_eq!(kept_nets(&["N1", "N2"]), ["N1"]);
+    assert_eq!(kept_nets(&["N2", "N1"]), ["N1"]);
+    assert_eq!(kept_nets(&["N1", "B"]), ["B"]);
+    assert_eq!(kept_nets(&["N1", "C"]), ["N1"]);
+    assert_eq!(kept_nets(&["C", "N1"]), ["C"]);
     // The same net item twice is one.
-    let out = Doc { scans: &[raw.clone(), net("N1"), net("N1")].concat(), ..Default::default() }.text();
-    assert_eq!(count(section(&out, "scanTypeList"), "<ScanType>"), 1);
-    let filters = "<RangeFilter><id>RAW</id></RangeFilter><RangeFilter><id>N1</id><rawId>RAW</rawId></RangeFilter><RangeFilter><id>N2</id><rawId>RAW</rawId></RangeFilter>";
-    assert!(Doc { filters: Some(filters), ..Default::default() }.client("").is_none());
+    assert_eq!(kept_nets(&["N1", "N1"]), Vec::<String>::new());
+    let filters = "<RangeFilter><id>RAW</id></RangeFilter><RangeFilter><id>N2</id><rawId>RAW</rawId></RangeFilter><RangeFilter><id>N1</id><rawId>RAW</rawId></RangeFilter>";
+    let out = Doc { filters: Some(filters), ..Default::default() }.text();
+    assert_eq!(["N1", "N2"].map(|id| count(section(&out, "filterList"), &format!("<id>{id}</id>"))), [1, 0]);
+}
+
+#[test]
+fn hash_walk_grows_the_table_by_full_buckets() {
+    // Ten keys of bucket 7 of 32, four of them in bucket 7 of 64 and six
+    // in bucket 39: the table grows to 32 at the ninth key of the bucket
+    // and to 64 at the tenth, although ten keys fit in 16. "N144", last
+    // put, walks before those of bucket 39; "N177" is last.
+    let names = ["N80", "N5", "N91", "N100", "N111", "N133", "N122", "N155", "N177", "N144"];
+    let kept = kept_nets(&names);
+    assert_eq!(kept.len(), 9);
+    assert!(kept.contains(&"N144".to_string()) && !kept.contains(&"N177".to_string()), "{kept:?}");
+}
+
+/// A case of the reference's own code (#582 and #599): the server text
+/// and the text written for a client (`None`: none), each kept as line
+/// hunks over the real document.
+fn oracle_cases() -> Vec<(String, String, Option<String>)> {
+    let packed = std::fs::read(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/gw1040/scanner_params/oracle_599.json.gz")).unwrap();
+    let mut json = String::new();
+    std::io::Read::read_to_string(&mut flate2::read::GzDecoder::new(&packed[..]), &mut json).unwrap();
+    let data: serde_json::Value = serde_json::from_str(&json).unwrap();
+    let (server, client) = (fixture("server.xml"), fixture("client.xml"));
+    let apply = |base: &str, hunks: &serde_json::Value| {
+        let lines: Vec<&str> = base.split_inclusive('\n').collect();
+        let (mut out, mut at) = (String::new(), 0);
+        for hunk in hunks.as_array().unwrap() {
+            let (first, end) = (hunk[0].as_u64().unwrap() as usize, hunk[1].as_u64().unwrap() as usize);
+            out.extend(lines[at..first].iter().copied());
+            out += hunk[2].as_str().unwrap();
+            at = end;
+        }
+        out.extend(lines[at..].iter().copied());
+        out
+    };
+    data["cases"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| {
+            let output = (!c["output"].is_null()).then(|| apply(&client, &c["output"]));
+            (c["name"].as_str().unwrap().to_string(), apply(&server, &c["input"]), output)
+        })
+        .collect()
+}
+
+#[test]
+fn computed_values_and_net_items_are_the_texts_of_the_reference() {
+    let cases = oracle_cases();
+    assert_eq!(cases.len(), 73);
+    for (name, input, want) in cases {
+        // The reference's code ran in 2026.
+        let got = for_client_in(&input, &session(OBSERVED), 2026);
+        match (got, want) {
+            (Some(got), Some(want)) => assert_same(&got, &want, &name),
+            (None, None) => {}
+            (got, want) => panic!("{name}: ibx gives a text: {}, the reference: {}", got.is_some(), want.is_some()),
+        }
+    }
 }

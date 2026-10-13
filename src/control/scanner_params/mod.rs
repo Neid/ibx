@@ -344,7 +344,7 @@ struct Refused;
 /// Read the server's scanner parameters into the model; `None` when the
 /// reference would refuse the text (ibx#571).
 pub(crate) fn parse(server_xml: &str) -> Option<Model> {
-    reader::read(server_xml).ok()
+    reader::read(server_xml).ok().filter(|(_, whole)| *whole).map(|(model, _)| model)
 }
 
 /// Write the model as the reference does. `None` when a member still
@@ -372,7 +372,16 @@ pub fn rebuild(server_xml: &str) -> Option<String> {
 /// It takes over 10 ms on the document of a real session: not for the
 /// engine thread.
 pub fn for_client(server_xml: &str, session: &Session) -> Option<String> {
-    let mut model = parse(server_xml)?;
-    session::apply(&mut model.root, session).ok()?;
+    let this_year = jiff::Timestamp::now().to_zoned(crate::gateway::machine_tz()).year();
+    for_client_in(server_xml, session, i32::from(this_year))
+}
+
+/// [`for_client`] in a given year of the machine's clock: computed values
+/// count the years up to it (ibx#599).
+pub(crate) fn for_client_in(server_xml: &str, session: &Session, this_year: i32) -> Option<String> {
+    // A text the reader stopped in is taken as far as it was read
+    // (ibx#599).
+    let (mut model, whole) = reader::read(server_xml).ok()?;
+    session::apply(&mut model.root, session, this_year, whole).ok()?;
     write(&model)
 }

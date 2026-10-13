@@ -53,6 +53,8 @@ pub(super) const COMBO_VALUE_DEFAULT: Slot = Slot { level: 50, at: 4 };
 pub(super) const SIDECAR_TEMPLATE_LIST: Slot = Slot { level: 35, at: 1 };
 pub(super) const TEMPLATE_VENDOR: Slot = Slot { level: 80, at: 1 };
 pub(super) const CONFIG_ITEM_NAME: Slot = Slot { level: 10, at: 0 };
+pub(super) const CONFIG_ITEM_VALUE: Slot = Slot { level: 10, at: 1 };
+pub(super) const CONFIG_ITEM_VALUE1: Slot = Slot { level: 10, at: 2 };
 
 /// `type` of the instrument made for an instrument group.
 pub(super) const GROUP_INSTRUMENT_TYPE: &str = "Global";

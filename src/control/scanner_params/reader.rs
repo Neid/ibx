@@ -13,6 +13,16 @@ use super::tables::{CLASSES, ENUMS, ROOT};
 use super::{class_in_package, class_named, enum_in_package, enum_named, simple_name};
 use super::{ClassId, Entry, Items, Kind, Model, Node, Refused, Ty, Value};
 
+/// Why a document was not read whole.
+#[derive(Debug)]
+enum Failure {
+    /// The reference fails on it, or the model does not cover it.
+    Refused,
+    /// The reference's reader throws to its caller, which keeps what was
+    /// read so far (ibx#599).
+    Thrown,
+}
+
 type El<'a, 'i> = roxmltree::Node<'a, 'i>;
 
 /// Names of scalar types. As the `type` attribute of an object member
@@ -38,13 +48,21 @@ const SCALAR_TYPES: &[&str] = &[
 ];
 
 /// Read a document. The name of its root element is not checked.
-pub(super) fn read(text: &str) -> Result<Model, Refused> {
+///
+/// Where the reference's reader throws to its caller, the caller goes on
+/// with the root as far as it was read: the members read before the one
+/// that failed (ibx#599). The second value is false then.
+pub(super) fn read(text: &str) -> Result<(Model, bool), Refused> {
     let options = roxmltree::ParsingOptions { allow_dtd: true, ..Default::default() };
     let doc = roxmltree::Document::parse_with_options(text, options).map_err(|_| Refused)?;
     let reader = Reader { src: text };
     let mut root = Node::of(ROOT).ok_or(Refused)?;
-    reader.object(&mut root, doc.root_element())?;
-    Ok(Model { root })
+    let whole = match reader.object(&mut root, doc.root_element()) {
+        Ok(()) => true,
+        Err(Failure::Thrown) => false,
+        Err(Failure::Refused) => return Err(Refused),
+    };
+    Ok((Model { root }, whole))
 }
 
 struct Reader<'i> {
@@ -138,7 +156,7 @@ impl Reader<'_> {
     }
 
     /// Fill an object from its element, by the kind of its class.
-    fn object(&self, node: &mut Node, el: El) -> Result<(), Refused> {
+    fn object(&self, node: &mut Node, el: El) -> Result<(), Failure> {
         let class = &CLASSES[node.class() as usize];
         match &class.kind {
             Kind::List(items) => self.list(node, el, items),
@@ -174,7 +192,7 @@ impl Reader<'_> {
     /// Read the members one class level declares; `base` is the position
     /// of its first member in the object. Returns false when the level
     /// was left early: its remaining members keep their defaults.
-    fn members(&self, level: ClassId, base: usize, node: &mut Node, el: El) -> Result<bool, Refused> {
+    fn members(&self, level: ClassId, base: usize, node: &mut Node, el: El) -> Result<bool, Failure> {
         for (i, member) in CLASSES[level as usize].members.iter().enumerate() {
             let slot = base + i;
             let (decl, decl_tag) = match member.ty {
@@ -216,7 +234,14 @@ impl Reader<'_> {
             };
             let sub_tag = self.name(sub);
             if sub_tag == "Array" {
-                return Err(Refused);
+                // An array of the class its `type` names. None, or a name
+                // that is no class: the level ends here. A class: the
+                // member cannot hold the array and the reader throws.
+                let element = attr(sub, "type").unwrap_or("");
+                if element.is_empty() || !(SCALAR_TYPES.contains(&element) || enum_named(element).is_some() || class_named(element).is_some()) {
+                    return Ok(false);
+                }
+                return Err(Failure::Thrown);
             }
             let mut class = decl;
             let type_attr = attr(sub, "type").unwrap_or("");
@@ -230,15 +255,16 @@ impl Reader<'_> {
                     None => return Ok(false),
                 }
             }
-            let mut class = class.ok_or(Refused)?;
+            let mut class = class.ok_or(Failure::Refused)?;
             let name = CLASSES[class as usize].name;
             if CLASSES[class as usize].abs {
                 // An abstract class stands for the class named like the
                 // element, in its own package.
                 let package = name.rfind('.').map_or("", |i| &name[..i]);
-                class = class_in_package(package, sub_tag).ok_or(Refused)?;
+                // None of that name: the reader throws.
+                class = class_in_package(package, sub_tag).ok_or(Failure::Thrown)?;
             }
-            let mut value = Node::of(class).ok_or(Refused)?;
+            let mut value = Node::of(class).ok_or(Failure::Refused)?;
             self.object(&mut value, sub)?;
             node.members[slot] = Value::Node(Box::new(value));
         }
@@ -247,7 +273,7 @@ impl Reader<'_> {
 
     /// A list: every child element is an item, in document order. Then
     /// the scalar members the list class declares itself are read.
-    fn list(&self, node: &mut Node, el: El, items: &Items) -> Result<(), Refused> {
+    fn list(&self, node: &mut Node, el: El, items: &Items) -> Result<(), Failure> {
         node.items.clear();
         for c in el.children().filter(|c| c.is_element()) {
             let class = match *items {
@@ -294,7 +320,7 @@ impl Reader<'_> {
     /// A list whose items are of several classes: the `type` attribute
     /// when it names a class, else the class of the list with the tag's
     /// name; no match, the element is skipped.
-    fn flexible_list(&self, node: &mut Node, el: El, classes: &[ClassId]) -> Result<(), Refused> {
+    fn flexible_list(&self, node: &mut Node, el: El, classes: &[ClassId]) -> Result<(), Failure> {
         node.items.clear();
         for c in el.children().filter(|c| c.is_element()) {
             let tag = self.name(c);
@@ -305,7 +331,7 @@ impl Reader<'_> {
                     // A `type` that names an enumeration is refused
                     // by `item`, as for any list.
                     None if attr(c, "type").and_then(enum_named).is_none() => continue,
-                    None => return Err(Refused),
+                    None => return Err(Failure::Refused),
                 },
             };
             node.items.push(Value::Node(Box::new(self.item(c, class)?)));
@@ -316,15 +342,15 @@ impl Reader<'_> {
     /// A new item from its element: a `type` attribute that names a
     /// class wins over the class of the list; one that names none is
     /// ignored.
-    fn item(&self, el: El, mut class: ClassId) -> Result<Node, Refused> {
+    fn item(&self, el: El, mut class: ClassId) -> Result<Node, Failure> {
         if let Some(t) = attr(el, "type").filter(|t| !t.is_empty()) {
             if let Some(named) = class_named(t) {
                 class = named;
             } else if enum_named(t).is_some() {
-                return Err(Refused);
+                return Err(Failure::Refused);
             }
         }
-        let mut item = Node::of(class).ok_or(Refused)?;
+        let mut item = Node::of(class).ok_or(Failure::Refused)?;
         self.object(&mut item, el)?;
         Ok(item)
     }
