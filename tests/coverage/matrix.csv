@@ -806,7 +806,6 @@ error,445,The RFQ for this order is no longer valid,no test
 error,446,Missing scale order profit offset,no test
 error,447,Missing scale price adjustment amount or interval.,no test
 error,448,Invalid scale price adjustment interval.,no test
-error,449,Unexpected scale price adjustment amount or interval.,no test
 error,451,n/a,no test
 error,452,Missing order exchange,no test
 error,453,Not enough data to check underlying price conditions,no test
@@ -839,7 +838,6 @@ error,481,Order size was reduced.,no test
 error,482,Main and Hedging order accounts do not match,no test
 error,483,One-to-one combo order is not supported.,no test
 error,484,Your desk is not configured to create tickets for: %s. Please contact system administrator to upgrade your permissions.,no test
-error,485,Multiple account allocation scale order is currently not supported,no test
 error,486,"For non-guaranteed Combo Scale orders, the order type must be Market-if-Touched (MIT).",no test
 error,487,US Bond Ratings (Corporates and Municipals) service is required to place municipal bond order.,no test
 error,488,Only US STK/OPT legs are supported for smart guaranteed combo.,no test
@@ -939,6 +937,11 @@ error,2180,,no test
 error,2181,The 'OptOutFromSmartRouting' order attribute is not supported.,no test
 error,2182,Algorithm end time is in the past for order %s,no test
 error,2183,Algorithm end time precedes algorithm start time for %s,no test
+error,2184,This order will be distributed over multiple accounts.<br>We strongly suggest you familiarize yourself with our allocation<br> facilities at the link below before submitting orders.,no test
+error,2185,The confirmed MaxHedgeSize value of %s must be greater than or equals to %s,no test
+error,2186,"Requested real-time market data requires additional subscription for API. You elected to receive delayed market data instead. To subscribe, see link in 'Market Data Connections' dialog for more details.",no test
+error,2187,Generic tick data is not available when using delayed market data fallback.,no test
+error,2188,Up-to-the-second historical data requires additional subscription for the API.,no test
 error,10000,Cross-currency combo order is not supported.,tests/gw_catalog/errors.rs::every_error_ibx_raises_is_the_gateways ; src/engine/combo.rs::non_guaranteed_needs_two_legs_and_one_currency
 error,10001,Cross-currency VOL order is not supported.,no test
 error,10002,Non-guaranteed order should only have two legs,tests/gw_catalog/errors.rs::every_error_ibx_raises_is_the_gateways ; src/engine/combo.rs::non_guaranteed_needs_two_legs_and_one_currency
@@ -1005,7 +1008,6 @@ error,10073,Reference price cannot be negative.,no test
 error,10074,Missing starting reference price,no test
 error,10075,Missing reference financial instrument,no test
 error,10076,Invalid price change of the reference financial instrument for peg-to-bench-order. Requires positive number.,no test
-error,10077,Scale order for a model is currently not supported,no test
 error,10078,This order conflicts with the order preset value(s),no test
 error,10079,%s is not accessible through API because product is trading on the basis of currency price with factor,no test
 error,10080,Custom Smart Strategy is not supported,no test
@@ -1014,7 +1016,6 @@ error,10082,Note that you are creating an order for a bond that has already been
 error,10083,Display size is smaller than the minimum requirement.,no test
 error,10084,Min. quantity is smaller than the minimum requirement.,no test
 error,10086,Option Exercise can only be cancelled,no test
-error,10087,Manual scale orders are not supported.,no test
 error,10089,Requested market data requires additional subscription for API. || Requested market data requires additional subscription for API. See link ,tests/gw_catalog/errors.rs::every_error_ibx_raises_is_the_gateways ; src/engine/hot_loop/mod.rs::requests_share_a_book
 error,10090,Part of requested market data is not subscribed. Subscription-independent ticks are still active.,no test
 error,10091,Part of requested market data requires additional subscription for API. || Part of requested market data requires additional subscription fo,no test
@@ -1264,6 +1265,30 @@ error,10345,You cannot trade a %s,no test
 error,10346,Market data for %s cannot be delivered because ticker for the same financial instrument is displayed on %s,no test
 error,10347,"<html>This security has limited liquidity. If you choose to trade this security,<br> there is a heightened risk that you may not be able to ",no test
 error,10348,The 'OptOutFromSmartRouting' order attribute is not supported.,no test
+error,10349,Order TIF was set to %s based on order preset,tests/gw_catalog/errors.rs::every_error_ibx_raises_is_the_gateways ; src/api/client/tests.rs::the_preset_time_in_force_is_the_orders ; src/engine/hot_loop/order_builder.rs::empty_tif_takes_the_order_preset
+error,10350,Connectivity with %SHORT_COMPNAME% is temporarily unavailable. Please retry in 1 minute,no test
+error,10351,What-If type %s is not supported for your account configuration.,no test
+error,10352,What-If type specified but What-If flag is not set. Orders with whatIfType must have whatIf=true.,no test
+error,10353,"Warning: setting ""Route marketable orders to exchanges at BBO only"" order attribute can result in higher total cost of the trade after exchange fees and commissions",tests/gw_catalog/errors.rs::every_error_ibx_raises_is_the_gateways ; src/engine/hot_loop/order_builder.rs::route_marketable_to_bbo_is_discarded_unless_bypassed
+error,10354,"Attaching stop-loss or profit-taker is not allowed as part of a single placeOrder request, please submit such orders separately.",no test
+error,10355,Cannot auto-attach %s. Preset is not defined.,no test
+error,10356,Invalid value for %s order-id or order-type,no test
+error,10357,Configuration access via API is not available. Please refer to the application interface to view or update your settings.,no test
+error,10358,Fundamentals data is not allowed,tests/gw_catalog/errors.rs::every_error_ibx_raises_is_the_gateways ; src/api/client/tests.rs::fundamentals_without_the_logon_permission_are_refused
+error,10359,Scan code %s is not allowed,no test
+error,10360,Scan filter %s is not allowed,no test
+error,10361,Volatility value too small. %s Volatility Type requires a minimum value of %s. Please enter %s or higher.,no test
+error,10362,OVERNIGHT order is not supported,tests/gw_catalog/errors.rs::every_error_ibx_raises_is_the_gateways
+error,10363,Non-ASCII symbol in field %s,no test
+error,10364,Max Hedging Size value must be defined for the hedge order.,no test
+error,10365,Max Hedging Size value is smaller than what has already filled: %s.,no test
+error,10366,Orders with Time in force in minutes cannot have a start time specified,no test
+error,10367,"Requesting ""Odd Lot Bid/Ask Quotes"" generic tick 787 is not allowed",tests/gw_catalog/errors.rs::every_error_ibx_raises_is_the_gateways ; src/client_core.rs::odd_lot_quotes_are_refused_below_level_225
+error,10368,Non-guaranteed combo order is only supported for 2-leg SMART combos.,no test
+error,10369,Limit price is required for combo orders with more than 2 legs.,no test
+error,10370,A security definition request with the same parameters is already in progress:,no test
+error,10371,Conditions include overnight is not supported for this instrument or is not enabled for this account.,no test
+error,10372,%s: The date entered is invalid. The correct format is yyyyMM for a contract month or yyyyMMdd for a date. E.g.: 202607 or 20260724.,no test
 error,2147483647,,no test
 writer,35=D 131,,tests/gw_catalog/writers.rs::every_order_request_variant_follows_the_gateway_writers
 writer,35=D 11,ClOrdID,tests/gw_catalog/writers.rs::every_order_request_variant_follows_the_gateway_writers ; src/engine/hot_loop/order_builder.rs::a_bracket_child_without_an_oca_type_gets_the_default_one ; src/engine/hot_loop/order_builder.rs::what_if_is_the_real_order_plus_the_preview_flag ; src/engine/hot_loop/order_builder.rs::peg_bench_from_the_api_matches_the_reference
@@ -1884,7 +1909,6 @@ attribute,6938 PeggedChangeAmount,custom,tests/gw_catalog/writers.rs::every_orde
 attribute,6939 ReferenceChangeAmount,double,tests/gw_catalog/writers.rs::every_order_request_variant_follows_the_gateway_writers
 attribute,6941 ReferenceContractId,custom,tests/gw_catalog/writers.rs::every_order_request_variant_follows_the_gateway_writers
 attribute,6942 ReferenceContractExchange,custom,tests/gw_catalog/writers.rs::every_order_request_variant_follows_the_gateway_writers
-attribute,6952 OrderSubmissionMidPrc,double,no test
 attribute,6965 AutoCancelParent,boolean,no test
 attribute,6975 CommissionType,enum,no test
 attribute,6979 OptionPrice,double,no test
@@ -1987,12 +2011,21 @@ attribute,8571 EUIlliqSecUserSelection,custom,no test
 attribute,8572 NoIdealModelChange,boolean,no test
 attribute,8582 JpMFundProspectusAck,boolean,no test
 attribute,8585 JpMFundProspectusData,string,no test
+attribute,8589 RampAndDumpAck,custom,no test
+attribute,8594 FundingComponentAck,custom,no test
+attribute,8596 RejectIfUncoveredCall,boolean,no test
+attribute,8604 ScaleDayNoLevels,custom,no test
+attribute,8605 ScaleDayFillPrice,custom,no test
+attribute,8606 ScaleDayFillCumQty,custom,no test
+attribute,8607 ScaleDeepestPrice,double,no test
+attribute,8615 ExternalInstructionID,string,no test
 attribute,9801 BlockOrder,custom,no test
 attribute,9813 DiscretionaryAmt,double,tests/gw_catalog/writers.rs::every_order_request_variant_follows_the_gateway_writers
 attribute,9816 Volatility,custom,no test
 attribute,9822 PercentOffset,double,no test
 attribute,99994 PostToAtsDurationUnit,custom,no test
 attribute,99995 DurationUnit,custom,no test
+attribute,2147483647 ScaleComponentDisplaySize,integer,no test
 eclient,req_positions,,tests/scenario_replay.rs::combo_fill_executions_and_commissions ; src/api/client/tests.rs::req_positions_delivers_via_wrapper ; src/api/client/tests.rs::req_positions_empty_still_calls_position_end
 eclient,req_pnl,,src/api/client/tests.rs::a_pnl_request_subscribes_the_quotes_it_needs_and_cancels_them_after ; src/api/client/tests.rs::a_pnl_quote_becomes_the_callers_subscription ; src/api/client/tests.rs::no_internal_quote_when_the_caller_has_one
 eclient,cancel_pnl,,src/api/client/tests.rs::a_pnl_request_subscribes_the_quotes_it_needs_and_cancels_them_after ; src/api/client/tests.rs::a_pnl_quote_becomes_the_callers_subscription ; tests/scenarios.rs::cancel_pnl_stops_dispatch

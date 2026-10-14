@@ -1,9 +1,11 @@
-//! The gateway 1040 catalogs of `tests/fixtures/gw1040/catalog/` (see its
-//! README): error codes, order local refusals, order writers, order
+//! The gateway catalogs of `tests/fixtures/<version>/catalog/` (see their
+//! READMEs): error codes, order local refusals, order writers, order
 //! attributes. Every expected value of the layer A tests comes from them.
+//! Each file is read from the reference ibx copies, 10.51 (ibx#604), when
+//! its 10.51 table exists, else from 10.40 (see [`version_of`]).
 
 use std::collections::{BTreeMap, HashMap};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// The fields of one CSV line (quotes and doubled quotes handled).
 pub fn csv_fields(line: &str) -> Vec<String> {
@@ -26,14 +28,25 @@ pub fn csv_fields(line: &str) -> Vec<String> {
     out
 }
 
+fn catalog_path(version: &str, name: &str) -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures").join(version).join("catalog").join(name)
+}
+
+/// The reference version a catalog file is read from: 10.51 when its 10.51
+/// table is made, else 10.40. The local rules (ibx#659) and the order
+/// writers have no 10.51 table yet.
+pub fn version_of(name: &str) -> &'static str {
+    if catalog_path("gw1051", name).exists() { "gw1051" } else { "gw1040" }
+}
+
 /// The rows of a catalog file as maps column name to value.
 pub fn rows(name: &str) -> Vec<HashMap<String, String>> {
-    rows_of("gw1040", name)
+    rows_of(version_of(name), name)
 }
 
 /// The rows of a catalog of one reference version.
 pub fn rows_of(version: &str, name: &str) -> Vec<HashMap<String, String>> {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures").join(version).join("catalog").join(name);
+    let path = catalog_path(version, name);
     let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
     let mut lines = text.lines().filter(|l| !l.trim().is_empty());
     let header = csv_fields(lines.next().unwrap());
@@ -68,18 +81,7 @@ impl ErrorCode {
 }
 
 pub fn error_codes() -> BTreeMap<i64, ErrorCode> {
-    // The codes of 10.40, then those only 10.51 has (the move to 10.51,
-    // ibx#559): a rule of 10.51 written behind its session level raises
-    // them (ibx#616).
-    let mut codes = error_codes_of("gw1040");
-    for (code, e) in error_codes_of("gw1051") {
-        codes.entry(code).or_insert(e);
-    }
-    codes
-}
-
-fn error_codes_of(version: &str) -> BTreeMap<i64, ErrorCode> {
-    rows_of(version, "error_codes.csv").into_iter().map(|r| {
+    rows("error_codes.csv").into_iter().map(|r| {
         let messages = if r["message"].is_empty() {
             Vec::new()
         } else {

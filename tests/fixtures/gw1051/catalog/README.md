@@ -21,7 +21,9 @@ Not made yet:
   order rules, id flow, modify, cancel), as the 1040 one was read.
 - `order_writers.csv`: waits for capture issue deepentropy/ib-agent#214.
 
-Until they exist, the 1040 files are the only local rules and writers tables.
+Until they exist, the 1040 files are the only local rules and writers tables. The tests read each file from 1051
+when it is here and from 1040 otherwise (`version_of` in `tests/gw_catalog/catalog.rs`, and the coverage matrix), so a
+1051 table added here is taken at once (since 14/10/2026).
 
 ### error_codes.csv
 

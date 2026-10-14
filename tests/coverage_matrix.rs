@@ -188,10 +188,13 @@ fn every_public_client_method_has_a_row() {
     assert!(missing.is_empty(), "EClient methods with no row in matrix.csv: {missing:?}");
 }
 
-/// The rows of a gateway catalog file (`tests/fixtures/gw1040/catalog/`)
-/// as maps of column name to value.
+/// The rows of a gateway catalog file as maps of column name to value: the
+/// 10.51 table where it is made, else the 10.40 one (ibx#604), as the
+/// table tests read them.
 fn catalog(name: &str) -> Vec<std::collections::HashMap<String, String>> {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/gw1040/catalog").join(name);
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+    let path = ["gw1051", "gw1040"].iter().map(|v| root.join(v).join("catalog").join(name))
+        .find(|p| p.exists()).unwrap();
     let text = std::fs::read_to_string(path).unwrap();
     let mut lines = text.lines().filter(|l| !l.trim().is_empty());
     let header = csv_fields(lines.next().unwrap());

@@ -1,7 +1,8 @@
-//! Layer A of the proof that ibx behaves like the gateway 1040 (ibx#485):
-//! table tests whose expected values all come from the catalogs extracted
-//! from the gateway 1040 JAR (`tests/fixtures/gw1040/catalog/`). Offline,
-//! through the real ibx code paths, on the in-memory transport.
+//! Layer A of the proof that ibx behaves like the gateway (ibx#485): table
+//! tests whose expected values all come from the catalogs extracted from
+//! the gateway's JAR, 10.51 where its table is made and 10.40 for the
+//! others (`tests/fixtures/<version>/catalog/`, ibx#604). Offline, through
+//! the real ibx code paths, on the in-memory transport.
 
 #[path = "gw_catalog/catalog.rs"]
 mod catalog;
