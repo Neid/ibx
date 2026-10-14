@@ -6845,6 +6845,36 @@ fn farm_sizes_of_zero_follow_a_kept_minus_one() {
     drop(engine);
 }
 
+// ibx#674 (the reference 10.51, paper, 14/10/2026, RY on TSE in delayed
+// mode): a contract that needs a subscription for the API, delayed data
+// available: 10089, marketDataType 3, then 354 with the farm's text, and the
+// request ends (its cancel gives 300).
+#[test]
+fn a_delayed_fallback_gives_10089_then_type_3_then_354() {
+    let (client, rx, shared) = test_client();
+    let engine = top_engine(rx);
+    let ry = Contract { con_id: 4458964, symbol: "RY".into(), sec_type: "STK".into(), exchange: "TSE".into(),
+        currency: "CAD".into(), ..Default::default() };
+    client.req_market_data_type(3);
+    client.req_mkt_data(816, &ry, "", true, false).unwrap();
+    let mut w = SnapRec { events: Vec::new() };
+    client.process_msgs(&mut w);
+    let instrument = *client.core.req_to_instrument.lock().unwrap().get(&816).unwrap();
+    shared.market.push_md_reject(crate::bridge::MdReject::DelayedFallback {
+        instrument, description: "RY TSE".into(), farm_text: "Error&TSE/STK/Top&BEST/STK/Top".into(), kept_params: None,
+    });
+    let mut w = SnapRec { events: Vec::new() };
+    client.process_msgs(&mut w);
+    let base = "Requested market data requires additional subscription for API. See link in 'Market Data Connections' dialog for more details.";
+    assert_eq!(w.events, [
+        format!("error:816:10089:{base}RY TSE/TOP/ALL"),
+        "mdt:816:3".to_string(),
+        format!("error:816:354:{}Error&TSE/STK/Top&BEST/STK/Top", crate::client_core::MD_NOT_SUBSCRIBED),
+    ]);
+    assert!(client.core.req_to_instrument.lock().unwrap().get(&816).is_none(), "the request is gone");
+    drop(engine);
+}
+
 // A snapshot that never completes ends 11 s after its start; a stream
 // never ends.
 #[test]

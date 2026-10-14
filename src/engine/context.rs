@@ -306,6 +306,12 @@ pub struct Context {
     /// A stock's type (COMMON, ETF, ...) by conId, from its definition: the
     /// ETF ticks are asked for an ETF only (ibx#641).
     pub(crate) stock_types: HashMap<i64, String>,
+    /// Stocks whose definition is not a US stock's, by conId (ibx#674).
+    pub(crate) foreign_stocks: std::collections::HashSet<i64>,
+    /// Contracts refused for want of an API subscription with delayed data
+    /// available: a later request in delayed mode is asked delayed at once
+    /// (ibx#674).
+    pub(crate) delayed_contracts: std::collections::HashSet<i64>,
     /// The logon's algo providers (ibx#505).
     pub(crate) algo_providers: Vec<String>,
     /// The account's order presets by security type: the time in force
@@ -426,6 +432,8 @@ impl Context {
             option_terms: HashMap::new(),
             def_kinds: HashMap::new(),
             stock_types: HashMap::new(),
+            foreign_stocks: std::collections::HashSet::new(),
+            delayed_contracts: std::collections::HashSet::new(),
             algo_providers: Vec::new(),
             order_presets: HashMap::new(),
             presets_asked: std::collections::HashSet::new(),

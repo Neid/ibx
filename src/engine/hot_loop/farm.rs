@@ -78,6 +78,10 @@ pub(crate) fn round_lot_reply(context: &mut Context, req_id: &str, msg: &[u8]) -
 pub(crate) fn note_definition(context: &mut Context, con_id: i64, msg: &[u8]) {
     if crate::control::contracts::is_us_stock_or_warrant(msg) {
         context.us_lots.insert(con_id);
+    } else if crate::control::contracts::parse_secdef_records(msg).unwrap_or_default().iter()
+        .any(|d| d.con_id == con_id && d.sec_type.to_api_str() == "STK")
+    {
+        context.foreign_stocks.insert(con_id);
     }
     let group = crate::control::contracts::agg_group_from_secdef(msg).unwrap_or(-1);
     context.agg_groups.insert(con_id, group);
@@ -556,6 +560,12 @@ pub(crate) struct FarmState {
     pub(crate) instrument_md_reqs: Vec<(InstrumentId, Vec<u32>)>,
     /// The client's market data modes from reqMarketDataType (ibx#447).
     pub(crate) md_modes: crate::types::MarketDataModes,
+    /// Instruments asked on an exchange of their own whose last entry the
+    /// reference asks on BEST: a stock that is not a US stock (ibx#674; the
+    /// reference 10.51, 13/10/2026 and 14/10/2026: RY on TSE, BMW on IBIS,
+    /// and stocks on ISE, LSE, EBS and TSEJ, 442 there and 443 on BEST).
+    /// Asked delayed, both entries go to BEST.
+    pub(crate) last_on_best: std::collections::HashSet<InstrumentId>,
     /// The market data status entries of the contracts asked in frozen
     /// mode (ibx#447).
     pub(crate) status: Vec<StatusEntry>,
@@ -640,6 +650,7 @@ impl FarmState {
             snapshot_reqs: Vec::new(),
             instrument_md_reqs: Vec::new(),
             md_modes: crate::types::MarketDataModes::default(),
+            last_on_best: std::collections::HashSet::new(),
             status: Vec::new(),
             thawed: Vec::new(),
             depth_reqs: Vec::new(),
@@ -1801,8 +1812,12 @@ impl FarmState {
         let con_id_str = con_id.to_string();
         let exchange = routing_exchange(&sub.exchange, &sub.sec_type);
         let sec_type = fix_sec_type(&sub.sec_type);
+        let on_best = self.last_on_best.contains(&instrument) && exchange != "BEST";
+        let delayed_entry = mode_9887 == crate::types::MarketDataModes::entry_mode(false, true);
+        let bid_ask_exch = if on_best && delayed_entry { "BEST" } else { bid_ask_exchange(exchange, &sub.sec_type) };
+        let last_exch = if on_best { "BEST" } else { exchange };
         let entries: Vec<(u32, &str, &str)> = native_id.map(|id| (id, exchange, NATIVE_TOP)).into_iter()
-            .chain([(bid_ask_id, bid_ask_exchange(exchange, &sub.sec_type), "442"), (last_id, exchange, "443")])
+            .chain([(bid_ask_id, bid_ask_exch, "442"), (last_id, last_exch, "443")])
             .collect();
         for &(req_id, exch, req_type) in &entries {
             self.md_entries.push(MdEntry {
@@ -1974,7 +1989,7 @@ impl FarmState {
         log::warn!("Farm market data reject: ids={:?} 9887={:?} 6763={:?} 58={:?}",
             ids, delayed_flags, access, parsed.get(&58));
         // (instrument, delayed available, API subscription needed), in order.
-        let mut hit: Vec<(InstrumentId, bool, bool)> = Vec::new();
+        let mut hit: Vec<(InstrumentId, bool, bool, bool)> = Vec::new();
         for (i, id) in ids.iter().enumerate() {
             if let Some(a) = access.get(i).filter(|a| api_subscription_needed(a)) {
                 self.note_refused_api_subscription(a);
@@ -1988,14 +2003,36 @@ impl FarmState {
             };
             let delayed = delayed_flags.get(i).is_some_and(|f| f == "1");
             let needs_sub = access.get(i).is_some_and(|a| api_subscription_needed(a));
+            // The "delayed available" of the texts is the bid/ask entry's
+            // (ibx#674; the reference 10.51, 14/10/2026: RY on TSE, 0 there
+            // and 1 on the last entry's BEST, no sentence in 10089).
+            let bid_ask = self.md_entries.iter().any(|e| e.req_id == id && e.req_type == "442");
             match hit.iter_mut().find(|(inst, ..)| *inst == instrument) {
-                Some(h) => { h.1 |= delayed; h.2 |= needs_sub; }
-                None => hit.push((instrument, delayed, needs_sub)),
+                Some(h) => { h.1 |= delayed; h.2 |= needs_sub; h.3 |= bid_ask && delayed; }
+                None => hit.push((instrument, delayed, needs_sub, bid_ask && delayed)),
             }
         }
         let delayed_enabled = self.md_modes.delayed;
-        for (instrument, delayed_available, needs_api_subscription) in hit {
-            if delayed_enabled && delayed_available {
+        let farm_text = parsed.get(&58).cloned().unwrap_or_default();
+        for (instrument, delayed_available, needs_api_subscription, delayed_on_top) in hit {
+            if delayed_enabled && delayed_available && needs_api_subscription {
+                // A contract that needs a subscription for the API, delayed
+                // data available, the client in delayed mode: the reference
+                // gives 10089, marketDataType 3, then 354 with the farm's
+                // text, and asks nothing more; later delayed requests on the
+                // contract are asked delayed at once (ibx#674; the reference
+                // 10.51, paper, 14/10/2026, RY on TSE).
+                self.md_resub_info.retain(|(id, ..)| *id != instrument);
+                let con_id = context.market.con_id(instrument);
+                if let Some(c) = con_id {
+                    context.delayed_contracts.insert(c);
+                }
+                let description = con_id.and_then(|c| context.depth_descriptions.get(&c).cloned()).unwrap_or_default();
+                let kept_params = con_id.and_then(|c| self.con_params.get(&c).cloned());
+                shared.market.push_md_reject(crate::bridge::MdReject::DelayedFallback {
+                    instrument, description, farm_text: farm_text.clone(), kept_params,
+                });
+            } else if delayed_enabled && delayed_available {
                 // Asked again with delayed data; the rejected ids stay with
                 // the subscription, so a cancel covers them too.
                 let Some(info) = self.md_resub_info.iter_mut().find(|(id, ..)| *id == instrument) else { continue };
@@ -2020,8 +2057,9 @@ impl FarmState {
                 let con_id = context.market.con_id(instrument);
                 let description = con_id.and_then(|c| context.depth_descriptions.get(&c).cloned()).unwrap_or_default();
                 let kept_params = con_id.and_then(|c| self.con_params.get(&c).cloned());
+
                 shared.market.push_md_reject(crate::bridge::MdReject::NotSubscribed {
-                    instrument, delayed_available, needs_api_subscription, description, kept_params,
+                    instrument, delayed_available: delayed_on_top, needs_api_subscription, description, kept_params,
                 });
             }
         }
@@ -3729,6 +3767,32 @@ mod tests {
         farm.instrument_md_reqs.push((md, vec![11, 12]));
         farm.handle_ticker_setup(b"8=O\x0135=L\x01265598,0.01,186,,1", &mut context);
         assert_eq!(context.market.route_farm_tag(farm.rx_farm, 186).map(|r| r.instrument), Some(md));
+    }
+
+    // ibx#674 (the reference 10.51, paper, 14/10/2026, RY on TSE): a stock
+    // that is not a US stock, asked on an exchange of its own, has its last
+    // entry on BEST; asked delayed, both entries are on BEST.
+    #[test]
+    fn a_directed_foreign_stock_asks_its_last_on_best() {
+        let mut farm = FarmState::new();
+        let mut context = Context::new();
+        let id = context.market.register(4458964);
+        farm.last_on_best.insert(id);
+        let sub = MdSubscribe {
+            con_id: 4458964, symbol: "RY".into(), exchange: "TSE".into(), sec_type: "STK".into(),
+            last_trade_date: String::new(), strike: 0.0, right: String::new(), multiplier: String::new(),
+            instrument: id, mode_9887: 0, snapshot: true,
+        };
+        let mut sink = RecordingSink(Vec::new());
+        let mut hb = HeartbeatState::new();
+        farm.subscribe_top(&sub, PRIMARY_MD, &mut sink, &mut hb);
+        let exchanges = |msg: &Vec<(u32, String)>| -> Vec<String> {
+            msg.iter().filter(|(t, _)| *t == 207).map(|(_, v)| v.clone()).collect()
+        };
+        assert_eq!(exchanges(&sink.0[0]), ["TSE", "BEST"]);
+        let delayed = MdSubscribe { instrument: id, snapshot: false, mode_9887: crate::types::MarketDataModes::entry_mode(false, true), ..sub };
+        farm.subscribe_top(&delayed, PRIMARY_MD, &mut sink, &mut hb);
+        assert_eq!(exchanges(sink.0.last().unwrap()), ["BEST", "BEST"]);
     }
 
     // ibx#449: the bid/ask ack gives the request parameters, with the

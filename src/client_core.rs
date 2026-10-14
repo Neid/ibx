@@ -2739,9 +2739,36 @@ impl ClientCore {
                     commands.push(ControlCommand::Unsubscribe { instrument });
                     continue;
                 }
+                crate::bridge::MdReject::DelayedAtOnce { instrument } => {
+                    for req_id in self.md_requests_of(instrument) {
+                        self.set_delayed(req_id);
+                        self.md_joins.lock().unwrap().push((req_id, true));
+                    }
+                    continue;
+                }
                 _ => {}
             }
             let (code, text, gone) = Self::md_reject_error(&reject);
+            // 10089, marketDataType 3, then 354 with the farm's text; the
+            // contract is known as delayed for the next requests (ibx#674).
+            if let crate::bridge::MdReject::DelayedFallback { instrument, farm_text, kept_params, .. } = &reject {
+                let con_ids: Vec<i64> = self.con_id_to_instrument.lock().unwrap().iter()
+                    .filter(|(_, iid)| **iid == *instrument).map(|(c, _)| *c).collect();
+                self.md_delayed_known.lock().unwrap().extend(con_ids);
+                for req_id in self.md_requests_of(*instrument) {
+                    if let Some((min_tick, bbo_exchange, permissions)) = kept_params.clone()
+                        && self.tick_req_params_sent.lock().unwrap().insert(req_id)
+                    {
+                        notices.push(MdNotice::TickReqParams { req_id, min_tick, bbo_exchange, permissions });
+                    }
+                    notices.push(MdNotice::Error { req_id, code, text: text.clone() });
+                    self.set_delayed(req_id);
+                    notices.push(MdNotice::MarketDataType { req_id, market_data_type: 3 });
+                    notices.push(MdNotice::Error { req_id, code: 354, text: format!("{MD_NOT_SUBSCRIBED}{farm_text}") });
+                    commands.extend(self.drop_mkt_data(shared, req_id, false).map(MdCancel::commands).unwrap_or_default());
+                }
+                continue;
+            }
             // The record keeps "not subscribed, delayed available" (ibx#444).
             if let crate::bridge::MdReject::NotSubscribed { instrument, delayed_available, .. } = &reject {
                 let con_ids: Vec<i64> = self.con_id_to_instrument.lock().unwrap().iter()
@@ -3580,12 +3607,19 @@ impl ClientCore {
                 let suffix = if description.is_empty() { String::new() } else { format!("{description}/TOP/ALL") };
                 (code, format!("{base}{delayed}{suffix}"), true)
             }
+            // Its three answers are given by `take_md_rejects`; this is the
+            // first (ibx#674).
+            MdReject::DelayedFallback { description, .. } => {
+                let suffix = if description.is_empty() { String::new() } else { format!("{description}/TOP/ALL") };
+                (10089, format!("Requested market data requires additional subscription for API. See link in 'Market Data Connections' dialog for more details.{suffix}"), true)
+            }
             MdReject::NoSecurityDefinition { .. } =>
                 (200, crate::engine::hot_loop::ccp::NO_SECURITY_DEFINITION.into(), true),
             MdReject::MaxTickers { .. } => (MD_MAX_TICKERS.0, MD_MAX_TICKERS.1.into(), true),
             MdReject::NewsRefused { text, .. } => (10094, text.clone(), true),
-            // Not errors: `take_md_rejects` moves the requests (ibx#447).
-            MdReject::Frozen { .. } | MdReject::Live { .. } => (0, String::new(), false),
+            // Not errors: `take_md_rejects` moves the requests (ibx#447,
+            // ibx#674).
+            MdReject::Frozen { .. } | MdReject::Live { .. } | MdReject::DelayedAtOnce { .. } => (0, String::new(), false),
         }
     }
 

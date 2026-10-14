@@ -636,6 +636,21 @@ impl HotLoop {
     /// request whose news tick is refused ends with 10094 instead, nothing
     /// sent, as the reference.
     fn route_md_subscribe(&mut self, sub: &farm::MdSubscribe) {
+        // A contract refused for want of an API subscription, delayed data
+        // available: in delayed mode it is asked delayed at once (ibx#674;
+        // the reference 10.51, paper, 14/10/2026, RY on TSE after such a
+        // refusal: a stream asked with 442 and 443 on BEST, delayed; a
+        // snapshot asked in real time again, and refused again).
+        let delayed_sub;
+        let sub = if sub.mode_9887 == 0 && !sub.snapshot && self.farm.md_modes.delayed
+            && self.context.delayed_contracts.contains(&sub.con_id)
+        {
+            delayed_sub = farm::MdSubscribe { mode_9887: crate::types::MarketDataModes::entry_mode(false, true), ..sub.clone() };
+            self.shared.market.push_md_reject(crate::bridge::MdReject::DelayedAtOnce { instrument: sub.instrument });
+            &delayed_sub
+        } else {
+            sub
+        };
         let news = self.take_waiting_news(sub.instrument);
         if let Some(text) = news.iter().find_map(|(_, refusal)| refusal.clone()) {
             self.shared.market.push_md_reject(crate::bridge::MdReject::NewsRefused { instrument: sub.instrument, con_id: sub.con_id, text });
@@ -661,6 +676,14 @@ impl HotLoop {
             self.shared.market.push_early_tick_req_params(crate::bridge::TickReqParams {
                 instrument: sub.instrument, min_tick, bbo_exchange, snapshot_permissions: permissions as i32,
             }, option);
+        }
+        // The last entry of a stock that is not a US stock, asked on an
+        // exchange of its own, goes to BEST (ibx#674).
+        let own_exchange = !matches!(sub.exchange.as_str(), "" | "SMART" | "BEST" | "IBEOS" | "OVERNIGHT");
+        if own_exchange && self.context.foreign_stocks.contains(&sub.con_id) {
+            self.farm.last_on_best.insert(sub.instrument);
+        } else {
+            self.farm.last_on_best.remove(&sub.instrument);
         }
         if !news_contract {
             if self.md_pass.on {

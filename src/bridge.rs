@@ -761,6 +761,18 @@ pub enum MdReject {
         instrument: InstrumentId, delayed_available: bool, needs_api_subscription: bool, description: String,
         kept_params: Option<(f64, String, i64)>,
     },
+    /// Refused for a contract that needs a subscription for the API, with
+    /// delayed data available and the client in delayed mode (ibx#674):
+    /// 10089, marketDataType 3, then 354 with the farm's text; the
+    /// subscription is gone.
+    DelayedFallback {
+        instrument: InstrumentId, description: String, farm_text: String,
+        kept_params: Option<(f64, String, i64)>,
+    },
+    /// Asked delayed at once, its contract known to need delayed data in
+    /// delayed mode (ibx#674): its requests observe delayed data, as the
+    /// requests that join a contract known so.
+    DelayedAtOnce { instrument: InstrumentId },
     /// A subscription given without a conId whose lookup found no single
     /// contract: error 200, the subscription is gone (ibx#278).
     NoSecurityDefinition { instrument: InstrumentId },
@@ -787,6 +799,8 @@ impl MdReject {
         match *self {
             MdReject::Delayed { instrument }
             | MdReject::NotSubscribed { instrument, .. }
+            | MdReject::DelayedFallback { instrument, .. }
+            | MdReject::DelayedAtOnce { instrument }
             | MdReject::NoSecurityDefinition { instrument }
             | MdReject::MaxTickers { instrument }
             | MdReject::NewsRefused { instrument, .. }
