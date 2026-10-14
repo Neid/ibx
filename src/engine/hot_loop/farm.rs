@@ -105,6 +105,9 @@ pub(crate) fn note_definition(context: &mut Context, con_id: i64, msg: &[u8]) {
         if !sec_type.is_empty() {
             context.def_kinds.insert(con_id, (sec_type, def.symbol.clone()));
         }
+        if !def.stock_type.is_empty() {
+            context.stock_types.insert(con_id, def.stock_type.clone());
+        }
         if terms.is_option() || crate::control::optcalc::market::has_model(&terms.sec_type) {
             context.option_terms.insert(con_id, terms);
         }
@@ -1034,7 +1037,11 @@ impl FarmState {
         // The top of book is confirmed: the generic ticks that waited for it
         // go, with the exchange map entry when its key is new, in one
         // message (ibx#450, ibx#441; captured 05/10/2026).
-        let generic = self.confirm_top(instrument);
+        // The ETF ticks go for an ETF only (ibx#641).
+        let etf = context.market.con_id(instrument)
+            .and_then(|c| context.stock_types.get(&c))
+            .is_some_and(|t| crate::control::generic_values::is_etf_type(t));
+        let generic = self.confirm_top(instrument, etf);
         let map = self.observe_exchange_map(instrument, parts.get(5).copied(), context, shared);
         self.send_after_ack(&generic, map, sink, hb);
         // A regulatory snapshot (ibx#446): its permission and BBO exchange
@@ -1633,9 +1640,14 @@ impl FarmState {
     /// The top of book of an instrument was acknowledged (ibx#450): its
     /// generic tick entries that waited for it get their request ids, in
     /// request code order; their indexes.
-    fn confirm_top(&mut self, instrument: InstrumentId) -> Vec<usize> {
+    /// The ETF ticks of a contract that is no ETF are dropped (ibx#641).
+    fn confirm_top(&mut self, instrument: InstrumentId, etf: bool) -> Vec<usize> {
         if !self.top_confirmed.contains(&instrument) {
             self.top_confirmed.push(instrument);
+        }
+        if !etf {
+            self.generic.retain(|e| !(e.instrument == instrument && e.farm_req == 0
+                && crate::control::generic_values::etf_only(e.code)));
         }
         let mut waiting: Vec<usize> = (0..self.generic.len())
             .filter(|&i| self.generic[i].instrument == instrument && self.generic[i].farm_req == 0)

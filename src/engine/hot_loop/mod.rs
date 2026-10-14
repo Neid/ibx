@@ -693,7 +693,8 @@ impl HotLoop {
         };
         for w in waiting {
             let primary = self.context.listing_exchanges.get(&sub.con_id).cloned().unwrap_or_default();
-            let msgs = self.farm.start_generic(sub.instrument, sub.con_id, &sub.exchange, &sub.sec_type, &primary, &w.codes, id);
+            let codes = self.etf_codes_for(sub.con_id, &w.codes);
+            let msgs = self.farm.start_generic(sub.instrument, sub.con_id, &sub.exchange, &sub.sec_type, &primary, &codes, id);
             self.send_md_messages(msgs);
         }
     }
@@ -716,8 +717,17 @@ impl HotLoop {
         };
         let Some(id) = self.md_route(&sub) else { return };
         let primary = self.context.listing_exchanges.get(&con_id).cloned().unwrap_or_default();
+        let codes = self.etf_codes_for(con_id, &codes);
         let msgs = self.farm.start_generic(instrument, con_id, &exchange, &sec_type, &primary, &codes, id);
         self.send_md_messages(msgs);
+    }
+
+    /// The codes of a request without the ETF ticks, unless its contract
+    /// is known as an ETF or ETMF (ibx#641).
+    fn etf_codes_for(&self, con_id: i64, codes: &[i32]) -> Vec<i32> {
+        use crate::control::generic_values as gv;
+        let etf = self.context.stock_types.get(&con_id).is_some_and(|t| gv::is_etf_type(t));
+        codes.iter().copied().filter(|&c| etf || !gv::etf_only(c)).collect()
     }
 
     /// The news ticks waiting for the top of book of an instrument, in the

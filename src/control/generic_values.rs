@@ -60,17 +60,25 @@ pub const IPO_PRICES: i32 = 586;
 pub const SHORT_TERM_VOLUME: i32 = 595;
 /// Creditman Slow Mark Price: tick 79.
 pub const SLOW_MARK_PRICE: i32 = 619;
+/// An ETF's net asset value, last and frozen last (ibx#641): one double
+/// each, ticks 96 and 97, asked for a stock of type ETF or ETMF once its
+/// top of book is acknowledged; -1 is no value (the reference 10.51, paper,
+/// 13/10/2026 regular hours, SPY: 577 answered 777.86932373, given as tick
+/// 96; 623 answered -1, nothing given).
+pub const ETF_NAV_LAST: i32 = 577;
+pub const ETF_FROZEN_NAV_LAST: i32 = 623;
 /// Index Future Premium (ibx#495): one double, tick 31,
 /// for an index only (the reference 10.51 on SPX, paper 12/10/2026).
 pub const INDEX_FUTURE_PREMIUM: i32 = 162;
 
 /// The ticks ibx subscribes: the others of a valid list are accepted and
 /// not sent (their decoders are not read yet).
-const SENT: [i32; 24] = [
+const SENT: [i32; 26] = [
     OPTION_VOLUME, OPTION_OPEN_INTEREST, AVERAGE_OPTION_VOLUME, IMPLIED_VOLATILITY, MISC_STATS, AUCTION,
     RT_VOLUME, SHORTABLE, TRADE_COUNT, TRADE_RATE, VOLUME_RATE, LAST_RTH_TRADE, RT_TRADE_VOLUME,
     RT_HISTORICAL_VOLATILITY, DIVIDENDS, HISTORICAL_VOLATILITY, FUTURES_OPEN_INTEREST, 104,
     PL_PRICE, FUNDAMENTALS, IPO_PRICES, SHORT_TERM_VOLUME, SLOW_MARK_PRICE, INDEX_FUTURE_PREMIUM,
+    ETF_NAV_LAST, ETF_FROZEN_NAV_LAST,
 ];
 
 /// The ticks whose block has a 16-bit length.
@@ -93,6 +101,17 @@ pub fn length_width(code: i32) -> usize {
     } else {
         1
     }
+}
+
+/// Whether the tick is asked only for a stock of type ETF or ETMF
+/// (ibx#641).
+pub fn etf_only(code: i32) -> bool {
+    matches!(code, ETF_NAV_LAST | ETF_FROZEN_NAV_LAST)
+}
+
+/// Whether a stock type is one the ETF ticks are asked for (ibx#641).
+pub fn is_etf_type(stock_type: &str) -> bool {
+    stock_type.eq_ignore_ascii_case("ETF") || stock_type.eq_ignore_ascii_case("ETMF")
 }
 
 /// Whether ibx sends this tick.
@@ -143,6 +162,9 @@ pub fn valid_for(code: i32, sec_type: &str) -> bool {
         FUNDAMENTALS => !one_of(sec_type, &["CFD", "FOP", "FUT", "IOPT", "OPT", "SLB", "WAR"]),
         IPO_PRICES => one_of(sec_type, &["STK"]),
         INDEX_FUTURE_PREMIUM => one_of(sec_type, &["IND"]),
+        // A stock; its type (ETF, ETMF) is checked when the top of book
+        // is acknowledged (`etf_only`).
+        ETF_NAV_LAST | ETF_FROZEN_NAV_LAST => one_of(sec_type, &["STK"]),
         _ => false,
     }
 }
@@ -213,6 +235,7 @@ enum Field {
     AuctionVolume, AuctionImbalance, AuctionPrice, RegulatoryImbalance, Shortable, ShortableShares,
     TradeCount, TradeRate, VolumeRate, LastRthTrade, FuturesOpenInterest,
     PlPrice, SlowMarkPrice, Volume3Min, Volume5Min, Volume10Min, IndexPremium,
+    EtfNavLast, EtfFrozenNavLast,
 }
 
 /// The unset value of an int field (the reference's `Integer.MAX_VALUE`).
@@ -340,6 +363,13 @@ pub fn decode(code: i32, payload: &[u8], rec: &mut GenericRecord, ctx: DecodeCtx
         }
         // Historical volatility (512): the daily one; tick 23.
         // The index future premium, tick 31, as it changes.
+        ETF_NAV_LAST | ETF_FROZEN_NAV_LAST => {
+            let Some(d) = r.double() else { return out };
+            let (field, tick) = if code == ETF_NAV_LAST { (Field::EtfNavLast, 96) } else { (Field::EtfFrozenNavLast, 97) };
+            if rec.set_double(field, d) && d != -1.0 {
+                price(&mut out, tick, d);
+            }
+        }
         INDEX_FUTURE_PREMIUM => {
             let Some(d) = r.double() else { return out };
             if rec.set_double(Field::IndexPremium, d) && d.is_finite() && d != f64::MAX {
@@ -803,6 +833,18 @@ mod tests {
     // ibx#495: the index future premium is one double, tick 31 as it
     // changes, for an index only (the reference 10.51 on SPX, 12/10/2026:
     // tickGeneric 31 0.0004214518350973517).
+    #[test]
+    fn etf_net_asset_values() {
+        // ibx#641: the blocks of 13/10/2026 (SPY): 577 then 623.
+        let mut rec = GenericRecord::default();
+        let ctx = DecodeCtx { min_tick: 0.01, now_ms: 0, round_lot: 1, entry_min_tick: 0.01, rt_in_shares: true };
+        assert_eq!(decode(ETF_NAV_LAST, &hex("40884ef460000000"), &mut rec, ctx), [GenTick::Price(96, 777.86932373)]);
+        assert!(decode(ETF_FROZEN_NAV_LAST, &hex("bff0000000000000"), &mut rec, ctx).is_empty(), "-1 is no value");
+        assert!(decode(ETF_NAV_LAST, &hex("40884ef460000000"), &mut rec, ctx).is_empty(), "unchanged");
+        assert!(valid_for(ETF_NAV_LAST, "STK") && !valid_for(ETF_NAV_LAST, "OPT") && etf_only(ETF_FROZEN_NAV_LAST));
+        assert!(is_etf_type("ETF") && is_etf_type("ETMF") && !is_etf_type("COMMON"));
+    }
+
     #[test]
     fn index_future_premium() {
         let mut rec = GenericRecord::default();
