@@ -58,7 +58,7 @@ pub struct FillExec {
     pub combo: Option<Box<ComboExec>>,
     /// An execution of an order of another API client: kept for
     /// `req_executions`, with no live callback and no commission report
-    /// (`jextend.ba.a(dq, aQ)`: the reports go to the order's client).
+    /// (the reference gives the reports to the order's client only).
     pub other_client: bool,
     /// An execution the server gave again (97=Y: the replay of the day at
     /// the logon, the fill-up after a reconnect): kept for
@@ -753,7 +753,7 @@ pub enum MdReject {
     /// The subscription stopped: error 354 (with the "delayed available"
     /// text when the server says so) or 10089 (an API subscription is
     /// needed). `description`: the contract as the error names it
-    /// (`jclient.dy.cU()`), empty when not known (ibx#444).
+    /// (as the reference writes it), empty when not known (ibx#444).
     /// `kept_params`: the request parameters (minimum tick, BBO exchange,
     /// permissions) the contract's record kept from an earlier subscription,
     /// which the requests get before the error (captured 05/10/2026).
@@ -1125,7 +1125,7 @@ pub struct OrderState {
     api_order_ids: Mutex<HashMap<OrderId, OrderId>>,
     /// The place of each order in the reference's book (insertion number)
     /// and the most orders the book held, for the order of the open-order
-    /// listings (`jclient.jv.w()`).
+    /// listings (code read of the reference).
     book_seqs: Mutex<HashMap<OrderId, u64>>,
     book_peak: std::sync::atomic::AtomicUsize,
     /// The highest API order id (6121) the server's reports gave for each
@@ -2006,7 +2006,7 @@ impl ReferenceState {
     }
 
     /// Whether `account`'s application is not approved yet (8092,
-    /// ibx#421; `jextend.bi.g(String)`).
+    /// ibx#421; code read of the reference).
     pub fn account_pending(&self, account: &str) -> bool {
         self.pending_accounts.lock().unwrap().iter().any(|a| a == account)
     }

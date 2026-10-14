@@ -1668,7 +1668,7 @@ pub(super) fn phase_rapid_order_dedup(conns: Conns) -> Conns {
     // Every status update of each order, in order. The reference sends an
     // order status for every server report of a known order, with no
     // de-duplication (ib-agent ORDER-STATUS.md section 1 "API push" and
-    // section 7, `jclient.dS.a(dk, fq)@677`), so the same status can come
+    // section 7), so the same status can come
     // twice (ibx#473). What must not happen: an update for an order this
     // phase did not submit, or a status going back (a working status after
     // a later one, or after the order ended).

@@ -108,8 +108,7 @@ fn has_complete_response_frame(buf: &[u8]) -> bool {
 /// The short hash of the session token: in the farm logon (tag 8483), the
 /// connect request of a reconnect and the port type change (ibx#423).
 ///
-/// The reference writes it with `Integer.toHexString` (`twslaunch.
-/// jauthentication.x.b(BigInteger)`): lower-case hex with **no** zero
+/// The reference writes it (code read) as lower-case hex with **no** zero
 /// padding: its logins of 26/09, 28/09 and 02/10/2026 sent `b8a6cde`,
 /// `708019c` and `287b51` in the farm logons and the port type change
 /// (and on 28/09 in a reconnect's connect request), and the farms logged
@@ -130,8 +129,8 @@ type MiscUrls = Vec<(String, String)>;
 /// is kept, and the list. None until an answer came.
 static MISC_URLS: std::sync::Mutex<Option<(String, MiscUrls)>> = std::sync::Mutex::new(None);
 
-/// The reference's misc URLs request (`twslaunch.trader.common.url.b`,
-/// thread "MiscUlrsRequester"): its own short connection, not the auth
+/// The reference's misc URLs request (code read, on a thread of its
+/// own): its own short connection, not the auth
 /// connection, to `{host}:4000` in clear, `MISC38;528;`, one answer
 /// `MISC38;529;{key}={value}|...;`, then the connection is closed. The
 /// reference sends it, in the background, when it has no list: at its
@@ -151,8 +150,8 @@ pub(crate) fn misc_urls_before_login(host: &str, redirected: bool) {
         match request_misc_urls(&host, misc_port()) {
             Ok(urls) => {
                 // The reference reads one flag from the list: the auth
-                // connection uses TLS unless `nossl=1` (`trader.common.url.
-                // d.a(Map)`, "sslRequired"). ibx takes its TLS setting
+                // connection uses TLS unless `nossl=1` (code read of the
+                // reference). ibx takes its TLS setting
                 // from IBX_USE_SSL only (ibx#423).
                 if urls.iter().any(|(k, v)| k == "nossl" && v == "1") {
                     log::warn!("Misc URLs of {}: the server asks for the auth connection without TLS (IBX_USE_SSL=false)", host);
@@ -179,7 +178,7 @@ fn misc_urls_wanted(known: Option<&str>, host: &str, redirected: bool) -> bool {
 }
 
 /// The reference's IPv4 address of one of its known hosts (ibx#423,
-/// `twslaunch.trader.common.url.t.a(E, CookbookMode)`, mode IPV4): a fixed
+/// code read of the reference, IPv4 mode): a fixed
 /// table by host name in lower case. A host not in it gives itself back
 /// (the reference logs "missing ip for [host]").
 pub(crate) fn cookbook_ipv4(host: &str) -> String {
@@ -208,7 +207,7 @@ pub(crate) fn cookbook_ipv4(host: &str) -> String {
 
 /// The connection of a misc URLs request (ibx#423): to `host:port`, and
 /// when that fails for any reason, once more to the reference's IPv4
-/// address of the host (`twslaunch.trader.common.url.i.run()`; its log of
+/// address of the host (code read of the reference; its log of
 /// 30/09/2026 at 21:04:05, 21:08:26 and 21:09:05: the name did not
 /// resolve, then `8.17.22.31:4000` was tried). `connect` opens one socket.
 pub(crate) fn misc_urls_connection<T>(
@@ -263,10 +262,9 @@ pub(crate) fn misc_urls_answer(payload: &[u8]) -> io::Result<MiscUrls> {
         .collect())
 }
 
-/// The port type change, as the reference builds it (`twslaunch.
-/// jauthentication.aI.g()`, filled by `aY.E()`): the connection's version
-/// (the auth start's, `n.i(aD)`), mode 0, then by version an empty field
-/// (27), the token mask (31; 2, the session token), the read-only flag 0
+/// The port type change, as the reference builds it (code read): the
+/// connection's version (the auth start's), mode 0, then by version an
+/// empty field (27), the token mask (31; 2, the session token), the read-only flag 0
 /// (35) and the short hashes of the tokens (49; the session token's, left
 /// out when there is none). Captured `50;526;0;;2;0;{hash};` (ibx#423).
 pub fn new_comm_port(version: u32, token_hash: &str) -> String {
@@ -535,8 +533,8 @@ pub fn build_farm_logon(
 }
 
 /// A connection socket of the reference: TLS or plain TCP (ibx#423,
-/// ibx#276). The reference picks it by the endpoint's SSL flag
-/// (`twslaunch.jconnection.y.b(boolean, boolean)`, `E.d()`).
+/// ibx#276). The reference picks it by the endpoint's SSL flag (code
+/// read of the reference).
 pub enum LinkStream {
     Tls(Box<native_tls::TlsStream<TcpStream>>),
     Plain(TcpStream),
@@ -610,19 +608,18 @@ impl Write for LinkStream {
 }
 
 /// The SSL port of an endpoint: the next port when the port is even
-/// (`twslaunch.jconnection.E.j()`: 4000 gives 4001).
+/// (as the reference does: 4000 gives 4001).
 pub fn ssl_port(port: u16) -> u16 {
     if port.is_multiple_of(2) { port + 1 } else { port }
 }
 
 /// The plain port of an endpoint: the port before when the port is odd
-/// (`twslaunch.jconnection.E.k()`: 4001 gives 4000).
+/// (as the reference does: 4001 gives 4000).
 pub fn plain_port(port: u16) -> u16 {
     if !port.is_multiple_of(2) { port - 1 } else { port }
 }
 
-/// The service of a farm, as the reference's SSL farm list names them
-/// (`jconnection.service.ServiceType`).
+/// The service of a farm, as the reference's SSL farm list names them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FarmService {
     MarketData,
@@ -638,10 +635,10 @@ impl FarmService {
     }
 }
 
-/// Whether `farm` of `service` is in the logon's SSL farm list (tag 8449,
-/// ibx#276): `;` separated items, each a farm name (any case) or one of
-/// the wildcards `all`, `allmd`, `allhmds`, `allaux`
-/// (`jconnection.service.j`, `FarmMatcherWildcard`).
+/// Whether `farm` of `service` is in the logon's SSL farm list
+/// (ibx#276): `;` separated items, each a farm name (any case) or one of
+/// the wildcards `all`, `allmd`, `allhmds`, `allaux`, as the reference
+/// matches them.
 pub fn ssl_farm_listed(list: &str, farm: &str, service: FarmService) -> bool {
     if farm.is_empty() {
         return false;
@@ -674,11 +671,10 @@ pub struct FarmLink {
 
 impl FarmLink {
     /// The link of `farm`: TLS when the auth connection uses TLS
-    /// (`auth_ssl`) and the farm is in the logon's SSL farm list
-    /// (`jmdclient.bo.a(E, String, ServiceType, boolean, String)`); else a
+    /// (`auth_ssl`) and the farm is in the logon's SSL farm list; else a
     /// plain socket with the key exchange, unless the server refused the
-    /// encryption of the auth login (`ns_secure_refused`,
-    /// `jmdclient.bo.a(int, Object)@458-550`).
+    /// encryption of the auth login (`ns_secure_refused`), as the reference
+    /// decides it (code read).
     pub fn of(ssl_farms: &str, auth_ssl: bool, farm: &str, service: FarmService, ns_secure_refused: bool) -> Self {
         let ssl = auth_ssl && ssl_farm_listed(ssl_farms, farm, service);
         FarmLink { ssl, ns_secure: !ssl && !ns_secure_refused }
@@ -1089,8 +1085,7 @@ pub fn connect_farm_ex(
 /// and goes on in clear when a farm refuses it with the permission to go
 /// on (ibx#423); the logon is then sent in clear and the session is not
 /// signed. On TLS there is no key exchange and the logon goes in clear
-/// inside TLS, as the reference's farm on an SSL socket
-/// (`jmdclient.bo.a(int, Object)@458-472`).
+/// inside TLS, as the reference's farm on an SSL socket (code read).
 pub fn connect_farm_opts(
     host: &str,
     farm_id: &str,
@@ -1551,9 +1546,9 @@ fn reconnect_ccp_attempt(auth: &ReconnectAuth, token_hash: &str, host: &str, dep
 /// the setting of the captured gateway, `ssl`) the connect request
 /// `connect_req` goes in clear inside TLS, with no key exchange before it.
 /// Without TLS the key exchange comes first and the connect request goes
-/// encrypted (`twslaunch.jconnection.A.a(int, Object)@56-155`,
-/// `aY.a(aE, boolean)`). The second value is set when the server refused
-/// the encryption with the permission to go on: the connect request was
+/// encrypted (code read of the reference). The second value is set when
+/// the server refused the encryption with the permission to go on: the
+/// connect request was
 /// sent (again) in clear, and the farms opened after this login skip their
 /// key exchange. Every auth login (first login, reconnect, redirect)
 /// starts here.
@@ -2753,9 +2748,8 @@ impl Gateway {
 /// Apply the values every logon reply sets (ibx#421): the clock offset of
 /// the current time request, the feature tokens that gate API requests,
 /// and the pending accounts (8092, none when absent: the reference sets
-/// them from every logon reply, `jclient.gi.a(jfix.dk, jfix.bb, boolean,
-/// boolean, boolean)@1583` → `trader.cm.j.b(jfix.dk)`). A reply read with
-/// no feature list (every captured reply has one) leaves the tokens as
+/// them from every logon reply, code read of the reference). A reply read
+/// with no feature list (every captured reply has one) leaves the tokens as
 /// they are.
 pub(crate) fn apply_logon_values(logon: &LogonValues, shared: &SharedState) {
     if let Some(offset) = logon.clock_offset_ms {
@@ -2952,9 +2946,9 @@ fn tick_by_tick_limit(fields: &[Option<String>; 4]) -> usize {
     value.map_or(3, |v| v.max(3) as usize)
 }
 
-/// The whiteBrandingId in one field of the logon data: tag 6593, as the
-/// reference (`jfix.d0.a(e3)@13-19`). Tag 6571 is an order attribute there,
-/// never a logon one (ibx#483).
+/// The whiteBrandingId in one field of the logon data, as the reference
+/// reads it (code read). The field it uses for it on orders is another
+/// one, never a logon one (ibx#483).
 fn white_branding_part(part: &str) -> Option<&str> {
     part.strip_prefix("6593=")
 }
@@ -3082,9 +3076,9 @@ mod tests {
 
     // ibx#423: in the reference's mode without TLS (jts.ini UseSSL false)
     // the key exchange comes first on the auth connection and the connect
-    // request goes encrypted (`twslaunch.jconnection.A.a(int, Object)@56-155`,
-    // `aY.a(aE, boolean)`); a refusal with the permission to go on sends it
-    // in clear; any other refusal is an error.
+    // request goes encrypted (code read of the reference); a refusal with
+    // the permission to go on sends it in clear; any other refusal is an
+    // error.
     #[test]
     fn auth_login_without_tls_runs_the_key_exchange() {
         use crate::auth::certs::fixture;

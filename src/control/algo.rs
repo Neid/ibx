@@ -159,7 +159,7 @@ pub const NO_ALGO_DEFINITION: &str = "Order processing failed. Algorithm definit
 pub const ALGO_NOT_ALLOWED: &str = "Specified algorithm is not allowed for this order.";
 
 /// The reference's checks of an algo order against the definitions
-/// (ibx#263), in its order (`jextend.algo.a`):
+/// (ibx#263), in its order (code read of the reference):
 /// - the algorithm must be defined and have its strategy selector (439);
 /// - an overnight order (`overnight`: the OVERNIGHT or IBEOS exchange, or
 ///   includeOvernight) needs an algorithm allowed overnight (442);
@@ -167,8 +167,7 @@ pub const ALGO_NOT_ALLOWED: &str = "Specified algorithm is not allowed for this 
 ///   not have (443); a time (value type Time, Date or DateTime) the
 ///   reference cannot read (10314 with the parameter's name; read as the
 ///   reference reads dates, a time with no zone gets the warning 2174 on
-///   the way, `jextend.algo.a.a(AlgoExchanges, AlgoAttributeMap,
-///   OrderCreator, dy)@477-610`); a number the reference cannot read (441
+///   the way); a number the reference cannot read (441
 ///   `name=value`);
 /// - then each value with a legal value list must be in it (145), each
 ///   number within its bounds (441);
@@ -202,8 +201,8 @@ pub fn check(definitions: &AlgoDefinitions, algorithm: &str, values: &[(&str, &s
         let Some(param) = find(name) else {
             return Some((443, format!("Order processing failed. Unknown algo attribute:{}", name)));
         };
-        // A time parameter (`AlgoAttribute.c(Class)`: the value types the
-        // reference reads as dates, `jattrib.algo.i`).
+        // A time parameter (the value types the reference reads as dates,
+        // code read of the reference).
         if matches!(param.value_class.as_str(), "Time" | "Date" | "DateTime") && !value.is_empty() {
             match crate::client_core::parse_condition_time(value, &crate::gateway::machine_time_zone()) {
                 Some(t) => {
@@ -252,8 +251,8 @@ pub fn check(definitions: &AlgoDefinitions, algorithm: &str, values: &[(&str, &s
     }
     // Captured 02/10/2026 (PctVol with no pctVol): "Algo attributes
     // validation failed:\n'Target Percentage' is invalid: value is
-    // required.\n" (`jattrib.algo.p.a(AlgoAttribute, Object,
-    // StringBuffer)`, one line per parameter).
+    // required.\n" (as the reference writes it, one line per
+    // parameter).
     let missing: String = params.iter()
         .filter(|p| p.required && !p.strategy_selector && p.default_value.is_none())
         .filter(|p| !values.iter().any(|(name, value)| *name == p.name && !value.trim().is_empty()))
@@ -433,9 +432,8 @@ mod tests {
     }
 
     // ib-agent#192 B9b and B10: the captured refusals, from the
-    // definitions (gateway local rules `145 algo.a.a(pe,OrderCreator)@212`,
-    // `443 algo.a.a(AlgoExchanges,...)@376`, `441 algo.a.a(AlgoExchanges,...)@649`,
-    // `439 algo.a.a(AlgoExchanges,...)@36`).
+    // definitions (local rules of the gateway for 145, 443, 441 and 439,
+    // code read of the reference).
     #[test]
     fn refusals_follow_the_definitions() {
         let d = captured_definitions();
@@ -497,7 +495,7 @@ mod tests {
     // Time in the definitions of 02/10/2026) the reference cannot read is
     // refused with 10314 and the parameter's name, in the caller's order
     // of the parameters; one read with no zone gets the warning 2174, as
-    // the time conditions (`jextend.algo.a.a(...)@477-610`).
+    // the time conditions do (code read of the reference).
     #[test]
     fn time_parameters_are_read_as_dates() {
         let d = definitions_of_20261002();
@@ -513,11 +511,11 @@ mod tests {
         assert_eq!(refusal(&d, "Vwap", &[("startTime", "")], false), None, "an empty value is not read");
     }
 
-    // ibx#263 (`jextend.algo.a`): an overnight order needs an algorithm
-    // allowed overnight (442, gateway local rule
-    // `442 algo.a.a(AlgoExchanges,...)@150`); the first parameter in the
-    // caller's order that fails gives the refusal; a number the reference
-    // cannot read is refused, and an empty value is not read.
+    // ibx#263 (code read of the reference): an overnight order needs an
+    // algorithm allowed overnight (442, a local rule of the gateway); the
+    // first parameter in the caller's order that fails gives the refusal;
+    // a number the reference cannot read is refused, and an empty value is
+    // not read.
     #[test]
     fn overnight_and_number_rules() {
         let d = definitions_of_20261002();

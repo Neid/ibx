@@ -1093,8 +1093,8 @@ impl HotLoop {
         if is_smart_depth {
             // SmartDepth that the contract does not allow: the reference
             // hands the book to its single-exchange requests, where this
-            // request is not (`jextend.dA.c(dy)` -> `jextend.dK.a(int,dy,false)`
-            // finds no entry in its single map): the request stays, with
+            // request is not (code read: its lookup finds no entry among
+            // the single-exchange requests): the request stays, with
             // nothing on the wire and no error.
             log::warn!("SmartDepth req {}: not allowed for this contract; nothing is sent, as the reference", req_id);
             let msgs = self.farm.start_depth(req_id, con_id, &st, true, num_rows, 1, false, Vec::new(), None, &self.shared);
@@ -1137,7 +1137,7 @@ impl HotLoop {
     }
 
     /// SmartDepth (#452): the contract is looked up on each of its valid
-    /// exchanges first, as the reference does (`jextend.d0.c(dy)`); its
+    /// exchanges first, as the reference does (code read); its
     /// books and tops go out once every lookup answered, or after 10 s
     /// (`start_gathered_depth`).
     fn gather_depth_components(&mut self, req_id: ReqId, con_id: i64, sec_type: String, num_rows: i32, exchanges: Vec<String>) {
@@ -1183,13 +1183,13 @@ impl HotLoop {
     }
 
     /// The books and tops of a SmartDepth request, as the reference sorts
-    /// its components (`jextend.d1.process`, `jextend.d0.b(dy)`): a
+    /// its components (code read of the reference): a
     /// component found with a depth route gets a book; else one with a top
     /// route gets a top of book, unless it is the smart-routing name or its
     /// order types hold NOT2D; the others nothing. The LAST entry of a top
     /// of book goes to BEST when SMART is a valid exchange (else to the
     /// listing exchange), except on an overnight venue, which keeps its own
-    /// (`jclient.is.a(pa,List,List,..)@531-738`, `jmdclient.aP.a(dy,TopQuote,..)`;
+    /// (code read of the reference;
     /// captured 28/09/2026: `207=ISE|264=442` with `207=BEST|264=443`,
     /// `207=IBEOS|264=442` with `207=IBEOS|264=443`).
     fn start_smart_depth(&mut self, g: farm::DepthGather) {
@@ -1275,7 +1275,7 @@ impl HotLoop {
         if std::mem::take(&mut self.ccp.permissions_changed) && self.permission_change.change(now) {
             // The reference's API access manager: a warning to the API
             // clients when a request was refused for an API subscription
-            // since the last change (`jextend.F.onPermissionsChanged()`).
+            // since the last change (code read of the reference).
             if self.farm.take_refused_api_subscriptions() {
                 use crate::control::logon::{MARKET_DATA_SUBSCRIPTION_CHANGED, MARKET_DATA_SUBSCRIPTION_CHANGED_CODE};
                 log::info!("Market data subscription has been changed: warning {}", MARKET_DATA_SUBSCRIPTION_CHANGED_CODE);
@@ -1299,7 +1299,7 @@ impl HotLoop {
     }
 
     /// The reference's market data resubscription after a data permission
-    /// change (ibx#421, `jclient.ij.r()`): "Desubscribing all farm mkt
+    /// change (ibx#421, code read): "Desubscribing all farm mkt
     /// data", then every streaming subscription and news entry asked again
     /// on new ids.
     fn resubscribe_market_data(&mut self) {
@@ -1315,8 +1315,8 @@ impl HotLoop {
         self.send_farm_messages(msgs);
     }
 
-    /// Every farm connection is closed and opened again (ibx#276,
-    /// `jmdclient.aP.j()`): the market data farm, the historical data farm
+    /// Every farm connection is closed and opened again (ibx#276, as the
+    /// reference does): the market data farm, the historical data farm
     /// and the farms opened on demand; their reconnects follow.
     fn reconnect_all_farms(&mut self) {
         if let Some(conn) = self.farm_conn.as_mut() {
@@ -3628,7 +3628,7 @@ pub(crate) fn format_price(price: Price) -> StackStr {
 
 /// A price in the reference's number form for its price fields: at least
 /// two decimals, at most eight (`0.00`, `0.05`, `272.885`, `-0.10`), the
-/// pattern `#0.00######` of its price formatter (`jutils.dO.F`, US
+/// pattern `#0.00######` of its price formatter (US
 /// symbols, no grouping), which writes every price tag of its order
 /// messages (ibx#263). Zero alloc.
 pub(crate) fn format_price_ref(price: Price) -> StackStr {
@@ -5658,7 +5658,7 @@ mod tests {
     }
 
     // ibx#421: a logon update with a new data permission stamp makes the
-    // reference resubscribe its market data (`jclient.ij`): every
+    // reference resubscribe its market data (code read): every
     // streaming top of book and news entry cancelled, then asked again on
     // new ids, at once the first time, then at most every 30 s; a change
     // within 1 s of the last one is ignored. A refusal for an API
@@ -5709,8 +5709,7 @@ mod tests {
     }
 
     // ibx#421: a relogin's stamp is a change only when the old and the
-    // new one are both set and differ (`jclient.gi.a(jfix.dk, jfix.bb,
-    // LogonType)@297-388`).
+    // new one are both set and differ (code read of the reference).
     #[test]
     fn relogin_data_permission_rule() {
         let mut ccp = CcpState::new();

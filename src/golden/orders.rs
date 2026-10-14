@@ -395,7 +395,7 @@ fn order_message_names_the_listing_exchange() {
 }
 
 // orderStatus whyHeld "trigger" for a stop or trailing order before its
-// trigger (jclient.pe.iK(): "child", "locate", "trigger"). Every replay
+// trigger (the reference's values: "child", "locate", "trigger"). Every replay
 // compares whyHeld; this one has STP and TRAIL orders.
 #[test]
 fn why_held_is_trigger_for_a_stop() {
@@ -442,10 +442,9 @@ fn what_if_of_a_combo() {
 // A condition time in Asia/Tokyo on a US stock: the reference refuses it
 // with 10314 after the contract lookup (not the contract's zone). It read
 // the zone from a trading schedule it had before the recording (no
-// schedule request in it: `trader.order.ay.a(dy,OrderCreator,D)`, the
-// schedule from `jextend.dX.a(dy, Consumer)`, asked only when not
-// cached); ibx asks no schedule for an order, knows no zone, and sends the
-// order.
+// schedule request in it; code read of the reference: the schedule is
+// asked only when not cached); ibx asks no schedule for an order, knows
+// no zone, and sends the order.
 #[test]
 #[ignore = "ibx#510: the contract's zone comes from a schedule the reference had before the recording"]
 fn condition_time_in_another_zone() {
@@ -456,8 +455,8 @@ fn condition_time_in_another_zone() {
 // "This order will be directly routed to OVERNIGHT." and discards it
 // (Cancelled, then 201 "Order was discarded."); the same id placed again
 // gets 103, its cancel 10147. It is the API precaution "Bypass Redirect
-// Order warning for Stock API Orders" (off by default,
-// `trader.order.confirm.OrderChecker$6.check(pe)`; ibx:
+// Order warning for Stock API Orders" (off by default, code read of the
+// reference; ibx:
 // `IBX_BYPASS_REDIRECT_ORDER_WARNING`). The Cancelled status has a permId
 // here and none in the ISLAND capture of 25/09/2026: ibx gives the id the
 // order would have gone out under.
@@ -469,10 +468,9 @@ fn overnight_directed_order() {
 
 // SPY option combos (a call spread, SMART and CBOE): the reference
 // refuses both with 460 "No trading permissions" before sending; ibx
-// gives no callback. The raise sites (`trader.order.proc.aN.a(pe,...)
-// @13670, @13743, @13933`) read positions, clearing and logon flags; no
-// tag of the logon or of the contract replies of the recording names the
-// option permission.
+// gives no callback. The reference's checks that raise it (code read)
+// read positions, clearing and logon flags; no field of the logon or of
+// the contract replies of the recording names the option permission.
 #[test]
 #[ignore = "ibx#510: the data behind 460 is not in the logon or the contract replies"]
 fn option_combo_without_permission() {

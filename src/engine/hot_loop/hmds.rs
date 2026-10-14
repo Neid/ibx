@@ -40,11 +40,11 @@ pub(crate) struct HmdsState {
     pub(crate) tbt_guess_window: (i64, i64),
     pub(crate) next_hmds_query_id: u32,
     /// The counter of the real-time bar query ids (`realTime{n}`, the
-    /// reference's `jextend.eG`), from 1.
+    /// reference's counter), from 1.
     pub(crate) next_rtbar_id: u32,
     pub(crate) disconnected: bool,
     /// In-flight historical bar queries: (query_id, req_id). No deadline,
-    /// as in the reference: its bar query (`jextend.j`, `hmdscore`) waits
+    /// as in the reference: its bar query (code read) waits
     /// for the server's answer, an error or a cancel; only a head timestamp
     /// query times out (ibx#485; ibx#231 failed a bar request after 60 s
     /// with a text of ibx's own).
@@ -102,7 +102,7 @@ pub(crate) struct HmdsState {
     head_ts_keys: std::collections::HashMap<ReqId, HeadTsKey>,
     /// Head timestamps the farm gave, Unix seconds, by contract, route,
     /// data and RTH flag: a later request is answered from here with no
-    /// query, as the reference's store (`hmdscore.store.b`, ibx#486).
+    /// query, as the reference's store does (ibx#486).
     head_ts_cache: std::collections::HashMap<HeadTsKey, i64>,
     /// How the bars of each bar request are written (ibx#431), until its
     /// answer ended (keepUpToDate: until its cancel).
@@ -401,8 +401,7 @@ pub(crate) struct NewsQuery {
 
 /// Scanner notices of the historical data link, as the reference words
 /// them (ibx#457): the text of 165 with the notice after its colon
-/// (`jextend.dt.e(String)` gives `d7.I.c(text)`, joined by
-/// `jextend.ac.a(String,String)`; ibx#485).
+/// (code read of the reference; ibx#485).
 /// The scanner parameters are asked this long after their first need
 /// (ibx#553).
 pub(crate) const SCANNER_PARAMS_DELAY: std::time::Duration = std::time::Duration::from_secs(1);
@@ -736,7 +735,7 @@ impl HmdsState {
                             if let Some(secs) = crate::control::historical::parse_server_time(&resp.head_timestamp) {
                                 resp.head_timestamp = crate::control::historical::head_timestamp_text(secs, format_date);
                                 // Kept for the next request; the later of two
-                                // values stays (`store.b.a(a, long)@19-66`).
+                                // values stays (code read of the reference).
                                 if let Some(key) = key {
                                     let kept = self.head_ts_cache.entry(key).or_insert(secs);
                                     *kept = (*kept).max(secs);
@@ -1754,8 +1753,8 @@ impl HmdsState {
 
     /// A head timestamp request the store answers (ibx#486): the reference
     /// answers a contract, route, data and RTH flag it was given before
-    /// with the stored value and sends no query (`headtime.k.a(store.a,
-    /// long)@0-86`; captured 02/10/2026, b1_431_hist_format: the second
+    /// with the stored value and sends no query (code read of the reference;
+    /// captured 02/10/2026, b1_431_hist_format: the second
     /// TRADES head timestamp of AAPL after the contract lookup, no 35=W).
     /// False when the store has no value for it.
     #[allow(clippy::too_many_arguments)]
@@ -2516,8 +2515,8 @@ fn reply_window_id(xml: &str) -> &str {
 }
 
 /// The key of a stored head timestamp: contract, route, data (as the
-/// API names it, upper case) and the RTH flag (`hmdscore.store.a(dy, flag,
-/// ...)`; the flag is useRTH for the contracts ibx asks).
+/// API names it, upper case) and the RTH flag, as the reference's store
+/// keys it (the flag is useRTH for the contracts ibx asks).
 type HeadTsKey = (i64, String, String, bool);
 
 fn head_ts_key(con_id: i64, sec_type: &str, exchange: &str, what_to_show: &str, use_rth: bool) -> HeadTsKey {

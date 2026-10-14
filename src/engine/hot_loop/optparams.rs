@@ -22,12 +22,12 @@ use super::HeartbeatState;
 /// option calculation lookups.
 pub(crate) const OPTPARAMS_LOOKUP_FIRST_ID: u32 = 0xB000_0000;
 pub(crate) const OPTPARAMS_LOOKUP_IDS: u32 = 0x1000_0000;
-/// Underlyings kept before the idle ones go (`jutils.thread.c`).
+/// Underlyings kept before the idle ones go (code read of the reference).
 const KEPT_UNDERLYINGS: usize = 100;
 /// An underlying idle this long can go once more than 100 are kept.
 const IDLE_UNDERLYING: Duration = Duration::from_secs(60);
 
-/// An underlying of the reference (`feature.derivatives.T`): conId,
+/// An underlying as the reference keeps it: conId,
 /// symbol in upper case, type and the futures option exchange.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) struct Underlying {
@@ -38,18 +38,18 @@ pub(crate) struct Underlying {
 }
 
 impl Underlying {
-    /// The derivative type whose leg must have data (`T.g()`).
+    /// The derivative type whose leg must have data.
     fn derivative(&self) -> &'static str {
         if self.sec_type == "FUT" { "FOP" } else { "OPT" }
     }
 
-    /// The exchange of the default chain query (`T.l()`): a future's only.
+    /// The exchange of the default chain query: a future's only.
     fn query_exchange(&self) -> &str {
         if self.sec_type == "FUT" { &self.exchange } else { "" }
     }
 
-    /// The chain key and query of a leg on an exchange (`T.a(String)`,
-    /// `feature.derivatives.D.b()`/`c()`).
+    /// The chain key and query of a leg on an exchange, as the reference
+    /// builds them.
     fn chain_key(&self, leg: &str, exchange: &str) -> (ChainKey, ChainKey) {
         let fop_of_other = leg == "FOP" && self.sec_type != "FUT";
         let query = ChainKey {
@@ -100,8 +100,8 @@ struct Entry {
 #[derive(Debug, Default)]
 pub(crate) struct OptParams {
     entries: HashMap<Underlying, Entry>,
-    /// Derivative answers by symbol, until the auth link drops
-    /// (`jclient.mw`).
+    /// Derivative answers by symbol, until the auth link drops, as the
+    /// reference keeps them.
     by_symbol: HashMap<String, UnderlyingAnswer>,
     /// Derivative queries sent, by symbol, and the underlyings waiting.
     asked: HashMap<String, Vec<Underlying>>,
@@ -196,7 +196,7 @@ impl OptParams {
     }
 
     /// A leg joins the underlying unless it is already filled
-    /// (`feature.derivatives.a.b(eh)`).
+    /// (code read of the reference).
     fn add_leg(entry: &mut Entry, kind: &'static str, exchanges: Vec<String>) {
         match entry.legs.iter_mut().find(|l| l.kind == kind) {
             Some(leg) => {
@@ -263,9 +263,9 @@ impl OptParams {
     }
 
     /// The definition lookup of a stock, future, currency or index leg
-    /// (`jclient.ph`): symbol, conId, type, and the futures option
-    /// exchange except for a future. Not sent: the leg waits, as in the
-    /// reference.
+    /// (code read of the reference): symbol, conId, type, and the futures
+    /// option exchange except for a future. Not sent: the leg waits, as in
+    /// the reference.
     fn send_lookup_leg(
         &mut self, under: &Underlying, kind: &'static str, conn: &mut Option<Connection>, connected: bool, hb: &mut HeartbeatState,
     ) {
@@ -381,7 +381,7 @@ impl OptParams {
 
     /// Every leg filled: the rows of each waiting request, then its end;
     /// or 322 when the option leg (or a futures option leg) has no data
-    /// (`feature.derivatives.l.a(boolean)`).
+    /// (code read of the reference).
     fn finish(&mut self, under: &Underlying, shared: &SharedState) {
         let Some(entry) = self.entries.get_mut(under) else { return };
         let missing = |kind: &str| entry.legs.iter().any(|l| l.kind == kind) && !entry.answers.contains_key(kind);
@@ -391,7 +391,7 @@ impl OptParams {
             return;
         }
         // Option rows when the request has no futures option exchange,
-        // else futures option rows (`jextend.cp.a(s)`).
+        // else futures option rows (code read of the reference).
         let kind = if under.exchange.is_empty() { "OPT" } else { "FOP" };
         let (no_magnifier_fix, island_to_nasdaq) = shared.reference.option_chain_features();
         let rows = optparams::chain_rows(entry.answers.get(kind).map(Vec::as_slice).unwrap_or(&[]), no_magnifier_fix, island_to_nasdaq);
@@ -417,7 +417,7 @@ impl OptParams {
     }
 
     /// The auth link dropped: the derivative answers are forgotten
-    /// (`jclient.mw.a()`); the chain answers stay.
+    /// (as the reference does); the chain answers stay.
     pub(crate) fn connection_lost(&mut self) {
         self.by_symbol.clear();
     }

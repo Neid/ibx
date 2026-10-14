@@ -291,7 +291,7 @@ pub(crate) struct NewsEntry {
 /// A generic tick entry of a contract (ibx#450): its own request id on the
 /// farm of the contract's route, shared by the requests that asked it, as
 /// the reference keeps one per tick in the contract's record
-/// (`generictick.bp`).
+/// (code read of the reference).
 #[derive(Debug, Clone)]
 pub(crate) struct GenericEntry {
     /// 0 while it waits for the top of book's acknowledgement.
@@ -313,7 +313,7 @@ pub(crate) struct GenericEntry {
 
 /// The market data status entry of a contract (ibx#447): the reference
 /// asks it for a request made in frozen mode, and its value tells whether
-/// the contract's data is frozen (`generictick.ad`, request code 398).
+/// the contract's data is frozen (request code 398).
 #[derive(Debug, Clone)]
 pub(crate) struct StatusEntry {
     pub(crate) farm_req: u32,
@@ -596,7 +596,7 @@ pub(crate) struct FarmState {
     /// text of a refused one: sent, or refused, when it goes.
     pub(crate) news_waiting: Vec<(InstrumentId, String, Option<String>)>,
     /// The API subscriptions a refusal named since the last data
-    /// permission change (ibx#421, the reference's `jextend.F.d`).
+    /// permission change (ibx#421, as the reference keeps them).
     pub(crate) refused_api_subscriptions: Vec<String>,
     /// Generic tick entries of the contracts (ibx#450).
     pub(crate) generic: Vec<GenericEntry>,
@@ -1237,7 +1237,7 @@ impl FarmState {
     }
 
     /// A 35=G generic tick frame (ibx#450): a bit count, then blocks of a
-    /// 32-bit server tag, a length and the payload (`jmdclient.br.a(byte[])`).
+    /// 32-bit server tag, a length and the payload, as the reference reads it.
     /// Each block goes to what its tag is: an exchange map subscription
     /// (ibx#441), a news entry (ibx#458) or a generic tick entry. A tag of
     /// nothing known ends the reading (its block's length is not known).
@@ -1329,8 +1329,8 @@ impl FarmState {
     }
 
     /// A market data status block (ibx#447): one 32-bit value, 1 when the
-    /// contract's data is frozen (`generictick.ad.a(int,a,byte[],pa,int,
-    /// MarketDataType,a)@24-74`; captured 07/10/2026: 1 for an option
+    /// contract's data is frozen (code read of the reference; captured
+    /// 07/10/2026: 1 for an option
     /// before the open, 2 for a stock in the pre-market, which is not
     /// frozen). Frozen: the frozen top of book is asked, the bid/ask and
     /// last pair with mode 2 and without the API source, on a slot of its
@@ -1746,9 +1746,9 @@ impl FarmState {
         // In frozen mode the contract's market data status is asked first,
         // in a message of its own, without the API source (ibx#447): the
         // reference's frozen observer registers before the request does
-        // (`jextend.s.a(dy,ec,Set)@490-500`, `jclient.record.o.a(b_,int)`
-        // -> `o.a0()`). Its sender sometimes puts the entry after the pair,
-        // then with the API source (captured 05/10/2026 and 07/10/2026).
+        // (code read of the reference). Its sender sometimes puts the
+        // entry after the pair, then with the API source (captured
+        // 05/10/2026 and 07/10/2026).
         if realtime && !sub.snapshot && self.md_modes.frozen {
             if let Some(msg) = self.start_status(sub, farm) {
                 sink.send_comp(&borrow_tags(&msg));
@@ -2088,8 +2088,7 @@ impl FarmState {
     /// The API subscription names of a refusal's API access value (6763)
     /// that needs one, kept until the next data permission change
     /// (ibx#421): the items of a `,` or `#` list, or the value itself,
-    /// without "", "0" and "none" (`jextend.F.a(String, Collection,
-    /// String)`, `jextend.F.b(Collection)`).
+    /// without "", "0" and "none" (code read of the reference).
     fn note_refused_api_subscription(&mut self, access: &str) {
         let names: Vec<&str> = if access.contains(',') {
             access.split(',').collect()
@@ -2113,8 +2112,7 @@ impl FarmState {
 
     /// A data permission change (ibx#421): true when a refusal named an
     /// API subscription since the last change (the reference then sends
-    /// 2134 to its API clients, `jextend.F.onPermissionsChanged()`,
-    /// `jextend.dL.K()`); the names are cleared.
+    /// 2134 to its API clients, code read); the names are cleared.
     pub(crate) fn take_refused_api_subscriptions(&mut self) -> bool {
         let any = !self.refused_api_subscriptions.is_empty();
         self.refused_api_subscriptions.clear();
@@ -2122,8 +2120,8 @@ impl FarmState {
     }
 
     /// The desubscription of the reference's market data resubscription
-    /// after a data permission change (ibx#421, `jclient.ij.b(boolean)`,
-    /// `jclient.is.v()`): every streaming top-of-book subscription has its
+    /// after a data permission change (ibx#421, code read of the
+    /// reference): every streaming top-of-book subscription has its
     /// entries cancelled on their farms, and every news entry on the wire
     /// is cancelled; the subscriptions stay, and go out again, on new
     /// ids, with [`Self::unsent_subscriptions`] and
@@ -2990,14 +2988,14 @@ fn api_subscription_needed(access: &str) -> bool {
     access.contains(',') || access.contains('#') || (!access.is_empty() && access.parse::<i64>().is_ok())
 }
 
-/// The reference's overnight venues (`jfix.R.C`): a top of book there
+/// The reference's overnight venues: a top of book there
 /// keeps its LAST entry on the venue (#452).
 pub(crate) fn overnight_venue(exchange: &str) -> bool {
     matches!(exchange, "OVERNIGHT" | "IBEOS")
 }
 
 /// The error of a refused depth book (#452), as the reference builds it
-/// (`jextend.F.a(ApiAccess,dy,DEEP,NONE,false)`): 10089 when an API
+/// (code read of the reference): 10089 when an API
 /// subscription is needed, else 354, in the texts of the reference's
 /// English language file, then the contract and `/DEEP` (`suffix`).
 /// Captured: "...for more details.AAPL NASDAQ.NMS/DEEP" (25/09/2026) and
@@ -3013,7 +3011,7 @@ pub(crate) fn depth_refusal(api_subscription: bool, suffix: &str) -> (i64, Strin
 }
 
 /// The contract as a refusal names it (#452, ibx#444,
-/// `jclient.dy.cU()`, `dy.a(boolean,FormatHint,boolean)`): a stock is its
+/// code read of the reference): a stock is its
 /// symbol, then its primary exchange with the market after a dot (`AAPL
 /// NASDAQ.NMS`), then its local symbol in parentheses and a space when it
 /// differs from the symbol (`7203 TSEJ (7203.T) `, captured 05/10/2026).

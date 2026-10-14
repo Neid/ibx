@@ -238,8 +238,8 @@ pub fn decode_ticks_35p_into(body: &[u8], ticks: &mut Vec<RawTick>) -> bool {
 
         let mut has_more = 1u64;
         // The type of the block's last entry: on a quote tag, a time base
-        // after a close is the close date, not a time (`jmdclient.bl.a(...)`
-        // types 20/21 of a quote block, `@2611-2900`; captured 05/10/2026,
+        // after a close is the close date, not a time (code read of the
+        // reference for types 20/21 of a quote block; captured 05/10/2026,
         // 7203 on delayed data).
         let mut prev_type: Option<u64> = None;
         while has_more == 1 {
@@ -799,9 +799,9 @@ mod tests {
 
     // ibx#446, captured 28/09/2026 (fix-agent-gw.20260928-164130.jsonl,
     // 16:07:16.345): a side with no quote comes as -100 at tick 0.01, a
-    // price of -1, with size 0. The reference keeps it as it is
-    // (`jccp.f.a(jutils.a)` = raw x tick, `jclient.record.ck.a(jccp.h, ar,
-    // MarketDataType)@282-357`) and sends tickPrice -1 with size 0.
+    // price of -1, with size 0. The reference keeps it as it is (raw
+    // count times the tick, code read of the reference) and sends
+    // tickPrice -1 with size 0.
     #[test]
     fn empty_quote_side_is_minus_one_tick_count() {
         let hex = "01480000055004e424000ce42c005800000005501600851634016c00a76aba1e3dac00d80000000550b000";

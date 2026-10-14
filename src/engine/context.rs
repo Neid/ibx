@@ -50,7 +50,7 @@ pub enum StatusChange {
 }
 
 /// What the reference's order book holds for an order beyond the order
-/// itself, for its global cancel (`trader.order.ay.c(List, bs, bE)`): the
+/// itself, for its global cancel (code read of the reference): the
 /// place the order took in the book, its parent and OCA group, and the API
 /// client of an order of another session.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -68,10 +68,10 @@ pub(crate) struct BookEntry {
 
 /// An order that ended and that the reference's book still holds
 /// (ibx#545). A global cancel walks them with the working orders and
-/// answers 161 for each (`trader.order.ay.a(pe, bs, bE, boolean)@176`):
+/// answers 161 for each (code read of the reference):
 /// - a cancelled order stays [`CANCELLED_ORDER_KEPT`] after the report
-///   that ended it, then a timer takes it out (`ay.a(pe, fq, long,
-///   boolean)`, `UISettings.ce()`; paper 10/10/2026: 161 at 3, 6 and 9 s,
+///   that ended it, then a timer takes it out (code read of the reference;
+///   paper 10/10/2026: 161 at 3, 6 and 9 s,
 ///   none at 10.2 s and later), whether its own cancel, its parent's or a
 ///   global cancel ended it;
 /// - an order the server refused (201) stays as long (paper 10/10/2026:
@@ -112,23 +112,23 @@ pub(crate) fn book_table_size(peak: usize) -> usize {
     size
 }
 
-/// The bucket of a permId in the reference's book, a `java.util.HashMap`
-/// keyed by a `Long` (`jclient.jv.l`): the key's hash, spread, masked by
-/// the table size. The book is walked bucket by bucket, each in insertion
-/// order (`jclient.jv.w()`).
+/// The bucket of a permId in the reference's book, a Java hash map keyed
+/// by a 64-bit integer (code read of the reference): the key's hash,
+/// spread, masked by the table size. The book is walked bucket by bucket,
+/// each in insertion order.
 pub(crate) fn book_bucket(perm_id: OrderId, table: usize) -> usize {
     let v = perm_id as u64;
     let h = (v ^ (v >> 32)) as u32;
     ((h ^ (h >> 16)) as usize) & (table - 1)
 }
 
-/// The reference's order id generator (`jclient.jv.b(String)`): the
+/// The reference's order id generator (code read of the reference): the
 /// server's order id of each new order and preview, the id part of its
 /// ClOrdID and the permId the client sees. The API order id goes in 6121
 /// and is not this id. The first id has random high bits and the seconds
-/// of the clock in its low 20 bits (`jfix.cy.a(String)`); then it counts
-/// up, and starts again from a new first id at an id the reference does
-/// not take (0 and the int bounds, `twslaunch.jutils.av.c(int)`).
+/// of the clock in its low 20 bits; then it counts up, and starts again
+/// from a new first id at an id the reference does not take (0 and the
+/// int bounds).
 pub(crate) struct OrderIdGenerator {
     next: i32,
     rng: u64,
@@ -224,7 +224,7 @@ pub struct Context {
     pub(crate) trail_limit_reported: HashMap<OrderId, TrailLimitReported>,
     /// The last stop price (6117) the server reported for an order, the
     /// reference's last known value a trailing replace compares with
-    /// (`jclient.pe.dz().e()`, ibx#263). A replace does not change it.
+    /// (ibx#263). A replace does not change it.
     pub(crate) reported_stop: HashMap<OrderId, crate::types::Price>,
     /// What decides outside-RTH, by conId and order exchange (ibx#465).
     pub(crate) rth_types: HashMap<(i64, String), crate::engine::outside_rth::RthTypes>,
@@ -1433,7 +1433,7 @@ impl Context {
     }
 
     /// A new order goes out under a server id of its own, from the
-    /// reference's order id generator (`jclient.jv.l()`); its API order id
+    /// reference's order id generator; its API order id
     /// stays its key. An order already held, or already given a server id,
     /// keeps its id.
     pub(crate) fn assign_server_id(&mut self, key: OrderId) {
@@ -1445,7 +1445,7 @@ impl Context {
     }
 
     /// The next id of the generator that names no order held: the
-    /// reference skips the ids it gave (`jclient.jv.b(String)@34-59`).
+    /// reference skips the ids it gave (code read of the reference).
     pub(crate) fn new_server_id(&mut self) -> OrderId {
         loop {
             let id = OrderId::from(self.order_ids.next());
@@ -1466,8 +1466,8 @@ impl Context {
     /// Whether this client gets the reports of an order (openOrder,
     /// orderStatus, executions, commissions): those of its own orders, and
     /// as client 0 those of a client that is not connected
-    /// (`jextend.ba.d(dK)`: the order's client, else client 0; no master
-    /// client, `ApiSettings.m_masterClientID` -1 by default). ibx is the
+    /// (code read of the reference: the order's client, else client 0; no
+    /// master client, its master client id -1 by default). ibx is the
     /// only client of its engine.
     pub(crate) fn delivered(&self, order_id: OrderId) -> bool {
         self.api_client_id == 0 || self.owned(order_id)
@@ -1476,7 +1476,7 @@ impl Context {
     /// Whether this client may act on an order by its id: an order of
     /// this client, or one the server reported for this client's id. The
     /// reference finds an API order by (client id, order id)
-    /// (`jclient.jv.b(int, int)`).
+    /// (code read of the reference).
     pub(crate) fn owned(&self, order_id: OrderId) -> bool {
         self.book.get(&order_id).and_then(|e| e.owner).is_none_or(|owner| owner == self.api_client_id)
     }
@@ -2160,8 +2160,8 @@ mod tests {
         ctx.update_order_status(999, OrderStatus::Cancelled);
     }
 
-    // ibx#466: the reference's order id generator (`jfix.cy.a(String)`,
-    // `jclient.jv.b(String)`): a positive first id, then one up per id; at
+    // ibx#466: the reference's order id generator (code read of the
+    // reference): a positive first id, then one up per id; at
     // an id the reference does not take (0, the int bounds) it starts
     // again from a new first id.
     #[test]

@@ -127,7 +127,7 @@ fn replay_hmds(fx: &Fixture) -> HmdsReplayed {
 }
 
 /// The layout of a query left out: the reference writes it with a new
-/// line after each element and tabs (`jxmlable.XmlGenerator`), ibx on one
+/// line after each element and tabs (its XML writer), ibx on one
 /// line.
 fn flat(q: &str) -> String {
     q.replace(['\n', '\t'], "")
@@ -154,7 +154,7 @@ fn bars_and_head_timestamp_as_the_reference() {
 }
 
 // A second head timestamp of the same contract and data: the reference
-// answers from its cache (`hmdscore.store.b`, HIST-BARS 4.3), no query,
+// answers from its cache (HIST-BARS 4.3), no query,
 // here with formatDate 2 (345479400).
 #[test]
 fn second_head_timestamp_from_the_cache() {

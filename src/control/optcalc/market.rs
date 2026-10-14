@@ -4,11 +4,11 @@
 //!
 //! For an option the reference asks, beside the option's top of book, the
 //! top of book of the underlying and its own entries on the volatility
-//! exchange: the model greeks (`generictick.greeks.a`, request code 732)
+//! exchange: the model greeks (request code 732)
 //! and the closing ones (733) of the option, its volatilities (734 the
-//! model's, 735 the mid's, 736 the bid's and the ask's, 737 the last's;
-//! `generictick.ba`, `generictick.am`) and the model parameters of the
-//! underlying (687, `generictick.aa`), with the market data status of both
+//! model's, 735 the mid's, 736 the bid's and the ask's, 737 the last's)
+//! and the model parameters of the
+//! underlying (687), with the market data status of both
 //! (398). From them (recorded on the reference 10.51, paper, 12/10/2026,
 //! regular hours, an AAPL call):
 //!
@@ -81,7 +81,7 @@ fn be_f64(b: &[u8], at: usize) -> Option<f64> {
     b.get(at..at + 8).map(|x| f64::from_be_bytes(x.try_into().unwrap_or([0; 8])))
 }
 
-/// A volatility block (734, 735, 737; `generictick.ba.a(DataInputStream)`):
+/// A volatility block (734, 735, 737):
 /// a count, then the volatility per trading day; valid with a count above 0
 /// and a value not below 0 (and above 0, as the record keeps it). None when
 /// not valid.
@@ -90,7 +90,7 @@ pub fn decode_vol(payload: &[u8]) -> Option<f64> {
     (n > 0 && valid_vol(v)).then_some(v)
 }
 
-/// The bid and ask volatility block (736, `generictick.am`): the bid's, the
+/// The bid and ask volatility block (736): the bid's, the
 /// ask's, then a count; both set when the count is above 0. Each None when
 /// not valid.
 pub fn decode_bid_ask_vols(payload: &[u8]) -> Option<(Option<f64>, Option<f64>)> {
@@ -101,7 +101,7 @@ pub fn decode_bid_ask_vols(payload: &[u8]) -> Option<(Option<f64>, Option<f64>)>
     Some((valid_vol(bid).then_some(bid), valid_vol(ask).then_some(ask)))
 }
 
-/// The server's model greeks of an option (732, `generictick.greeks.a`).
+/// The server's model greeks of an option (732).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ServerGreeks {
     pub price: f64,
@@ -139,7 +139,7 @@ pub fn decode_greeks(payload: &[u8]) -> Option<ServerGreeks> {
 }
 
 /// The reference price of the underlying in a model parameters block
-/// (687, `generictick.aa`): from the zlib stream after its header, four
+/// (687): from the zlib stream after its header, four
 /// ints and two doubles, then the symbol (a 32-bit length and its bytes),
 /// then the price. Recorded: 339.666015625 and 339.662353515625 on AAPL
 /// (12/10/2026), as tick 13 gave them.

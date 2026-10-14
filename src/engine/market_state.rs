@@ -43,8 +43,8 @@ impl std::hash::Hasher for TagHasher {
 /// different steps (a currency pair's bid/ask book and its last price).
 /// `trade` is set for a trade stream tag. `size_tick` is the size
 /// increment of the tag times QTY_SCALE: the reference keeps it per server
-/// tag too (`jmdclient.bB` from the first acknowledgement of the tag,
-/// `jmdclient.p` from the latest trade setup; ibx#446).
+/// tag too (a value from the first acknowledgement of the tag, another
+/// from the latest trade setup; ibx#446).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TagRoute {
     pub instrument: InstrumentId,
@@ -195,8 +195,8 @@ pub struct MarketState {
 }
 
 /// The terms of an option contract its orders carry, as the reference
-/// writes them after the symbol (`jclient.pe.c(StringBuffer)@1195-1235`,
-/// `@1485`): the maturity (tag 200, the definition's own 200), the right
+/// writes them after the symbol (code read of the reference): the
+/// maturity (the definition's own), the right
 /// (201: 1 call, 0 put), the strike (202) and the multiplier (231).
 #[derive(Debug, Clone, PartialEq)]
 pub struct OptionTerms {

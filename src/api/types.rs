@@ -9,7 +9,7 @@ pub const PRICE_SCALE_F: f64 = PRICE_SCALE as f64;
 
 /// An API price (a double) as a fixed-point price: rounded half to even at
 /// the eighth decimal, as the reference's price formatter rounds the
-/// double it writes (`jutils.dO.F`, `#0.00######`, Java's HALF_EVEN). A
+/// double it writes (`#0.00######`, Java's HALF_EVEN). A
 /// cast truncated, so 0.29 went out as 0.28999999 (ibx#263).
 #[inline]
 pub fn price_from_f64(v: f64) -> crate::types::Price {
@@ -415,7 +415,7 @@ impl Default for Order {
 
 impl Order {
     /// Parse the action string to Side: the reference's names, case
-    /// ignored (`jfix.eU.a(String, boolean)`; SSHRT is its short form of
+    /// ignored (code read of the reference; SSHRT is its short form of
     /// SSHORT). An action the reference does not know is refused by it
     /// with 321 (`ClientCore::refusal_before_sending`).
     pub fn side(&self) -> Result<Side, String> {
@@ -1056,7 +1056,7 @@ impl Default for ContractDetails {
 }
 
 /// Minimum size, size increment and suggested size increment of a row
-/// (`jextend.dL.a/b/c(dy, o)`): from the size set of the record's market
+/// (code read of the reference): from the size set of the record's market
 /// rule; for a contract with fractional sizes (a rule increment below 1,
 /// or detail 8193) the fractional increment (the rule's when below 1,
 /// else detail 8175, else 1/10000) is the minimum and the increment.
@@ -1075,7 +1075,7 @@ fn size_fields(def: &crate::control::contracts::ContractDefinition, fund: bool) 
     (min_low, min_inc, min_inc)
 }
 
-/// EV rule text of a row (`feature.evrule.h.b(h)`): `name:value`.
+/// EV rule text of a row, as the reference writes it: `name:value`.
 fn ev_rule_text(raw: &str) -> String {
     if raw.is_empty() {
         return String::new();
@@ -1088,8 +1088,7 @@ fn ev_rule_text(raw: &str) -> String {
 
 impl ContractDetails {
     /// The API row of a definition, as the reference fills it (ibx#436,
-    /// `jextend.protobuf.outgoing.a.a(dy, o, lh.D, String, boolean)` and the
-    /// client's decoding). A bond row without the BONDAPI feature has most
+    /// code read of the reference's sender and the client's decoding). A bond row without the BONDAPI feature has most
     /// bond texts empty and its short description as `desc_append`.
     pub fn from_definition(def: &crate::control::contracts::ContractDefinition) -> Self {
         let bond = def.is_bond();
@@ -1128,7 +1127,7 @@ impl ContractDetails {
         if !def.isin.is_empty() {
             sec_id_list.push(TagValue { tag: "ISIN".into(), value: def.isin.clone() });
         }
-        // The CUSIP when it is not an internal id (`jsecdef.cm.ak()`).
+        // The CUSIP when it is not an internal id, as the reference gives it.
         if !def.cusip.is_empty() && !def.cusip.starts_with("IBCID") {
             sec_id_list.push(TagValue { tag: "CUSIP".into(), value: def.cusip.clone() });
         }
@@ -1138,7 +1137,7 @@ impl ContractDetails {
             contract: c,
             market_name: shown(&def.market_name),
             min_tick: def.min_tick,
-            // Each order type without its flags (`jibtypes.i.aK()`).
+            // Each order type without its flags, as the reference gives them.
             order_types: def.order_types.iter()
                 .map(|t| t.split('/').next().unwrap_or(""))
                 .collect::<Vec<_>>()
@@ -1195,7 +1194,7 @@ impl ContractDetails {
             let b = &def.bond;
             let api = def.bond_api;
             // The request symbol when it reads as a CUSIP, else the local
-            // symbol (`jextend.dK.a(dy, String)`; the CUSIP feature of the
+            // symbol (code read of the reference; the CUSIP feature of the
             // account is not known here).
             d.cusip = if def.lookup_cusip.is_empty() { def.local_symbol.clone() } else { def.lookup_cusip.clone() };
             d.maturity = if api { expiry } else { String::new() };

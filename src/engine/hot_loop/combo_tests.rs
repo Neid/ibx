@@ -476,8 +476,7 @@ fn combos_without_a_non_guaranteed_value() {
 }
 
 // ibx#470: the reference's refusals while it reads and checks a combo
-// order (`jextend.bH.q(ee)`, `jextend.bH.S()`, `jextend.at.a(OrderCreator)`),
-// before anything is sent.
+// order (code read of the reference), before anything is sent.
 #[test]
 fn combo_refusals_before_sending() {
     let mut s = Session::new();

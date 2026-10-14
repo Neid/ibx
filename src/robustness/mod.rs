@@ -2,7 +2,7 @@
 //! D). No gateway reference is needed: no input from the network may
 //! panic, block the hot loop or corrupt the state. Bad input gives an error
 //! value and the session goes on, as the gateway drops a bad block and
-//! continues (`jmdclient.bl.a(...)@5249-5332`, log "Exception top3").
+//! continues (code read of the reference, log "Exception top3").
 //!
 //! - `decoders`: property tests, any bytes into each decoder: no panic,
 //!   allocation bounded by the input.

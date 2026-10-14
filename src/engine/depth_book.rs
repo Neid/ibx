@@ -524,7 +524,7 @@ impl SmartMerge {
 }
 
 /// What the farm said of the components of a SmartDepth request, for the
-/// reference's warning 2152 (#452, `jextend.d0`): once every component
+/// reference's warning 2152 (#452, code read): once every component
 /// book and top of book was accepted or refused, or 10 s after they were
 /// asked, one warning names the exchanges of each group.
 #[derive(Debug, Clone)]
@@ -588,7 +588,7 @@ impl SmartStatus {
         Some(self.text(true)).filter(|t| !t.is_empty())
     }
 
-    /// The reference's text (`jextend.d0.b(boolean)`): each group as
+    /// The reference's text (code read of the reference): each group as
     /// "{label} - Depth: A; B; Top: C; ", the exchanges of a group in the
     /// order the reference's sets give them.
     fn text(&self, timed_out: bool) -> String {

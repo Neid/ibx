@@ -1,9 +1,9 @@
 # Gateway 1040 catalogs
 
-Tables read from the gateway 1040 JAR (its bytecode and its message table), for the layer A table tests
+Tables read from the gateway 1040 program (its code and its message table), for the layer A table tests
 (ibx#485, `tests/gw_catalog.rs`). Every expected value of those tests comes from here, never from the ibx code.
 Read on 24/09/2026 to 03/10/2026; the conditions come from the translation specs of the reference (order submit,
-modify, cancel, combo and local validation), read in the bytecode.
+modify, cancel, combo and local validation), read in its code.
 
 ## Files
 
@@ -22,8 +22,8 @@ modify, cancel, combo and local validation), read in the bytecode.
   modify a filled order.", 329 and 462 with the new value after a period, 413 and 10167 with one final period,
   443 with the parameter after a colon, 2174 with "Warning: " before it, 10148 "cannot". The tests take this text
   only.
-- `wrapping` of 365 and 366 is `as_is`, read again in the bytecode (`jextend.bC.o()@101-112`,
-  `jextend.bs.o()@90-101`: the code is sent itself); the index rule had them wrapped in 322.
+- `wrapping` of 365 and 366 is `as_is`, read again in the code of
+  both cancel requests (the code is sent itself); the index rule had them wrapped in 322.
 - A line break of a message is written `\n` (two characters).
 - `%SHORT_COMPNAME%`, `%SHORT_PRODNAME%` are the gateway's own placeholders (product and company names).
 
@@ -37,7 +37,7 @@ and time codes, which keep their code), `check` (first checks: 321 with the rule
 
 ### order_writers.csv
 
-The writers of the three order messages, flattened in bytecode order (`pos`). A tag listed at two positions is
+The writers of the three order messages, flattened in the order of the gateway's code (`pos`). A tag listed at two positions is
 two branches of the writer, not two emissions. A `block` (the order attributes, the algo parameters, the order
 conditions, the combo legs, the FA allocation...) is one position whose tags come in any order: the attribute
 block is a map keyed by class identity, so its order changes from one gateway run to the next. `when` says when

@@ -59,7 +59,7 @@ pub(crate) struct RthTypes {
     pub pre_open: bool,
     pub ignore_opening: bool,
     /// SMART is a valid exchange of the contract (tag 6046 names it BEST;
-    /// `jclient.dy.dI()`), for the redirect precaution (ibx#486).
+    /// code read of the reference), for the redirect precaution (ibx#486).
     pub smart: bool,
     /// The contract's valid exchanges, BEST named SMART; None when the
     /// definition has no list (ibx#630).
@@ -257,8 +257,7 @@ pub(crate) const ALL_OR_NONE_NOT_ALLOWED: &str = "The 'All or None' order attrib
 /// An order with all-or-none, checked against the order-type list: the
 /// reference refuses it with 10257 when the contract's list for the
 /// order's exchange is known and has no AON key
-/// (`trader.order.proc.aN.a(pe,OcoScope,Q,pe,boolean)@12594-12650`,
-/// `jattrib.attribs.AllOrNone.h(pe)` → `jattrib.Attribute.a(jibtypes.i)`:
+/// (code read of the reference:
 /// no list, or the empty one, allows it). Some(the instrument, None for a
 /// replace, whose instrument is the order's) for a request with
 /// all-or-none set; None otherwise.
@@ -279,16 +278,16 @@ pub(crate) const UNSUPPORTED_ORDER_TYPE: &str = "Unsupported order type for this
 /// A new order of a type checked against the order-type list, and its
 /// instrument: the reference refuses it with 387 when the contract's
 /// order-type list for its exchange lacks the type's key
-/// (`trader.order.proc.aN.a(pe,OcoScope,Q,pe,boolean)@5275-5352`: the key
-/// `jibtypes.s.i()` is not in the list and the type is not in the list's
+/// (code read of the reference: the type's key
+/// is not in the list and the type is not in the list's
 /// order types either). Checked for pegged to market and pegged to
 /// midpoint (ib-agent#192 B8b, ibx#414), and for market and stop with
-/// protection, keys MKTPROT and STPPROT (`jibtypes.L.i()`,
-/// `jibtypes.ae.i()`; ibx#493: neither is in the SPY list on BEST), and
+/// protection, keys MKTPROT and STPPROT (ibx#493: neither is in the SPY
+/// list on BEST), and
 /// for pegged to best and retail price improvement, keys REL2MID and RPI
 /// (ibx#469; captured 28/09/2026 and 07/10/2026: the SPY list on BEST has
 /// no RPI key and the order is refused, the IBM list has it and the order
-/// is sent), and for passive relative, key PASSVREL (`jibtypes.R.i()`; no
+/// is sent), and for passive relative, key PASSVREL (no
 /// recorded list has it, and the reference refused the type on every
 /// route tried).
 pub(crate) fn pegged_type_check(req: &OrderRequest) -> Option<(u32, fn(&RthTypes) -> bool)> {

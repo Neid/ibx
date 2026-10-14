@@ -39,8 +39,8 @@ pub fn use_ssl_setting(value: Option<&str>) -> bool {
     !matches!(value.map(str::trim), Some(v) if v.eq_ignore_ascii_case("false") || v == "0")
 }
 
-/// The reference's setting `[Communication] TestSecureConnect` of its jts.ini
-/// (`jsetting.J.o()`, read once per process by `crypt.d.a(int, boolean)`):
+/// The reference's setting `[Communication] TestSecureConnect` of its
+/// settings file (read once per process, code read of the reference):
 /// on, the key exchange also accepts the test certificates (ibx#276).
 /// `IBX_TEST_SECURE_CONNECT=true` (or `1`) turns it on; off by default, as
 /// the reference's.

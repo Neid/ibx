@@ -27,12 +27,11 @@ pub const QTY_SCALE: i64 = 10_000; // 10^4
 /// does not allow it (ib-agent#192 B5, a REL offset of -0.50 refused with
 /// 110), or not a multiple of `tick` when the tick is known (a
 /// non-positive tick: unknown, not checked). The rule allows a price at or
-/// below 0 only when it says so (`jmarketrules.o.o(double)`: above 0, or
-/// its flag `ak`): a combo's rule does (`jclient.dy.cP()`, captured BAG
+/// below 0 only when it says so (the reference's check: above 0, or the
+/// rule's flag set; code read): a combo's rule does (captured BAG
 /// limit prices of -73.15 and -50.10, ibx#470), a stock's does not.
 /// The reference refuses such an order with 110 and sends nothing
-/// (`jextend.dx.a(dy, boolean)@1886-1961`, `trader.common.b9.a(OrderCreator,
-/// o)`); it does not round it.
+/// (code read of the reference); it does not round it.
 pub fn off_grid(price: Price, tick: i64, signed: bool) -> bool {
     (price < 0 && !signed) || (tick > 0 && price % tick != 0)
 }
@@ -875,9 +874,9 @@ pub enum OrderKind {
 
 impl OrderKind {
     /// The prices of this kind the reference checks against the price grid
-    /// (`trader.common.b9.a(OrderCreator, o)`, ibx#263): the limit price of
+    /// (code read of the reference, ibx#263): the limit price of
     /// every type, and the stop or offset price (the API auxPrice) of the
-    /// types that have one (`jibtypes.s.s()`), for a trailing type its
+    /// types that have one, for a trailing type its
     /// amount, never a percent. Not checked: the trailing stop price, the
     /// TRAIL LIMIT offset, the adjusted prices, the benchmark changes.
     /// Unset prices are 0 and pass.
@@ -2777,7 +2776,7 @@ mod tests {
         assert!(!off_grid(15_012_345_678, 0, false));
         assert!(off_grid(-50_000_000, 0, false));
         assert!(off_grid(-50_000_000, TICK_CENT, false));
-        // A combo's rule allows a price at or below 0 (`jclient.dy.cP()`;
+        // A combo's rule allows a price at or below 0 (code read;
         // captured BAG limits -73.15 and -50.10, ibx#470), on its tick.
         assert!(!off_grid(-7_315_000_000, 0, true));
         assert!(!off_grid(-5_010_000_000, TICK_CENT, true));

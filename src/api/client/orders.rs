@@ -291,8 +291,8 @@ impl EClient {
     }
 
     /// The open orders, each with its status, then the end of the list
-    /// (`jextend.dL.b(pe, int, String, String, String)@41-46`: OPEN_ORDER
-    /// then ORDER_STATUS).
+    /// (the reference sends OPEN_ORDER then ORDER_STATUS for each, code
+    /// read of the reference).
     pub(crate) fn answer_open_orders(&self, wrapper: &mut (impl Wrapper + ?Sized), request: crate::client_core::OpenOrdersRequest) {
         for (order_id, tracked, client_id) in self.core.open_orders_listing(&self.shared, request) {
             let state = crate::api::types::OrderState {

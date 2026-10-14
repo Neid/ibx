@@ -499,10 +499,10 @@ pub fn duration_start(end: i64, duration: &str, machine_zone: &str) -> i64 {
     span.ok().and_then(|sp| at.checked_sub(sp).ok()).map_or(end, |z| z.timestamp().as_second())
 }
 
-/// A time as the reference's `jutils.d1.T()` writes it (ibx#421):
+/// A time as the reference writes it (ibx#421, code read):
 /// `yyyyMMdd HH:mm:ss` and the zone's abbreviation, in `zone`. The
 /// reference writes the short name of its Java zone when it reads back as
-/// the same zone, else the long name (`jutils.d1.aa()`); the zone
+/// the same zone, else the long name; the zone
 /// database abbreviation is taken here, which was not compared with the
 /// reference's names.
 fn calendar_text(secs: i64, zone: &jiff::tz::TimeZone) -> String {
@@ -511,8 +511,8 @@ fn calendar_text(secs: i64, zone: &jiff::tz::TimeZone) -> String {
         .unwrap_or_default()
 }
 
-/// The reference's second years rule of a bar request (ibx#421,
-/// `jextend.bM.n()@1578-1601` → `jextend.bM.b(jutils.d1)`), for a
+/// The reference's second years rule of a bar request (ibx#421, code
+/// read of the reference), for a
 /// contract without includeExpired and a session without NIGHTLY (the
 /// caller's): the limit is now moved back by `max_years` years, then by
 /// one day, on the calendar of the machine zone; a request whose start
@@ -762,9 +762,9 @@ pub fn build_query_xml(req: &HistoricalRequest) -> String {
     // symbol, API exchange and type label (ibx#429; a one-shot query too,
     // ibx#486: `cf76;;AAPL@SMART Trades;;1;;true;;0;;I`).
     let query_id = format!("{};;{};;1;;true;;0;;I", req.query_id, chart_name(&req.symbol, &req.exchange, &req.data_type.label()));
-    // Whole days for daily and longer bars (`hmdscore.xml.Query.a(settings.b,
-    // boolean, boolean)@119-167`, `settings.b.l()` = shorter than a day;
-    // captured: 1 day bars true, 1 hour false, ibx#486).
+    // Whole days for daily and longer bars, not for a bar shorter than a
+    // day (code read of the reference; captured: 1 day bars true, 1 hour
+    // false, ibx#486).
     let whole_days = !req.bar_size.is_intraday();
 
     let (end_time_tag, refresh_tag) = if req.keep_up_to_date {
@@ -1538,7 +1538,7 @@ pub fn realtime_bar_data(what_to_show: &str) -> Option<&'static str> {
 }
 
 /// The id of a real-time bar query, as the reference writes it
-/// (`jextend.eG.a(Query)`, `hmdscore.xml.j.toString()`; captured
+/// (code read of the reference; captured
 /// 05/10/2026): `realTime{n};;{symbol}@{exchange} {data};;1;;true;;0;;U`,
 /// the data named as the reference's bar types (Trades, Midpoint, Bid,
 /// Ask); an empty exchange is SMART.
@@ -1966,7 +1966,7 @@ mod tests {
             "Error validating request.-'bM' : cause - Historical data request for 2 year(s) rejected. Max API Backfill Years=1");
     }
 
-    // ibx#421: the second years rule (`jextend.bM.b(jutils.d1)`): with
+    // ibx#421: the second years rule (code read of the reference): with
     // includeExpired off, a request that starts before now moved back by
     // M years and one day (machine calendar) is refused, with the start
     // and end written in the zone of the end date.

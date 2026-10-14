@@ -24,7 +24,7 @@ use crate::types::{ComboSpec, OrderId, Price, PRICE_SCALE};
 pub(crate) type Fields = Vec<(u32, String)>;
 
 /// Error 200, the reference's answer when a definition of the combo or of
-/// a leg is not found (`jextend.av.a(jsecdef.f, boolean)@24/@132/@395`).
+/// a leg is not found (code read of the reference).
 pub(crate) const NO_DEFINITION: (i64, &str) = (200, "No security definition has been found for the request");
 
 /// One leg of a built combo.
@@ -55,7 +55,7 @@ pub(crate) struct Combo {
     pub currency: String,
     /// The BAG record's trading class (COMB).
     pub trading_class: String,
-    /// The legs in the contract's order: ascending conId (`jcomb.a9.C()`).
+    /// The legs in the contract's order: ascending conId (code read of the reference).
     pub legs: Vec<Leg>,
     /// The combo multiplier the server gave (6040=36), 1 when not asked.
     pub multiplier: f64,
@@ -63,19 +63,19 @@ pub(crate) struct Combo {
 
 impl Combo {
     /// The combo's symbol: the leg symbols, sorted, each once, comma
-    /// separated (`jcomb.a9.aI()`, `jclient.dy.R()`).
+    /// separated, as the reference writes it.
     pub(crate) fn symbol(&self) -> String {
         let symbols: std::collections::BTreeSet<&str> = self.legs.iter().map(|l| l.symbol.as_str()).collect();
         symbols.into_iter().collect::<Vec<_>>().join(",")
     }
 
-    /// The leg category of the combo (`jcomb.b2.g(List)`), tag 6134.
+    /// The leg category of the combo, as the reference reckons it (6134).
     pub(crate) fn category(&self) -> i32 {
         category(self.legs.iter().map(|l| l.sec_type.as_str()))
     }
 
     /// The legs sub-blocks: the leg count, then per leg its conId, ratio
-    /// and side (1 buy, 0 sell) (`jcomb.bk.a(StringBuffer, int, boolean)`).
+    /// and side (1 buy, 0 sell), as the reference writes them.
     fn legs_fields(&self) -> Fields {
         let mut f = vec![(6079, self.legs.len().to_string())];
         for leg in &self.legs {
@@ -86,8 +86,8 @@ impl Combo {
         f
     }
 
-    /// The combo block of a new order, after its conId (`pe.c@1767`,
-    /// `jcomb.bk.a(StringBuffer, boolean)`): the multiplier for the leg
+    /// The combo block of a new order, after its conId, as the reference
+    /// writes it: the multiplier for the leg
     /// categories that carry it, the legs, the combo type (0) and the leg
     /// category. Captured 26/09/2026: `6079=2|6080=756733|6081=1|6082=1|
     /// 6080=320227571|6081=1|6082=0|6175=0|6134=9`.
@@ -106,7 +106,7 @@ impl Combo {
     /// The combo key the reference shows as comboLegsDescrip: per leg in
     /// contract order its conId and its ratio, negative for a selling leg,
     /// the ratios divided by their greatest common divisor
-    /// (`jextend.protobuf.outgoing.a.b(jclient.pe)`). Captured:
+    /// (code read of the reference). Captured:
     /// `756733|1,320227571|-1`.
     pub(crate) fn legs_descrip(&self) -> String {
         let divisor = self.legs.iter().fold(0, |g, l| gcd(g, l.ratio.unsigned_abs())).max(1) as i32;
@@ -156,7 +156,7 @@ impl Combo {
         }).collect()
     }
 
-    /// The combo price of per-leg prices (`jcomb.a9.a(double, o, double...)`):
+    /// The combo price of per-leg prices, as the reference reckons it:
     /// each leg price times its ratio and multiplier, added for a buying
     /// leg and taken off for a selling one, over the combo multiplier.
     /// Captured: 721.35 - 794.50 = -73.15.
@@ -185,7 +185,7 @@ fn format_number(v: f64) -> String {
 }
 
 /// The leg category of a combo by its legs' security types
-/// (`jcomb.b2.g(List)`): 0 for options, 9 for stocks, 1 for options and
+/// (code read of the reference): 0 for options, 9 for stocks, 1 for options and
 /// stocks, 2 futures, 3 stocks and futures, 4 options and futures, 5 all
 /// three, 7 futures options, 8 futures options and futures, 11 options and
 /// cash, 12 with a warrant, 13 with a commodity, 14 with a CFD, -1 else.
@@ -483,7 +483,7 @@ impl ComboBook {
         f
     }
 
-    /// The leg confirmation (`jcomb.fJ.a(StringBuffer)`; captured:
+    /// The leg confirmation (as the reference writes it; captured:
     /// `35=U|6040=7|320=FixComboLegConfirmRequest80|207=BEST|6134=9|6248=1|
     /// 6079=2|...|6175=0`), with the non-guaranteed flag when the order has
     /// it.
@@ -543,7 +543,7 @@ impl ComboBook {
                     Some(def) => {
                         let sec_type = api_sec_type(first_tag(msg, 167).unwrap_or(""));
                         if sec_type == "STK" && !is_smart(&setup.spec.exchange) {
-                            // `jextend.av.a(jsecdef.f, boolean)@219-280`.
+                            // The reference's rule (code read).
                             Err((10125, format!(
                                 "Combos with STK legs are only supported on SMART. Please change the exchange for your BAG contract from '{}' to 'SMART'.",
                                 setup.spec.exchange)))
@@ -663,9 +663,8 @@ impl ComboBook {
     }
 }
 
-/// A definition request by conId (`jfix.bf.a(StringBuffer,
-/// ArConidExchangePair, int, int)`): `35=c|320={id}|321=2|146=1|6008=
-/// {conId}|6004={exchange}`.
+/// A definition request by conId on an exchange, as the reference
+/// writes it.
 fn by_con_id(ts: &str, req_id: &str, con_id: i64, exchange: &str) -> Fields {
     vec![
         (35, "c".to_string()), (52, ts.to_string()), (320, req_id.to_string()), (321, "2".to_string()),
@@ -690,8 +689,8 @@ fn setup_combo(setup: &Setup) -> Combo {
 }
 
 /// The reference's checks of a built combo before the order goes out, in
-/// its order, with the code itself (`jextend.dC.a(jclient.dy)`,
-/// `trader.order.proc.aN`): legs in more than one currency (10000), a BAG
+/// its order and with its error codes (code read of the reference): legs
+/// in more than one currency (10000), a BAG
 /// symbol that is not among the legs' (478), a non-guaranteed smart combo
 /// without exactly two legs (10002).
 pub(crate) fn order_refusal(combo: &Combo, spec: &ComboSpec) -> Option<(i64, String)> {

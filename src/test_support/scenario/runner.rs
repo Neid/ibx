@@ -516,8 +516,8 @@ pub fn session_values(line: &str, now: &HashSet<String>) -> String {
     if f[0] == "historicalDataEnd" && f.len() > 1 && now.contains(f[1]) {
         return format!("historicalDataEnd|{}|{{start}}|{{now}}", f[1]);
     }
-    // The RTVolume time is the time the reference read the block
-    // (`generictick.aB`, `jutils.d1.r()`, ibx#450): a session value.
+    // The RTVolume time is the time the reference read the block (code
+    // read, ibx#450): a session value.
     if f[0] == "tickString" && matches!(f.get(2), Some(&"48") | Some(&"77")) && f.len() == 4 {
         let mut parts: Vec<&str> = f[3].split(';').collect();
         if parts.len() == 6 {

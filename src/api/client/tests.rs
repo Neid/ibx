@@ -897,7 +897,7 @@ fn place_order_unknown_tif_is_rejected() {
 }
 
 // ibx#263: the reference takes all-or-none on any order type; its
-// instruction field carries the type letter, then G (`jclient.pe.gI()`).
+// instruction field carries the type letter, then G (code read).
 // ibx refused it on TRAIL and REL.
 #[test]
 fn place_order_all_or_none_trail_and_rel_are_sent() {
@@ -917,7 +917,7 @@ fn place_order_all_or_none_trail_and_rel_are_sent() {
 }
 
 // ibx#263: a trigger method the reference does not have is refused before
-// sending, 321 with error 146's text (`jextend.bH.S()@2257`).
+// sending, 321 with error 146's text (code read of the reference).
 #[test]
 fn place_order_unknown_trigger_method_is_refused() {
     let (client, rx, shared) = test_client();
@@ -1827,7 +1827,7 @@ fn what_if_on_an_unanswered_order_id_is_a_duplicate() {
     assert!(client.core.what_if_orders.lock().unwrap().is_empty());
 }
 
-// ibx#462 (`trader.order.bQ.a(gi, e3, fq)@263-321`; paper 02/10/2026 phase
+// ibx#462 (code read of the reference; paper 02/10/2026 phase
 // 72): an order-message reply comes before the data reply. Each gives an
 // open_order, the first with no margins; the preview is kept until the
 // data reply, which carries the margins.
@@ -1994,8 +1994,8 @@ fn place_order_invalid_action_is_refused_with_321() {
         "{:?}", w.events);
 }
 
-// ibx#485: order id 0 is refused with 10149, as the reference
-// (`jextend.bH.W()@29-55`); ibx used to take the next id.
+// ibx#485: order id 0 is refused with 10149, as the reference does
+// (code read); ibx used to take the next id.
 #[test]
 fn place_order_with_id_zero_is_refused_with_10149() {
     let (client, rx, shared) = test_client();
@@ -5987,7 +5987,7 @@ fn open_order_requests_wait_for_the_order_replay() {
 // reqAllOpenOrders lists every order of the book in its order (a hash
 // table keyed by permId, walked bucket by bucket; captured 01/10/2026),
 // with the order id and client id the reference shows; reqOpenOrders
-// only this client's (`jextend.cu.b(List)@149`).
+// only this client's (code read of the reference).
 #[test]
 fn open_order_listings_go_in_the_books_order_by_client() {
     use crate::bridge::RichOrderInfo;
@@ -6032,7 +6032,7 @@ fn open_orders_show_the_reported_contract_and_trail_stop() {
 }
 
 // An execution of another client's order is kept for reqExecutions, with
-// no live callback and no commission report (`jextend.ba.a(dq, aQ)`).
+// no live callback and no commission report (code read of the reference).
 #[test]
 fn an_execution_of_another_clients_order_gives_no_callback() {
     let (client, _rx, shared) = test_client();
@@ -6390,10 +6390,9 @@ fn spy_quote() -> crate::types::Quote {
     }
 }
 
-// ibx#446, from the reference's delayed sender (`jextend.dL.b(List, s,
-// int, pa, dy, o, SnapshotPreference, Set)`): a delayed snapshot sends the
-// trade's time as 88, never the exchanges nor a halted tick, and ends once
-// the delayed bid, ask, last, open, close and time came.
+// ibx#446, from the reference's delayed sender (code read): a delayed
+// snapshot sends the trade's time as 88, never the exchanges nor a halted
+// tick, and ends once the delayed bid, ask, last, open, close and time came.
 #[test]
 fn delayed_snapshot_sends_its_own_time_and_no_exchanges() {
     let (client, rx, shared) = test_client();
@@ -7344,7 +7343,7 @@ fn a_symbol_only_request_joins_the_contract_it_finds() {
     ]);
 }
 
-// ibx#444 (`jextend.s.a(dy,ec,Set)@116-188`): a request joining a contract
+// ibx#444 (code read of the reference): a request joining a contract
 // that runs on delayed data gets 10168 when the client has not enabled
 // delayed data, and is not kept; with delayed data enabled it joins on
 // delayed data (marketDataType 3).
@@ -7377,7 +7376,7 @@ fn joining_a_delayed_subscription() {
     assert_eq!(seen, ["subscribe:265598"]);
 }
 
-// ibx#447 (`jextend.v.a(boolean)`, captured 07/10/2026): when the
+// ibx#447 (code read of the reference, captured 07/10/2026): when the
 // contract's data is frozen its requests go on with the frozen slot,
 // marketDataType 2; a request that joins then is on the frozen slot too;
 // back on real-time data they return to the real-time slot, marketDataType
@@ -7413,7 +7412,7 @@ fn a_frozen_contract_moves_its_requests_to_the_frozen_slot_and_back() {
     assert_eq!(seen, ["subscribe:265598", "unsubscribe:9", "unsubscribe:5"]);
 }
 
-// ibx#444 (`jextend.s.b(boolean,boolean)`, `jextend.ba.a(...)@280`): when
+// ibx#444 (code read of the reference): when
 // the top of book is rejected, a request with the news tick keeps it, with
 // 2117; one without ends with 354, and the others' subscription stays.
 #[test]
@@ -7466,7 +7465,7 @@ fn an_invalid_generic_tick_list_is_refused() {
 // sent); a snapshot with an invalid list is not refused by this check.
 // ibx#444: `mdoff` (any case, anywhere in the list) turns the top of book
 // off for its request: the reference's sender skips the top pass of that
-// subscriber (`jextend.dL.a(s,int,pa,Map,Set)@136-220`). Another request
+// subscriber (code read). Another request
 // of the same contract still gets it.
 #[test]
 fn mdoff_request_gets_no_top_of_book() {
@@ -7522,7 +7521,7 @@ fn line_engine(rx: crossbeam_channel::Receiver<ControlCommand>) -> std::thread::
     })
 }
 
-// ibx#444 (`jextend.s.a(dy,ec,Set)@104-191`): after a 354 with delayed data
+// ibx#444 (code read of the reference): after a 354 with delayed data
 // available, the contract's record keeps that state. A new request of a
 // client without delayed data gets 10168 at once, nothing sent; with
 // delayed data enabled it goes delayed at once: marketDataType 3, no
@@ -7560,7 +7559,7 @@ fn a_contract_known_delayed_available_gives_10168_or_goes_delayed() {
     assert_eq!(seen, ["subscribe:265598:0", "unsubscribe:10", "subscribe:265598:1", "unsubscribe:11", "subscribe:265598:0"]);
 }
 
-// ibx#444 (`jclient.k_.a(boolean)`, `jextend.a4.a(jclient.record.dU)@136`):
+// ibx#444 (code read of the reference):
 // with every API line taken, a stream on a new contract gets 101; a
 // snapshot and a stream joining a running contract take no line. Observed
 // 12/10/2026 (ibx#501): the refused request ends (its cancel gets 300) and

@@ -113,7 +113,7 @@ fn send_orders(
         // the server (201 "Can't find parent order", paper 01/10/2026).
         // The cancel of an order that never left (it waits, or the
         // reference kept it pending after a refusal): ApiCancelled,
-        // nothing on the wire (`jextend.bw.a(pe)@162`, `jextend.dK.H(int)`).
+        // nothing on the wire (code read of the reference).
         if let OrderRequest::Cancel { order_id } = order_req && api_cancel(context, shared, order_id) {
             continue;
         }
@@ -394,7 +394,7 @@ fn send_orders(
         // replacing the snapping of ibx#216). The tick comes from the
         // market-data subscription ack; without one only a negative price
         // is refused. A combo (BAG) is checked with its own rule, which
-        // allows a price at or below 0 (`jclient.dy.cP()`); its tick is the
+        // allows a price at or below 0 (code read of the reference); its tick is the
         // combo's, which ibx does not have, so only the sign rule applies
         // and a combo passes (ibx#470).
         let combo = order_req.combo().is_some()
@@ -1800,7 +1800,7 @@ fn cancel_fields(context: &mut Context, account_id: &str, order_id: crate::types
     let new_ver = prev_ver + 1;
     context.modify_versions.insert(order_id, new_ver);
     // The next version of the order's ClOrdID, under the server's id of
-    // the order (`jfix.co.bp()@44`): an order of another session is kept
+    // the order (as the reference builds it): an order of another session is kept
     // under its API order id, and its version is the one the server gave.
     let server_id = context.server_id(order_id);
     let clord = format!("{}.{}", server_id, new_ver);
@@ -1833,19 +1833,18 @@ fn cancel_fields(context: &mut Context, account_id: &str, order_id: crate::types
     fields
 }
 
-/// The reference's global cancel (API message 58, `jextend.bp.o()`):
+/// The reference's global cancel (API message 58, code read of the
+/// reference):
 /// - the orders of this client that wait to be sent end as ApiCancelled,
-///   nothing on the wire (`bp.d()`: the client's pending orders; captured
+///   nothing on the wire (the client's pending orders; captured
 ///   25/09/2026: orderStatus ApiCancelled, permId 0, all remaining); the
 ///   requests about them go with them;
-/// - every order of the book, whatever its client or session
-///   (`jextend.dK.a(String, String)@9`: `gi.b1().w()`, no client filter),
-///   gets a cancel tagged ALL (`@66`), in the book's order with the orders
-///   that have a parent last (`trader.order.bh`); only the first order of
-///   an OCA group, and not a child whose parent goes in this cancel
-///   (`trader.order.ay.c(List, bs, bE)@96-183`);
+/// - every order of the book, whatever its client or session (no client
+///   filter), gets a cancel tagged ALL, in the book's order with the orders
+///   that have a parent last; only the first order of
+///   an OCA group, and not a child whose parent goes in this cancel;
 /// - an order with a cancel or a replace pending is not sent: 161 to its
-///   client (`ay.a(pe, bs, bE, boolean)@176`); so is an ended order the
+///   client; so is an ended order the
 ///   book still holds ([`crate::engine::context::EndedOrder`], ibx#545).
 ///
 /// Captured 01/10/2026 (17:11:41, paper): 8 orders of earlier sessions,
@@ -1906,7 +1905,7 @@ fn global_cancel(
         }
         // An ended order cannot be cancelled: 161 to its client, after
         // the callbacks of the orders this cancel ended. It does not
-        // stand for its children (`ay.c@141`, `pe.i4()`): paper
+        // stand for its children (code read of the reference): paper
         // 09/10/2026, a bracket cancelled 5 s before gave 161 for its
         // parent and for the first of its two children.
         if ended {
@@ -1943,7 +1942,7 @@ fn global_cancel(
 
 /// The orders of a new-order request end as ApiCancelled: orderStatus
 /// with permId 0, nothing filled and the whole quantity remaining, the
-/// prices unset (`jextend.dL.a(Collection, String)`; captured 25/09/2026
+/// prices unset (as the reference writes it; captured 25/09/2026
 /// and in i105_combo_directed of 26/09/2026). Their ids.
 fn api_cancelled(context: &Context, shared: &Arc<SharedState>, req: &OrderRequest) -> Vec<OrderId> {
     let Some(qty) = req.new_order_qty() else { return Vec::new() };
@@ -2009,7 +2008,7 @@ fn cancel_refusal(context: &Context, order_id: crate::types::OrderId) -> Option<
     let state = match context.order(order_id) {
         // An order the server reported for another client: the reference
         // finds an API order by this client's id and the order id
-        // (`jextend.bw.o()@46`, `jclient.jv.b(int, int)`), so not this one
+        // (code read of the reference), so not this one
         // (ib-agent#151: an order of another client gets 10147).
         Some(_) if !context.owned(order_id) => return not_found(),
         Some(o) if o.status == OrderStatus::PendingCancel => OrderStatus::PendingCancel,
@@ -2243,8 +2242,8 @@ fn send_new_order(
         context.rth_types.get(&(con_id, destination))
     }).flatten();
     let cash_qty = (sec_type == "CASH").then(|| field(fields, 38).map(|q| format!("{q}.00"))).flatten();
-    // An option's terms after its symbol, and its multiplier
-    // (`jclient.pe.c(StringBuffer)@1195-1235`, `@1485`).
+    // An option's terms after its symbol, and its multiplier, where the
+    // reference writes them (code read of the reference).
     let option = context.market.option_terms(instrument).map(|t| (
         t.maturity.clone(),
         if t.call { "1" } else { "0" },
@@ -2274,7 +2273,7 @@ fn send_new_order(
     // carry percent (ibx#263).
     if !out.iter().any(|&(t, _)| t == 6268) && trailing_type(&out) { out.push((6268, "0")); }
     // The stop price in 6117: the stop trigger of every non-trailing stop
-    // type (`jclient.pe.j@1993-2152`, the adjustable stop included,
+    // type (code read of the reference, the adjustable stop included,
     // captured ib-agent#192 B11), the touched trigger of MIT and LIT
     // (ibx#263).
     let stop_trigger = (touched_type(&out) || matches!(field(&out, 40), Some("3" | "4" | "SP")))
@@ -2316,8 +2315,8 @@ fn send_new_order(
 
 /// Whether a new order of this frame's type writes the trigger method
 /// (6115), as the reference (ibx#263): it writes it on a new order whose
-/// type is a stop or touched type (`jattrib.attribs.TriggerMethod.b`, true
-/// for `jibtypes.s.aw()`): STP, STP LMT, STP PRT, TRAIL, TRAIL LIMIT, MIT,
+/// type is a stop or touched type (code read of the reference): STP,
+/// STP LMT, STP PRT, TRAIL, TRAIL LIMIT, MIT,
 /// LIT, TRAIL MIT and TRAIL LIT (captured on all but STP PRT), never on a
 /// replace. A trailing stop is the pegged type with the trailing letter.
 fn has_trigger_method(fields: &[(u32, &str)]) -> bool {
@@ -2325,8 +2324,8 @@ fn has_trigger_method(fields: &[(u32, &str)]) -> bool {
 }
 
 /// Whether the frame's type is a trailing one, which writes the trail
-/// unit (6268) on a new order and a replace (`jattrib.attribs.TrailingUnit.b`,
-/// true for `jibtypes.s.as()`): TRAIL, TRAIL LIMIT, TRAIL MIT, TRAIL LIT
+/// unit (6268) on a new order and a replace (code read of the reference):
+/// TRAIL, TRAIL LIMIT, TRAIL MIT, TRAIL LIT
 /// (ibx#263; captured with 6268 on all four, new orders and replaces).
 fn trailing_type(fields: &[(u32, &str)]) -> bool {
     match field(fields, 40) {
@@ -2338,8 +2337,7 @@ fn trailing_type(fields: &[(u32, &str)]) -> bool {
 
 /// Whether the frame's type is a touched one, whose stop price the
 /// reference keeps as the touched trigger and writes in 6117 among the
-/// order attributes (`jclient.pe.D(double)` for `jibtypes.s.v()`,
-/// `jattrib.attribs.TouchedTrigger.b`): MIT and LIT (ibx#263, captured in
+/// order attributes (code read of the reference): MIT and LIT (ibx#263, captured in
 /// ib-agent#199 on new orders and replaces).
 fn touched_type(fields: &[(u32, &str)]) -> bool {
     matches!(field(fields, 40), Some("J" | "LT"))
@@ -2433,7 +2431,7 @@ pub(crate) fn reference_rank(tag: u32) -> u16 {
         168 => 86,
         9813 => 87,
         6102 => 88,
-        // Cash quantity (`jattrib.attribs.holder.CashQuantityValue`).
+        // Cash quantity.
         152 => 89,
         6941 => 90,
         6938 => 91,
@@ -2615,8 +2613,8 @@ fn modify_fields(
     let mut stop_trigger: Option<String> = None; // restated for STP / STP LMT
     // A trailing type restates its stop price only when it differs from the
     // last one the server reported, and not before any report
-    // (`jclient.pe.j@2041-2152`: `dz()` null or `dz().e()` equal, not
-    // written; captured ib-agent#195 S2 with 6117, ib-agent#192 A3b without).
+    // (code read of the reference: no reported stop, or an equal one, is
+    // not written; captured ib-agent#195 S2 with 6117, ib-agent#192 A3b without).
     let trailing_stop = |stop: crate::types::Price| (stop > 0 && reported_stop.is_some_and(|r| r != stop)).then(|| p(stop));
     let mut touched_trigger: Option<String> = None; // MIT / LIT, an attribute
     let mut trail_offset: Option<String> = None; // TRAIL LIMIT limit offset
@@ -2763,8 +2761,8 @@ fn modify_fields(
             "PB"
         }
     };
-    // The instruction field as on the new order (`jclient.pe.gI()`, also
-    // written by the replace writer `jclient.pe.d`): the type letter, G for
+    // The instruction field as on the new order (the reference's replace
+    // writes it the same way): the type letter, G for
     // all-or-none, e for an algo (ibx#263).
     let inst = exec_inst(&kind, attrs.all_or_none, attrs.algo.is_some());
     if !inst.is_empty() { after_type.push((18, inst)); }
@@ -2810,8 +2808,8 @@ fn modify_fields(
     if attrs.seek_price_improvement { f.push((6557, "1".to_string())); }
     // The price management flag, last of the attributes (ibx#492).
     if price_mgmt && !crate::engine::price_mgmt::excluded_kind(&kind) { f.push((8339, "1".to_string())); }
-    // The algo block, restated as on the new order (`jclient.pe.d` writes
-    // it through the same `jclient.pe.j`; ibx#263).
+    // The algo block, restated as on the new order (the reference's replace
+    // writes it the same way; ibx#263).
     if let Some(algo) = &attrs.algo { f.extend(algo_fields(algo)); }
     f.push((38, format_uint(qty as u64).to_string()));
     f.push((54, side.to_string()));
@@ -3457,9 +3455,9 @@ pub(crate) fn order_contract_reply(context: &mut Context, shared: &SharedState, 
     true
 }
 
-/// Text of the redirect precaution (`trader.order.warning.x.u()`): 10311
+/// Text of the redirect precaution, as the reference writes it: 10311
 /// "Routing_warning", 10329 "Routing_warning_for_overnight" for OVERNIGHT
-/// and IBEOS (`jfix.R.C`), then the API precaution line
+/// and IBEOS (the reference's overnight venues), then the API precaution line
 /// (`API_Precautionary_Settings_Specified`), as captured on 28/09/2026.
 pub(crate) fn redirect_warning(exchange: &str) -> (i64, String) {
     const API_PRECAUTION: &str = "Restriction is specified in Precautionary Settings of Global Configuration/API.";
@@ -3471,14 +3469,13 @@ pub(crate) fn redirect_warning(exchange: &str) -> (i64, String) {
 }
 
 /// The reference's redirect precaution for API orders
-/// (`trader.order.confirm.OrderChecker$6.check(pe)`, ibx#486): a stock
+/// (code read of the reference, ibx#486): a stock
 /// order whose exchange is set and is not SMART, IBDESK or ZERO, on a
-/// contract that trades on SMART (`jclient.dy.dI()`), with the setting
+/// contract that trades on SMART, with the setting
 /// "Bypass Redirect Order warning for Stock API Orders" off (the default;
 /// `IBX_BYPASS_REDIRECT_ORDER_WARNING`): 10311 (10329 for OVERNIGHT and
 /// IBEOS), then the order is discarded: orderStatus Cancelled with nothing
-/// filled, then 201 "Order was discarded." (`jextend.dK.b(pe, String)`;
-/// captured 28/09/2026 on OVERNIGHT, 25/09/2026 on ISLAND, named NASDAQ).
+/// filled, then 201 "Order was discarded." (captured 28/09/2026 on OVERNIGHT, 25/09/2026 on ISLAND, named NASDAQ).
 /// Its permId is the id it would have gone out under. `Some(false)` while
 /// the contract's definition on that exchange is asked, `Some(true)` when
 /// discarded, `None` to go on.
@@ -3540,7 +3537,7 @@ fn redirect_precaution(
 /// counted as SMART) is refused with 464 "Invalid exchange" and nothing is
 /// sent; kept, not working, its cancel ends it with Cancelled, 202 and 161
 /// (ibx#630; the reference 10.51 and 10.40 check it after the redirect and
-/// route-to-BBO precautions, `trader.order.proc.aN.a(...)@3544`; paper
+/// route-to-BBO precautions, code read; paper
 /// 12/10 and 13/10/2026: AAPL to ISLAND refused, to NASDAQ sent). Not
 /// checked: the broker's ATS venue, AVGCOST and IBDESK, as the reference,
 /// and a definition without a list. `Some(false)` while the definition is
@@ -4129,8 +4126,7 @@ fn send_order_ex(
             fields.push((99, o.clone()));
             fields.push((211, o));
         }
-        // Passive relative, from the reference's code (`jibtypes.R`,
-        // `jclient.pe.b(jibtypes.s,boolean)@41`, `pe.o@213-332`; not
+        // Passive relative, from a code read of the reference (not
         // captured): its own order type, the limit price when set, the
         // offset in both fields like the retail price improvement type,
         // no instruction.
@@ -4191,7 +4187,7 @@ fn send_order_ex(
     send_new_order(conn, context, instrument, &refs)
 }
 
-/// Tag 18 as the reference builds it (`jclient.pe.gI()`): the letter of a
+/// The instruction field (18) as the reference builds it: the letter of a
 /// pegged or trailing type (a trailing stop, R relative, P pegged to
 /// market, M pegged to midpoint), G for all-or-none, e for an algo order
 /// whatever its type (ib-agent#192 B9, ibx#405, ibx#263), R for pegged to
@@ -4212,8 +4208,8 @@ fn exec_inst(kind: &crate::types::OrderKind, all_or_none: bool, algo: bool) -> S
     parts.join(" ")
 }
 
-/// The algo block, as the reference writes it after the order attributes
-/// (`jattrib.algo.AlgoAttributeMap.a`): the strategy (847, after 849 when
+/// The algo block, as the reference writes it after the order attributes:
+/// the strategy (847, after 849 when
 /// the algo has a maximum percentage of volume), then the parameter count
 /// and its pairs.
 fn algo_fields(algo: &crate::types::OrderAlgo) -> Fields {
@@ -5652,7 +5648,7 @@ mod tests {
 
     // The global cancel reaches every order of the book: this session's,
     // and those of other clients and earlier sessions, on any contract
-    // (`jextend.dK.a(String, String)@9`, no client filter). Paper
+    // (no client filter, code read of the reference). Paper
     // 04/10/2026: orders of earlier sessions got nothing.
     #[test]
     fn global_cancel_reaches_every_order_of_the_book() {
@@ -5699,7 +5695,7 @@ mod tests {
     }
 
     // Only the first order of an OCA group gets the cancel; the server
-    // cancels the group (`ay.c@96-131`).
+    // cancels the group (code read of the reference).
     #[test]
     fn global_cancel_sends_one_order_of_an_oca_group() {
         let (frames, _, _) = global_cancel_of(|ctx| {
@@ -5713,7 +5709,7 @@ mod tests {
     }
 
     // A child whose parent goes in the same cancel is left to the server
-    // (`ay.c@160-183`); the parents go first (`trader.order.bh`). A child
+    // (code read of the reference); the parents go first. A child
     // whose parent is not in the book gets its own cancel.
     #[test]
     fn global_cancel_leaves_a_child_to_its_parent() {
@@ -5751,7 +5747,7 @@ mod tests {
     }
 
     // The cancel of an order that waits to be sent: ApiCancelled, nothing
-    // on the wire, its other requests dropped (`jextend.bw.a(pe)@162`). A
+    // on the wire, its other requests dropped (code read of the reference). A
     // combo refused with 200 stays pending: its cancel and a global cancel
     // end it as ApiCancelled too (i105_combo_directed, 26/09/2026).
     #[test]
@@ -5787,7 +5783,7 @@ mod tests {
     }
 
     // An order whose cancel is pending is not sent again: 161 at its
-    // client, with the order's permId (`ay.a(pe, bs, bE, boolean)@176`;
+    // client, with the order's permId (code read of the reference;
     // the text as captured 01/10/2026 in pd-orders). An order of another
     // client gives nothing to this one.
     #[test]
@@ -5809,7 +5805,7 @@ mod tests {
     }
 
     // The orders of this client that wait to be sent end as ApiCancelled,
-    // nothing on the wire (`jextend.bp.d()`; captured 25/09/2026: permId
+    // nothing on the wire (code read of the reference; captured 25/09/2026: permId
     // 0, the whole quantity remaining); the requests about them go too.
     #[test]
     fn global_cancel_ends_the_orders_that_wait() {
@@ -5956,7 +5952,7 @@ mod tests {
 
     // An order of another session kept under its API order id: its
     // cancel goes under the server's id, at the version the server gave
-    // (`jfix.co.bp()@44`).
+    // (code read of the reference).
     #[test]
     fn a_replayed_order_is_cancelled_under_its_server_id() {
         let tags = wire_tags_with(
@@ -5969,7 +5965,7 @@ mod tests {
     }
 
     // The reference finds an API order by the client's id and the order
-    // id (`jextend.bw.o()@46`): an order of another client is not found
+    // id (code read): an order of another client is not found
     // (10147, ib-agent#151) and nothing is sent.
     #[test]
     fn cancel_of_an_order_of_another_client_is_refused_with_10147() {
@@ -7521,7 +7517,8 @@ mod tests {
     }
 
     // ibx#263: every algo keeps the order's own type, its fields and its
-    // instruction letter, the algo letter after it (`jclient.pe.gI()`).
+    // instruction letter, the algo letter after it (as the reference
+    // builds the instruction field).
     #[test]
     fn algo_orders_keep_their_order_type() {
         use crate::types::{AdaptivePriority, OrderAlgo, OrderAttrs, OrderKind as K};
@@ -7631,8 +7628,8 @@ mod tests {
     }
 
     // ibx#263: the trigger method goes on a new order of the stop and
-    // touched types only (`jattrib.attribs.TriggerMethod.b`, true for
-    // `jibtypes.s.aw()`), the caller's value or the default 0; never on the
+    // touched types only (code read of the reference), the caller's value
+    // or the default 0; never on the
     // other types, whatever the caller set. Captured with 6115=0: STP,
     // STP LMT, TRAIL, TRAIL LIMIT, MIT, LIT (and an Adaptive STP and a
     // bracket's stop child); without: LMT, MKT, REL, PEG MID, PEG BENCH,
@@ -7686,8 +7683,8 @@ mod tests {
 
     // ibx#263: a replace writes no trigger method (the reference writes it
     // on a new order only; no captured 35=G has it) and restates the
-    // instruction field as the new order does (`jclient.pe.gI()` in the
-    // replace writer `jclient.pe.d`): the type letter, then G for
+    // instruction field as the new order does (the reference's replace
+    // builds it the same way): the type letter, then G for
     // all-or-none, after the trail field.
     #[test]
     fn replace_restates_all_or_none_and_no_trigger_method() {
@@ -7819,8 +7816,8 @@ mod tests {
 
     // ibx#263: a replace of an algo order restates the algo letter in 18
     // and the algo block after the attributes, as the new order: the
-    // reference's replace writer `jclient.pe.d` writes them through the
-    // same `jclient.pe.j` and `jclient.pe.gI()`. Not captured.
+    // reference's replace writes them the same way as its new order
+    // (code read of the reference). Not captured.
     #[test]
     fn replace_of_an_algo_order_restates_the_algo() {
         use crate::types::{AdaptivePriority, OrderAlgo, OrderAttrs, OrderKind as K};
@@ -7951,7 +7948,7 @@ mod tests {
     }
 
     // ibx#263: the reference writes every price of its order messages with
-    // one formatter (`jutils.dO.F`, `#0.00######`, HALF_EVEN, US symbols):
+    // one formatter (`#0.00######`, HALF_EVEN, US symbols):
     // `0.50`, `450.00`, `-0.10`. Every gateway new order and replace on disk
     // (tests/fixtures/gw1040/order_frames, from the ib-agent captures of
     // 23/09 to 02/10/2026) is read back into its API order, encoded by ibx,
@@ -8024,7 +8021,7 @@ mod tests {
     // TRAIL LIMIT replace restates the stop price when the server last
     // reported another one (it had moved the stop to 752.01, the order
     // still had 751.89), and not when it is the same or before any report
-    // (`jclient.pe.j@2041-2152`, `pe.dz().e()`).
+    // (code read of the reference).
     #[test]
     fn trailing_replace_restates_the_stop_price_only_when_the_server_moved_it() {
         use crate::types::{OrderAttrs, OrderKind as K};
@@ -8063,7 +8060,7 @@ mod tests {
     }
 
     // ibx#263: the cash quantity is the reference's attribute 152
-    // (`jattrib.attribs.holder.CashQuantityValue`, a double attribute
+    // (a double attribute
     // written with the price formatter); 5920 is only its column id.
     #[test]
     fn cash_quantity_goes_out_in_152() {
@@ -8077,7 +8074,7 @@ mod tests {
     }
 
     // ibx#263: a price off the contract's grid is refused with 110 and
-    // nothing is sent, as the reference (`jextend.dx.a(dy, boolean)@1961`,
+    // nothing is sent, as the reference (code read of the reference,
     // ib-agent#192 B5); ibx snapped it to the tick (ibx#216).
     #[test]
     fn a_price_off_the_grid_is_refused_with_110() {
@@ -8103,7 +8100,7 @@ mod tests {
 
     // ibx#466: a new order goes out under a server id of the reference's
     // order id generator, as the reference's ClOrdID is its permId
-    // (`jfix.cx.d()`, `jclient.jv.l()`), with its API order id in 6121; two
+    // (code read of the reference), with its API order id in 6121; two
     // orders get two ids. Its replace and its cancel go under the same
     // server id.
     #[test]
@@ -8478,7 +8475,7 @@ mod tests {
 
     // An option order carries the option's terms after its symbol and its
     // multiplier, as the reference's new-order writer
-    // (`jclient.pe.c(StringBuffer)@1195-1485`): maturity 200, right 201
+    // (code read of the reference): maturity 200, right 201
     // (1 call), strike 202, 167=OPT, 231. Without them the server refused
     // the option's conId sent as a stock (201 "Contract does not match
     // supplied contract parameters", paper 03/10/2026).

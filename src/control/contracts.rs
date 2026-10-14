@@ -211,8 +211,8 @@ pub struct ContractDefinition {
     pub ineligibility: Vec<(String, String)>,
     pub fund: FundFields,
     pub bond: BondFields,
-    /// Last trade date and time of the API row, from the schedule
-    /// (`jclient.dy.c(lh.D)`); None when no schedule was merged.
+    /// Last trade date and time of the API row, from the schedule, as the
+    /// reference gives them; None when no schedule was merged.
     pub schedule_expiry: Option<(String, String)>,
     /// Logon features BONDAPI and EVAPI when the row was made.
     pub bond_api: bool,
@@ -324,7 +324,7 @@ impl Default for ContractDefinition {
     }
 }
 
-/// A lookup symbol read as a CUSIP (`jfix.bh.b(String)`): 9 characters,
+/// A lookup symbol read as a CUSIP (code read of the reference): 9 characters,
 /// or the internal id prefix `IBCID` followed by more.
 pub fn reads_as_cusip(symbol: &str) -> bool {
     let s = symbol.trim();
@@ -332,7 +332,7 @@ pub fn reads_as_cusip(symbol: &str) -> bool {
 }
 
 impl ContractDefinition {
-    /// API security type, as the reference names it (`jfix.eh.toString()`):
+    /// API security type, as the reference names it:
     /// `CONTFUT` for a continuous futures record, the stock code `CS` as
     /// `STK`, any other type as received (ibx#436).
     pub fn api_sec_type(&self) -> String {
@@ -352,7 +352,7 @@ impl ContractDefinition {
         }
     }
 
-    /// A bond, bill or fixed income record (`jfix.eh.N()`): its rows are
+    /// A bond, bill or fixed income record (code read of the reference): its rows are
     /// bond contract details.
     pub fn is_bond(&self) -> bool {
         self.sec_type == SecurityType::Bond || matches!(self.wire_sec_type.as_str(), "BOND" | "BILL" | "FIXED")
@@ -535,8 +535,9 @@ pub fn parse_secdef_records(data: &[u8]) -> Option<Vec<ContractDefinition>> {
                 apply_secdef_fields(&mut def, &mut keys, block);
             }
         }
-        // Last trade date: 541, else 200; contract month: 200, else the
-        // month of 541 (`jclient.dy.aV()`, `dy.aU()`).
+        // Last trade date: the record's expiry, else its contract month;
+        // contract month: the record's month, else the month of its expiry
+        // (code read of the reference).
         def.last_trade_date = if keys.expiry.is_empty() { keys.month } else { keys.expiry }.to_string();
         def.contract_month = if keys.month.is_empty() {
             keys.expiry.get(..6).unwrap_or(keys.expiry).to_string()
@@ -544,7 +545,7 @@ pub fn parse_secdef_records(data: &[u8]) -> Option<Vec<ContractDefinition>> {
             keys.month.to_string()
         };
         // The primary exchange carries its suffix when that full name is a
-        // valid exchange of the contract (`jclient.dy.y()`).
+        // valid exchange of the contract (code read of the reference).
         if !def.primary_suffix.is_empty() {
             let full = format!("{}.{}", def.primary_exchange, def.primary_suffix);
             if def.valid_exchanges.contains(&full) {
@@ -562,7 +563,7 @@ pub fn parse_secdef_records(data: &[u8]) -> Option<Vec<ContractDefinition>> {
             def.order_types = list.split(',').map(|s| s.to_string()).collect();
         }
         // Industry, category and subcategory: the industry text of the
-        // record's key split on '|' (`jsecdef.l`, `jclient.b5.m/n/o()`).
+        // record's key split on '|' (code read of the reference).
         if !keys.industry.is_empty()
             && let Some((_, text)) = industries.iter().find(|(key, _)| *key == keys.industry)
         {
@@ -605,8 +606,8 @@ pub fn parse_secdef_records(data: &[u8]) -> Option<Vec<ContractDefinition>> {
     }
     // Records of one underlying share its name, symbol and type: a
     // detail block that leaves them out gets those of another record of
-    // the same underlying (the underlying's data, `jclient.dy.bt()`,
-    // `dy.ba()`, `dy.aB()`).
+    // the same underlying (the reference reads them from the underlying's
+    // data).
     for i in 0..defs.len() {
         let under = defs[i].under_con_id;
         if under <= 0 {
@@ -639,12 +640,12 @@ struct RecordKeys<'a> {
 }
 
 /// A flag sent as text: true when its first character is `T` or `Y`
-/// (`jutils.dN.j(String)`).
+/// (code read of the reference).
 fn text_flag(v: &str) -> bool {
     matches!(v.as_bytes().first(), Some(b'T' | b'Y'))
 }
 
-/// A flag sent as a number: true when not 0 (`jfix.cN.e()`).
+/// A flag sent as a number: true when not 0 (code read of the reference).
 fn int_flag(v: &str) -> bool {
     v.trim().parse::<i64>().is_ok_and(|n| n != 0)
 }
@@ -691,7 +692,7 @@ fn apply_secdef_fields<'a>(def: &mut ContractDefinition, keys: &mut RecordKeys<'
             TAG_LAST_TRADE_DATE => keys.month = v,
             6614 => def.real_expiration_date = v.to_string(),
             TAG_STRIKE => def.strike = v.parse().unwrap_or(0.0),
-            // The wire right is 1 for a call and 0 for a put (`jfix.eg`);
+            // The wire right is 1 for a call and 0 for a put (code read);
             // the letters are accepted too.
             TAG_RIGHT => {
                 def.right = match v {
@@ -701,7 +702,7 @@ fn apply_secdef_fields<'a>(def: &mut ContractDefinition, keys: &mut RecordKeys<'
                 };
             }
             // The API stock type is the text of 8273; 8077 fills an enum
-            // the API does not send (`jsecdef.i.a@5330`).
+            // the API does not send (code read of the reference).
             TAG_IB_STOCK_TYPE_TEXT => def.stock_type = v.to_string(),
             6911 => def.country = v.to_string(), // Country
             58 => def.market_name = v.to_string(), // MarketName
@@ -832,7 +833,7 @@ pub struct MarketRule {
     /// Size set of the rule (ibx#436): minimum size and size increments.
     pub size_increments: Vec<PriceIncrement>,
     /// Price magnifier: 10 to the power of the first tier set's exponent
-    /// (`jmarketrules.o.<init>@...`: `round(10^l.b())`, l from tag 6021).
+    /// of the rule, rounded (code read of the reference).
     pub price_magnifier: i32,
 }
 
@@ -1168,7 +1169,7 @@ fn flush_session(
 type Session = (jiff::Timestamp, jiff::Timestamp);
 
 /// The days of a schedule from the current day on, as the reference builds
-/// them (`feature.lh.ag`, `feature.lh.D.<init>`): one day per trade date,
+/// them (code read of the reference): one day per trade date,
 /// the days between two trade dates and the current day and the next one
 /// added closed; the days before the current day left out. A day's liquid
 /// sessions are its trading sessions when it has no liquid session, and
@@ -1238,7 +1239,7 @@ fn schedule_days(sched: &ContractSchedule, today: jiff::civil::Date) -> Schedule
     ScheduleDays { tz, trading, liquid }
 }
 
-/// One day of an hours text (`feature.lh.f.a(TimeZone)`): its sessions
+/// One day of an hours text, in the schedule's zone: its sessions
 /// `yyyyMMdd:HHmm-yyyyMMdd:HHmm` joined with `;`, or `yyyyMMdd:CLOSED`.
 fn day_text(date: jiff::civil::Date, sessions: &[Session], tz: &jiff::tz::TimeZone) -> String {
     if sessions.is_empty() {
@@ -1255,14 +1256,14 @@ fn day_text(date: jiff::civil::Date, sessions: &[Session], tz: &jiff::tz::TimeZo
 }
 
 /// A day with a session that starts or ends before its own date
-/// (`feature.lh.f.a(false)`).
+/// (code read of the reference).
 fn starts_before(date: jiff::civil::Date, sessions: &[Session], tz: &jiff::tz::TimeZone) -> bool {
     sessions.iter().any(|(start, end)| {
         start.to_zoned(tz.clone()).date() < date || end.to_zoned(tz.clone()).date() < date
     })
 }
 
-/// An hours text of the API row (`feature.lh.D.a(f[], boolean)`): the first
+/// An hours text of the API row, as the reference writes it: the first
 /// day always; a later closed day is left out when the next day is open
 /// and starts on an earlier date (its session covers the closed day).
 fn hours_text(days: &[(jiff::civil::Date, Vec<Session>)], tz: &jiff::tz::TimeZone) -> String {
@@ -1284,8 +1285,8 @@ fn hours_text(days: &[(jiff::civil::Date, Vec<Session>)], tz: &jiff::tz::TimeZon
     out
 }
 
-/// The last trading instant of a contract with a schedule
-/// (`jclient.dy.c(lh.D)`), and whether it has a time: with a last trading
+/// The last trading instant of a contract with a schedule, as the
+/// reference reads it, and whether it has a time: with a last trading
 /// time (6850) the date at that time in the zone; else, for a contract
 /// that is not a bond, the end of the last session of an open liquid day
 /// on that date; else the start of the date. None without a date.
@@ -1309,8 +1310,8 @@ fn last_trading(def: &ContractDefinition, days: &ScheduleDays) -> Option<(jiff::
     date.to_zoned(days.tz.clone()).ok().map(|z| (z, false))
 }
 
-/// The days of a schedule up to the last trading instant
-/// (`feature.lh.D.b(d1)`): a closed day is kept, an open day is kept when
+/// The days of a schedule up to the last trading instant, as the reference
+/// keeps them: a closed day is kept, an open day is kept when
 /// it starts before that instant, is its date, or holds it; the days after
 /// the first other one are left out. The session that holds the instant
 /// ends at it, the later sessions of that day are left out.
@@ -1347,7 +1348,7 @@ fn trim_days(days: &[(jiff::civil::Date, Vec<Session>)], end: jiff::Timestamp, t
 }
 
 /// Merge a schedule into a definition, as the reference fills the API row
-/// (ibx#436, `jextend.dz.a(dy, lh.D)`): a contract whose last trading
+/// (ibx#436, code read of the reference): a contract whose last trading
 /// instant is past gets no schedule; else the zone, the trading and liquid
 /// hours up to that instant, and the last trade date and time.
 pub fn apply_schedule(def: &mut ContractDefinition, sched: &ContractSchedule, now: jiff::Timestamp) {
@@ -1374,7 +1375,8 @@ pub fn apply_schedule(def: &mut ContractDefinition, sched: &ContractSchedule, no
 }
 
 /// Market rule id of each valid exchange of a definition whose rule is
-/// known, comma-joined in valid-exchange order (ibx#435, `jclient.dy.fu()`).
+/// known, comma-joined in valid-exchange order (ibx#435, code read of the
+/// reference).
 pub fn market_rule_ids(def: &ContractDefinition, known: &HashMap<(i64, String), u32>) -> String {
     let mut ids = String::new();
     for exch in &def.valid_exchanges {

@@ -11,7 +11,7 @@
 //!   own), in the fixed order of the reference's sender: bid, ask, last
 //!   (each with its size), bid size, ask size, last size, volume, high, low,
 //!   close, open, bid and ask exchanges, last time, halted
-//!   (`jextend.dL.a(List,s,int,pa,dy,o,SnapshotPreference,Set)`; the
+//!   (code read of the reference; the
 //!   delayed sender has the volume after the low and no exchanges). The
 //!   halted state is sent when its halted or volatility-halted bit changes,
 //!   then in each step until the next book update. The last exchange is
@@ -280,8 +280,8 @@ impl Out<'_> {
         self.push(MdTick::Time { tick_type, secs: self.fields[field::TIME] / 1_000_000_000 });
     }
 
-    /// An exchange text; an empty one is not sent (`jextend.dK.c(List,int,
-    /// int,String)@0-14`): no letters before the exchange map came.
+    /// An exchange text; an empty one is not sent (code read of the
+    /// reference): no letters before the exchange map came.
     fn exchanges(&mut self, idx: usize) {
         let tick_type = match idx {
             field::BID_EXCH => TICK_BID_EXCHANGE,
@@ -798,7 +798,7 @@ fn pass_one(
         }
     };
     // `mdoff`: the reference's sender skips the top of book pass of the
-    // request (`jextend.dL.a(s,int,pa,Map,Set)@136-220`).
+    // request (code read of the reference).
     if st.top_off {
         out.truncate(mark);
     }

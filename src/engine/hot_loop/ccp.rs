@@ -29,9 +29,9 @@ const MATCHING_SYMBOLS_SEND_GAP: std::time::Duration = std::time::Duration::from
 /// How long an internal contract lookup of ibx (cache fill, scanner
 /// enrichment: ids from 0xF000_0000) waits for its answer. A caller's
 /// contract details request has no deadline, as in the reference: its
-/// contract definition requests (`jclient.mE`, the 6 s sweep of
-/// `jclient.pN`) give up only for an order's lookup (`jextend.dx.a()`,
-/// 30 s), and the API request waits for its answer (ibx#485).
+/// contract definition requests (with a 6 s sweep) give up only for an
+/// order's lookup (30 s), and the API request waits for its answer
+/// (code read of the reference, ibx#485).
 const SECDEF_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// Whether a lookup is an internal one of ibx, not a caller's request.
@@ -213,7 +213,7 @@ fn fill_exec_of(parsed: &std::collections::HashMap<u32, String>, exec_id: &str) 
 }
 
 /// The permId of a report's order: the id part of its ClOrdID (11), as
-/// the reference gives it (`pe.aY().a()`, the long of `jfix.cx`; captured
+/// the reference gives it (code read; captured
 /// 01/10/2026: openOrder permId 1790865742870063 for 11=1790865742870063.0).
 /// 0 for none.
 fn perm_id_of(parsed: &std::collections::HashMap<u32, String>) -> i64 {
@@ -225,7 +225,7 @@ fn perm_id_of(parsed: &std::collections::HashMap<u32, String>) -> i64 {
 }
 
 /// The API order id a report gives (6121), 0 when it gives none
-/// (`jexec.fq.k()`: absent reads as the int maximum, shown as 0).
+/// (the reference reads an absent one as the int maximum, shown as 0).
 fn report_api_order_id(parsed: &std::collections::HashMap<u32, String>) -> OrderId {
     parsed.get(&6121).and_then(|s| s.parse::<OrderId>().ok())
         .filter(|&id| id != i32::MAX as OrderId)
@@ -233,10 +233,9 @@ fn report_api_order_id(parsed: &std::collections::HashMap<u32, String>) -> Order
 }
 
 /// Note the API order id (6121) of a report for its API client (6119, 0
-/// when absent): the reference keeps the highest order id each client used
-/// (`jextend.H.c(int)`), and moves it for every order it shows the client
-/// (`jextend.dL.c(List, int, jclient.pe, jfix.ct, String, Runnable)@1039`).
-/// Only positive ids: the reference keeps negative ones apart.
+/// when absent): the reference keeps the highest order id each client used,
+/// and moves it for every order it shows the client (code read of the
+/// reference). Only positive ids: the reference keeps negative ones apart.
 fn note_reported_order_id(parsed: &std::collections::HashMap<u32, String>, shared: &SharedState) {
     let id = report_api_order_id(parsed);
     if id <= 0 || id >= i32::MAX as OrderId {
@@ -1192,14 +1191,13 @@ impl CcpState {
     /// A logon message on the logged-on auth connection (ibx#421). With a
     /// session epoch (6059) it is a solicited logon, which the reference
     /// ignores with a warning. Without one it is a logon update
-    /// (`jclient.gi.j(jfix.dk)`), whose steps run in the reference's order:
-    /// the pending accounts (8092, when present, `@61-76`); the feature
+    /// (code read of the reference), whose steps run in the reference's order:
+    /// the pending accounts (8092, when present); the feature
     /// list (6542), where DENYAPI turning on stops the API, as the
-    /// reference stops its API connections (`jfix.s.c(jfix.dk)@587-620`,
-    /// `jclient.gi.dT()`); the private label misc URLs (6321, when not
-    /// empty, `jfix.d0.a(jfix.dk)`, `@171-231`); a changed data permission
-    /// stamp (6764, `@235-308`), which makes the hot loop run the
-    /// permission change; the SSL farm list (8449, `@427-506`), replaced
+    /// reference stops its API connections; the private label misc URLs
+    /// (6321, when not empty); a changed data permission
+    /// stamp (6764), which makes the hot loop run the
+    /// permission change; the SSL farm list (8449), replaced
     /// by the update's (empty when absent).
     pub(crate) fn handle_logon_update(
         &mut self,
@@ -1258,9 +1256,8 @@ impl CcpState {
 
     /// The data permission stamp of a relogin's logon reply (ibx#421): a
     /// change only when the old and the new stamp are both set and differ;
-    /// the new one is kept in any case, even unset
-    /// (`jclient.gi.a(jfix.dk, jfix.bb, LogonType)@297-388`). True when it
-    /// changed.
+    /// the new one is kept in any case, even unset (code read of the
+    /// reference). True when it changed.
     pub(crate) fn relogin_data_permissions(&mut self, stamp: Option<&str>) -> bool {
         let changed = matches!((self.data_permissions.as_deref(), stamp), (Some(old), Some(new)) if old != new);
         if changed {
@@ -1297,12 +1294,12 @@ impl CcpState {
             log::info!("What-if reply for {} that this session did not send: dropped", clord);
             return;
         };
-        // A reject report (150=8, or 39=8: the reference reads the report
-        // kind from 39 unless 150 is 8, `jexec.fq.<init>@2690-2752`) takes
-        // the reject path, error 201 alone (`jclient.dS.a(dk, fq, pe, long,
-        // boolean)@168-189`, `trader.order.h.a(pe, fq)`), unless it is a
-        // status report (20=3): those go to the preview's reply handling
-        // whatever their status (`dS.a(dk, fq, pe, boolean, boolean)@262-345`).
+        // A reject report (its kind rejected, or its order status rejected:
+        // the reference reads the report kind from the order status unless
+        // the kind field says rejected) takes the reject path, error 201
+        // alone, unless it is a status report: those go to the
+        // preview's reply handling whatever their status (code read of the
+        // reference).
         let tag = |t: u32| parsed.get(&t).map(|s| s.as_str());
         let reject = tag(150) == Some("8") || tag(39) == Some("8");
         if reject && tag(20) != Some("3") {
@@ -1318,7 +1315,7 @@ impl CcpState {
         let is_data_frame = MARGIN_TAGS.iter().any(|tag| number(*tag).is_some());
         // A frame with an order message gives an open order with that
         // message as its warning text, and the preview waits for its data
-        // frame (ibx#462, `trader.order.bQ.a(gi, e3, fq)@263-321`).
+        // frame (ibx#462, code read of the reference).
         let warning_text = parsed.get(&6361).cloned().unwrap_or_default();
         // A status report that rejects the preview is its final reply, with
         // or without numbers: the open order, then error 201.
@@ -1450,8 +1447,8 @@ impl CcpState {
         // of another session or client, put in the book so it can be
         // cancelled, by its id or by a global cancel, and its reports reach
         // it (ibx#191). The reference makes an order of any report of an
-        // unknown order (`jclient.pe.<init>(jexec.fq, boolean,
-        // jclient.dy)`: API order id 6121, client id 6119, ClOrdID 11); the
+        // unknown order, with the report's API order id (6121), client id
+        // (6119) and order id (11) (code read of the reference); the
         // logon replay reports an order not routed yet as 39=A (captured
         // 01/10/2026: 8 orders of earlier sessions, 150=A 20=3 39=A), which
         // was left out when only 150=0 39=0 was taken (paper 04/10/2026:
@@ -1558,9 +1555,9 @@ impl CcpState {
             return;
         }
 
-        // Who gets the reports of this order (`jextend.ba.d(dK)`): its client,
-        // else client 0; its errors and notices only its client
-        // (`pe.gY()`, `trader.order.bg.a`). Captured 01/10/2026: client 193
+        // Who gets the reports of this order, as the reference sends them:
+        // its client, else client 0; its errors and notices only its client.
+        // Captured 01/10/2026: client 193
         // got nothing of the cancel of 8 orders of client 0.
         let delivered = context.delivered(clord_id);
         let owned = context.owned(clord_id);
@@ -2159,7 +2156,7 @@ impl CcpState {
                 order_ref: parsed.get(&6010).cloned().unwrap_or_default(),
                 // The cash quantity the server echoes in 152, which the
                 // reference reads into the order's cash quantity
-                // (`jexec.fq.<init>(dk, boolean)@2005-2120`, ibx#263).
+                // (ibx#263).
                 cash_qty: parsed.get(&152).and_then(|s| s.parse().ok()).unwrap_or(0.0),
                 // A TRAIL LIMIT's offset as the server reports it (ib-agent#194).
                 lmt_price_offset: trail_limit.map_or(f64::MAX, |r| r.offset as f64 / PRICE_SCALE as f64),
@@ -2463,7 +2460,7 @@ impl CcpState {
         log::info!("Fill {} of untracked order {}: con_id={} {:?} {} @ {}, stored",
             exec_id, clord_id, con_id, side, shares, last_px);
         // The execution's reports go to its client, else to client 0
-        // (`jextend.ba.a(dq, aQ)`).
+        // (code read of the reference).
         let mut exec = fill_exec_of(parsed, exec_id);
         let me = context.api_client_id;
         exec.other_client = me != 0 && exec.client_id != me;
@@ -3143,7 +3140,7 @@ impl CcpState {
         let lookup = self.take_lookup(req_id);
         let multiplier = lookup.as_ref().and_then(|l| l.filters.multiplier.parse::<f64>().ok());
         // The request symbol is the CUSIP of a bond row when it reads as
-        // one (`jextend.dz.b(dy, lh.D)`, ibx#436).
+        // one (as the reference does, ibx#436).
         if let Some(cusip) = lookup.as_ref().map(|l| l.symbol.as_str()).filter(|s| crate::control::contracts::reads_as_cusip(s)) {
             for def in records.iter_mut() {
                 def.lookup_cusip = cusip.to_string();
@@ -3865,7 +3862,7 @@ fn handle_account_end(msg: &[u8], shared: &SharedState) {
 }
 
 /// The account keys of a `35=RL` row and the ledger tag of each, in the
-/// order of the reference's table (`jaccount.X.n`, ibx#475, ibx#487). The
+/// order of the reference's table (ibx#475, ibx#487). The
 /// row's currency (8002) is the key's currency. `Currency`, `AccountOrGroup`
 /// and `RealCurrency` are texts (tag ""); the insured deposit (8174) is
 /// added to CashBalance (the API setting that gives it a key of its own is
@@ -3997,7 +3994,7 @@ pub(crate) fn parse_account_rows(text: &str, form_10_40: bool) -> (Vec<(String, 
 }
 
 /// The rows of a ledger frame (`35=RL`) of an account summary, as the
-/// reference reads them (`jfix.aL.<init>(String)`, ibx#486): the account
+/// reference reads them (ibx#486): the account
 /// of the frame (`8001=AccountCode` then 8004), and per `LedgerList` row its
 /// currency (8002), tag 15, and its numeric tags. A value Java does not
 /// read as a number (`nan`) stays unset.
@@ -4601,7 +4598,7 @@ mod tests {
         assert!(context.what_ifs.is_empty());
     }
 
-    // ibx#462 (`trader.order.bQ.a(gi, e3, fq)@263-321`): a reply with an
+    // ibx#462 (code read of the reference): a reply with an
     // order message gives an open order with that warning text, and the
     // preview waits for its data reply.
     #[test]
@@ -4936,7 +4933,7 @@ mod tests {
     }
 
     // ibx#263: the reference reads the cash quantity the server echoes in
-    // 152 into the order (`jexec.fq.<init>(dk, boolean)@2005-2120`), which
+    // 152 into the order, which
     // openOrder shows.
     #[test]
     fn the_reported_cash_quantity_is_read_from_152() {
@@ -5079,7 +5076,7 @@ mod tests {
     }
 
     // ibx#466: the API order id of each report counts for its client's
-    // next valid id (`jextend.H.c(int)`): the highest positive id per
+    // next valid id, as in the reference: the highest positive id per
     // client id (6119, 0 when absent); none for a report without 6121.
     #[test]
     fn reports_note_the_highest_api_order_id_of_their_client() {
@@ -5358,7 +5355,7 @@ mod tests {
 
     // ── ibx#485: a caller's contract details request has no deadline ──
 
-    // As in the reference (`jclient.mE`: only an order's lookup gives up),
+    // As in the reference (only an order's lookup gives up),
     // a caller's request waits for its answer: no error 200 of ibx's own,
     // no end. A negative request id is a caller's (ibx#285).
     #[test]
@@ -7113,7 +7110,7 @@ mod tests {
     }
 
     // The reports of an order go to its client, else to client 0
-    // (`jextend.ba.d(dK)`); its notices only to its client (`pe.gY()`).
+    // (code read of the reference); its notices only to its client.
     // Captured 01/10/2026: client 193 got nothing of client 0's orders.
     #[test]
     fn reports_of_another_clients_order_reach_only_its_client_or_client_0() {

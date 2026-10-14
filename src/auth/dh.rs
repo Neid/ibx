@@ -13,15 +13,13 @@ use crate::auth::crypto::{aes_cbc_decrypt, aes_cbc_encrypt, hmac_sha1, strip_lea
 use crate::auth::srp::SRP_N_STR;
 use crate::protocol::ns::NS_MAGIC;
 
-/// Login text of a failed key exchange (`n.g(aD)@440-454`,
-/// `trader.common.tag.g.C`).
+/// Login text of a failed key exchange (code read of the reference).
 pub const SECURE_CONNECTION_FAILED: &str = "Unable to establish secure connection";
-/// Login text of an expired first certificate (`n.g(aD)@410-424`,
-/// `trader.common.tag.g.D`).
+/// Login text of an expired first certificate (code read of the reference).
 pub const CERTIFICATE_EXPIRED: &str =
     "The certificate has expired. Please check if your system time is set correctly and try again.";
-/// Login text of a first certificate not yet valid (`n.g(aD)@380-394`,
-/// `trader.common.tag.g.E`).
+/// Login text of a first certificate not yet valid (code read of the
+/// reference).
 pub const CERTIFICATE_NOT_YET_VALID: &str =
     "The certificate is not yet valid. Please check if your system time is set correctly and try again.";
 
@@ -150,16 +148,16 @@ impl SecureChannel {
     ///
     /// `fields` are the semicolon-split parts after version and msg_type:
     /// server random, server public value, signature, certificate count,
-    /// then each certificate (`crypt.a.b(String)@12-150`, a tokenizer on
+    /// then each certificate (the reference reads them with a tokenizer on
     /// `;`: an empty field is skipped; fields after the certificates are
     /// not read).
     ///
     /// A missing field, bad base64, a bad count or certificate, or a
-    /// certificate check that fails (`crypt.a.a(List)`, see
+    /// certificate check that fails (see
     /// [`certs::check_server_certificates`]) is an `InvalidData` error with
     /// the reference's login text and leaves the channel without keys, so
-    /// the caller fails the login, as the reference does (`n.g(aD)@313-454`;
-    /// on a farm the failure callback, `az.g(aD)@185-200`), ibx#276.
+    /// the caller fails the login, as the reference does (on a farm through
+    /// its failure callback), ibx#276.
     pub fn process_server_hello(&mut self, fields: &[&str]) -> io::Result<()> {
         let mut tokens = fields.iter().filter(|f| !f.is_empty());
         let mut next = |name: &str| {
@@ -580,7 +578,7 @@ mod tests {
 
     // ibx#276: the login texts of a failed check: the first certificate's
     // dates have their own texts, any other failure gives "Unable to
-    // establish secure connection" (`n.g(aD)@313-454`); the channel keeps
+    // establish secure connection" (code read of the reference); the channel keeps
     // no keys.
     #[test]
     fn certificate_failures_give_the_reference_login_texts() {

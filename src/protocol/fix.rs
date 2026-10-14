@@ -1,9 +1,9 @@
-//! FIX message framing.
+//! Message framing of the server protocol.
 //!
-//! IB's FIX format (from decompiled a8.java):
+//! The format, as the reference writes it:
 //! - Body length: 4-digit zero-padded (e.g. "0199")
-//! - MsgSeqNum: 6-digit zero-padded (e.g. "000001")
-//! - No SenderCompID (49) or TargetCompID (56) — set at session level
+//! - Sequence number: 6-digit zero-padded (e.g. "000001")
+//! - No sender or target id: set at session level
 //! - SOH (0x01) delimiter
 
 use std::collections::HashMap;
@@ -70,7 +70,7 @@ pub fn fmt_pipe(bytes: &[u8]) -> String {
 }
 
 /// An XML payload (tag 6118) in the layout of the reference's XML writer
-/// (`jxmlable.XmlGenerator`): the declaration and each element on a line
+/// (code read of the reference): the declaration and each element on a line
 /// of its own, a new line after each, a tab per level before each
 /// element; an element with text only stays on one line (every 35=W,
 /// 35=Z and 35=U the reference sent to the historical farm, captured
