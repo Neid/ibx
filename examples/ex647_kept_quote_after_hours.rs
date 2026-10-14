@@ -5,6 +5,10 @@
 //! sizes of 0. Run with `IBX_LOG_DIR` and `IBX_LOG_LEVEL=debug` to read the
 //! farm messages of each round.
 //!
+//! `IBX647_STRIKES` gives the strike of each round (default 340,340,340);
+//! another strike of the same underlying shows where the second option's
+//! entries go (the reference keeps one of them on the first option).
+//!
 //! Prints every market data callback with its time from the start.
 //! It stops unless the account id starts with DU.
 //!
@@ -68,14 +72,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             std::thread::sleep(Duration::from_millis(5));
         }
     };
-    let option = Contract {
-        symbol: "AAPL".into(), sec_type: "OPT".into(), exchange: "SMART".into(), currency: "USD".into(),
-        last_trade_date_or_contract_month: "20261218".into(), strike: 340.0, right: "C".into(),
-        multiplier: "100".into(), ..Default::default()
-    };
-    for round in 0..3i64 {
+    let strikes: Vec<f64> = env::var("IBX647_STRIKES").unwrap_or_else(|_| "340,340,340".into())
+        .split(',').filter_map(|s| s.trim().parse().ok()).collect();
+    for (round, &strike) in (0i64..).zip(&strikes) {
+        let option = Contract {
+            symbol: "AAPL".into(), sec_type: "OPT".into(), exchange: "SMART".into(), currency: "USD".into(),
+            last_trade_date_or_contract_month: "20261218".into(), strike, right: "C".into(),
+            multiplier: "100".into(), ..Default::default()
+        };
         let stream = 211 + 10 * round;
-        w.line(format!("---- round {} stream {stream}", round + 1));
+        w.line(format!("---- round {} stream {stream} strike {strike}", round + 1));
         client.req_mkt_data(stream, &option, "", false, false)?;
         pump(&client, &mut w, 12.0);
         client.cancel_mkt_data(stream)?;

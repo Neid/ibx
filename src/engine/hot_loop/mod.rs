@@ -808,8 +808,16 @@ impl HotLoop {
             self.context.market.keep_quote(crate::engine::market_state::KeptQuote::from_wire(con_id, wire, min_tick, size_tick, lot, auto));
         }
         // The option model's cancels around the top of book's (ibx#502).
-        let (model_pre, model_post) = self.farm.optmd.stop(instrument);
+        let (model_first, model_pre, model_post) = self.farm.optmd.stop(instrument);
         if self.md_pass.on {
+            // The model's first cancels in a pass of their own, the rest
+            // in the next (ibx#647; the reference 10.51, 13/10/2026 and
+            // 14/10/2026: 5 to 7 ms apart).
+            if !model_first.is_empty() {
+                self.send_md_messages(model_first);
+                let msgs = self.md_pass.take_due(self.pace_now(), true);
+                self.send_farm_messages(msgs);
+            }
             // In the order of the reference's cancels: the top of book,
             // the generic tick entries, the news entry, the market data
             // status entry (ibx#450, ibx#458, ibx#447).
@@ -825,6 +833,7 @@ impl HotLoop {
             self.send_md_messages(msgs);
             return;
         }
+        self.send_farm_messages(model_first);
         self.send_farm_messages(model_pre);
         let now = Instant::now();
         for (id, msg) in self.farm.unsubscribe_top(instrument) {

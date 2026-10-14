@@ -48,6 +48,16 @@ const START_WAIT: Duration = Duration::from_secs(10);
 /// How long a model stopped by a lost farm waits for it.
 const RESTART_WAIT: Duration = Duration::from_secs(120);
 
+/// The option's frozen pair, its bid and ask in frozen mode, asked when the
+/// model's status says the option is frozen, for a request in real-time
+/// mode too; then one more entry of the option (ibx#647, ibx#494; the
+/// reference 10.51, 14 requests on 12/10, 13/10 and 14/10/2026, after hours
+/// and before the open). Kept apart from the snapshot's own pair by their
+/// sign; the wire has 442 and 443.
+const FROZEN_BID: i32 = -442;
+const FROZEN_ASK: i32 = -443;
+const AFTER_FROZEN: i32 = 317;
+
 /// One entry of a model on the wire.
 #[derive(Debug, Clone)]
 pub(crate) struct ModelEntry {
@@ -56,7 +66,8 @@ pub(crate) struct ModelEntry {
     pub(crate) con_id: String,
     pub(crate) exchange: String,
     pub(crate) sec_type: String,
-    /// Request code: 442 / 443 for a top of book pair, else the tick's.
+    /// Request code: 442 / 443 for a top of book pair, else the tick's;
+    /// negative for the frozen pair.
     pub(crate) code: i32,
     /// Of the underlying.
     pub(crate) under: bool,
@@ -74,7 +85,7 @@ pub(crate) struct OptionModel {
     pub(crate) terms: OptionTerms,
     opt_farm: FarmId,
     under_farm: FarmId,
-    entries: Vec<ModelEntry>,
+    pub(crate) entries: Vec<ModelEntry>,
     /// The status entries and the volatilities went out.
     vols_sent: bool,
     under_bid: Option<f64>,
@@ -94,6 +105,10 @@ pub(crate) struct OptionModel {
     /// The option's market data status says frozen (1): its model does not
     /// compute.
     frozen: bool,
+    /// The frozen pair went out.
+    frozen_asked: bool,
+    /// The frozen pair brought a trade, for the streams of the option.
+    again: bool,
 }
 
 impl OptionModel {
@@ -140,6 +155,11 @@ pub(crate) struct OptMd {
     pub(crate) outbox: Vec<(FarmId, Vec<(u32, String)>)>,
     /// The logon features that change the entries (ibx#648).
     pub(crate) entry_marks: std::sync::Arc<std::sync::atomic::AtomicU8>,
+    /// The option whose entry after the frozen pair the models of an
+    /// underlying ask: the first that asked it in the session (ibx#647; the
+    /// reference 10.51 after hours, 13/10 and 14/10/2026: six requests of
+    /// the AAPL 300 call asked it on the 340 call, asked first).
+    after_frozen_option: HashMap<i64, i64>,
 }
 
 /// A price of `magnitude` ticks: divided by the ticks per unit when the
@@ -167,23 +187,27 @@ fn head(action: &str, n: usize) -> Vec<(u32, String)> {
 }
 
 /// A message of entries, as the reference writes the model's: no API
-/// source; the API mark only on the model's own pair of the option; the
-/// entry mark on both pairs (ibx#648).
+/// source; the frozen mode on the frozen pair; the API mark only on the
+/// option's pairs; the entry mark on every pair (ibx#648).
 fn message(action: &str, entries: &[&ModelEntry], marks: u8) -> Vec<(u32, String)> {
     let mut msg = head(action, entries.len());
     for e in entries {
+        let code = e.code.abs();
         msg.extend([
             (262, e.farm_req.to_string()),
             (6008, e.con_id.clone()),
             (207, e.exchange.clone()),
             (167, e.sec_type.clone()),
-            (264, e.code.to_string()),
+            (264, code.to_string()),
         ]);
-        if !e.under && matches!(e.code, 442 | 443) {
+        if e.code < 0 {
+            msg.push((9887, crate::types::MarketDataModes::entry_mode(true, false).to_string()));
+        }
+        if !e.under && matches!(code, 442 | 443) {
             msg.push((9830, "1".into()));
         }
-        if matches!(e.code, 442 | 443) {
-            if let Some(mark) = super::farm::entry_mark(&e.code.to_string(), marks, false) {
+        if matches!(code, 442 | 443) {
+            if let Some(mark) = super::farm::entry_mark(&code.to_string(), marks, false) {
                 msg.push((9839, mark.into()));
             }
         }
@@ -232,13 +256,17 @@ impl OptMd {
         for code in [market::GREEKS, market::GREEKS_CLOSE, market::MODEL_VOL, market::MID_VOL, market::BID_ASK_VOL, market::LAST_VOL] {
             add(&mut entries, code, false, "IBVOL");
         }
+        for code in [FROZEN_BID, FROZEN_ASK, AFTER_FROZEN] {
+            add(&mut entries, code, false, "BEST");
+        }
         let under_con_id = terms.under_con_id;
+        let known = self.params.get(&under_con_id).copied();
         let mut model = OptionModel {
             instrument, snapshot, terms, opt_farm, under_farm, entries, vols_sent: false,
             under_bid: None, under_ask: None, under_last: None, under_wire: [None; 4], under_auto: None, under_trade: None,
             state: market::ModelState::default(), next_pass: None, passes: 0, sent: [None; 4], frozen: false,
+            frozen_asked: false, again: false,
         };
-        let known = self.params.get(&under_con_id).copied();
         let mut groups: Vec<Vec<(i32, bool)>> = Vec::new();
         if snapshot {
             groups.push(vec![(442, false), (443, false)]);
@@ -314,32 +342,55 @@ impl OptMd {
         Some((m.terms.under_con_id, m.under_wire, e.min_tick, e.size_tick, m.under_auto))
     }
 
-    pub(crate) fn stop(&mut self, instrument: InstrumentId) -> (Messages, Messages) {
+    /// The cancels, in one of the reference's two orders (10.51, regular
+    /// hours 12/10/2026 and after hours 13/10/2026):
+    /// - a snapshot's: the greeks and the entry after the frozen pair, the
+    ///   underlying's status and parameters; then the frozen pair, the
+    ///   snapshot's own pair, the underlying's pair, the volatilities and
+    ///   the option's status;
+    /// - a stream's: the underlying's status; then the frozen pair, the
+    ///   option's top of book, the underlying's pair, the option's entries
+    ///   in descending code order with its status and the entry after the
+    ///   frozen pair last, the parameters.
+    ///
+    /// After hours two of four requests took the other order (see the
+    /// issue tracker). The first part leaves in a pass of its own, the
+    /// rest about 6 ms later. Returns the first part, the cancels before
+    /// the option's top of book, and those after it.
+    pub(crate) fn stop(&mut self, instrument: InstrumentId) -> (Messages, Messages, Messages) {
         self.starting.retain(|s| s.instrument != instrument);
-        let Some(pos) = self.models.iter().position(|m| m.instrument == instrument) else { return (Vec::new(), Vec::new()) };
+        let Some(pos) = self.models.iter().position(|m| m.instrument == instrument) else {
+            return (Vec::new(), Vec::new(), Vec::new());
+        };
         let m = self.models.remove(pos);
         let marks = self.entry_marks.load(std::sync::atomic::Ordering::Relaxed);
         let status = super::farm::MARKET_DATA_STATUS;
         let vols_desc = vec![
             (market::LAST_VOL, false), (market::BID_ASK_VOL, false), (market::MID_VOL, false), (market::MODEL_VOL, false),
         ];
+        let frozen = vec![(FROZEN_BID, false), (FROZEN_ASK, false)];
+        // The entry after the frozen pair on another option goes alone,
+        // last.
+        let own = m.terms.con_id.to_string();
+        let foreign = m.entry(AFTER_FROZEN, false).is_some_and(|e| e.con_id != own);
+        let after: Vec<(i32, bool)> = if foreign { Vec::new() } else { vec![(AFTER_FROZEN, false)] };
+        let last_alone = if foreign { vec![(AFTER_FROZEN, false)] } else { Vec::new() };
         if m.snapshot {
-            let mut last = vols_desc.clone();
+            let mut greeks = vec![(market::GREEKS_CLOSE, false), (market::GREEKS, false)];
+            greeks.extend(&after);
+            let first = Self::cancel_groups(&m, &[greeks, vec![(status, true), (market::MODEL_PARAMS, true)]], marks);
+            let mut last = vols_desc;
             last.push((status, false));
-            let pre = Self::cancel_groups(&m, &[
-                vec![(market::GREEKS_CLOSE, false), (market::GREEKS, false)],
-                vec![(status, true), (market::MODEL_PARAMS, true)],
-                vec![(442, false), (443, false)],
-                vec![(442, true), (443, true)],
-                last,
-            ], marks);
-            (pre, Vec::new())
+            let pre = Self::cancel_groups(&m, &[frozen, vec![(442, false), (443, false)], vec![(442, true), (443, true)], last, last_alone], marks);
+            (first, pre, Vec::new())
         } else {
-            let pre = Self::cancel_groups(&m, &[vec![(status, true)]], marks);
+            let first = Self::cancel_groups(&m, &[vec![(status, true)]], marks);
+            let pre = Self::cancel_groups(&m, &[frozen], marks);
             let mut opt = vols_desc;
             opt.extend([(market::GREEKS_CLOSE, false), (market::GREEKS, false), (status, false)]);
-            let post = Self::cancel_groups(&m, &[vec![(442, true), (443, true)], opt, vec![(market::MODEL_PARAMS, true)]], marks);
-            (pre, post)
+            opt.extend(&after);
+            let post = Self::cancel_groups(&m, &[vec![(442, true), (443, true)], opt, vec![(market::MODEL_PARAMS, true)], last_alone], marks);
+            (first, pre, post)
         }
     }
 
@@ -392,7 +443,7 @@ impl OptMd {
     /// block), None when it is none.
     pub(crate) fn code_of(&self, farm: FarmId, tag: u32) -> Option<i32> {
         self.models.iter().flat_map(|m| &m.entries)
-            .find(|e| e.farm == farm && e.tag == Some(tag) && !matches!(e.code, 442 | 443))
+            .find(|e| e.farm == farm && e.tag == Some(tag) && !matches!(e.code.abs(), 442 | 443))
             .map(|e| e.code)
     }
 
@@ -408,6 +459,16 @@ impl OptMd {
     #[inline]
     pub(crate) fn tick(&mut self, farm: FarmId, t: &tick_decoder::RawTick) {
         use tick_decoder as td;
+        // A trade on the frozen pair: the frozen view of the option repeats
+        // its last trade (ibx#647).
+        if t.tick_type == td::O_LAST_SIZE {
+            for m in self.models.iter_mut().filter(|m| m.frozen_asked) {
+                if m.entries.iter().any(|e| e.code == FROZEN_BID && e.farm == farm && e.tag == Some(t.server_tag)) {
+                    m.again = true;
+                }
+            }
+            return;
+        }
         if !matches!(t.tick_type, td::O_BID_PRICE | td::O_ASK_PRICE | td::O_LAST_PRICE
             | td::O_BID_SIZE | td::O_ASK_SIZE | td::O_AUTO_EXEC | td::O_ATTRIBUTES)
         {
@@ -499,14 +560,38 @@ impl OptMd {
     /// option frozen, a stream got no computation, a snapshot the model's
     /// at once and the sides' at its time limit, with their volatility and
     /// no greeks.
-    pub(crate) fn status(&mut self, farm: FarmId, tag: u32, payload: &[u8]) {
+    ///
+    /// Frozen, the model asks the option's frozen pair, then the entry
+    /// after it, once; not when the requests are in frozen mode, whose own
+    /// frozen pair the status of their top of book asks (ibx#447).
+    pub(crate) fn status(&mut self, farm: FarmId, tag: u32, payload: &[u8], frozen_mode: bool, next_id: &mut u32) {
         let Some(value) = payload.get(..4).map(|b| i32::from_be_bytes([b[0], b[1], b[2], b[3]])) else { return };
+        let marks = self.entry_marks.load(std::sync::atomic::Ordering::Relaxed);
+        let mut asked = Vec::new();
         for m in &mut self.models {
             if m.entries.iter().any(|e| !e.under && e.code == super::farm::MARKET_DATA_STATUS && e.farm == farm && e.tag == Some(tag)) {
                 m.frozen = value == 1;
                 log::info!("Option model of instrument {}: market data status {}", m.instrument, value);
+                if m.frozen && !frozen_mode && !m.frozen_asked {
+                    m.frozen_asked = true;
+                    let option = *self.after_frozen_option.entry(m.terms.under_con_id).or_insert(m.terms.con_id);
+                    if let Some(e) = m.entries.iter_mut().find(|e| e.code == AFTER_FROZEN) {
+                        e.con_id = option.to_string();
+                    }
+                    asked.extend(Self::send_groups(m, &[
+                        vec![(FROZEN_BID, false), (FROZEN_ASK, false)],
+                        vec![(AFTER_FROZEN, false)],
+                    ], next_id, marks));
+                }
             }
         }
+        self.outbox.extend(asked);
+    }
+
+    /// The options whose frozen pair brought a trade since the last call:
+    /// their streams give its size and time again (ibx#647).
+    pub(crate) fn take_again(&mut self) -> Vec<InstrumentId> {
+        self.models.iter_mut().filter_map(|m| std::mem::take(&mut m.again).then_some(m.instrument)).collect()
     }
 
     /// The models whose pass is due: their computations that changed go to

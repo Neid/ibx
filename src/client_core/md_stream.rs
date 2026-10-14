@@ -326,6 +326,18 @@ fn last_valid(fields: &[i64; field::COUNT]) -> bool {
 /// the halted state while it is pending.
 fn stream_pass(st: &mut StreamState, m: &Mirror, pass: Pass, out: &mut Out) {
     let fields = &m.fields;
+    // The trade of the option's frozen view: its size, then its time,
+    // again, nothing else (ibx#647; the reference 10.51 after hours,
+    // 13/10/2026, three option streams in real-time mode).
+    if matches!(pass, Pass::Step(MdStep::Again, _)) {
+        if !st.delayed && !st.frozen && last_valid(fields) {
+            out.size(TICK_LAST_SIZE, field::LAST_SIZE);
+            if fields[field::TIME] != 0 {
+                out.time();
+            }
+        }
+        return;
+    }
     let mut todo = [false; field::COUNT];
     for (idx, pending) in todo.iter_mut().enumerate() {
         *pending = match idx {
@@ -455,6 +467,10 @@ fn stream_pass(st: &mut StreamState, m: &Mirror, pass: Pass, out: &mut Out) {
 /// letters on the quote (10.51, paper, 12/10/2026, regular hours; ibx#503).
 /// The delayed sender sends no halted state either.
 fn snapshot_pass(snap: &mut PlainSnapshot, m: &Mirror, pass: Pass, out: &mut Out) {
+    // A snapshot gives nothing of the frozen view's trade (ibx#647).
+    if matches!(pass, Pass::Step(MdStep::Again, _)) {
+        return;
+    }
     let (set, trade) = match pass {
         Pass::Join | Pass::Step(MdStep::CatchUp, _) => (field::ALL, true),
         Pass::Step(step, set) => (set, step == MdStep::Last),
@@ -1205,6 +1221,25 @@ mod tests {
         let q = Quote { bid_size: 20 * QTY_SCALE, ..q };
         shared.market.push_test_message(6, &q, &TestMessage { steps: Some(&[MdStep::Quote]), sizes_seen: true, ..Default::default() });
         assert_eq!(poll(&core, &shared), ["size:1:0:20"]);
+    }
+
+    // ibx#647 (the reference 10.51 after hours, 13/10/2026, three option
+    // streams in real-time mode): the trade of the option's frozen view
+    // gives a stream its last size, then its time, again, with no price; a
+    // snapshot gets nothing of it.
+    #[test]
+    fn the_frozen_views_trade_gives_a_stream_its_size_and_time_again() {
+        let (core, shared) = (ClientCore::new(), SharedState::new());
+        stream(&core, &shared, 1, 5);
+        assert!(core.attach_md_request(&shared, 2, 5, true, "OPT", "SMART", None, false, false));
+        let q = Quote {
+            last: 46 * PRICE_SCALE, last_size: QTY_SCALE, timestamp_ns: 1_791_921_218_000_000_000, ..Default::default()
+        };
+        shared.market.push_test_message(5, &q, &TestMessage { steps: Some(&[MdStep::Time, MdStep::Last]), sizes_seen: true, ..Default::default() });
+        let first = poll(&core, &shared);
+        assert!(first.contains(&"size:1:5:1".to_string()) && first.contains(&"size:2:5:1".to_string()), "{first:?}");
+        shared.market.push_test_message(5, &q, &TestMessage { steps: Some(&[MdStep::Again]), sizes_seen: true, ..Default::default() });
+        assert_eq!(poll(&core, &shared), ["size:1:5:1", "string:1:45:1791921218"]);
     }
 
     // ibx#681, ibx#647 (the reference 10.51, 13/10/2026, an option with

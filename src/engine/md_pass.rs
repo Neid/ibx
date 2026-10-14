@@ -86,8 +86,11 @@ impl MdPass {
 /// What makes two market data messages one: the farm, the action, the
 /// kind of their entries (top of book, news, or another generic tick) and
 /// their data mode. News entries keep their own message, as recorded on
-/// 02/10/2026.
-fn key(farm: FarmId, msg: &[(u32, String)]) -> Option<(FarmId, String, u8, String)> {
+/// 02/10/2026. The other generic ticks only with those of the same
+/// contract (ibx#647; the reference 10.51, 13/10 and 14/10/2026: an option
+/// model's cancels and the entry of another option, one pass, two
+/// messages).
+fn key(farm: FarmId, msg: &[(u32, String)]) -> Option<(FarmId, String, u8, String, String)> {
     if msg.first().is_none_or(|(tag, v)| *tag != 35 || v != "V") {
         return None;
     }
@@ -100,13 +103,18 @@ fn key(farm: FarmId, msg: &[(u32, String)]) -> Option<(FarmId, String, u8, Strin
         _ => 2,
     };
     let mode = msg.iter().find(|(tag, _)| *tag == 9887).map(|(_, v)| v.clone()).unwrap_or_default();
-    Some((farm, action, top, mode))
+    let contract = if top == 2 {
+        msg.iter().find(|(tag, _)| *tag == 6008).map(|(_, v)| v.clone()).unwrap_or_default()
+    } else {
+        String::new()
+    };
+    Some((farm, action, top, mode, contract))
 }
 
 /// The messages of a pass: those of one key become one message, with the
 /// entries in the order they came and their count; the others as they are.
 fn group(held: Vec<FarmMessage>) -> Vec<FarmMessage> {
-    let mut out: Vec<(Option<(FarmId, String, u8, String)>, FarmMessage)> = Vec::new();
+    let mut out: Vec<(Option<(FarmId, String, u8, String, String)>, FarmMessage)> = Vec::new();
     for (farm, msg) in held {
         let k = key(farm, &msg);
         let first_entry = msg.iter().position(|(tag, _)| *tag == 262);
@@ -181,6 +189,18 @@ mod tests {
             262=34|6008=265598|207=BEST|167=CS|264=443|9830=1");
         assert_eq!(text(&out[1].1), "35=V|263=2|146=2|262=38|6008=272093|207=NEWS|167=CS|264=292|9830=1|\
             262=35|6008=265598|207=NEWS|167=CS|264=292|9830=1");
+    }
+
+    // ibx#647: the generic ticks of two contracts are two messages (an
+    // option model's cancels and the entry of another option, the reference
+    // 10.51 after hours, 13/10 and 14/10/2026); those of one contract one.
+    #[test]
+    fn generic_ticks_of_two_contracts_stay_apart() {
+        let entry = |id: u32, con_id: &str, kind: &str| vec![(35, "V".to_string()), (52, "t".into()), (263, "2".into()),
+            (146, "1".into()), (262, id.to_string()), (6008, con_id.into()), (207, "BEST".into()), (167, "OPT".into()), (264, kind.into())];
+        let out = group(vec![(FARM, entry(1, "692808040", "398")), (FARM, entry(2, "692808040", "737")), (FARM, entry(3, "692808239", "317"))]);
+        let counts: Vec<&str> = out.iter().map(|(_, m)| m.iter().find(|(t, _)| *t == 146).unwrap().1.as_str()).collect();
+        assert_eq!(counts, ["2", "1"]);
     }
 
     // News entries and the other generic ticks are not one message.

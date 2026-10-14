@@ -898,6 +898,14 @@ impl FarmState {
         if let Some(b) = block.take() {
             self.end_md_block(&b, context, queue);
         }
+        // The trade an option's frozen view repeats (ibx#647).
+        if models {
+            for instrument in self.optmd.take_again() {
+                use crate::md_events::{field, MdStep};
+                let fields = 1 << field::LAST_SIZE | 1 << field::TIME;
+                queue.offer_quote(instrument, MdStep::Again, fields, context.quote(instrument), None, 0);
+            }
+        }
         // The message's steps go together (the reader takes its book
         // updates after its other steps).
         queue.publish();
@@ -1298,7 +1306,8 @@ impl FarmState {
                 Some(MARKET_DATA_STATUS) => {
                     // The option model's status of its option (ibx#502).
                     if !self.optmd.is_empty() {
-                        self.optmd.status(rx_farm, tag, payload);
+                        let frozen_mode = self.md_modes.frozen;
+                        self.optmd.status(rx_farm, tag, payload, frozen_mode, &mut self.next_md_req_id);
                     }
                     self.handle_md_status(tag, payload, sink, context, shared, hb)
                 }

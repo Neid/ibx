@@ -12,6 +12,7 @@ use super::*;
 use crate::bridge::SharedState;
 use crate::control::generic_values::GenTick;
 use crate::control::optcalc::{inputs, market, OptionComputation, OptionTerms, Right, Style, NOT_COMPUTED};
+use crate::md_events::MdStep;
 
 const OPTION: i64 = 692808239;
 const AAPL: i64 = 265598;
@@ -370,4 +371,157 @@ fn the_model_asks_the_underlyings_exchange_map() {
     // The last entry's acknowledgement does not ask it again.
     ack_with(&mut engine, 179, 4);
     assert!(sent(&mut farm_side).is_empty());
+}
+
+// ibx#647, ibx#494: the option's status frozen, a request in real-time mode.
+// The reference 10.51 after hours (13/10/2026, two streams and two
+// snapshots of AAPL calls; the same on 12/10 and 14/10/2026): the option's
+// frozen pair, then the entry after it, each in its message; their cancels
+// in the request's own order; the frozen pair's trade given again to the
+// streams. Not asked in frozen mode, whose requests have their own frozen
+// pair (ibx#447).
+#[test]
+fn a_frozen_option_asks_its_frozen_pair() {
+    for (snapshot, frozen_mode) in [(false, false), (true, false), (false, true)] {
+        let shared = Arc::new(SharedState::new());
+        shared.reference.set_api_features(crate::control::logon::ApiFeatures::parse("ODDLOTBIDASK,PRCEXTRAPREC"));
+        let mut engine = HotLoop::new(shared.clone(), None, None);
+        engine.set_farm_name("usfarm".into());
+        engine.farm.md_modes.frozen = frozen_mode;
+        let (client, mut farm_side) = crate::protocol::connection::mem_pair();
+        engine.farm_conn = Some(crate::protocol::connection::Connection::new_mem(client));
+        engine.context.option_terms.insert(OPTION, terms());
+        let id = engine.context.market.register(OPTION);
+        engine.context.market.set_routing(id, "OPT", "SMART");
+        let sub = farm::MdSubscribe {
+            con_id: OPTION, symbol: "AAPL".into(), exchange: "SMART".into(), sec_type: "OPT".into(),
+            last_trade_date: String::new(), strike: 0.0, right: String::new(), multiplier: String::new(),
+            instrument: id, mode_9887: 0, snapshot,
+        };
+        engine.route_md_subscribe(&sub);
+        let first = engine.farm.next_md_req_id;
+        let _ = sent(&mut farm_side);
+        let mut req = first - if snapshot { 7 } else { 5 };
+        if snapshot {
+            ack(&mut engine, 494084, req);
+            ack(&mut engine, 494084, req + 1);
+            req += 2;
+        }
+        for (tag, r) in [(179, req), (179, req + 1), (7178, req + 2), (494098, req + 3), (494099, req + 4)] {
+            ack(&mut engine, tag, r);
+        }
+        generic(&mut engine, &frames()["params"]);
+        engine.service_option_models(Instant::now());
+        let _ = sent(&mut farm_side);
+        let next = engine.farm.next_md_req_id;
+        for (tag, r) in [(187, next - 6), (494136, next - 5), (30586, next - 4), (494137, next - 3), (494138, next - 2), (494139, next - 1)] {
+            ack(&mut engine, tag, r);
+        }
+        // The option's status: frozen.
+        generic(&mut engine, &[0x00, 0x48, 0x00, 0x07, 0x8a, 0x38, 0x04, 0x00, 0x00, 0x00, 0x01]);
+        engine.service_option_models(Instant::now());
+        let msgs = sent(&mut farm_side);
+        if frozen_mode {
+            assert!(msgs.is_empty(), "{msgs:#?}");
+            continue;
+        }
+        let n = next;
+        assert_eq!(msgs, [
+            format!("35=V|263=1|146=2|262={n}|6008=692808239|207=BEST|167=OPT|264=442|9887=2|9830=1|9839=1\
+                |262={}|6008=692808239|207=BEST|167=OPT|264=443|9887=2|9830=1|9839=2", n + 1),
+            format!("35=V|263=1|146=1|262={}|6008=692808239|207=BEST|167=OPT|264=317", n + 2),
+        ], "snapshot {snapshot}");
+        // The status again: nothing more.
+        generic(&mut engine, &[0x00, 0x48, 0x00, 0x07, 0x8a, 0x38, 0x04, 0x00, 0x00, 0x00, 0x01]);
+        engine.service_option_models(Instant::now());
+        assert!(sent(&mut farm_side).is_empty());
+
+        // The frozen pair's image repeats the option's last trade: a step
+        // for its requests (the reference gave the size and time again).
+        ack(&mut engine, 988376, n);
+        ack(&mut engine, 988376, n + 1);
+        ack(&mut engine, 652179, n + 2);
+        let queue = &shared.market.md_events;
+        queue.listen(id, true);
+        let from = queue.head();
+        ticks(&mut engine, &[(988376, &[(2, 4600), (6, 1)])]);
+        let steps: Vec<MdStep> = (from..queue.head()).map(|s| queue.step_at(s).0).collect();
+        assert_eq!(steps, [MdStep::Again], "snapshot {snapshot}");
+
+        // The cancels: the frozen pair before the option's pair; the entry
+        // after it with the greeks of a snapshot, last of the option's
+        // entries of a stream.
+        engine.route_md_cancel(id);
+        let msgs = sent(&mut farm_side);
+        let codes: Vec<Vec<String>> = msgs.iter().map(|m| {
+            m.split('|').filter_map(|f| f.strip_prefix("264=").map(str::to_string))
+                .chain(m.contains("9887=2").then(|| "frozen".to_string())).collect()
+        }).collect();
+        let expected: Vec<Vec<&str>> = if snapshot {
+            vec![vec!["733", "732", "317"], vec!["398", "687"], vec!["442", "443", "frozen"], vec!["442", "443"], vec!["442", "443"],
+                vec!["737", "736", "735", "734", "398"]]
+        } else {
+            vec![vec!["398"], vec!["442", "443", "frozen"], vec!["442", "443"], vec!["442", "443"],
+                vec!["737", "736", "735", "734", "733", "732", "398", "317"], vec!["687"]]
+        };
+        assert_eq!(codes[..expected.len()], expected, "snapshot {snapshot}: {msgs:#?}");
+    }
+}
+
+// ibx#647: a second option of the same underlying asks the entry after its
+// frozen pair on the first option that asked it, and cancels it alone, last
+// (the reference 10.51 after hours, 13/10 and 14/10/2026: six requests of
+// the AAPL 300 call asked it on the 340 call).
+#[test]
+fn the_entry_after_the_frozen_pair_stays_on_the_first_option() {
+    const SECOND: i64 = 692808040;
+    let shared = Arc::new(SharedState::new());
+    let mut engine = HotLoop::new(shared.clone(), None, None);
+    engine.set_farm_name("usfarm".into());
+    let (client, mut farm_side) = crate::protocol::connection::mem_pair();
+    engine.farm_conn = Some(crate::protocol::connection::Connection::new_mem(client));
+    engine.context.option_terms.insert(OPTION, terms());
+    engine.context.option_terms.insert(SECOND, OptionTerms { con_id: SECOND, strike: 300.0, ..terms() });
+    let mut last_after = String::new();
+    for (con_id, tag) in [(OPTION, 494136u32), (SECOND, 494236u32)] {
+        let id = engine.context.market.register(con_id);
+        engine.context.market.set_routing(id, "OPT", "SMART");
+        let sub = farm::MdSubscribe {
+            con_id, symbol: "AAPL".into(), exchange: "SMART".into(), sec_type: "OPT".into(),
+            last_trade_date: String::new(), strike: 0.0, right: String::new(), multiplier: String::new(),
+            instrument: id, mode_9887: 0, snapshot: false,
+        };
+        engine.route_md_subscribe(&sub);
+        let _ = sent(&mut farm_side);
+        // The option's status entry: the one with code 398 of the option.
+        let status_req = engine.farm.optmd.models.iter().find(|m| m.instrument == id)
+            .and_then(|m| m.entries.iter().find(|e| !e.under && e.code == 398).map(|e| e.farm_req)).unwrap();
+        let req = if status_req == 0 {
+            // Parameters not known yet: they come, the status goes out.
+            let first = engine.farm.next_md_req_id;
+            ack(&mut engine, 7178, first - 3);
+            generic(&mut engine, &frames()["params"]);
+            engine.service_option_models(Instant::now());
+            let _ = sent(&mut farm_side);
+            engine.farm.optmd.models.iter().find(|m| m.instrument == id)
+                .and_then(|m| m.entries.iter().find(|e| !e.under && e.code == 398).map(|e| e.farm_req)).unwrap()
+        } else {
+            status_req
+        };
+        ack(&mut engine, tag, req);
+        let [b0, b1, b2, b3] = tag.to_be_bytes();
+        generic(&mut engine, &[0x00, 0x48, b0, b1, b2, b3, 0x04, 0x00, 0x00, 0x00, 0x01]);
+        engine.service_option_models(Instant::now());
+        let msgs = sent(&mut farm_side);
+        assert_eq!(msgs.len(), 2, "{msgs:#?}");
+        assert!(msgs[1].ends_with(&format!("|6008={OPTION}|207=BEST|167=OPT|264=317")), "{}", msgs[1]);
+        engine.route_md_cancel(id);
+        let msgs = sent(&mut farm_side);
+        last_after = msgs.last().cloned().unwrap_or_default();
+        if con_id == OPTION {
+            assert!(msgs.iter().any(|m| m.contains("|264=398|") && m.ends_with("|264=317")), "{msgs:#?}");
+        }
+    }
+    assert!(last_after.ends_with(&format!("|263=2|146=1|262={}|6008={OPTION}|207=BEST|167=OPT|264=317", engine.farm.next_md_req_id - 1)),
+        "{last_after}");
 }

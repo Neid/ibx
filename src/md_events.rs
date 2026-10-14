@@ -158,6 +158,9 @@ pub enum MdStep {
     /// The bid and ask a contract kept, given to a new request as a book
     /// update; a snapshot gives them without auto-execution (ibx#671).
     KeptQuote = 8,
+    /// The trade an option's frozen view repeats (ibx#647): a stream gives
+    /// its last size and time again; a snapshot nothing.
+    Again = 9,
 }
 
 impl MdStep {
@@ -170,6 +173,7 @@ impl MdStep {
             5 => Self::Quote,
             7 => Self::Kept,
             8 => Self::KeptQuote,
+            9 => Self::Again,
             _ => Self::CatchUp,
         }
     }
@@ -562,6 +566,7 @@ impl TestMessage<'_> {
                 MdStep::Time => 1 << TIME,
                 MdStep::Exchange | MdStep::Kept => 1 << LAST_EXCH,
                 MdStep::Last => LAST_TRADE,
+                MdStep::Again => 1 << LAST_SIZE | 1 << TIME,
                 MdStep::Quote | MdStep::KeptQuote => QUOTE,
                 MdStep::CatchUp => ALL,
             }
