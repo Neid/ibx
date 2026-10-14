@@ -103,7 +103,7 @@ impl EClient {
             })).collect::<PyResult<Vec<MdStep>>>()?),
             None => None,
         };
-        let message = TestMessage { steps: steps.as_deref(), halted, auto_bits, sizes_seen };
+        let message = TestMessage { steps: steps.as_deref(), halted, auto_bits, sizes_seen, pre_open: None };
         shared.market.push_test_message(instrument, &q, &message);
         Ok(())
     }

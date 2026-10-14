@@ -198,6 +198,9 @@ impl Mirror {
         if let Some(on) = given.ask_auto() {
             self.auto.set_ask_auto(on);
         }
+        if let Some(on) = given.pre_open() {
+            self.auto.set_pre_open(on);
+        }
         if ev.step == MdStep::CatchUp {
             self.valid = true;
         }
@@ -295,13 +298,13 @@ impl Out<'_> {
 
     fn price(&mut self, tick_type: i32, idx: usize, can_auto_execute: bool) {
         let tick_type = self.api(tick_type);
-        self.push(MdTick::Price { tick_type, value: self.fields[idx] as f64 / PRICE_SCALE_F, can_auto_execute });
+        self.push(MdTick::Price { tick_type, value: self.fields[idx] as f64 / PRICE_SCALE_F, can_auto_execute, pre_open: false });
     }
 
     /// A price or size the record does not have: unset (`f64::MAX`).
     fn unset_price(&mut self, tick_type: i32) {
         let tick_type = self.api(tick_type);
-        self.push(MdTick::Price { tick_type, value: f64::MAX, can_auto_execute: false });
+        self.push(MdTick::Price { tick_type, value: f64::MAX, can_auto_execute: false, pre_open: false });
     }
 
     fn unset_size(&mut self, tick_type: i32) {
@@ -336,6 +339,17 @@ impl Out<'_> {
     fn halted(&mut self, status: i64) {
         let tick_type = self.api(TICK_HALTED);
         self.push(MdTick::Generic { tick_type, value: QuoteMarks::halted_tick_value(status) });
+    }
+}
+
+/// The bid or ask price just written carries the quote's pre-open state
+/// (ibx#692; the reference 10.51, paper, 14/10/2026: an AAPL call's bid and
+/// ask of -1 before the open, as a stream).
+fn pre_open_mark(out: &mut Out, m: &Mirror) {
+    if m.auto.pre_open() == Some(true)
+        && let Some(MdOut::Tick(_, MdTick::Price { pre_open, .. })) = out.out.last_mut()
+    {
+        *pre_open = true;
     }
 }
 
@@ -436,8 +450,8 @@ fn stream_pass(st: &mut StreamState, m: &Mirror, pass: Pass, out: &mut Out) {
             // A price comes with its size; the delayed sender does not send
             // that size again on its own (captured 05/10/2026, 7203 on
             // delayed data: 66 and 69, 67 and 70, 68 and 71, once each).
-            field::BID => { out.price(TICK_BID, idx, bid_auto); out.size(TICK_BID_SIZE, field::BID_SIZE); if once { todo[field::BID_SIZE] = false; } }
-            field::ASK => { out.price(TICK_ASK, idx, ask_auto); out.size(TICK_ASK_SIZE, field::ASK_SIZE); if once { todo[field::ASK_SIZE] = false; } }
+            field::BID => { out.price(TICK_BID, idx, bid_auto); pre_open_mark(out, m); out.size(TICK_BID_SIZE, field::BID_SIZE); if once { todo[field::BID_SIZE] = false; } }
+            field::ASK => { out.price(TICK_ASK, idx, ask_auto); pre_open_mark(out, m); out.size(TICK_ASK_SIZE, field::ASK_SIZE); if once { todo[field::ASK_SIZE] = false; } }
             // No trade: a last of -1 with no size is not given; the size
             // goes on its own (ibx#671; the reference 10.51, an option with
             // no trade, 13/10/2026).
@@ -980,7 +994,7 @@ impl Drain<'_> {
         for req_id in wanted {
             for t in &g.ticks {
                 let tick = match t.clone() {
-                    GenTick::Price(tick_type, value) => MdTick::Price { tick_type, value, can_auto_execute: false },
+                    GenTick::Price(tick_type, value) => MdTick::Price { tick_type, value, can_auto_execute: false, pre_open: false },
                     GenTick::Size(tick_type, value) => MdTick::Size { tick_type, value },
                     GenTick::Generic(tick_type, value) => MdTick::Generic { tick_type, value },
                     GenTick::Text(tick_type, value) => MdTick::Text { tick_type, value },
@@ -1046,7 +1060,7 @@ impl Drain<'_> {
                 continue;
             }
             let tick = match t.clone() {
-                GenTick::Price(tick_type, value) => MdTick::Price { tick_type, value, can_auto_execute: false },
+                GenTick::Price(tick_type, value) => MdTick::Price { tick_type, value, can_auto_execute: false, pre_open: false },
                 GenTick::Size(tick_type, value) => MdTick::Size { tick_type, value },
                 GenTick::Generic(tick_type, value) => MdTick::Generic { tick_type, value },
                 GenTick::Text(tick_type, value) => MdTick::Text { tick_type, value },
@@ -1279,6 +1293,29 @@ mod tests {
         let q = Quote { bid_size: 20 * QTY_SCALE, ..q };
         shared.market.push_test_message(6, &q, &TestMessage { steps: Some(&[MdStep::Quote]), sizes_seen: true, ..Default::default() });
         assert_eq!(poll(&core, &shared), ["size:1:0:20"]);
+    }
+
+    // ibx#692 (the reference 10.51, paper, 14/10/2026, an AAPL call from
+    // 15:26 Paris): a stream's bid and ask carry the quote's pre-open state;
+    // once it opens, they do not.
+    #[test]
+    fn the_bid_and_ask_carry_the_pre_open_state() {
+        let (core, shared) = (ClientCore::new(), SharedState::new());
+        stream(&core, &shared, 1, 6);
+        let q = Quote { bid: -PRICE_SCALE, ask: -PRICE_SCALE, ..Default::default() };
+        shared.market.push_test_message(6, &q, &TestMessage { steps: Some(&[MdStep::Quote]), auto_bits: Some(12), pre_open: Some(true), sizes_seen: true, ..Default::default() });
+        let mut out = Vec::new();
+        core.poll_market_data(&shared, None, &mut out);
+        let marks: Vec<(i32, bool)> = out.iter().filter_map(|o| match o {
+            MdOut::Tick(_, MdTick::Price { tick_type, pre_open, .. }) => Some((*tick_type, *pre_open)),
+            _ => None,
+        }).collect();
+        assert_eq!(marks, [(1, true), (2, true)]);
+        let q = Quote { bid: 9365 * PRICE_SCALE / 100, ask: 9705 * PRICE_SCALE / 100, ..q };
+        shared.market.push_test_message(6, &q, &TestMessage { steps: Some(&[MdStep::Quote]), auto_bits: Some(12), pre_open: Some(false), sizes_seen: true, ..Default::default() });
+        out.clear();
+        core.poll_market_data(&shared, None, &mut out);
+        assert!(out.iter().all(|o| !matches!(o, MdOut::Tick(_, MdTick::Price { pre_open: true, .. }))), "{out:?}");
     }
 
     // ibx#494 (the reference 10.51, paper, 14/10/2026, case C of

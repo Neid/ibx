@@ -302,8 +302,8 @@ impl EClient {
         for item in out.drain(..) {
             match item {
                 MdOut::Tick(req_id, tick) => match tick {
-                    MdTick::Price { tick_type, value, can_auto_execute } => {
-                        let attrib = TickAttrib { can_auto_execute, past_limit: false, pre_open: false };
+                    MdTick::Price { tick_type, value, can_auto_execute, pre_open } => {
+                        let attrib = TickAttrib { can_auto_execute, past_limit: false, pre_open };
                         let attrib_obj = Py::new(py, attrib)?.into_any();
                         call_wrapper!(self.wrapper, py, "tick_price", (req_id, tick_type, value, &attrib_obj));
                     }

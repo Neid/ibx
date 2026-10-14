@@ -161,6 +161,7 @@ impl QuoteMarks {
     const HALTED_KNOWN: u64 = 1 << 4;
     const HALTED_SHIFT: u32 = 5;
     const SEEN_SHIFT: u32 = 8;
+    const PRE_OPEN: u32 = 12;
 
     fn flag(self, shift: u32) -> Option<bool> {
         match (self.0 >> shift) & 3 {
@@ -187,10 +188,16 @@ impl QuoteMarks {
         self.set_ask_auto(bits & 8 != 0);
     }
 
-    /// Both auto-execution flags as one byte (0: the farm said nothing).
-    pub fn auto_word(self) -> u8 { (self.0 & 0xF) as u8 }
+    /// Whether the quote is in its pre-open state; `None` before the farm
+    /// said (ibx#692).
+    pub fn pre_open(self) -> Option<bool> { self.flag(Self::PRE_OPEN) }
+    pub fn set_pre_open(&mut self, on: bool) { self.set_flag(Self::PRE_OPEN, on) }
+
+    /// Both auto-execution flags and the pre-open state as one byte (0:
+    /// the farm said nothing).
+    pub fn auto_word(self) -> u8 { ((self.0 & 0xF) | (((self.0 >> Self::PRE_OPEN) & 3) << 4)) as u8 }
     /// The flags of an `auto_word`.
-    pub fn from_auto_word(word: u8) -> Self { Self(word as u64 & 0xF) }
+    pub fn from_auto_word(word: u8) -> Self { Self((word as u64 & 0xF) | (((word as u64 >> 4) & 3) << Self::PRE_OPEN)) }
 
     /// The trading status of the last trade, as its two low bits (1 halted,
     /// 2 volatility halted); `None` before a trade gave one.

@@ -794,6 +794,7 @@ impl MarketState {
             td::O_ASK_EXCH => q.ask_exch_mask = m,
             td::O_LAST_EXCH => q.last_exch_mask = m,
             td::O_AUTO_EXEC if !trade && !tick.stats_block => self.marks[i].set_auto_bits(m),
+            td::O_PRE_OPEN if !trade && !tick.stats_block => self.marks[i].set_pre_open(m != 0),
             td::O_ATTRIBUTES if !tick.stats_block => {
                 if trade { self.marks[i].set_halted(m) } else { self.marks[i].set_auto_bits(m) }
             }

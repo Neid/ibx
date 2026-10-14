@@ -553,6 +553,8 @@ pub struct TestMessage<'a> {
     pub halted: Option<i64>,
     pub auto_bits: Option<i64>,
     pub sizes_seen: bool,
+    /// The quote's pre-open state (ibx#692).
+    pub pre_open: Option<bool>,
 }
 
 impl TestMessage<'_> {
@@ -593,10 +595,15 @@ impl TestMessage<'_> {
                 halted_given |= ev.halted.is_some();
             }
             if matches!(step, MdStep::Quote | MdStep::KeptQuote | MdStep::CatchUp)
-                && let Some(bits) = self.auto_bits
+                && (self.auto_bits.is_some() || self.pre_open.is_some())
             {
                 let mut marks = QuoteMarks::default();
-                marks.set_auto_bits(bits);
+                if let Some(bits) = self.auto_bits {
+                    marks.set_auto_bits(bits);
+                }
+                if let Some(on) = self.pre_open {
+                    marks.set_pre_open(on);
+                }
                 ev.auto = marks.auto_word();
             }
             out.push(ev);

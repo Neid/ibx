@@ -167,6 +167,10 @@ pub const O_VOLUME: u64 = 10;
 /// On a quote, attribute bits with the auto-execution bits; on a trade,
 /// its trading status.
 pub const O_ATTRIBUTES: u64 = 13;
+/// In a quote block: 1 while the contract is in its pre-open state, 0
+/// once it opens (the reference 10.51, paper, 14/10/2026: an AAPL call
+/// from 15:26 Paris, 0 at 15:29:56; the API's preOpen attribute; ibx#692).
+pub const O_PRE_OPEN: u64 = 11;
 pub const O_BID_EXCH: u64 = 16;
 pub const O_ASK_EXCH: u64 = 17;
 pub const O_HALTED: u64 = 18;

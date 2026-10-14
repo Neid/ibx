@@ -503,8 +503,8 @@ impl EClient {
         for item in out.drain(..) {
             match item {
                 MdOut::Tick(req_id, tick) => match tick {
-                    MdTick::Price { tick_type, value, can_auto_execute } => {
-                        let attrib = crate::api::types::TickAttrib { can_auto_execute, ..Default::default() };
+                    MdTick::Price { tick_type, value, can_auto_execute, pre_open } => {
+                        let attrib = crate::api::types::TickAttrib { can_auto_execute, pre_open, ..Default::default() };
                         wrapper.tick_price(req_id, tick_type, value, &attrib);
                     }
                     MdTick::Size { tick_type, value } => wrapper.tick_size(req_id, tick_type, value),

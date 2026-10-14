@@ -122,7 +122,7 @@ fn smart_components_timeout(code: &str, sec_type_id: Option<u8>) -> (i64, String
 #[derive(Debug, Clone, PartialEq)]
 pub enum MdTick {
     /// `tick_price`; only a bid or an ask can execute automatically.
-    Price { tick_type: i32, value: f64, can_auto_execute: bool },
+    Price { tick_type: i32, value: f64, can_auto_execute: bool, pre_open: bool },
     /// `tick_size`.
     Size { tick_type: i32, value: f64 },
     /// `tick_string`: exchange letters (32, 33).

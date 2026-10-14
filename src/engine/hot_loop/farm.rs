@@ -3352,7 +3352,9 @@ mod tests {
         assert_eq!(steps[1].values[TIME], 1_790_921_778 * 1_000_000_000);
         assert_eq!((steps[2].values[LAST], steps[2].values[LAST_SIZE], steps[2].halted), (px(22_510, 5_000), 0, Some(0)));
         assert_eq!(steps[3].values[HIGH], px(22_517, 5_000));
-        assert_eq!((steps[0].values[BID], steps[0].values[ASK], steps[0].auto), (px(112_547, 1_000), px(112_549, 1_000), 0));
+        assert_eq!((steps[0].values[BID], steps[0].values[ASK], steps[0].auto & 0xF), (px(112_547, 1_000), px(112_549, 1_000), 0));
+        // Its quote says it is not in a pre-open state (ibx#692).
+        assert_eq!(crate::types::QuoteMarks::from_auto_word(steps[0].auto).pre_open(), Some(false));
         assert_eq!(marks.halted(), Some(0));
         // The daily figures first in another message: their step first.
         let (_, steps) = eur_usd_steps(&[tick_message(&[EUR_USD_DAILY, EUR_USD_TRADE])]);
