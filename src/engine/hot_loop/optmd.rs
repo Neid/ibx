@@ -598,18 +598,28 @@ impl OptMd {
     /// the requests of their instrument. `inputs` gives the model inputs of
     /// an option's terms (None while not known).
     pub(crate) fn passes(
-        &mut self, now: Instant, context: &Context, shared: &SharedState,
+        &mut self, now: Instant, context: &Context, shared: &SharedState, quote_slot: impl Fn(InstrumentId) -> InstrumentId,
         mut inputs: impl FnMut(&OptionTerms, &mut dyn FnMut(Option<&crate::control::optcalc::ModelInputs>)),
     ) {
         for m in &mut self.models {
             if m.next_pass.is_none_or(|t| t > now) {
                 continue;
             }
-            let q = context.quote(m.instrument);
+            // The side prices from the frozen slot when the contract's
+            // requests are on it (ibx#494; the reference 10.51, paper, after
+            // hours 14/10/2026: ticks 11 and 12 of a snapshot in frozen mode
+            // with the frozen bid and ask).
+            let slot = quote_slot(m.instrument);
+            let q = context.quote(slot);
             let px = |v: i64| (v > 0).then(|| v as f64 / PRICE_SCALE as f64);
             let (bid, ask, last) = (px(q.bid), px(q.ask), px(q.last));
             let under = m.under_price();
-            let form = if m.frozen {
+            // The frozen data is the requests' own data in frozen mode: the
+            // model computes on it (the reference 10.51, paper, after hours
+            // 14/10/2026: ticks 11 and 12 with greeks; in real-time mode, on
+            // 12/10 and 13/10/2026, none).
+            let frozen = m.frozen && slot == m.instrument;
+            let form = if frozen {
                 market::Form::Volatility
             } else if m.passes > 0 {
                 market::Form::Computed
@@ -642,7 +652,7 @@ impl OptMd {
                 }
                 m.sent[slot] = Some(c);
                 let tick = crate::control::generic_values::GenTick::Option(c);
-                if m.frozen && !(snapshot && c.tick_type == market::MODEL) {
+                if frozen && !(snapshot && c.tick_type == market::MODEL) {
                     kept.push(tick);
                 } else {
                     sent.push(tick);

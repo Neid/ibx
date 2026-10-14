@@ -6885,6 +6885,8 @@ fn plain_snapshot_ends_at_the_time_limit() {
     let engine = top_engine(rx);
     client.req_mkt_data(1, &spy_stk(), "", true, false).unwrap();
     let s = crate::types::PRICE_SCALE;
+    // The time limit counts from the acknowledgement (ibx#494).
+    shared.market.push_top_ack(5, start);
     shared.market.push_test_message(5, &crate::types::Quote { bid: 100 * s, ..Default::default() }, &Default::default());
     let mut w = SnapRec::default();
     client.process_msgs(&mut w);

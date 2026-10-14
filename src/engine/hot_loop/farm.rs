@@ -1086,6 +1086,8 @@ impl FarmState {
         // The bid/ask entry of the pair (the first of each pair of ids)
         // gives the request parameters (ibx#449).
         if bid_ask {
+            // A snapshot's time limit counts from here (ibx#494).
+            shared.market.push_top_ack(instrument, std::time::Instant::now());
             let sec_type = context.market.order_routing(instrument).0;
             if let Some(mut params) = tick_req_params(instrument, min_tick, &parts, &sec_type) {
                 // The frozen pair of a frozen contract gives its requests no

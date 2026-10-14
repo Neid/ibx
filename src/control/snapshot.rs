@@ -7,8 +7,14 @@
 
 use std::time::{Duration, Instant};
 
-/// A snapshot that is not complete ends this long after it started.
+/// A snapshot that is not complete ends this long after its top of book
+/// was acknowledged. The reference 10.51 ends it 11.0 to 12.0 s after it
+/// sends the top of book (four snapshots, paper, 12/10, 13/10 and
+/// 14/10/2026, the option farm connecting or not); the acknowledgement
+/// comes 0.1 to 0.4 s after the send (ibx#494).
 pub const TIMEOUT: Duration = Duration::from_millis(11_000);
+/// ibx's own limit for a snapshot whose top of book is never acknowledged.
+pub const UNACKED_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// The refusal of a snapshot with generic ticks.
 pub const GENERIC_TICKS_REFUSED: &str =
@@ -114,13 +120,25 @@ pub struct PlainSnapshot {
     /// Asked with no security type: typed once the engine knows the
     /// definition's (ibx#676).
     pub untyped: bool,
+    /// Its top of book was acknowledged (`started` is then that time), or
+    /// it joined a quote already there (ibx#494).
+    pub acked: bool,
 }
 
 impl PlainSnapshot {
     pub fn new(sec_type: &str, started: Instant) -> Self {
         Self {
             started, sent: premarked(sec_type), option: is_option(sec_type),
-            index: sec_type.eq_ignore_ascii_case("IND"), untyped: sec_type.is_empty(),
+            index: sec_type.eq_ignore_ascii_case("IND"), untyped: sec_type.is_empty(), acked: false,
+        }
+    }
+
+    /// Its top of book was acknowledged at `at`: the time limit counts
+    /// from there, once.
+    pub fn acked_at(&mut self, at: Instant) {
+        if !self.acked {
+            self.acked = true;
+            self.started = at.max(self.started);
         }
     }
 
@@ -160,7 +178,7 @@ impl PlainSnapshot {
     }
 
     pub fn timed_out(&self, now: Instant) -> bool {
-        now.duration_since(self.started) >= TIMEOUT
+        now.duration_since(self.started) >= if self.acked { TIMEOUT } else { UNACKED_TIMEOUT }
     }
 }
 
@@ -257,12 +275,20 @@ mod tests {
         assert!(opt.complete());
     }
 
+    // ibx#494: 11 s from the acknowledgement of its top of book; before
+    // it (a farm still connecting), only ibx's own longer limit.
     #[test]
-    fn eleven_seconds_end_it() {
+    fn eleven_seconds_after_the_acknowledgement_end_it() {
         let start = Instant::now();
-        let s = PlainSnapshot::new("STK", start);
-        assert!(!s.timed_out(start + Duration::from_millis(10_999)));
-        assert!(s.timed_out(start + Duration::from_millis(11_000)));
+        let mut s = PlainSnapshot::new("STK", start);
+        assert!(!s.timed_out(start + Duration::from_millis(30_000)));
+        assert!(s.timed_out(start + UNACKED_TIMEOUT));
+        let ack = start + Duration::from_millis(13_000);
+        s.acked_at(ack);
+        assert!(!s.timed_out(ack + Duration::from_millis(10_999)));
+        assert!(s.timed_out(ack + Duration::from_millis(11_000)));
+        s.acked_at(ack + Duration::from_millis(5_000));
+        assert_eq!(s.started, ack, "the first acknowledgement counts");
     }
 
     #[test]

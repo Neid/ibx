@@ -718,6 +718,9 @@ pub struct MarketDataState {
     /// The security type of a snapshot's contract taken from its
     /// definition (ibx#676).
     md_kinds: Mutex<Vec<(InstrumentId, String)>>,
+    /// The acknowledgements of top-of-book subscriptions, with their time:
+    /// a snapshot's time limit counts from it (ibx#494).
+    top_acks: Mutex<Vec<(InstrumentId, std::time::Instant)>>,
     /// The request parameters of acked subscriptions (ibx#449).
     tick_req_params: Mutex<Vec<TickReqParams>>,
     /// Request parameters known before the acknowledgement, and whether the
@@ -828,6 +831,7 @@ impl MarketDataState {
             md_merges: Mutex::new(Vec::new()),
             md_resolved: Mutex::new(Vec::new()),
             md_kinds: Mutex::new(Vec::new()),
+            top_acks: Mutex::new(Vec::new()),
             tick_req_params: Mutex::new(Vec::new()),
             early_tick_req_params: Mutex::new(Vec::new()),
             snapshot_acks: Mutex::new(Vec::new()),
@@ -908,6 +912,18 @@ impl MarketDataState {
     /// its definition (ibx#676).
     #[doc(hidden)] pub fn push_md_kind(&self, instrument: InstrumentId, sec_type: &str) {
         self.md_kinds.lock().unwrap().push((instrument, sec_type.to_string()));
+    }
+
+    /// A top-of-book subscription of the instrument was acknowledged now
+    /// (ibx#494).
+    pub fn push_top_ack(&self, instrument: InstrumentId, at: std::time::Instant) {
+        self.top_acks.lock().unwrap().push((instrument, at));
+    }
+
+    pub fn drain_top_acks(&self) -> Vec<(InstrumentId, std::time::Instant)> {
+        let mut acks = self.top_acks.lock().unwrap();
+        if acks.is_empty() { return Vec::new(); }
+        acks.drain(..).collect()
     }
 
     pub fn drain_md_kinds(&self) -> Vec<(InstrumentId, String)> {

@@ -942,8 +942,12 @@ impl HotLoop {
         if self.farm.optmd.is_empty() {
             return;
         }
-        let (optmd, optcalc, context, shared) = (&mut self.farm.optmd, &mut self.ccp.optcalc, &self.context, &self.shared);
-        optmd.passes(now, context, shared, |terms, f| optcalc.with_inputs(terms, |inp| f(inp)));
+        // A contract on its frozen slot: the model reads the frozen pair's
+        // prices there (ibx#494).
+        let farm = &mut self.farm;
+        let (optmd, status, optcalc, context, shared) = (&mut farm.optmd, &farm.status, &mut self.ccp.optcalc, &self.context, &self.shared);
+        let quote_slot = |i: InstrumentId| status.iter().find_map(|e| (e.instrument == i).then_some(e.frozen).flatten()).unwrap_or(i);
+        optmd.passes(now, context, shared, quote_slot, |terms, f| optcalc.with_inputs(terms, |inp| f(inp)));
     }
 
     /// The frozen slots whose farm was lost (ibx#447): their requests go

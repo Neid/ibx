@@ -595,7 +595,13 @@ impl ClientCore {
         }
         if let Some(sec_type) = kind.as_ref().and_then(|k| k.snapshot) {
             let mut snaps = self.snapshot_reqs.lock().unwrap();
-            snaps.insert(req_id, PlainSnapshot::new(sec_type, std::time::Instant::now()));
+            let mut snap = PlainSnapshot::new(sec_type, std::time::Instant::now());
+            // A request that joins a quote sends no top of book of its own:
+            // its time limit counts from now (ibx#494).
+            if joining {
+                snap.acked_at(snap.started);
+            }
+            snaps.insert(req_id, snap);
             self.snapshot_count.store(snaps.len(), Ordering::Release);
         }
         let delayed = self.delayed_reqs.lock().unwrap().contains(&req_id);
@@ -660,6 +666,17 @@ impl ClientCore {
     /// `mdoff` gets no top of book tick; its snapshot still ends as the
     /// quote completes (ibx#444).
     pub fn poll_market_data(&self, shared: &SharedState, now: Option<std::time::Instant>, out: &mut Vec<MdOut>) {
+        // A snapshot's time limit counts from its top of book's
+        // acknowledgement (ibx#494).
+        for (instrument, at) in shared.market.drain_top_acks() {
+            let reqs: Vec<i64> = self.instrument_to_req.lock().unwrap().get(&instrument).cloned().unwrap_or_default();
+            let mut snaps = self.snapshot_reqs.lock().unwrap();
+            for req in reqs {
+                if let Some(snap) = snaps.get_mut(&req) {
+                    snap.acked_at(at);
+                }
+            }
+        }
         // A snapshot asked with no type takes its definition's (ibx#676).
         for (instrument, kind) in shared.market.drain_md_kinds() {
             let reqs: Vec<i64> = self.instrument_to_req.lock().unwrap().get(&instrument).cloned().unwrap_or_default();
@@ -675,7 +692,21 @@ impl ClientCore {
         let tail = queue.tail();
         let snapshots = self.snapshot_count.load(Ordering::Acquire) > 0;
         // The generic tick blocks read before the queue's end (ibx#450).
-        let generic = shared.market.take_generic_ticks(head);
+        let mut generic = shared.market.take_generic_ticks(head);
+        // The option model of a contract whose requests went to its frozen
+        // slot computes on the real-time slot: its values go to the frozen
+        // slot's requests (ibx#494; the reference 10.51, paper, after hours
+        // 14/10/2026: a snapshot in frozen mode gets ticks 13, 11 and 12).
+        if !generic.is_empty() {
+            let frozen = self.md_frozen.lock().unwrap();
+            if !frozen.is_empty() {
+                for g in &mut generic {
+                    if let Some(&to) = frozen.get(&g.instrument) {
+                        g.instrument = to;
+                    }
+                }
+            }
+        }
         if head == tail && !snapshots && self.md_joins_waiting.load(Ordering::Acquire) == 0 && generic.is_empty() {
             return;
         }
@@ -1392,8 +1423,24 @@ mod tests {
             "option:2:13:0.24:14.949999809265137", "option:2:11:0.25:14.949999809265137", "option:2:12:0.24:14.949999809265137"],
             "{lines:?}");
         let mut out = Vec::new();
-        core.poll_market_data(&shared, Some(std::time::Instant::now() + crate::control::snapshot::TIMEOUT), &mut out);
+        let acked = std::time::Instant::now();
+        shared.market.push_top_ack(6, acked);
+        core.poll_market_data(&shared, Some(acked + crate::control::snapshot::TIMEOUT), &mut out);
         assert_eq!(lines_of(&out), [format!("option:2:10:{NO}:14.949999809265137"), "end:2".to_string()]);
+    }
+
+    // ibx#494 (the reference 10.51, paper, after hours 14/10/2026): a
+    // request moved to its contract's frozen slot gets the computations its
+    // option model makes on the real-time slot.
+    #[test]
+    fn a_request_on_the_frozen_slot_gets_the_models_computations() {
+        let (core, shared) = (ClientCore::new(), SharedState::new());
+        let (live, frozen) = (5 as InstrumentId, 9 as InstrumentId);
+        assert!(core.attach_md_request(&shared, 1, frozen, true, "OPT", "SMART", None, false, false));
+        core.md_frozen.lock().unwrap().insert(live, frozen);
+        push_computations(&shared, live, &[computation(13, 0.24)]);
+        let lines = poll(&core, &shared);
+        assert!(lines.iter().any(|l| l.starts_with("option:1:13:0.24")), "{lines:?}");
     }
 
     fn lines_of(out: &[MdOut]) -> Vec<String> {
