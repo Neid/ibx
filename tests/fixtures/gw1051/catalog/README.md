@@ -14,16 +14,15 @@ capture repository (its error code and order attribute tables of 10.51). The sam
 |---|---|---|
 | `error_codes.csv` | 637 | `code`, `message`, `wrapping`, `captured_text` (as in 1040) |
 | `order_attributes.csv` | 336 | `tag`, `attribute`, `kind` (as in 1040) |
+| `order_local_rules.csv` | 205 | `id`, `code`, `api_code`, `stage`, `text`, `condition` (as in 1040; `id` differs, see below) |
 
 Not made yet:
 
-- `order_local_rules.csv`: needs a reading of the 1051 order checks (request decoder, first checks, order build,
-  order rules, id flow, modify, cancel), as the 1040 one was read.
 - `order_writers.csv`: waits for capture issue deepentropy/ib-agent#214.
 
-Until they exist, the 1040 files are the only local rules and writers tables. The tests read each file from 1051
-when it is here and from 1040 otherwise (`version_of` in `tests/gw_catalog/catalog.rs`, and the coverage matrix), so a
-1051 table added here is taken at once (since 14/10/2026).
+Until it exists, the 1040 file is the only writers table. The tests read each file from 1051 when it is here and
+from 1040 otherwise (`version_of` in `tests/gw_catalog/catalog.rs`, and the coverage matrix), so a 1051 table added
+here is taken at once (since 14/10/2026).
 
 ### error_codes.csv
 
@@ -61,3 +60,21 @@ writer, and the local and duration types, give `custom`. Rows ordered by tag, th
 The texts and names that hold a trademark term carry the placeholder `%TM%` in its place: the messages of codes
 2180, 10106, 10122, 10234, 10235 and 10247, and the attribute name of the order attribute 8015 (the same rows as in 1040). The
 tests read `%TM%` like `%s`: any text.
+
+### order_local_rules.csv
+
+Read on 14/10/2026 in the code of 1051 (ibx#659): every rule of the 1040 table found again in 1051 (141 the same,
+26 corrected or changed, one gone: 10087), and 38 rules new in 1051, among them those of the session levels 216 to 225.
+Stages, `api_code` and `text` as in 1040, with these differences:
+
+- `id` is `<code>-<n>`, n counting the rows of the same code in table order. It names no place in the gateway's code.
+- `condition` is written in plain terms, without names of the gateway's code.
+- `api_code`: the rules whose error the request handler sends as itself keep their own code (391, 10052, 10136, 10244,
+  10272, 10273, 10274, 10289, 10300, 10315, 10316, 10340, 10341, 135); the 1040 table had some of them as 321 or 320.
+  The hedge rules 10006 to 10010 and 10033 come as 320, as a reading error; 10027 comes as 321 at the first checks
+  (code read; ibx sends 320, ibx#688).
+- `text`: the handler named in a 321 text is `PlaceOrder(3)`, as a client at session level 225 gets it (seen on
+  12/10/2026); the tests read it as the name ibx gives at level 214 (ibx#591).
+
+What the code read did not settle, and the rows ibx is not compared with yet: ibx#688 and the line "local order rules
+of 10.51" of ibx#635.

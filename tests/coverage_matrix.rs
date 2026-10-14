@@ -9,7 +9,7 @@
 //! - `order_request`: a variant of `OrderRequest`;
 //! - `eclient`: a public `EClient` method;
 //! - `local_rule`: a local order refusal of the gateway catalog
-//!   (`tests/fixtures/gw1040/catalog/order_local_rules.csv`, ibx#485);
+//!   (`order_local_rules.csv` of 10.51, ibx#485, ibx#659);
 //! - `attribute`: an order attribute of the gateway catalog
 //!   (`order_attributes.csv`, ibx#485).
 //! - `decoder`: a decoder of network input, with its property test
