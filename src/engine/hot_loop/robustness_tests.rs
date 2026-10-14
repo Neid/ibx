@@ -36,10 +36,10 @@ fn start(farm: Connection, ccp: Connection, hmds: Option<Connection>) -> Running
     let shared = Arc::new(SharedState::new());
     let (mut engine, control) = HotLoop::with_connections(
         shared.clone(), None, "DUXXXXXXX".into(), farm, ccp, hmds, None);
-    let handle = std::thread::spawn(move || {
+    let handle = std::thread::Builder::new().stack_size(super::ENGINE_STACK).spawn(move || {
         engine.run();
         engine
-    });
+    }).unwrap();
     Running { handle, control, shared }
 }
 

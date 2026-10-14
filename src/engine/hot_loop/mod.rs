@@ -157,6 +157,11 @@ const WAIT_TIMEOUT_MS: i32 = 1;
 /// The consumers are woken at least this often while nothing comes.
 const NOTIFY_PERIOD: std::time::Duration = std::time::Duration::from_millis(1);
 
+/// The stack of the engine's thread. A debug build of the loop needs about
+/// 2 MB, the default of a new thread, and overflowed it (ibx#694); the
+/// memory is reserved, not used.
+pub const ENGINE_STACK: usize = 16 * 1024 * 1024;
+
 /// Maximum HMDS reconnect attempts before giving up (ibx#187).
 /// Total wait at cap: 3+6+12+24+48 = 93s before final attempt fires.
 const HMDS_MAX_RECONNECT_ATTEMPTS: u32 = 6;
@@ -4521,7 +4526,8 @@ mod tests {
         engine.ccp.disconnected = true;
         assert!(engine.all_transports_down());
 
-        let handle = std::thread::spawn(move || { engine.run(); engine });
+        let handle = std::thread::Builder::new().stack_size(ENGINE_STACK)
+            .spawn(move || { engine.run(); engine }).unwrap();
         std::thread::sleep(Duration::from_millis(60));
         tx.send(ControlCommand::Shutdown).unwrap();
         let engine = handle.join().unwrap();

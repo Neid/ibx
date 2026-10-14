@@ -878,7 +878,14 @@ impl FarmState {
                 }
                 block = route.as_ref().and_then(|r| MdBlock::start(r.instrument, r.trade, tick.stats_block, queue));
             }
-            let Some(route) = route else { continue };
+            let Some(route) = route else {
+                // A request cancelled before its data came: the data goes
+                // to the contract's kept bid and ask (ibx#694).
+                if !tick.stats_block {
+                    context.market.apply_ended_tick(self.rx_farm, tick);
+                }
+                continue;
+            };
             let instrument = route.instrument;
             if let Some(b) = block.as_mut() {
                 b.note(tick);

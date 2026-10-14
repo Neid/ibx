@@ -211,6 +211,7 @@ impl EClient {
 
         let handle = thread::Builder::new()
             .name("ib-engine-hotloop".into())
+            .stack_size(crate::engine::hot_loop::ENGINE_STACK)
             .spawn(move || {
                 hot_loop.run_with_panic_recovery();
             })
