@@ -521,6 +521,16 @@ impl Wrapper for Recorder {
     fn open_order_end(&mut self) {
         self.lines.push("openOrderEnd".into());
     }
+    fn completed_order(&mut self, c: &Contract, o: &Order, state: &OrderState) {
+        self.lines.push(format!(
+            "completedOrder|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
+            c.con_id, c.symbol, o.action, n(o.total_quantity), o.order_type, order_price(o.lmt_price),
+            order_price(o.aux_price), o.tif, o.order_ref, perm(o.perm_id), n(o.filled_quantity), state.status,
+        ));
+    }
+    fn completed_orders_end(&mut self) {
+        self.lines.push("completedOrdersEnd".into());
+    }
     fn exec_details(&mut self, req_id: i64, c: &Contract, e: &Execution) {
         self.lines.push(format!(
             "execDetails|{req_id}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",

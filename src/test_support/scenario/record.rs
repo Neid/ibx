@@ -178,6 +178,21 @@ pub fn canonical(cb: &Value) -> Option<String> {
         ),
         "openOrder" => open_order_line(i(1), &a[2], &a[3], &a[4]),
         "openOrderEnd" => "openOrderEnd".into(),
+        // reqCompletedOrders (ibx#515): the contract, the order's main
+        // fields, its filled quantity and its final status.
+        "completedOrder" => {
+            let (c, o) = (&a[1], &a[2]);
+            let os = |k: &str| o[k].as_str().unwrap_or("").to_string();
+            let price = |k: &str| if o[k].is_null() { "-".to_string() } else { order_price(num(&o[k])) };
+            format!(
+                "completedOrder|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
+                c["conId"].as_i64().unwrap_or(0), c["symbol"].as_str().unwrap_or(""), os("action"), n(num(&o["totalQuantity"])),
+                os("orderType"), price("lmtPrice"), price("auxPrice"), os("tif"), os("orderRef"),
+                perm(if o["permId"].is_null() { 0 } else { num(&o["permId"]) as i64 }),
+                n(num(&o["filledQuantity"])), a[3]["status"].as_str().unwrap_or(""),
+            )
+        }
+        "completedOrdersEnd" => "completedOrdersEnd".into(),
         "execDetails" => {
             let (c, e) = (&a[2], &a[3]);
             let es = |k: &str| e[k].as_str().unwrap_or("").to_string();

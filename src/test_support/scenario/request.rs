@@ -143,6 +143,7 @@ pub fn make(c: &EClient, r: &Rec, rec: &mut Recorder) -> bool {
         "REQ_GLOBAL_CANCEL" => { let _ = c.req_global_cancel(); }
         "REQ_OPEN_ORDERS" => c.req_open_orders(rec),
         "REQ_ALL_OPEN_ORDERS" => c.req_all_open_orders(rec),
+        "REQ_COMPLETED_ORDERS" => c.req_completed_orders(rec),
         "REQ_POSITIONS" => c.req_positions(rec),
         "CANCEL_POSITIONS" => c.cancel_positions(),
         "REQ_MKT_DATA" => {

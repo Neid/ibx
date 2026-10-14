@@ -481,12 +481,30 @@ fn plain_trail_follows_the_server() {
 // Left out: the version notice 2172 (from the logon frame, which the replay
 // has not); the P&L callbacks and the account request of the P&L partition
 // (the test below); the order of the position rows, which is the order of a
-// hash set over the real account id: the rows are compared sorted.
+// hash set over the real account id: the rows are compared sorted; the
+// rows of reqCompletedOrders, which the reference asks the server for
+// (ibx#695; the test below), its end compared.
 #[test]
 fn session_start_first_client() {
+    session_start(false);
+}
+
+#[test]
+#[ignore = "ibx#695: reqCompletedOrders does not ask the server for the day's orders"]
+fn session_start_with_completed_orders() {
+    session_start(true);
+}
+
+fn session_start(completed: bool) {
     let core = |f: &Fields| f.iter().any(|(t, v)| *t == 6700 && v == "Core");
-    let keep = |l: &str| !(l.starts_with("error|-1|2172|") || l.starts_with("pnl|") || l.starts_with("pnlSingle|")
-        || l.starts_with("error|9831|2150|"));
+    fn left_out(l: &str) -> bool {
+        l.starts_with("error|-1|2172|") || l.starts_with("pnl|") || l.starts_with("pnlSingle|") || l.starts_with("error|9831|2150|")
+    }
+    let keep: fn(&str) -> bool = if completed {
+        |l| !left_out(l)
+    } else {
+        |l| !left_out(l) && !l.starts_with("completedOrder|")
+    };
     let o = replay(&load_scenario("20261007/session_start"),
         &Options::default().compare(&[ORDER, SUBSCRIPTION]).skip_frame(core).keep(keep));
     if std::env::var_os("IBX_SCENARIO_DUMP").is_some() {
