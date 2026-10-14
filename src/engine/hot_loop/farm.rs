@@ -242,6 +242,8 @@ pub(crate) struct MdEntry {
     pub(crate) sec_type: String,
     pub(crate) req_type: &'static str,
     pub(crate) mode_9887: i32,
+    /// Asked for a snapshot (ibx#696).
+    pub(crate) snapshot: bool,
 }
 
 /// The security type as the request writes it: a stock has a code of its
@@ -1877,7 +1879,7 @@ impl FarmState {
         for &(req_id, exch, req_type) in &entries {
             self.md_entries.push(MdEntry {
                 req_id, instrument, farm, con_id: con_id_str.clone(), exchange: exch.to_string(),
-                sec_type: sec_type.to_string(), req_type, mode_9887,
+                sec_type: sec_type.to_string(), req_type, mode_9887, snapshot: sub.snapshot,
             });
         }
 
@@ -2167,6 +2169,11 @@ impl FarmState {
         self.md_req_to_instrument.retain(|(r, _)| !reqs.contains(r));
         let mut entries: Vec<MdEntry> = self.md_entries.iter().filter(|e| reqs.contains(&e.req_id)).cloned().collect();
         self.md_entries.retain(|e| !reqs.contains(&e.req_id));
+        // An option snapshot's own entries are never cancelled: the
+        // reference 10.51 left every one of them in five recordings (paper,
+        // 13/10 and 14/10/2026, after hours), and cancelled those of stock
+        // and index snapshots (ibx#696).
+        entries.retain(|e| !(e.snapshot && e.sec_type == "OPT"));
         // By request type, the newest entry first: a subscription asked
         // again with delayed data cancels its delayed and rejected entries
         // as 442 delayed, 442, 443 delayed, 443 (captured 05/10/2026).

@@ -255,10 +255,17 @@ fn a_snapshot_with_known_parameters_sends_its_entries_at_once() {
     assert_eq!(codes, ["398", "732", "733", "734", "735", "736", "737"]);
     let codes: Vec<&str> = msgs[4].split('|').filter_map(|f| f.strip_prefix("264=")).collect();
     assert_eq!(codes, ["687", "398"]);
+    let snapshot_ids: Vec<String> = msgs[0].split('|').filter_map(|f| f.strip_prefix("262=")).map(String::from).collect();
 
     // Its end, in the reference's order (20:41:08.17).
     engine.route_md_cancel(id);
     let msgs = sent(&mut farm_side);
+    // The snapshot's own entries are not cancelled (ibx#696; the reference
+    // 10.51, paper, five recordings of 13/10 and 14/10/2026).
+    for m in &msgs {
+        let ids: Vec<&str> = m.split('|').filter_map(|f| f.strip_prefix("262=")).collect();
+        assert!(snapshot_ids.iter().all(|s| !ids.contains(&s.as_str())), "{m}");
+    }
     let codes: Vec<Vec<&str>> = msgs.iter().map(|m| m.split('|').filter_map(|f| f.strip_prefix("264=")).collect()).collect();
     assert_eq!(codes[..5], [vec!["733", "732"], vec!["398", "687"], vec!["442", "443"], vec!["442", "443"], vec!["737", "736", "735", "734", "398"]],
         "{msgs:#?}");
