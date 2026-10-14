@@ -5362,7 +5362,9 @@ mod tests {
     fn sweep_keeps_a_callers_request_past_any_deadline() {
         let mut ccp = CcpState::new();
         let shared = SharedState::new();
-        let past = Instant::now() - std::time::Duration::from_secs(3600);
+        // Any moment past is past the deadline; an hour back panics in the
+        // first hour after the machine starts.
+        let past = Instant::now() - std::time::Duration::from_secs(1);
         ccp.pending_secdef.push((7, true, past));
         ccp.pending_secdef.push((-7, true, past));
 
