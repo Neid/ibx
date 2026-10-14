@@ -328,6 +328,20 @@ def test_partial_fills_then_executions():
     assert sum(1 for l in theirs if l.startswith("execDetails|-1|") and "|SLD|200|" in l) == 1
 
 
+# The modify of a cancelled order, with its answer (14/10/2026 in RTH, the
+# reference 10.51 at level 214, ibx#515): Cancelled and 202, then 104 for the
+# modify and nothing sent. As the Rust test: the server reported the order
+# pending then working in one run, working twice in the other.
+@pytest.mark.parametrize("name,first", [("modify_cancelled", "PreSubmitted"),
+                                        ("modify_cancelled_no_pending", "Submitted")])
+def test_modify_of_a_cancelled_order(name, first):
+    out = replay(f"gw1051/20261014/{name}", compare=["order"])
+    assert out["frames_compared"] == 2
+    theirs = assert_same(out)
+    assert [l.split("|")[2] for l in theirs if l.startswith("orderStatus|")] == [first, "Submitted", "Cancelled"]
+    assert theirs[-1].startswith("error|") and "|104|" in theirs[-1]
+
+
 # SPY then QQQ top of book in the session (28/09/2026), up to the second SPY
 # request (src/golden/l1.rs `spy_and_qqq_in_the_session`).
 def test_top_of_book_in_the_session():

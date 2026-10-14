@@ -82,6 +82,27 @@ fn cancel_gives_pending_cancel_then_cancelled() {
     assert!(o.theirs.iter().any(|(_, l)| l.starts_with("orderStatus|2|PendingCancel")));
 }
 
+// The modify of a cancelled order, with its answer (14/10/2026 in RTH, the
+// reference 10.51 with the client at level 214, ibx#515): a far LMT, its
+// cancel 4 s later (Cancelled, 202), then the same order modified 2 s
+// after: 104, and nothing sent to the server. Recorded twice: the server
+// reported the order pending then working (PreSubmitted, Submitted), and in
+// the other run working twice (Submitted twice).
+#[test]
+fn modify_of_a_cancelled_order() {
+    for (name, first) in [("gw1051/20261014/modify_cancelled", "PreSubmitted"),
+                          ("gw1051/20261014/modify_cancelled_no_pending", "Submitted")] {
+        let o = check(name, orders());
+        // The new order and the cancel; the modify sends nothing.
+        assert_eq!(o.frames_compared, 2, "{name}");
+        let status: Vec<&str> = o.theirs.iter().filter(|(_, l)| l.starts_with("orderStatus|"))
+            .map(|(_, l)| l.split('|').nth(2).unwrap_or("")).collect();
+        assert_eq!(status, [first, "Submitted", "Cancelled"], "{name}");
+        let last = &o.theirs.last().expect("callbacks").1;
+        assert!(last.starts_with("error|") && last.contains("|104|"), "{name}: {last}");
+    }
+}
+
 // The cancel of an unknown order (26/09/2026, ibx#464): 10147, nothing on
 // the wire.
 #[test]
