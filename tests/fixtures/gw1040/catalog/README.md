@@ -10,8 +10,8 @@ modify, cancel, combo and local validation), read in its code.
 | File | Rows | Columns |
 |---|---|---|
 | `error_codes.csv` | 612 | `code`, `message` (format string, `%s` placeholders; alternative texts joined by ` \|\| `), `wrapping`, `captured_text` |
-| `order_local_rules.csv` | 168 | `id` (code and raise site), `code`, `api_code`, `stage`, `text`, `condition` |
-| `order_writers.csv` | 973 | `msg` (`D` new order, `G` replace, `F` cancel), `pos`, `tag`, `block`, `site`, `when`, `condition` |
+| `order_local_rules.csv` | 168 | `id` (code and a number), `code`, `api_code`, `stage`, `text`, `condition` |
+| `order_writers.csv` | 973 | `msg` (`D` new order, `G` replace, `F` cancel), `pos`, `tag`, `block`, `when`, `condition` |
 | `order_attributes.csv` | 328 | `tag`, `attribute`, `kind` |
 
 ### error_codes.csv
@@ -28,6 +28,10 @@ modify, cancel, combo and local validation), read in its code.
 - `%SHORT_COMPNAME%`, `%SHORT_PRODNAME%` are the gateway's own placeholders (product and company names).
 
 ### order_local_rules.csv
+
+Since 14/10/2026 (ibx#686) `id` is `<code>-<n>`, n counting the rows of the same code in table order, and the writers
+table has no column naming the place of each field in the gateway's code. The tests read the 1051 rules table
+(ibx#659); this one stays for the 1040 recordings.
 
 One row per refusal the gateway makes before sending an order (and the modify and cancel refusals). `stage`:
 `read` (the request decoder: the client gets 320 "Error reading request:" with the rule text, except the date

@@ -540,7 +540,7 @@ rule,ORDER-MODIFY 6107,on a new child (35=D only),no test
 rule,ORDER-MODIFY 5,Local modify refusals (no 35=G sent),src/api/client/tests.rs::modify_of_side_or_oca_is_refused_before_sending
 rule,ORDER-MODIFY 6,After the send,no test
 rule,ORDER-MODIFY 7,Summary for a client (IBX),no test
-rule,ORDER-OUTSIDERTH 0,Opaque flags (obfuscation),no test
+rule,ORDER-OUTSIDERTH 0,Opaque flags,no test
 rule,ORDER-OUTSIDERTH 1,Where 2109 is raised and where 6433 is written,no test
 rule,ORDER-OUTSIDERTH 2,The rule: (384 bytes),no test
 rule,ORDER-OUTSIDERTH 2.1,Market-type rule (A4),no test
@@ -571,7 +571,7 @@ rule,ORDER-STATUS 7,API socket side (gateway to the reference API client),src/go
 rule,ORDER-STATUS 8,Parent and permId,no test
 rule,ORDER-SUBMIT 1,Entry path: API placeOrder to,src/golden/orders.rs::premarket_order_types
 rule,ORDER-SUBMIT 2,The 35=D body,src/golden/orders.rs::premarket_order_types
-rule,ORDER-SUBMIT 2.1,How to read the obfuscated code,no test
+rule,ORDER-SUBMIT 2.1,How to read the spec's names,no test
 rule,ORDER-SUBMIT 2.2,Emission order,src/golden/orders.rs::premarket_order_types
 rule,ORDER-SUBMIT 2.3,"Sub-block (price, account, GTD, short sale, attributes, algo)",src/golden/orders.rs::premarket_order_types
 rule,ORDER-SUBMIT 2.4,Attribute block,src/golden/orders.rs::premarket_order_types
