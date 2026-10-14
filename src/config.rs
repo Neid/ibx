@@ -50,8 +50,7 @@ pub fn test_secure_connect() -> bool {
 }
 
 /// The reference's API precaution "Bypass Redirect Order warning for Stock
-/// API Orders" (`ApiSettings.n()`, `m_bypassRedirectWarning`, false by
-/// default): off, a stock order directed to an exchange other than SMART
+/// API Orders" (false by default): off, a stock order directed to an exchange other than SMART
 /// is discarded with 10311 (10329 for OVERNIGHT and IBEOS), ibx#486.
 /// `IBX_BYPASS_REDIRECT_ORDER_WARNING=true` (or `1`) turns the bypass on.
 pub fn bypass_redirect_order_warning() -> bool {

@@ -7100,7 +7100,7 @@ mod tests {
 
     // ibx#263: all-or-none is refused with 10257 and nothing is sent when
     // the contract's order-type list for the order's exchange has no AON
-    // key, or has it in state 4 (`AllOrNone.h(pe)`, `jibtypes.i`); with
+    // key, or has it in state 4; with
     // the key (the captured AAPL lists of 28/09/2026: AON/1 on BEST,
     // AON/3 on ISLAND) the order goes out with its all-or-none flag.
     #[test]

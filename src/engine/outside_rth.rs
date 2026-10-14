@@ -173,7 +173,7 @@ pub(crate) fn outside_rth_applies(kind: RthKind, tif: u8, exchange: &str, types:
         && (tif != b'2' || exchange == "ARCA");
     // A combo (ibx#470, its BAG definition): never with a market-like
     // type, else when the time in force allows it or the type is a stop
-    // or touched one (`OutsideRth.a(pe, list, type, exch, tif)` step 2).
+    // or touched one.
     // Whether the combo's exchange enables outside RTH for combos (A3) is
     // not known here; it is taken as enabled.
     if types.sec_type == "BAG" {
