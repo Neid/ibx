@@ -65,6 +65,12 @@ pub fn load_codec(name: &str) -> Scenario {
 /// A four-leg scenario by its path under tests/fixtures/gw1040/scenarios/
 /// (`20260926/lmt_cancel`), with its decoded API side.
 pub fn load_scenario(rel: &str) -> Scenario {
+    // A scenario of the reference 10.51 recorded with the client at level
+    // 214: `gw1051/<date>/<name>` (ibx#515).
+    if let Some(rest) = rel.strip_prefix("gw1051/") {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/gw1051/scenarios");
+        return load_path(&dir.join(format!("{rest}.jsonl")));
+    }
     load_path(&fixtures_dir().join("scenarios").join(format!("{rel}.jsonl")))
 }
 

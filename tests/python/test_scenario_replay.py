@@ -76,6 +76,9 @@ class Recorder(EWrapper):
             "lastLiquidity": e.lastLiquidity,
         })
 
+    def exec_details_end(self, req_id):
+        self._add("execDetailsEnd", req_id)
+
     def commission_and_fees_report(self, r):
         self._add("commissionAndFeesReport", {
             "commissionAndFees": r.commissionAndFees, "currency": r.currency,
@@ -227,6 +230,13 @@ class Driver:
             c.cancel_real_time_bars(rid)
         elif name == "REQ_OPEN_ORDERS":
             c.req_open_orders()
+        elif name == "REQ_EXECUTIONS":
+            f = q.get("executionFilter", {})
+            filt = type("ExecutionFilter", (), {})()
+            filt.clientId = f.get("clientId", 0)
+            for k in ("acctCode", "time", "symbol", "secType", "exchange", "side"):
+                setattr(filt, k, f.get(k, ""))
+            c.req_executions(rid, filt)
         else:
             return False
         return True
@@ -305,6 +315,18 @@ def test_combo_fill_executions_and_commissions():
     theirs = assert_same(out, keep=lambda l: not l.startswith("position") and l.split("|")[1:2] != ["9501"])
     assert any(l.startswith("execDetails|") for l in theirs)
     assert any(l.startswith("commissionAndFeesReport|") for l in theirs)
+
+
+# Partial fills in RTH (14/10/2026, the reference 10.51 with the client at
+# level 214, ibx#515): three rounds of a marketable limit buying 300 F and
+# its sale, the second sale filled in two executions, reqExecutions after each
+# buy. As the Rust test: the quote ticks are left out (ibx#694) and the replay
+# stops before the closing global cancel.
+def test_partial_fills_then_executions():
+    out = replay("gw1051/20261014/partial_fills", compare=["order"], until=2137)
+    theirs = assert_same(out, keep=lambda l: not l.startswith("tick"))
+    assert sum(1 for l in theirs if l.startswith("execDetails|")) == 17
+    assert sum(1 for l in theirs if l.startswith("execDetails|-1|") and "|SLD|200|" in l) == 1
 
 
 # SPY then QQQ top of book in the session (28/09/2026), up to the second SPY

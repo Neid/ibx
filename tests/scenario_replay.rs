@@ -176,6 +176,34 @@ fn combo_fill_executions_and_commissions() {
     assert!(o.theirs.iter().any(|(_, l)| l.starts_with("commissionAndFeesReport|")));
 }
 
+// Partial fills in RTH (14/10/2026, the reference 10.51 with the client
+// at level 214, ibx#515): three rounds of a marketable limit buying 300 F
+// and its sale; the second sale filled in two executions (200 and 100),
+// each with its execution, openOrder and orderStatus, then two commission
+// reports; reqExecutions after each buy lists every execution of the
+// session, the split sale as two rows.
+// The quote ticks are left out: from the second request of F on, the
+// reference's kept quote has the farm's data that came after the earlier
+// request's cancel, which ibx drops (ibx#694; the test below). The replay
+// stops before the closing global cancel, whose answers depend on how long
+// ago each order filled (ibx#551) and on the positions of the session's
+// logon, which the recording does not hold.
+#[test]
+fn partial_fills_then_executions() {
+    let o = check("gw1051/20261014/partial_fills", Options::default().mask(known).skip_frame(exchange_map)
+        .keep(|l| !l.starts_with("tick")).until(2137));
+    // Seven executions as they came (the split sale twice), then 1, 3
+    // and 6 rows of reqExecutions.
+    assert_eq!(o.theirs.iter().filter(|(_, l)| l.starts_with("execDetails|")).count(), 17);
+    assert_eq!(o.theirs.iter().filter(|(_, l)| l.starts_with("execDetails|-1|") && l.contains("|SLD|200|")).count(), 1);
+}
+
+#[test]
+#[ignore = "ibx#694: the farm's data after a cancel does not update the kept quote"]
+fn partial_fills_with_the_quotes() {
+    check("gw1051/20261014/partial_fills", Options::default().mask(known).skip_frame(exchange_map).until(2137));
+}
+
 // A SMART stock combo whose symbol does not match its legs (26/09/2026,
 // ibx#470): the definition lookups of the combo and its legs, the
 // multiplier and leg confirmation queries, then 478; the cancels give

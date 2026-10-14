@@ -667,8 +667,20 @@ pub fn run(sc: &Scenario, opts: &Options, links: &mut Links, driver: &mut dyn Dr
     crate::gateway::set_machine_zone_for_test(Some(super::session::zone_of(&sc.header)));
     // A recording of 10.40 follows its order rules (ibx#660); one with no
     // version is from before 10.51.
-    if sc.header.get("gateway_version").and_then(|v| v.as_i64()).is_none_or(|v| v < 10500) {
+    let version = sc.header.get("gateway_version")
+        .and_then(|v| v.as_i64().or_else(|| v.as_str().and_then(|t| t.parse().ok())));
+    if version.is_none_or(|v| v < 10500) {
         links.shared.reference.set_form_10_40(true);
+    } else {
+        // 10.51 marks its entries and sizes come in shares (ibx#663).
+        links.engine.set_lot_sizes(false);
+    }
+    // The logon features of the recording's session, when its header has
+    // them (a recording of 10.51, ibx#515): the market data entry marks
+    // and the requests they gate follow them.
+    if let Some(features) = sc.header.get("logon_features").and_then(|v| v.as_str()) {
+        links.shared.reference.set_logon_features(features);
+        links.shared.reference.set_api_features(crate::control::logon::ApiFeatures::parse(features));
     }
     let recs = prepare(sc, opts);
     if opts.paced {
@@ -952,7 +964,7 @@ impl Run<'_> {
             // request with its mark (ibx#648; 1 and 1, the replay's session
             // having no extra price precision). Read in the 10.51 form until
             // the recordings are made again on 10.51 (ibx#604).
-            if kd == MARKET_DATA && msg_type(&b) == "V" {
+            if kd == MARKET_DATA && msg_type(&b) == "V" && self.links.shared.reference.form_10_40() {
                 b = with_entry_marks(b);
             }
             (self.opts.frame_mask)(&mut a);

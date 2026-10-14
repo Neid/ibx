@@ -65,7 +65,8 @@ jobs:
           # The official client library: the comparison report takes its
           # argument names and unset values. Same release as the recordings.
           pip install --quiet "ibapi @ git+https://github.com/deepentropy/ibapi.git@v10.47.01"
-          maturin develop --locked
+          # With the test helpers, so the scenario replays run (ibx#515).
+          maturin develop --locked --features python,test-support
 
       - name: Run the Python tests (live tests skipped)
         run: |

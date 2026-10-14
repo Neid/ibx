@@ -218,6 +218,7 @@ def export(src: Path, name: str, area: str, keep, notes: str):
 
 
 SCENARIOS = OUT.parent / "scenarios"
+SCENARIOS_1051 = OUT.parent.parent / "gw1051" / "scenarios"
 
 
 def api_sidecar(src: Path):
@@ -375,7 +376,10 @@ def main():
                     help="write the decoded API side of every scenario file (<name>.api.jsonl)")
     a = ap.parse_args()
     if a.scenarios:
-        for src in sorted(SCENARIOS.glob("*/*.jsonl")):
+        # The scenarios of the reference 10.40, and of 10.51 recorded with
+        # the client at level 214 (ibx#515).
+        sources = sorted(SCENARIOS.glob("*/*.jsonl")) + sorted(SCENARIOS_1051.glob("*/*.jsonl"))
+        for src in sources:
             if src.name.endswith(".api.jsonl") or (a.only and a.only not in src.stem):
                 continue
             api_sidecar(src)
