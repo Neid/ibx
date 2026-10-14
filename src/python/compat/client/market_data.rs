@@ -30,7 +30,9 @@ impl EClient {
         // A contract with no exchange: 321, the reference's first check.
         // An invalid generic tick list of a request that is no snapshot:
         // 321 (ibx#450).
-        if let Some((code, text)) = crate::client_core::ClientCore::market_data_exchange_refusal(&contract.exchange, &contract.sec_type)
+        // A contract text the 10.51 reference refuses (ibx#658).
+        if let Some((code, text)) = crate::client_core::ClientCore::contract_text_refusal(&contract.to_api(), "MarketDataRequest")
+            .or_else(|| crate::client_core::ClientCore::market_data_exchange_refusal(&contract.exchange, &contract.sec_type))
             .or_else(|| self.core.generic_tick_list_refusal(generic_tick_list, snapshot, &contract.sec_type, shared.reference.fundamentals_allowed()))
         {
             shared.orders.push_order_error(req_id, code, text);

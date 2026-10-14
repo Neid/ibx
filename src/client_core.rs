@@ -5427,6 +5427,28 @@ impl ClientCore {
     /// A reqMktData whose contract has no exchange (empty, the official
     /// API's default), but a news contract: 321, the reference's first
     /// check (MKTDATA-L1 1.2). Nothing is sent.
+    /// The 10.51 reference's refusals of a request's contract text (ibx#658;
+    /// observed on paper, 14/10/2026, on reqContractDetails and reqMktData):
+    /// a symbol with a character that is not ASCII, 10363 naming the
+    /// request's field ("ContractDataRequest", "MarketDataRequest"); a
+    /// contract month or date that is neither yyyyMM (a month 01 to 12) nor
+    /// yyyyMMdd (a real date), 10372. Nothing is sent.
+    pub fn contract_text_refusal(c: &crate::api::types::Contract, request: &str) -> Option<(i64, String)> {
+        if !c.symbol.is_ascii() {
+            return Some((10363, format!("Non-ASCII symbol in field {request}.contract.symbol.")));
+        }
+        let month = c.last_trade_date_or_contract_month.trim();
+        let digits = month.bytes().all(|b| b.is_ascii_digit());
+        let valid = month.is_empty()
+            // A date with a time after it is left to the server.
+            || month.contains(' ')
+            || (digits && month.len() == 6 && matches!(month[4..6].parse::<u8>(), Ok(1..=12)))
+            || (digits && month.len() == 8 && jiff::civil::Date::new(
+                month[0..4].parse().unwrap_or(0), month[4..6].parse().unwrap_or(0), month[6..8].parse().unwrap_or(0)).is_ok());
+        (!valid).then(|| (10372, "lastTradeDateOrContractMonth: The date entered is invalid. The correct format is \
+            yyyyMM for a contract month or yyyyMMdd for a date. E.g.: 202607 or 20260724.".to_string()))
+    }
+
     pub fn market_data_exchange_refusal(exchange: &str, sec_type: &str) -> Option<(i64, String)> {
         (exchange.is_empty() && !sec_type.eq_ignore_ascii_case("NEWS"))
             .then(|| (321, "Error validating request.-'bQ' : cause - Please enter exchange".to_string()))
@@ -5441,6 +5463,9 @@ impl ClientCore {
     /// fixed income one. An empty exchange or currency is not refused:
     /// those fields are left out of the lookup.
     pub fn contract_details_refusal(c: &crate::api::types::Contract) -> Option<(i64, String)> {
+        if let Some(refusal) = Self::contract_text_refusal(c, "ContractDataRequest") {
+            return Some(refusal);
+        }
         let refuse = |cause: &str| Some((321, format!("Error validating request.-'bK' : cause - {}", cause)));
         let sec_type = c.sec_type.trim();
         let news = sec_type.eq_ignore_ascii_case("NEWS");
@@ -7998,6 +8023,26 @@ mod tests {
         // An order this client does not track is not made finished.
         core.finish_before_report(9, "Filled", 0.0);
         assert!(!core.finished_orders.lock().unwrap().contains(&9));
+    }
+
+    // ibx#658 (the reference 10.51, paper, 14/10/2026): 10363 for a symbol
+    // that is not ASCII, naming the request's field; 10372 for each contract
+    // month or date the reference refused; the good forms pass.
+    #[test]
+    fn contract_texts_the_reference_refuses() {
+        let c = |symbol: &str, month: &str| crate::api::types::Contract {
+            symbol: symbol.into(), sec_type: "OPT".into(), exchange: "SMART".into(),
+            last_trade_date_or_contract_month: month.into(), ..Default::default()
+        };
+        assert_eq!(ClientCore::contract_text_refusal(&c("AAPL\u{c9}", ""), "ContractDataRequest"),
+            Some((10363, "Non-ASCII symbol in field ContractDataRequest.contract.symbol.".into())));
+        assert_eq!(ClientCore::contract_details_refusal(&c("AAPL\u{c9}", "")).map(|r| r.0), Some(10363));
+        for bad in ["2026-12", "20261", "202613", "20261232", "2026121", "abc"] {
+            assert_eq!(ClientCore::contract_text_refusal(&c("AAPL", bad), "MarketDataRequest").map(|r| r.0), Some(10372), "{bad}");
+        }
+        for good in ["", "202612", "20261218"] {
+            assert_eq!(ClientCore::contract_text_refusal(&c("AAPL", good), "MarketDataRequest"), None, "{good}");
+        }
     }
 
     // ibx#665 (the reference 10.51, paper, 13/10/2026): an AccuDistr order
