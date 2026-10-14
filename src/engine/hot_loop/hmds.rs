@@ -71,6 +71,9 @@ pub(crate) struct HmdsState {
     pub(crate) scanner_params_waiting: u32,
     /// Row limit of each scan type, from the scanner parameters (ibx#456).
     pub(crate) scan_size_limits: std::collections::HashMap<String, u32>,
+    /// The scan codes and filter codes of the parameters (ibx#657).
+    pub(crate) scan_codes: std::collections::HashSet<String>,
+    pub(crate) filter_codes: std::collections::HashSet<String>,
     /// Live scanner subscriptions, matched to results by their id (ibx#457).
     pub(crate) pending_scanner: Vec<ScannerSub>,
     /// The ids of `pending_scanner` in the order the waiting subscriptions
@@ -492,6 +495,8 @@ impl HmdsState {
             scanner_params: None,
             scanner_params_waiting: 0,
             scan_size_limits: std::collections::HashMap::new(),
+            scan_codes: std::collections::HashSet::new(),
+            filter_codes: std::collections::HashSet::new(),
             pending_scanner: Vec::new(),
             scanner_table: Default::default(),
             pending_news: Vec::new(),
@@ -1880,8 +1885,9 @@ impl HmdsState {
             shared.reference.push_scanner_params(xml.to_string());
         }
         self.scan_size_limits = crate::control::scanner::scan_size_limits(xml);
+        (self.scan_codes, self.filter_codes) = crate::control::scanner::parameter_codes(xml);
         self.scanner_params = Some(xml.to_string());
-        self.send_waiting_scanners(hmds_conn, hb);
+        self.send_waiting_scanners(hmds_conn, hb, shared);
         self.scanner_table.remove(crate::control::scanner::ScannerTable::PARAMS_REQUEST);
     }
 
@@ -1889,9 +1895,30 @@ impl HmdsState {
     /// goes out only once the scanner parameters are known, as the
     /// reference does: its row count depends on the scan type's limit
     /// there (ibx#456).
-    fn send_waiting_scanners(&mut self, hmds_conn: &mut Option<Connection>, hb: &mut HeartbeatState) {
+    fn send_waiting_scanners(&mut self, hmds_conn: &mut Option<Connection>, hb: &mut HeartbeatState, shared: &SharedState) {
         if self.scanner_params.is_none() {
             return;
+        }
+        // A scan code or a filter the parameters do not name: 162 and the
+        // subscription is gone, nothing sent (ibx#657; the reference 10.51,
+        // paper, 14/10/2026: "Scanner type with code NOT_A_SCAN_CODE is
+        // disabled.", "Scanner filter notAFilter is disabled."; a code of
+        // another instrument, named in the parameters, is sent).
+        let refused: Vec<(String, String)> = self.pending_scanner.iter().filter(|s| !s.sent).filter_map(|s| {
+            let text = if !self.scan_codes.is_empty() && !self.scan_codes.contains(&s.request.scan_code) {
+                format!("Scanner type with code {} is disabled.", s.request.scan_code)
+            } else {
+                let bad = s.request.filters.iter().find(|(code, _)| !self.filter_codes.is_empty() && !self.filter_codes.contains(code))?;
+                format!("Scanner filter {} is disabled.", bad.0)
+            };
+            Some((s.scan_id.clone(), text))
+        }).collect();
+        for (scan_id, text) in refused {
+            if let Some(pos) = self.pending_scanner.iter().position(|s| s.scan_id == scan_id) {
+                let sub = self.drop_scanner(pos);
+                log::warn!("Scanner subscription {} refused: {}", sub.req_id, text);
+                shared.reference.push_historical_error(sub.req_id, 162, historical_service_error(&text));
+            }
         }
         // Several wait only for the parameters: they go out in the
         // reference's order, not the order of the requests (ibx#513).
@@ -1973,12 +2000,13 @@ impl HmdsState {
 
     /// Start a scanner subscription (ibx#456): sent at once when the
     /// scanner parameters are known, else after they arrive.
-    pub(crate) fn send_scanner_subscribe(&mut self, req_id: ReqId, client_id: i64, request: crate::control::scanner::ScannerSubscription, now: Instant, hmds_conn: &mut Option<Connection>, hb: &mut HeartbeatState) {
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn send_scanner_subscribe(&mut self, req_id: ReqId, client_id: i64, request: crate::control::scanner::ScannerSubscription, now: Instant, hmds_conn: &mut Option<Connection>, hb: &mut HeartbeatState, shared: &SharedState) {
         let scan_id = crate::control::scanner::scanner_subscription_id(client_id, req_id);
         self.scanner_table.insert(&scan_id);
         self.pending_scanner.push(ScannerSub { scan_id, req_id, request, xml: None, sent: false });
         if self.scanner_params.is_some() {
-            self.send_waiting_scanners(hmds_conn, hb);
+            self.send_waiting_scanners(hmds_conn, hb, shared);
         } else {
             self.need_scanner_params(now, hmds_conn, hb);
         }

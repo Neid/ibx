@@ -2322,7 +2322,7 @@ impl HotLoop {
                     } else if self.hmds_conn.is_none() {
                         self.emit_hmds_unavailable(req_id, false);
                     } else {
-                        self.hmds.send_scanner_subscribe(req_id, client_id, subscription, self.pace_now(), &mut self.hmds_conn, &mut self.hb);
+                        self.hmds.send_scanner_subscribe(req_id, client_id, subscription, self.pace_now(), &mut self.hmds_conn, &mut self.hb, &self.shared);
                     }
                 }
                 ControlCommand::CancelScanner { req_id } => {
@@ -5172,6 +5172,35 @@ mod tests {
     // parameters, the rows are cut to the asked count, and a cancel
     // before the parameters arrive sends nothing.
     #[test]
+    fn scan_codes_and_filters_the_parameters_do_not_name_are_refused() {
+        // ibx#657 (the reference 10.51, paper, 14/10/2026).
+        let shared = Arc::new(SharedState::new());
+        let (mut engine, mut server, tx) = scanner_engine(&shared);
+        engine.hmds.max_real_time_requests = 100;
+        let cmd = |req_id: ReqId, code: &str, filters: Vec<(String, String)>| ControlCommand::SubscribeScanner {
+            req_id, client_id: 5,
+            subscription: crate::control::scanner::ScannerSubscription {
+                instrument: "STK".into(), location_code: "STK.US.MAJOR".into(),
+                scan_code: code.into(), number_of_rows: 5, filters,
+            },
+        };
+        tx.send(cmd(1, "NOT_A_SCAN_CODE", Vec::new())).unwrap();
+        tx.send(cmd(2, "TOP_PERC_GAIN", vec![("notAFilter".into(), "1".into())])).unwrap();
+        tx.send(cmd(3, "TOP_PERC_GAIN", vec![("moodyRatingAbove".into(), "AAA".into())])).unwrap();
+        engine.poll_control_commands();
+        assert_eq!(plain_messages_sent(&mut server).len(), 1, "parameters request only");
+        load_scanner_params_keep(&mut engine, "<ScanParameterResponse><ScanTypeList>\
+            <ScanType><scanCode>TOP_PERC_GAIN</scanCode></ScanType></ScanTypeList>\
+            <FilterList><RangeFilter><id>MOODY</id><AbstractField><code>moodyRatingAbove</code></AbstractField></RangeFilter>\
+            </FilterList></ScanParameterResponse>");
+        assert_eq!(plain_messages_sent(&mut server).len(), 1, "only the subscription with known codes goes out");
+        assert_eq!(errors(&shared), [
+            "1:162:Historical Market Data Service error message:Scanner type with code NOT_A_SCAN_CODE is disabled.",
+            "2:162:Historical Market Data Service error message:Scanner filter notAFilter is disabled.",
+        ]);
+    }
+
+    #[test]
     fn scanner_rows_follow_the_scan_type_limit() {
         let shared = Arc::new(SharedState::new());
         let (mut engine, mut server, tx) = scanner_engine(&shared);
@@ -5194,6 +5223,7 @@ mod tests {
         assert_eq!(errors(&shared), ["5:162:Historical Market Data Service error message:API scanner subscription cancelled: 5"]);
         load_scanner_params_keep(&mut engine, "<ScanParameterResponse><ScanTypeList><ScanType>\
             <scanCode>HIGH_DIVIDEND_YIELD_IB</scanCode><respSizeLimit>750</respSizeLimit></ScanType>\
+            <ScanType><scanCode>TOP_PERC_GAIN</scanCode></ScanType>\
             </ScanTypeList></ScanParameterResponse>");
         let sent = plain_messages_sent(&mut server);
         // By request id: the waiting subscriptions go out in the

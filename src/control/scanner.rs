@@ -543,3 +543,43 @@ mod tests {
         assert!(parse_scanner_response("not xml at all").is_none());
     }
 }
+
+/// The scan codes and the filter codes the scanner parameters name (any
+/// instrument): the reference refuses a subscription whose scan code or
+/// filter is in neither (ibx#657).
+pub fn parameter_codes(xml: &str) -> (std::collections::HashSet<String>, std::collections::HashSet<String>) {
+    fn values(text: &str, tag: &str) -> std::collections::HashSet<String> {
+        let (open, close) = (format!("<{tag}>"), format!("</{tag}>"));
+        let mut out = std::collections::HashSet::new();
+        let mut rest = text;
+        while let Some(i) = rest.find(&open) {
+            let after = &rest[i + open.len()..];
+            let Some(j) = after.find(&close) else { break };
+            out.insert(after[..j].trim().to_string());
+            rest = &after[j + close.len()..];
+        }
+        out
+    }
+    let filters = xml.find("<FilterList").map_or("", |i| &xml[i..]);
+    (values(xml, "scanCode"), values(filters, "code"))
+}
+
+#[cfg(test)]
+mod parameter_codes_tests {
+    // ibx#657: the codes of the recorded server parameters.
+    #[test]
+    fn scan_and_filter_codes_of_the_parameters() {
+        use std::io::Read;
+        let gz = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/gw1040/scanner_params/server.xml.gz")).unwrap();
+        let mut xml = String::new();
+        flate2::read::GzDecoder::new(&gz[..]).read_to_string(&mut xml).unwrap();
+        let (scans, filters) = super::parameter_codes(&xml);
+        for code in ["TOP_PERC_GAIN", "MOST_ACTIVE", "HIGH_OPEN_GAP"] {
+            assert!(scans.contains(code), "{code}");
+        }
+        for code in ["priceAbove", "priceBelow", "volumeAbove", "moodyRatingAbove"] {
+            assert!(filters.contains(code), "{code}");
+        }
+        assert!(!scans.contains("NOT_A_SCAN_CODE") && !filters.contains("notAFilter") && !filters.contains("bondCouponRateAbove"));
+    }
+}
