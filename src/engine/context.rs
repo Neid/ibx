@@ -320,6 +320,12 @@ pub struct Context {
     pub(crate) order_presets: HashMap<String, Option<String>>,
     pub(crate) presets_asked: std::collections::HashSet<String>,
     pub(crate) next_preset_request: u32,
+    /// The account's trading permission by permission class, as the
+    /// server answered (ibx#666); a class asked and not answered yet is in
+    /// `permissions_asked`, with the time the order stops waiting.
+    pub(crate) trading_permissions: HashMap<String, bool>,
+    pub(crate) permissions_asked: HashMap<String, std::time::Instant>,
+    pub(crate) next_permission_request: u32,
     /// Contracts whose trading hours were asked for an order and have not
     /// come: an order with a zone to check waits for them (ibx#668).
     pub(crate) zone_pending: std::collections::HashSet<i64>,
@@ -438,6 +444,9 @@ impl Context {
             order_presets: HashMap::new(),
             presets_asked: std::collections::HashSet::new(),
             next_preset_request: 3,
+            trading_permissions: HashMap::new(),
+            permissions_asked: HashMap::new(),
+            next_permission_request: 0,
             zone_pending: std::collections::HashSet::new(),
             depth_unsupported: std::collections::HashSet::new(),
             def_parked: Vec::new(),

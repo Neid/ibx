@@ -73,6 +73,9 @@ pub(crate) struct RthTypes {
     pub local_symbol: String,
     pub contract_month: String,
     pub multiplier: String,
+    /// The key of the contract's trading permission class (an option's
+    /// "2/OPT/R"), empty for a stock (ibx#666).
+    pub permission_key: String,
 }
 
 impl RthTypes {

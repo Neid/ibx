@@ -5506,15 +5506,17 @@ impl ClientCore {
     /// Refuse orders on the security types whose order message ibx does not
     /// write yet. Written: stocks (an empty type is a stock), combos
     /// (ibx#470), futures, CFDs and forex pairs (ibx#666, the reference's
-    /// messages of 13/10/2026). The others (options and the rest) would
-    /// otherwise go out without the fields their message needs (ibx#202).
+    /// messages of 13/10/2026), options (ibx#666: their terms as an
+    /// option's order of ibx#486; checked against the account's trading
+    /// permission first). The others would otherwise go out without the
+    /// fields their message needs (ibx#202).
     pub fn validate_order_contract(sec_type: &str) -> Result<(), String> {
-        const WRITTEN: [&str; 5] = ["STK", "BAG", "FUT", "CFD", "CASH"];
+        const WRITTEN: [&str; 6] = ["STK", "BAG", "FUT", "CFD", "CASH", "OPT"];
         if sec_type.is_empty() || WRITTEN.iter().any(|t| sec_type.eq_ignore_ascii_case(t)) {
             return Ok(());
         }
         Err(format!(
-            "Unsupported contract sec_type '{}': orders are written for STK, BAG, FUT, CFD and CASH only.              See https://github.com/deepentropy/ibx/issues/666",
+            "Unsupported contract sec_type '{}': orders are written for STK, BAG, FUT, CFD, CASH and OPT only.              See https://github.com/deepentropy/ibx/issues/666",
             sec_type
         ))
     }

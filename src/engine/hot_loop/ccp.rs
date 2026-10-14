@@ -714,8 +714,33 @@ fn secdef_by_symbol_fields(req_id: ReqId, lookup: &SymbolLookup, strike: &str) -
 /// Write one by-symbol lookup on `conn` (ibx#410; also the conId lookup of
 /// a market data request, ibx#278).
 pub(crate) fn send_symbol_lookup_on(conn: &mut Connection, req_id: ReqId, lookup: &SymbolLookup, strike: &str) {
+    send_lookup_body(conn, &secdef_by_symbol_fields(req_id, lookup, strike));
+}
+
+/// The by-symbol lookup of an order's contract (ibx#486): the source is
+/// written whatever the terms, and an option's strike after its right, as
+/// the reference asks it (ibx#666; paper 14/10/2026: an AAPL call given by
+/// its description, looked up with its expiry, right, strike and
+/// multiplier).
+pub(crate) fn order_lookup_fields(req_id: ReqId, lookup: &SymbolLookup) -> Vec<(u32, String)> {
+    let mut fields = secdef_by_symbol_fields(req_id, lookup, "");
+    let strike = lookup.filters.strike_text();
+    if !strike.is_empty() {
+        let after_type = fields.iter().position(|(t, _)| *t == 167).map_or(fields.len(), |i| i + 1);
+        let at = fields[after_type..].iter().position(|(t, _)| ![541, 200, 201].contains(t))
+            .map_or(fields.len(), |i| after_type + i);
+        fields.insert(at, (202, strike));
+    }
+    fields
+}
+
+/// Write an order's contract lookup on `conn` ([`order_lookup_fields`]).
+pub(crate) fn send_order_lookup_on(conn: &mut Connection, req_id: ReqId, lookup: &SymbolLookup) {
+    send_lookup_body(conn, &order_lookup_fields(req_id, lookup));
+}
+
+fn send_lookup_body(conn: &mut Connection, body: &[(u32, String)]) {
     let ts = chrono_free_timestamp();
-    let body = secdef_by_symbol_fields(req_id, lookup, strike);
     let mut fields: Vec<(u32, &str)> = Vec::with_capacity(body.len() + 1);
     fields.push((fix::TAG_MSG_TYPE, "c"));
     fields.push((fix::TAG_SENDING_TIME, &ts));
@@ -1166,6 +1191,8 @@ impl CcpState {
                             log::info!("Algo definitions received for {:?}", parsed.get(&6364));
                             shared.reference.add_algo_definitions(xml);
                         },
+                        // A trading permission answer (ibx#666).
+                        "66" => super::order_builder::permission_reply(context, &parsed),
                         // The exchange directory: not the depth exchanges,
                         // which come from the routing table (#453).
                         "102" => {}
@@ -5485,6 +5512,20 @@ mod tests {
 
     fn frame_text(fields: &[(u32, String)]) -> String {
         fields.iter().map(|(t, v)| format!("{}={}", t, v)).collect::<Vec<_>>().join("|")
+    }
+
+    // ibx#666, the reference's lookup of an option order (paper 14/10/2026):
+    // the source, then the option's terms with its strike, as given.
+    #[test]
+    fn an_option_order_is_looked_up_with_its_strike() {
+        let filters = crate::types::SecDefFilters {
+            last_trade_date_or_contract_month: "20261218".into(), strike: 340.0, right: "C".into(),
+            multiplier: "100".into(), ..Default::default()
+        };
+        assert_eq!(frame_text(&order_lookup_fields(13, &symbol_lookup("AAPL", "OPT", "SMART", filters))),
+            "35=c|320=FixSecDefReqBySymbol13|321=2|6088=Socket|55=AAPL|167=OPT|541=20261218|201=1|202=340|231=100|100=BEST|15=USD");
+        assert_eq!(frame_text(&order_lookup_fields(13, &symbol_lookup("AAPL", "STK", "SMART", Default::default()))),
+            "35=c|320=FixSecDefReqBySymbol13|321=2|6088=Socket|55=AAPL|167=CS|100=BEST|15=USD");
     }
 
     fn option_filters(local_symbol: &str, trading_class: &str, multiplier: &str) -> crate::types::SecDefFilters {

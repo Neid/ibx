@@ -1951,16 +1951,17 @@ fn place_order_unsupported_type_returns_error() {
 
 #[test]
 fn place_order_non_stk_contract_rejected() {
-    // A non-STK contract must be rejected, not silently sent as a stock order
-    // on the underlying. See: https://github.com/deepentropy/ibx/issues/202
+    // A contract whose order message is not written must be rejected, not
+    // silently sent as a stock order on the underlying (ibx#202). Options
+    // are written since ibx#666; warrants are not.
     let (client, rx, shared) = test_client();
     shared.market.set_instrument_count(1);
-    let opt = Contract { con_id: 999001, symbol: "AAPL".into(), sec_type: "OPT".into(), ..Default::default() };
+    let war = Contract { con_id: 999001, symbol: "AAPL".into(), sec_type: "WAR".into(), ..Default::default() };
     let order = Order { action: "BUY".into(), total_quantity: 1.0, order_type: "MKT".into(), ..Default::default() };
-    let result = client.place_order(1, &opt, &order);
+    let result = client.place_order(1, &war, &order);
     assert!(result.is_err());
     let err = result.unwrap_err();
-    assert!(err.contains("OPT"));
+    assert!(err.contains("WAR"));
     assert!(err.contains("STK"));
     // No order must have been queued to the engine.
     assert!(rx.try_recv().is_err());

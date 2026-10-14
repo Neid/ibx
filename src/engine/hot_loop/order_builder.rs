@@ -326,6 +326,13 @@ fn send_orders(
         if not_held_refusal(&order_req, context, shared) {
             continue;
         }
+        // An option order without the trading permission of its class
+        // (ibx#666).
+        match permission_refusal(&order_req, context, conn, hb, shared) {
+            Some(false) => { context.rth_parked.push(rewrap(order_req)); continue; }
+            Some(true) => continue,
+            None => {}
+        }
         // The price management flag, where the reference writes it; the
         // contract definition of the order's exchange is asked once when
         // the flag could apply (ibx#492).
@@ -3115,6 +3122,88 @@ fn not_held_refusal(req: &OrderRequest, context: &mut Context, shared: &Arc<Shar
     true
 }
 
+/// A new option order on a contract whose permission class the account
+/// does not trade: refused with 460 and nothing sent; the order is kept
+/// for its cancel (Cancelled, 202 "Order was discarded" and 161). The
+/// reference asks the server about the class named in the contract's
+/// definition once per session, and refuses when the answer has no
+/// permission (paper, regular hours 14/10/2026: an AAPL call by
+/// description, then by conId). Futures and CFDs without the permission
+/// go out and the server refuses them (paper 13/10/2026), so the check is
+/// on options only. `Some(false)` while the answer is on its way.
+fn permission_refusal(
+    req: &OrderRequest,
+    context: &mut Context,
+    conn: &mut Connection,
+    hb: &mut HeartbeatState,
+    shared: &Arc<SharedState>,
+) -> Option<bool> {
+    let (_, attrs) = req.new_order_side()?;
+    if req.combo().is_some() { return None; }
+    let instrument = req.instrument()?;
+    if context.market.order_routing(instrument).0 != "OPT" { return None; }
+    let key = match definition(context, conn, hb, instrument) {
+        Definition::NoContract => return None,
+        Definition::Waiting => return Some(false),
+        Definition::Known(types, _) => types.permission_key.clone(),
+    };
+    if key.is_empty() { return None; }
+    match context.trading_permissions.get(&key) {
+        Some(true) => None,
+        Some(false) => {
+            let oid = req.order_id();
+            log::warn!("Order {} refused: no trading permission for {} (460)", oid, key);
+            shared.orders.push_order_error(oid, 460, NO_TRADING_PERMISSIONS.to_string());
+            context.unsent.insert(oid, (instrument, req.new_order_qty().unwrap_or(0), attrs.map_or(0, |a| a.parent_id)));
+            Some(true)
+        }
+        None => {
+            if !context.permissions_asked.contains_key(&key) {
+                let seq = context.next_permission_request.to_string();
+                context.next_permission_request += 1;
+                let now = chrono_free_timestamp();
+                match conn.send_fix(&[(35, "U"), (52, &now), (6040, "65"), (6410, &seq), (6411, &key)]) {
+                    Ok(()) => hb.last_ccp_sent = Instant::now(),
+                    Err(e) => log::error!("Trading permission request not sent: {}", e),
+                }
+                log::info!("Trading permission of {} asked ({})", key, seq);
+                context.permissions_asked.insert(key, Instant::now() + RTH_LOOKUP_TIMEOUT);
+            }
+            Some(false)
+        }
+    }
+}
+
+/// The answer of a trading permission request (ibx#666): whether the
+/// account trades the class; the orders that waited for it go on.
+pub(crate) fn permission_reply(context: &mut Context, parsed: &std::collections::HashMap<u32, String>) {
+    let Some(key) = parsed.get(&6411) else { return };
+    let allowed = parsed.get(&6414).is_some_and(|v| v != "0");
+    log::info!("Trading permission of {}: {}", key, allowed);
+    context.permissions_asked.remove(key);
+    context.trading_permissions.insert(key.clone(), allowed);
+    release_rth_parked(context);
+}
+
+/// Permission requests with no answer in time: the order goes out, and
+/// the server's own answer applies.
+pub(crate) fn sweep_permission_requests(context: &mut Context) {
+    if context.permissions_asked.is_empty() { return; }
+    let now = Instant::now();
+    let expired: Vec<String> = context.permissions_asked.iter()
+        .filter(|(_, deadline)| **deadline <= now).map(|(k, _)| k.clone()).collect();
+    if expired.is_empty() { return; }
+    for key in expired {
+        log::warn!("No answer on the trading permission of {}: the order goes out", key);
+        context.permissions_asked.remove(&key);
+        context.trading_permissions.insert(key, true);
+    }
+    release_rth_parked(context);
+}
+
+/// Text of error 460 (paper 14/10/2026).
+pub(crate) const NO_TRADING_PERMISSIONS: &str = "No trading permissions.";
+
 /// Text of error 10297 (ibx#690, paper 14/10/2026).
 const NOT_HELD_INVALID: &str = "Not Held attribute is invalid for this order.";
 
@@ -3220,6 +3309,7 @@ fn store_rth_types(context: &mut Context, key: (i64, String), msg: &[u8]) {
     );
     types.smart = tags.get(&6046).is_some_and(|v| v.split(',').any(|e| e == "BEST" || e == "SMART"));
     types.under_sec_type = tags.get(&310).cloned().unwrap_or_default();
+    types.permission_key = tags.get(&6411).cloned().unwrap_or_default();
     if let Some(d) = def.as_ref() {
         // A contract given by its conId alone takes its symbol, security
         // type and currency from its definition, as the reference resolves
@@ -3396,7 +3486,7 @@ fn look_up_order_contract(context: &mut Context, conn: &mut Connection, hb: &mut
         filters,
         continuous: false,
     };
-    super::ccp::send_symbol_lookup_on(conn, crate::types::ReqId::from(lookup_id), &lookup, "");
+    super::ccp::send_order_lookup_on(conn, crate::types::ReqId::from(lookup_id), &lookup);
     hb.last_ccp_sent = std::time::Instant::now();
     log::info!("Order contract lookup {} for {} {}", lookup_id, lookup.symbol, lookup.sec_type);
     context.order_lookups.push((lookup_id, instrument));
@@ -7027,6 +7117,57 @@ mod tests {
             assert_eq!(frames.iter().filter(|f| tag(f, 35) == Some("D")).count(), 1, "{exchange}: sent: {frames:?}");
             assert!(shared.orders.drain_order_errors().is_empty(), "{exchange}");
         }
+    }
+
+    // ibx#666 (the reference 10.51, paper, regular hours 14/10/2026): an
+    // option order asks the trading permission of the class its definition
+    // names, once; without it the order is refused with 460, nothing sent,
+    // and its cancel gives Cancelled, 202 and 161. A second order of the
+    // class is refused at once. With the permission the order goes out.
+    #[test]
+    fn an_option_order_without_the_class_permission_is_refused_with_460() {
+        let run = |allowed: &str| {
+            let (client, mut server) = crate::protocol::connection::mem_pair();
+            let mut conn = Some(Connection::new_mem(client));
+            let shared = Arc::new(SharedState::new());
+            let mut context = Context::new();
+            context.market.register(692808239);
+            context.set_symbol(0, "AAPL".to_string());
+            context.market.set_routing(0, "OPT", "SMART");
+            context.pending_orders.push(OrderRequest::SubmitLimit {
+                order_id: 80, instrument: 0, side: Side::Buy, qty: 1, price: px(0.05) });
+            let frames = drain_frames(&mut context, &shared, &mut conn, &mut server);
+            assert_eq!(tag(&frames[0], 35), Some("c"), "the definition is asked: {frames:?}");
+            let id = tag(&frames[0], 320).unwrap().to_string();
+            let fields = vec![(35, "d"), (320, id.as_str()), (6008, "692808239"), (55, "AAPL"), (167, "OPT"),
+                (15, "USD"), (207, "BEST"), (6411, "2/OPT/R"), (6431, "DAY/3,LMT/3,MKT/1")];
+            assert!(rth_definition_reply(&mut context, &id, &fix::fix_build(&fields, 1)));
+            let frames = drain_frames(&mut context, &shared, &mut conn, &mut server);
+            assert_eq!(frames.len(), 1, "{frames:?}");
+            assert_eq!((tag(&frames[0], 35), tag(&frames[0], 6040), tag(&frames[0], 6410), tag(&frames[0], 6411)),
+                (Some("U"), Some("65"), Some("0"), Some("2/OPT/R")));
+            let answer: std::collections::HashMap<u32, String> = [(6040, "66"), (6410, "0"), (6411, "2/OPT/R"),
+                (6412, "1"), (6414, allowed)].into_iter().map(|(t, v)| (t, v.to_string())).collect();
+            permission_reply(&mut context, &answer);
+            let frames = drain_frames(&mut context, &shared, &mut conn, &mut server);
+            (frames, shared, context, conn, server)
+        };
+        let (frames, shared, mut context, mut conn, mut server) = run("0");
+        assert!(frames.is_empty(), "nothing sent: {frames:?}");
+        assert_eq!(shared.orders.drain_order_errors(), [(80, 460, "No trading permissions.".to_string())]);
+        context.pending_orders.push(OrderRequest::Cancel { order_id: 80 });
+        assert!(drain_frames(&mut context, &shared, &mut conn, &mut server).is_empty(), "nothing sent");
+        assert_eq!(shared.orders.drain_order_updates().iter().map(|u| (u.order_id, u.status)).collect::<Vec<_>>(),
+            [(80, OrderStatus::Cancelled)]);
+        assert_eq!(shared.orders.drain_order_notices().iter().map(|n| (n.0, n.1)).collect::<Vec<_>>(), [(80, 202), (80, 161)]);
+        context.pending_orders.push(OrderRequest::SubmitLimit {
+            order_id: 81, instrument: 0, side: Side::Buy, qty: 1, price: px(0.05) });
+        assert!(drain_frames(&mut context, &shared, &mut conn, &mut server).is_empty(), "not asked again");
+        assert_eq!(shared.orders.drain_order_errors(), [(81, 460, "No trading permissions.".to_string())]);
+
+        let (frames, shared, ..) = run("1");
+        assert_eq!(frames.iter().filter(|f| tag(f, 35) == Some("D")).count(), 1, "sent: {frames:?}");
+        assert!(shared.orders.drain_order_errors().is_empty());
     }
 
     // ibx#542, paper 09/10/2026 (the reference and ibx on the same case):

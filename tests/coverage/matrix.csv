@@ -1529,7 +1529,7 @@ local_rule,337-1,337 read: goodAfterTime not a date and time (same pattern as 34
 local_rule,387-1,387 rules: order type not in the contract's order type list for the exchange (server data); PEG MID and PEG BEST need their own entries in that list,src/engine/hot_loop/order_builder.rs::pegged_types_not_in_the_list_are_refused_with_387
 local_rule,441-1,441 build: algo parameter value refused by the definition (min / max of the server's algo definition),src/control/algo.rs::refusals_follow_the_definitions
 local_rule,443-1,443 build: algo parameter name not in the definition's parameter list,src/control/algo.rs::refusals_follow_the_definitions
-local_rule,460-1,460 rules: no trading permission for the account and contract (server data),open #485
+local_rule,460-1,460 rules: no trading permission for the account and contract (server data),src/engine/hot_loop/order_builder.rs::an_option_order_without_the_class_permission_is_refused_with_460
 local_rule,2109-1,"2109 rules: warning, order still sent: outsideRth does not apply to the order type and destination; the attribute is removed",src/engine/hot_loop/order_builder.rs::outside_rth_waits_for_the_definition_then_follows_the_rule ; src/engine/hot_loop/order_builder.rs::outside_rth_without_a_definition_uses_the_empty_list
 local_rule,10243-1,"10243 build: account can trade fractions, STK or WAR, and the quantity is not whole",tests/gw_catalog/refusals.rs::fractional_quantity
 local_rule,10256-1,10256 rules: minQty set and the server's attribute list for the contract and exchange does not allow minimum quantity,open #485
