@@ -43,6 +43,8 @@ use super::pool::FarmId;
 const FIRST_PASS: Duration = Duration::from_millis(1000);
 /// The passes after the second.
 const LATER_PASS: Duration = Duration::from_millis(2000);
+/// The pass after the requests moved onto the frozen slot (ibx#494).
+const SWITCH_PASS: Duration = Duration::from_millis(250);
 /// How long a model waits for its definitions before it is dropped.
 const START_WAIT: Duration = Duration::from_secs(10);
 /// How long a model stopped by a lost farm waits for it.
@@ -588,6 +590,17 @@ impl OptMd {
         self.outbox.extend(asked);
     }
 
+    /// The requests of the model of `instrument` moved onto its frozen
+    /// slot: its values go again, from a pass a little later, once the
+    /// requests are there (ibx#494; the reference 10.51, paper, 14/10/2026:
+    /// tick 13 0.26 s after the switch).
+    pub(crate) fn switched(&mut self, instrument: InstrumentId, now: Instant) {
+        for m in self.models.iter_mut().filter(|m| m.instrument == instrument) {
+            m.sent = [None; 4];
+            m.next_pass = Some(now + SWITCH_PASS);
+        }
+    }
+
     /// The options whose frozen pair brought a trade since the last call:
     /// their streams give its size and time again (ibx#647).
     pub(crate) fn take_again(&mut self) -> Vec<InstrumentId> {
@@ -614,11 +627,14 @@ impl OptMd {
             let px = |v: i64| (v > 0).then(|| v as f64 / PRICE_SCALE as f64);
             let (bid, ask, last) = (px(q.bid), px(q.ask), px(q.last));
             let under = m.under_price();
-            // The frozen data is the requests' own data in frozen mode: the
-            // model computes on it (the reference 10.51, paper, after hours
-            // 14/10/2026: ticks 11 and 12 with greeks; in real-time mode, on
-            // 12/10 and 13/10/2026, none).
-            let frozen = m.frozen && slot == m.instrument;
+            // In frozen mode the frozen data is the requests' own: a
+            // snapshot's model computes on it, and a stream gets tick 13
+            // (the reference 10.51, paper, 14/10/2026, after hours and
+            // before the open: a snapshot ticks 13, 11 and 12 with greeks,
+            // two streams tick 13 only; in real-time mode, 12/10 and
+            // 13/10/2026, a stream none and a snapshot tick 13).
+            let on_frozen_slot = slot != m.instrument;
+            let frozen = m.frozen && !(on_frozen_slot && m.snapshot);
             let form = if frozen {
                 market::Form::Volatility
             } else if m.passes > 0 {
@@ -652,7 +668,7 @@ impl OptMd {
                 }
                 m.sent[slot] = Some(c);
                 let tick = crate::control::generic_values::GenTick::Option(c);
-                if frozen && !(snapshot && c.tick_type == market::MODEL) {
+                if frozen && !((snapshot || on_frozen_slot) && c.tick_type == market::MODEL) {
                     kept.push(tick);
                 } else {
                     sent.push(tick);

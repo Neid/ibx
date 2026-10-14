@@ -74,6 +74,9 @@ pub struct StreamState {
     frozen: bool,
     /// The halted value the first frozen image gives after the ask.
     frozen_halted: Option<i64>,
+    /// The halted value given last, after a switch onto the frozen view
+    /// (ibx#494).
+    switch_halted: Option<i64>,
     /// The bid and ask auto-execution comes from the farm.
     farm_auto: bool,
     /// `mdoff`: no top of book ticks.
@@ -92,6 +95,25 @@ impl StreamState {
     pub(crate) fn freeze(&mut self) {
         self.frozen = true;
         self.frozen_halted = Some(-1);
+    }
+
+    /// The values the request was given before its switch (ibx#494).
+    pub(crate) fn given(&self) -> ([i64; field::COUNT], u8) {
+        (self.fields, self.sizes_sent)
+    }
+
+    /// A running request switched onto the frozen view when type 2 is set
+    /// (ibx#494; the reference 10.51, paper, 14/10/2026, case C of
+    /// `.tmp/494`): what differs from what it was given, the volume and the
+    /// close again, then the halted state 0 last.
+    pub(crate) fn switched(&mut self, given: ([i64; field::COUNT], u8)) {
+        let (mut fields, sizes_sent) = given;
+        fields[field::VOLUME] = 0;
+        fields[field::CLOSE] = 0;
+        self.fields = fields;
+        self.sizes_sent = sizes_sent & !(1 << SizeKind::Volume as u8);
+        self.frozen_halted = None;
+        self.switch_halted = Some(0);
     }
 }
 
@@ -440,6 +462,11 @@ fn stream_pass(st: &mut StreamState, m: &Mirror, pass: Pass, out: &mut Out) {
     // reference marks it when the request joins the record).
     if pass == Pass::Join {
         st.halted_pending = m.halted.is_some();
+    }
+    if let Some(value) = st.switch_halted.filter(|_| fields[field::BID] != 0 || fields[field::ASK] != 0) {
+        st.switch_halted = None;
+        st.halted_pending = false;
+        out.push(MdTick::Generic { tick_type: out.api(TICK_HALTED), value: value as f64 });
     }
     if st.halted_pending && let Some(status) = m.halted {
         out.halted(status);
@@ -1252,6 +1279,37 @@ mod tests {
         let q = Quote { bid_size: 20 * QTY_SCALE, ..q };
         shared.market.push_test_message(6, &q, &TestMessage { steps: Some(&[MdStep::Quote]), sizes_seen: true, ..Default::default() });
         assert_eq!(poll(&core, &shared), ["size:1:0:20"]);
+    }
+
+    // ibx#494 (the reference 10.51, paper, 14/10/2026, case C of
+    // `.tmp/494`): a running stream switched onto the frozen view when type
+    // 2 is set gets what differs from what it was given, the volume and the
+    // close again, then the halted state 0 last; not its unchanged last.
+    #[test]
+    fn a_stream_switched_onto_the_frozen_view_gets_the_changes_volume_close_and_halted_0() {
+        let (core, shared) = (ClientCore::new(), SharedState::new());
+        stream(&core, &shared, 1, 6);
+        core.mdt_sent.lock().unwrap().insert(1);
+        let before = Quote {
+            bid: -PRICE_SCALE, ask: -PRICE_SCALE, last: 969 * PRICE_SCALE / 10, last_size: QTY_SCALE,
+            close: 9232 * PRICE_SCALE / 100, ..Default::default()
+        };
+        shared.market.push_test_message(6, &before, &TestMessage { sizes_seen: true, ..Default::default() });
+        poll(&core, &shared);
+        {
+            let mut streams = core.last_quotes.lock().unwrap();
+            let st = streams.get_mut(&1).unwrap();
+            let given = st.given();
+            st.freeze();
+            st.switched(given);
+        }
+        let frozen = Quote {
+            bid: 9265 * PRICE_SCALE / 100, ask: 951 * PRICE_SCALE / 10, bid_size: 3 * QTY_SCALE, ask_size: 2 * QTY_SCALE, volume: 5 * QTY_SCALE, ..before
+        };
+        shared.market.push_test_message(6, &frozen, &TestMessage { steps: Some(&[MdStep::CatchUp]), sizes_seen: true, ..Default::default() });
+        assert_eq!(poll(&core, &shared), [
+            "price:1:1:92.65", "size:1:0:3", "price:1:2:95.1", "size:1:3:2", "size:1:8:5", "price:1:9:92.32", "generic:1:49:0",
+        ]);
     }
 
     // ibx#647 (the reference 10.51 after hours, 13/10/2026, three option

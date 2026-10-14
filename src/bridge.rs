@@ -790,6 +790,10 @@ pub enum MdReject {
     /// The contract's data is frozen (ibx#447): its requests go on with
     /// the frozen top of book of slot `frozen` (marketDataType 2).
     Frozen { instrument: InstrumentId, frozen: InstrumentId },
+    /// The same, onto a frozen slot that has its data already: the
+    /// option model's frozen pair, when type 2 is set while the requests
+    /// run (ibx#494).
+    FrozenWithData { instrument: InstrumentId, frozen: InstrumentId },
     /// The contract of the frozen slot `instrument` has real-time data
     /// again (ibx#447): its requests go back to slot `live`
     /// (marketDataType 1) and the frozen slot is let go.
@@ -808,6 +812,7 @@ impl MdReject {
             | MdReject::MaxTickers { instrument }
             | MdReject::NewsRefused { instrument, .. }
             | MdReject::Frozen { instrument, .. }
+            | MdReject::FrozenWithData { instrument, .. }
             | MdReject::Live { instrument, .. } => instrument,
         }
     }

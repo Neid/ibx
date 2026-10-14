@@ -569,6 +569,9 @@ pub(crate) struct FarmState {
     /// The market data status entries of the contracts asked in frozen
     /// mode (ibx#447).
     pub(crate) status: Vec<StatusEntry>,
+    /// The frozen slot fed by an option model's frozen pair: (real-time
+    /// slot, frozen slot, its requests moved onto it) (ibx#494).
+    pub(crate) model_twins: Vec<(InstrumentId, InstrumentId, bool)>,
     /// Frozen slots whose contract went back to real-time data away from a
     /// farm message (its farm was lost): (frozen slot, real-time slot),
     /// given out by `take_thawed` (ibx#447).
@@ -652,6 +655,7 @@ impl FarmState {
             md_modes: crate::types::MarketDataModes::default(),
             last_on_best: std::collections::HashSet::new(),
             status: Vec::new(),
+            model_twins: Vec::new(),
             thawed: Vec::new(),
             depth_reqs: Vec::new(),
             user_book: false,
@@ -1018,6 +1022,21 @@ impl FarmState {
         if let Some((instrument, code, under)) = self.optmd.ack(rx_farm, req_id, server_tag, min_tick, size_min_tick) {
             if !under && matches!(code, 442 | 443) {
                 context.market.register_farm_tag_sized(rx_farm, server_tag, instrument, min_tick, size_min_tick);
+            }
+            // The model's frozen pair feeds a frozen slot of its own: the
+            // requests move onto it when type 2 is set while they run, as
+            // the reference's do, with no new pair (ibx#494; the reference
+            // 10.51, paper, 14/10/2026, case C of `.tmp/494`).
+            if !under && matches!(code, -442 | -443) {
+                let twin = match self.model_twins.iter().find(|t| t.0 == instrument) {
+                    Some(t) => Some(t.1),
+                    None => self.new_frozen_slot(instrument, context, shared).inspect(|&twin| {
+                        self.model_twins.push((instrument, twin, false));
+                    }),
+                };
+                if let Some(twin) = twin {
+                    context.market.register_farm_tag_sized(rx_farm, server_tag, twin, min_tick, size_min_tick);
+                }
             }
             // The underlying's exchange map is asked at its bid and ask's
             // acknowledgement, as for a contract asked by the API (ibx#664;
@@ -1445,12 +1464,30 @@ impl FarmState {
     /// The real-time slot of a frozen slot (ibx#447).
     pub(crate) fn frozen_live(&self, frozen: InstrumentId) -> Option<InstrumentId> {
         self.status.iter().find(|e| e.frozen == Some(frozen)).map(|e| e.instrument)
+            .or_else(|| self.model_twins.iter().find(|t| t.1 == frozen).map(|t| t.0))
     }
 
     /// The frozen slot of a real-time slot whose contract is frozen
     /// (ibx#447).
     pub(crate) fn frozen_slot(&self, live: InstrumentId) -> Option<InstrumentId> {
         self.status.iter().find(|e| e.instrument == live).and_then(|e| e.frozen)
+            .or_else(|| self.model_twins.iter().find(|t| t.0 == live).map(|t| t.1))
+    }
+
+    /// A new slot for the frozen data of the contract of `live`, typed as
+    /// it (ibx#447, ibx#494).
+    fn new_frozen_slot(&self, live: InstrumentId, context: &mut Context, shared: &SharedState) -> Option<InstrumentId> {
+        let info = self.md_resub_info.iter().find(|(id, ..)| *id == live).cloned()?;
+        let Some(twin) = context.market.try_register_unresolved() else {
+            log::error!("Instrument table full: no slot for the frozen data of instrument {}", live);
+            return None;
+        };
+        let (_, symbol, exchange, sec_type, ..) = info;
+        context.market.set_symbol(twin, symbol);
+        context.market.set_routing(twin, &sec_type, &exchange);
+        context.market.set_round_lot(twin, context.market.round_lot(live));
+        shared.market.set_instrument_count(context.market.count());
+        Some(twin)
     }
 
     /// The top of book of an instrument ended (ibx#447): its status entry

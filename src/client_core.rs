@@ -2731,7 +2731,11 @@ impl ClientCore {
         for reject in shared.market.drain_md_rejects() {
             match reject {
                 crate::bridge::MdReject::Frozen { instrument, frozen } => {
-                    self.md_freeze(shared, instrument, frozen, &mut notices);
+                    self.md_freeze(shared, instrument, frozen, false, &mut notices);
+                    continue;
+                }
+                crate::bridge::MdReject::FrozenWithData { instrument, frozen } => {
+                    self.md_freeze(shared, instrument, frozen, true, &mut notices);
                     continue;
                 }
                 crate::bridge::MdReject::Live { instrument, live } => {
@@ -2820,7 +2824,7 @@ impl ClientCore {
     /// marketDataType 2, the request parameters of the frozen pair when the
     /// request has not had any (ibx#494), then the frozen view as it comes,
     /// sent again from nothing (captured 07/10/2026 and 14/10/2026).
-    fn md_freeze(&self, shared: &SharedState, live: InstrumentId, frozen: InstrumentId, notices: &mut Vec<MdNotice>) {
+    fn md_freeze(&self, shared: &SharedState, live: InstrumentId, frozen: InstrumentId, had_data: bool, notices: &mut Vec<MdNotice>) {
         let Some(reqs) = self.instrument_to_req.lock().unwrap().remove(&live) else { return };
         shared.market.md_events.listen(live, false);
         for iid in self.con_id_to_instrument.lock().unwrap().values_mut() {
@@ -2830,11 +2834,15 @@ impl ClientCore {
         for req_id in reqs {
             self.req_to_instrument.lock().unwrap().remove(&req_id);
             self.md_joins.lock().unwrap().retain(|(r, _)| *r != req_id);
-            if !self.join_md_observers(shared, req_id, frozen, false, None, None) {
+            let given = self.last_quotes.lock().unwrap().get(&req_id).map(|st| st.given());
+            if !self.join_md_observers(shared, req_id, frozen, had_data, None, None) {
                 continue;
             }
             if let Some(st) = self.last_quotes.lock().unwrap().get_mut(&req_id) {
                 st.freeze();
+                if had_data && let Some(given) = given {
+                    st.switched(given);
+                }
             }
             self.mdt_sent.lock().unwrap().insert(req_id);
             notices.push(MdNotice::MarketDataType { req_id, market_data_type: MDT_FROZEN });
@@ -3619,7 +3627,7 @@ impl ClientCore {
             MdReject::NewsRefused { text, .. } => (10094, text.clone(), true),
             // Not errors: `take_md_rejects` moves the requests (ibx#447,
             // ibx#674).
-            MdReject::Frozen { .. } | MdReject::Live { .. } | MdReject::DelayedAtOnce { .. } => (0, String::new(), false),
+            MdReject::Frozen { .. } | MdReject::FrozenWithData { .. } | MdReject::Live { .. } | MdReject::DelayedAtOnce { .. } => (0, String::new(), false),
         }
     }
 

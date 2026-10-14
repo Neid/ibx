@@ -809,6 +809,12 @@ impl HotLoop {
         }
         // The option model's cancels around the top of book's (ibx#502).
         let (model_first, model_pre, model_post) = self.farm.optmd.stop(instrument);
+        // The frozen slot its frozen pair fed goes with it (ibx#494).
+        if let Some(pos) = self.farm.model_twins.iter().position(|t| t.0 == instrument) {
+            let (_, twin, _) = self.farm.model_twins.remove(pos);
+            self.context.market.drop_quote_tags(twin);
+            self.try_reclaim_instrument(twin);
+        }
         if self.md_pass.on {
             // The model's first cancels in a pass of their own, the rest
             // in the next (ibx#647; the reference 10.51, 13/10/2026 and
@@ -946,7 +952,10 @@ impl HotLoop {
         // prices there (ibx#494).
         let farm = &mut self.farm;
         let (optmd, status, optcalc, context, shared) = (&mut farm.optmd, &farm.status, &mut self.ccp.optcalc, &self.context, &self.shared);
-        let quote_slot = |i: InstrumentId| status.iter().find_map(|e| (e.instrument == i).then_some(e.frozen).flatten()).unwrap_or(i);
+        let twins = &farm.model_twins;
+        let quote_slot = |i: InstrumentId| status.iter().find_map(|e| (e.instrument == i).then_some(e.frozen).flatten())
+            .or_else(|| twins.iter().find(|t| t.0 == i && t.2).map(|t| t.1))
+            .unwrap_or(i);
         optmd.passes(now, context, shared, quote_slot, |terms, f| optcalc.with_inputs(terms, |inp| f(inp)));
     }
 
@@ -1535,6 +1544,10 @@ impl HotLoop {
         if self.md_slots_told.iter().any(|(_, slot)| *slot == instrument) {
             return;
         }
+        // Fed by an option model's frozen pair (ibx#494).
+        if self.farm.model_twins.iter().any(|t| t.1 == instrument) {
+            return;
+        }
         if self.farm.has_md_subscription(instrument)
             || self.context.lot_parked.iter().chain(&self.context.lot_ready).chain(&self.context.md_resolved)
                 .chain(self.context.md_lookups.iter().map(|(_, s, _)| s))
@@ -2106,6 +2119,26 @@ impl HotLoop {
                 }
                 ControlCommand::SetMarketDataType { market_data_type } => {
                     self.farm.md_modes.apply(market_data_type);
+                    // Type 2 set while requests run on a frozen option: they
+                    // move onto its model's frozen slot, with its data
+                    // (ibx#494; the reference 10.51, paper, 14/10/2026: the
+                    // switch within 3 ms, no new pair).
+                    if self.farm.md_modes.frozen {
+                        let status = &self.farm.status;
+                        let mut moved = Vec::new();
+                        for t in self.farm.model_twins.iter_mut().filter(|t| !t.2) {
+                            if status.iter().any(|e| e.instrument == t.0 && e.frozen.is_some()) {
+                                continue;
+                            }
+                            t.2 = true;
+                            moved.push(t.0);
+                            self.shared.market.push_md_reject(crate::bridge::MdReject::FrozenWithData { instrument: t.0, frozen: t.1 });
+                        }
+                        let now = Instant::now();
+                        for live in moved {
+                            self.farm.optmd.switched(live, now);
+                        }
+                    }
                 }
                 ControlCommand::Unsubscribe { instrument } => {
                     // Not sent yet: nothing to cancel on the farm.
