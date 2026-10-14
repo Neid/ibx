@@ -316,8 +316,36 @@ impl RoutingTable {
         list.iter().find(|(row, _)| want.matches(row)).map(|(_, idx)| &self.routes[*idx])
     }
 
-    /// Every route of a depth kind, as reqMktDepthExchanges lists them.
+    /// Every route of a depth kind, as reqMktDepthExchanges lists them, in
+    /// the reference's order (ibx#685): the order of a hash set of the
+    /// rows, whose hash is the text of the row's group (its exchange when it
+    /// has none), exchange, listing exchange (`*` for any), security type
+    /// and data kind. Rows of one bucket keep the order of their kinds,
+    /// then the table's (observed 13/10/2026, paper, 306 rows of the
+    /// reference 10.51: no row out of this order).
     pub fn depth_exchanges(&self) -> Vec<DepthExchange> {
+        let mut out = self.depth_rows();
+        let mut capacity = 16usize;
+        while out.len() > capacity / 4 * 3 {
+            capacity *= 2;
+        }
+        let kind_rank = |kind: &str| match kind {
+            "Deep2" => 0,
+            "DeepX" => 1,
+            "Deep" => 2,
+            _ => 3,
+        };
+        out.sort_by_cached_key(|row| {
+            let group = if row.agg_group == i32::MAX { row.exchange.clone() } else { row.agg_group.to_string() };
+            let listing = if row.listing_exch.is_empty() { "*" } else { row.listing_exch.as_str() };
+            let text = format!("{group}{}{listing}{}{}", row.exchange, row.sec_type, row.service_data_type);
+            (hash_bucket(&text, capacity), kind_rank(&row.service_data_type))
+        });
+        out
+    }
+
+    /// The depth rows in the table's order.
+    fn depth_rows(&self) -> Vec<DepthExchange> {
         let mut out = Vec::new();
         for (dt, list) in &self.keys {
             if !dt.is_depth() {
@@ -343,6 +371,15 @@ impl RoutingTable {
     pub fn routes(&self) -> &[Route] {
         &self.routes
     }
+}
+
+/// The bucket of `text` in a hash table of `capacity` (a power of two), as
+/// the reference's hash sets place a text key: the 32-bit string hash
+/// (31 times the hash plus each UTF-16 unit), its high half folded into
+/// its low half.
+fn hash_bucket(text: &str, capacity: usize) -> usize {
+    let h = text.encode_utf16().fold(0u32, |h, unit| h.wrapping_mul(31).wrapping_add(unit as u32));
+    ((h ^ (h >> 16)) as usize) & (capacity - 1)
 }
 
 #[cfg(test)]
@@ -461,6 +498,35 @@ mod tests {
             service_data_type: "DeepX".into(), agg_group: i32::MAX,
         }));
         assert_eq!(rows.iter().filter(|r| r.service_data_type == "Deep").count(), 6);
+    }
+
+    // ibx#685, the reference 10.51's list of 13/10/2026 (paper, 306 rows):
+    // its first six rows in its order, and two buckets shared by two kinds
+    // (NASDAQ Deep2 before IDEALPRO Deep in bucket 12; SMART Deep before
+    // SMART AggDeep in bucket 206). A table of 13 to 24 rows has 32
+    // buckets; the list of 306 rows, 512.
+    #[test]
+    fn depth_exchanges_in_the_reference_order() {
+        assert_eq!(hash_bucket("COMEXCOMEX*FOPDeep", 512), 7);
+        assert_eq!(hash_bucket("NASDAQNASDAQ*WARDeep2", 512), 12);
+        assert_eq!(hash_bucket("4IDEALPRO*CASHDeep", 512), 12);
+        assert_eq!(hash_bucket("14SMART*CMDTYDeep", 512), 206);
+        assert_eq!(hash_bucket("1SMARTPINKSTKAggDeep", 512), 206);
+        const ROWS: &str = "ARCA,STK,Deep,-1,*,h,4000,f;IDEALPRO,CASH,Deep,4,*,h,4000,f;            NASDAQ,WAR,Deep2,-1,*,h,4000,f;SGX,FUT,Deep,-1,*,h,4000,f;LSEETF,STK,Deep,-1,*,h,4000,f;            COMEX,FOP,Deep,-1,*,h,4000,f";
+        let names = |t: &RoutingTable| t.depth_exchanges().iter()
+            .map(|r| format!("{} {} {}", r.exchange, r.sec_type, r.service_data_type)).collect::<Vec<_>>();
+        // Six rows: 16 buckets.
+        let t = RoutingTable::parse(ROWS, TableKind::MarketData);
+        let order: Vec<usize> = ["COMEXCOMEX*FOPDeep", "LSEETFLSEETF*STKDeep", "SGXSGX*FUTDeep",
+            "NASDAQNASDAQ*WARDeep2", "4IDEALPRO*CASHDeep", "ARCAARCA*STKDeep"].iter().map(|k| hash_bucket(k, 16)).collect();
+        let by_bucket = names(&t);
+        assert_eq!(by_bucket.len(), 6);
+        let mut expected: Vec<(usize, &str)> = order.iter().copied().zip(["COMEX FOP Deep", "LSEETF STK Deep", "SGX FUT Deep",
+            "NASDAQ WAR Deep2", "IDEALPRO CASH Deep", "ARCA STK Deep"]).collect();
+        expected.sort_by_key(|(b, name)| (*b, if name.ends_with("Deep2") { 0 } else { 2 }));
+        assert_eq!(by_bucket, expected.iter().map(|(_, n)| n.to_string()).collect::<Vec<_>>());
+        let t = RoutingTable::parse("BEST,STK,AggDeep,1,PINK,h,4000,f;BEST,CMDTY,Deep,14,*,h,4000,f", TableKind::MarketData);
+        assert_eq!(names(&t), ["SMART CMDTY Deep", "SMART STK AggDeep"]);
     }
 }
 
