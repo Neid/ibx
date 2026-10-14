@@ -2305,6 +2305,9 @@ fn send_new_order(
     out.push((6088, "Socket"));
     out.push((6211, ""));
     out.push((6238, ""));
+    // An order for the broker's ATS venue goes to BEST with the venue mark
+    // (the reference 10.51, paper, pre-market 14/10/2026; ibx#690).
+    if context.market.exchange(instrument) == "IBKRATS" { out.push((8032, "1")); }
     in_reference_order(&mut out);
     let result = conn.send_fix(&out);
     // When each new order leaves, for a comparison of timings (ibx#548).
@@ -2468,6 +2471,8 @@ pub(crate) fn reference_rank(tag: u32) -> u16 {
         54 => 127,
         59 => 128,
         6436 => 129,
+        // The venue mark of an order for the broker's ATS venue (ibx#690).
+        8032 => 130,
         100 => 131,
         6210 => 132,
         // The combo block follows the conId (ibx#470).
@@ -4982,6 +4987,17 @@ mod tests {
         let frames = drain_frames(&mut context, &shared, &mut conn, &mut server);
         assert_eq!(frames.len(), 1, "{frames:?}");
         assert_eq!((tag(&frames[0], 35), tag(&frames[0], 100), tag(&frames[0], 207)), (Some("c"), Some("BEST"), None));
+        // The order then goes to BEST with the venue mark after its time in
+        // force (the reference 10.51, paper, pre-market 14/10/2026).
+        let id = format!("FixSecDefReqBySymbol{}", ORDER_LOOKUP_FIRST_ID);
+        let reply = format!("8=FIX.4.1|35=d|320={id}|322=*|323=4|55=AAPL|167=STK|207=BEST|6008=265598|15=USD|6431=LMT/3,MKT/1,STP/1,RTH/1|6046=BEST,NASDAQ,IBKRATS|146=1|6344=1|6008=265598|10=000|").replace('|', "");
+        assert!(order_contract_reply(&mut context, &shared, &id, reply.as_bytes()));
+        context.bypass_redirect_warning = true;
+        let frames = drain_frames(&mut context, &shared, &mut conn, &mut server);
+        let order = frames.iter().find(|f| tag(f, 35) == Some("D")).unwrap_or_else(|| panic!("no order: {frames:?}"));
+        let tags: Vec<u32> = order.iter().map(|(t, _)| *t).filter(|t| matches!(t, 59 | 8032 | 100)).collect();
+        assert_eq!(tags, [59, 8032, 100], "{order:?}");
+        assert_eq!((tag(order, 8032), tag(order, 100)), (Some("1"), Some("BEST")));
     }
 
     #[test]
