@@ -322,6 +322,10 @@ fn send_orders(
         if post_only_refusal(&order_req, context, shared) {
             continue;
         }
+        // Not-held on a stock order not for the ATS venue (ibx#690).
+        if not_held_refusal(&order_req, context, shared) {
+            continue;
+        }
         // The price management flag, where the reference writes it; the
         // contract definition of the order's exchange is asked once when
         // the flag could apply (ibx#492).
@@ -2391,6 +2395,8 @@ pub(crate) fn reference_rank(tag: u32) -> u16 {
         44 | 6879 => 20,
         99 => 21,
         1 => 30,
+        // Not-held, right after the account (ibx#690).
+        6287 => 31,
         126 | 432 => 32,
         // Short-sale fields.
         114 => 40,
@@ -3090,6 +3096,27 @@ fn post_only_refusal(req: &OrderRequest, context: &mut Context, shared: &Arc<Sha
     context.unsent.insert(oid, (instrument, req.new_order_qty().unwrap_or(0), attrs.parent_id));
     true
 }
+
+/// A new stock order with not-held that is not for the broker's ATS venue:
+/// refused with 10297 and nothing sent; the order is kept for its cancel
+/// (the reference 10.51, paper, pre-market 14/10/2026: AAPL on SMART, then
+/// Cancelled, 202 "Order was discarded" and 161 at the cancel; ibx#690).
+/// Other security types are sent as given (not observed yet).
+fn not_held_refusal(req: &OrderRequest, context: &mut Context, shared: &Arc<SharedState>) -> bool {
+    let Some((_, Some(attrs))) = req.new_order_side() else { return false };
+    if !attrs.not_held { return false; }
+    let Some(instrument) = req.instrument() else { return false };
+    let (sec_type, _) = context.market.order_routing(instrument);
+    if !matches!(sec_type.as_str(), "STK" | "CS") || context.market.exchange(instrument) == "IBKRATS" { return false; }
+    let oid = req.order_id();
+    log::warn!("Order {} refused: not-held (10297)", oid);
+    shared.orders.push_order_error(oid, 10297, NOT_HELD_INVALID.to_string());
+    context.unsent.insert(oid, (instrument, req.new_order_qty().unwrap_or(0), attrs.parent_id));
+    true
+}
+
+/// Text of error 10297 (ibx#690, paper 14/10/2026).
+const NOT_HELD_INVALID: &str = "Not Held attribute is invalid for this order.";
 
 /// Whether the orders of a request carry the price management flag
 /// (ibx#492), None while the contract definition it needs is asked for.
@@ -3878,6 +3905,9 @@ fn push_extended_attrs(
     // precaution let it through (ibx#608, paper 12/10/2026).
     if attrs.seek_price_improvement { fields.push((6557, "1".to_string())); }
     if attrs.route_marketable_to_bbo { fields.push((8265, "1".to_string())); }
+    // Not-held, after the account (the reference 10.51, paper, pre-market
+    // 14/10/2026, an order for the broker's ATS venue; ibx#690).
+    if attrs.not_held { fields.push((6287, "1".to_string())); }
     if attrs.cash_qty > 0 {
         // Tag 152, the cash quantity attribute of the reference, written
         // with its price formatter (ibx#263; 5920 is only its column id).
@@ -6417,6 +6447,41 @@ mod tests {
             [(91, 496, "The Post-Only attribute cannot be used with order type \"PEG MKT\".".to_string())]);
         assert!(context.unsent.contains_key(&91));
         assert!(!post_only_refusal(&lmt_with(92, A { post_only: true, ..Default::default() }), &mut context, &shared));
+    }
+
+    // ibx#690 (the reference 10.51, paper, pre-market 14/10/2026): not-held
+    // on a stock order for SMART is refused with 10297, nothing sent; on an
+    // order for the broker's ATS venue it goes right after the account.
+    #[test]
+    fn not_held_is_refused_on_smart_and_sent_for_the_ats_venue() {
+        use crate::types::OrderAttrs as A;
+        let (frames, errors, context, _) = flag_frames(vec![lmt_with(93, A { not_held: true, ..Default::default() })]);
+        assert!(frames.iter().all(|f| tag(f, 35) != Some("D")), "{frames:?}");
+        assert_eq!(errors, [(93, 10297, "Not Held attribute is invalid for this order.".to_string())]);
+        assert!(context.unsent.contains_key(&93));
+
+        let mut context = Context::new();
+        let slot = context.market.try_register_unresolved().unwrap();
+        context.market.set_symbol(slot, "AAPL".into());
+        context.market.set_routing(slot, "STK", "IBKRATS");
+        context.market.set_currency(slot, "USD");
+        context.bypass_redirect_warning = true;
+        context.pending_orders.push(OrderRequest::SubmitEx { order_id: 94, instrument: slot, side: Side::Buy, qty: 1,
+            kind: crate::types::OrderKind::Limit { price: 100 * P }, tif: b'0', attrs: A { not_held: true, ..Default::default() } });
+        let shared = Arc::new(SharedState::new());
+        let (client, mut server) = crate::protocol::connection::mem_pair();
+        let mut conn = Some(Connection::new_mem(client));
+        let frames = drain_frames(&mut context, &shared, &mut conn, &mut server);
+        assert_eq!(tag(&frames[0], 35), Some("c"), "{frames:?}");
+        let id = format!("FixSecDefReqBySymbol{}", ORDER_LOOKUP_FIRST_ID);
+        let reply = format!("8=FIX.4.1|35=d|320={id}|322=*|323=4|55=AAPL|167=STK|207=BEST|6008=265598|15=USD|6431=LMT/3,MKT/1,STP/1,RTH/1|6046=BEST,NASDAQ,IBKRATS|146=1|6344=1|6008=265598|10=000|").replace('|', "\x01");
+        assert!(order_contract_reply(&mut context, &shared, &id, reply.as_bytes()));
+        let frames = drain_frames(&mut context, &shared, &mut conn, &mut server);
+        let order = frames.iter().find(|f| tag(f, 35) == Some("D")).unwrap_or_else(|| panic!("no order: {frames:?}"));
+        let at = |t: u32| order.iter().position(|f| f.0 == t);
+        assert_eq!(at(6287), at(1).map(|a| a + 1), "{order:?}");
+        assert_eq!(tag(order, 6287), Some("1"));
+        assert!(shared.orders.drain_order_errors().is_empty());
     }
 
     // ibx#607, the reference's replaces of 12/10/2026: allow pre-open and

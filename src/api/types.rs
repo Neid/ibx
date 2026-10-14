@@ -524,6 +524,7 @@ impl Order {
             deactivate: self.deactivate,
             route_marketable_to_bbo: self.route_marketable_to_bbo,
             seek_price_improvement: self.seek_price_improvement,
+            not_held: self.not_held,
             clearing_intent: self.clearing_intent.clone(),
             short_sale: ShortSale {
                 slot: self.short_sale_slot,
@@ -576,6 +577,8 @@ impl Order {
             // The order attributes of ibx#608.
             || self.route_marketable_to_bbo
             || self.seek_price_improvement
+            // Not-held (ibx#690).
+            || self.not_held
             // The clearing intent and the short-sale instructions reach the
             // side check and the short-sale fields (ibx#417).
             || !self.clearing_intent.is_empty()
