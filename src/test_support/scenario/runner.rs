@@ -125,8 +125,13 @@ fn with_entry_marks(fields: Fields) -> Fields {
         if t == 264 && (v == "442" || v == "443") {
             in_pair = true;
         }
-        // The real-time volume in its 10.51 share form (ibx#642).
-        let v = if t == 264 && v == "233" { crate::control::generic_values::wire_code(233).to_string() } else { v };
+        // The real-time volumes and the short-term volumes in their 10.51
+        // share forms (ibx#642, ibx#641).
+        let v = if t == 264 && matches!(v.as_str(), "233" | "375" | "595") {
+            crate::control::generic_values::wire_code(v.parse().unwrap_or(0)).to_string()
+        } else {
+            v
+        };
         out.push((t, v));
     }
     if in_pair {

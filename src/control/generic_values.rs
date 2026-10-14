@@ -513,8 +513,12 @@ pub fn decode(code: i32, payload: &[u8], rec: &mut GenericRecord, ctx: DecodeCtx
             for (v, field, tick) in [
                 (seen[0], Field::Volume3Min, 63), (seen[1], Field::Volume5Min, 64), (seen[2], Field::Volume10Min, 65),
             ] {
+                // In shares when asked as 773 (ibx#641; observed 14/10/2026 on
+                // AAPL: 352560 shares given as 352560), in round lots in the
+                // 10.40 form.
+                let unit = if ctx.rt_in_shares { 1 } else { ctx.round_lot.max(1) };
                 if let Some(v) = v && rec.set_int(field, v as i64) {
-                    size(&mut out, tick, v as i64 * ctx.round_lot.max(1));
+                    size(&mut out, tick, v as i64 * unit);
                 }
             }
         }
@@ -586,7 +590,9 @@ fn rt_volume(rec: &mut GenericRecord, trade: bool, value: f64, volume: i64, coun
     // size and volume are given in round lots, truncated; with a lot
     // above 1 every block gives a string (observed 13/10/2026, MSFT,
     // round lot 40, on the reference 10.51).
-    let lot = if trade || !ctx.rt_in_shares { 1 } else { ctx.round_lot.max(1) };
+    // So is the real-time trade volume, asked as 766 (ibx#641; observed
+    // 14/10/2026 on MSFT: 2451712 shares given as 61292).
+    let lot = if !ctx.rt_in_shares { 1 } else { ctx.round_lot.max(1) };
     if lot == 1 && d_count == 0 && d_vol == 0 && d_value == 0.0 {
         return None;
     }
@@ -602,11 +608,14 @@ fn rt_volume(rec: &mut GenericRecord, trade: bool, value: f64, volume: i64, coun
 }
 
 /// The code a generic tick is asked under on the wire: the reference 10.51
-/// asks the real-time volume (233) in its share form, 765 (ibx#641,
-/// observed 13/10/2026 on MSFT, regular hours).
+/// asks the real-time volumes in their share forms, 233 as 765 and 375 as
+/// 766, and the short-term volumes (595) as 773 (ibx#641, observed on
+/// 13/10/2026 and 14/10/2026 on MSFT and AAPL, regular hours).
 pub fn wire_code(code: i32) -> i32 {
     match code {
         RT_VOLUME => 765,
+        RT_TRADE_VOLUME => 766,
+        SHORT_TERM_VOLUME => 773,
         other => other,
     }
 }
@@ -928,6 +937,20 @@ mod tests {
     // and the price is that share's, as the reference gave it
     // ('549.66;0E-16;...;151145...;548.54166701;false').
     #[test]
+    fn share_forms_of_14_october() {
+        // ibx#641, the reference 10.51 on 14/10/2026: MSFT 766 blocks (round
+        // lot 40) and AAPL's 773 block, as the reference gave them.
+        let ctx = DecodeCtx { min_tick: 0.01, now_ms: 1791987034821, round_lot: 40, entry_min_tick: 0.01, rt_in_shares: true };
+        let mut rec = GenericRecord::default();
+        assert!(decode(RT_TRADE_VOLUME, &hex("41d3d6f13077d3ed00000000002565d200005d5100000000"), &mut rec, ctx).is_empty());
+        assert_eq!(decode(RT_TRADE_VOLUME, &hex("41d3d89e9508c9b0000000000025690000005d5f00000000"), &mut rec, ctx),
+            [GenTick::Text(77, "540.17;20.0000000000000000;1791987034821;61292.0000000000000000;543.23424127;false".into())]);
+        let ctx = DecodeCtx { round_lot: 100, ..ctx };
+        assert_eq!(decode(SHORT_TERM_VOLUME, &hex("00000004000000006acf8d380000000300056130000000050008a2000000000a000f2dc800000000"), &mut GenericRecord::default(), ctx),
+            [GenTick::Size(63, 352560.0), GenTick::Size(64, 565760.0), GenTick::Size(65, 994760.0)]);
+    }
+
+    #[test]
     fn rt_volume_in_shares() {
         let mut rec = GenericRecord::default();
         let ctx = DecodeCtx { min_tick: 0.01, now_ms: 1791900393444, round_lot: 40, entry_min_tick: 0.01, rt_in_shares: true };
@@ -936,7 +959,7 @@ mod tests {
             vec![GenTick::Text(48, "549.66;0E-16;1791900393444;151145.0000000000000000;548.54166701;false".into())]);
         // With a lot above 1, a block with no change gives a string too.
         assert_eq!(decode(RT_VOLUME, &hex("41e8b57edfd1930500000000005c407700024a1a00000000"), &mut rec, ctx).len(), 1);
-        assert_eq!((wire_code(RT_VOLUME), wire_code(RT_TRADE_VOLUME)), (765, RT_TRADE_VOLUME));
+        assert_eq!((wire_code(RT_VOLUME), wire_code(RT_TRADE_VOLUME), wire_code(SHORT_TERM_VOLUME)), (765, 766, 773));
     }
 
     #[test]
