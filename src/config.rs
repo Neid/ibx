@@ -40,7 +40,7 @@ pub fn use_ssl_setting(value: Option<&str>) -> bool {
 }
 
 /// The reference's setting `[Communication] TestSecureConnect` of its
-/// settings file (read once per process, code read of the reference):
+/// settings file (read once per process):
 /// on, the key exchange also accepts the test certificates (ibx#276).
 /// `IBX_TEST_SECURE_CONNECT=true` (or `1`) turns it on; off by default, as
 /// the reference's.

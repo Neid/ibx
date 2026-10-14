@@ -442,8 +442,8 @@ fn what_if_of_a_combo() {
 // A condition time in Asia/Tokyo on a US stock: the reference refuses it
 // with 10314 after the contract lookup (not the contract's zone). It read
 // the zone from a trading schedule it had before the recording (no
-// schedule request in it; code read of the reference: the schedule is
-// asked only when not cached); ibx asks no schedule for an order, knows
+// schedule request in it: the schedule is asked only when not
+// cached); ibx asks no schedule for an order, knows
 // no zone, and sends the order.
 #[test]
 #[ignore = "ibx#510: the contract's zone comes from a schedule the reference had before the recording"]
@@ -455,8 +455,7 @@ fn condition_time_in_another_zone() {
 // "This order will be directly routed to OVERNIGHT." and discards it
 // (Cancelled, then 201 "Order was discarded."); the same id placed again
 // gets 103, its cancel 10147. It is the API precaution "Bypass Redirect
-// Order warning for Stock API Orders" (off by default, code read of the
-// reference; ibx:
+// Order warning for Stock API Orders" (off by default; ibx:
 // `IBX_BYPASS_REDIRECT_ORDER_WARNING`). The Cancelled status has a permId
 // here and none in the ISLAND capture of 25/09/2026: ibx gives the id the
 // order would have gone out under.
@@ -468,7 +467,7 @@ fn overnight_directed_order() {
 
 // SPY option combos (a call spread, SMART and CBOE): the reference
 // refuses both with 460 "No trading permissions" before sending; ibx
-// gives no callback. The reference's checks that raise it (code read)
+// gives no callback. The reference's checks that raise it
 // read positions, clearing and logon flags; no field of the logon or of
 // the contract replies of the recording names the option permission.
 #[test]

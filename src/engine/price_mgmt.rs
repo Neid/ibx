@@ -37,7 +37,7 @@ pub(crate) fn excluded_frame(fields: &[(u32, &str)]) -> bool {
 
 /// The value for a security type when the client leaves it unset: the
 /// order preset of that type. The preset is a stored user setting with no
-/// default in the reference's code; it was seen on for stocks on the test
+/// default in the reference; it was seen on for stocks on the test
 /// paper account. Other types are not known and stay off.
 pub(crate) fn preset(sec_type: &str) -> bool {
     sec_type == "STK"

@@ -31,7 +31,7 @@ const MESSAGE_UPDATE_INTERVAL_MS: i64 = 30_000;
 /// The offset of the local clock to the server clock, as the reference
 /// keeps it: set by the server time of every logon reply, then refreshed
 /// at most every 30 s by the server time of a test request or of an
-/// eligible server update message (code read of the reference). The
+/// eligible server update message. The
 /// current time request answers the local clock plus this offset.
 #[derive(Debug, Default)]
 pub struct ClockOffset {
@@ -97,7 +97,7 @@ fn offset(server_ms: i64, received_ms: i64, now_ms: i64, logon: bool, zone: &jif
 /// Whether a server message sets the clock offset after the logon: a test
 /// request, or a `35=U` message without an account (tag 1) whose
 /// message number `comm` (tag 6040) is not 60, 146 or 151
-/// (code read of the reference). The reference
+///. The reference
 /// also uses a 6040=110 message in one session state ibx does not track;
 /// such a message is not used here.
 pub fn message_sets_clock(msg_type: &str, comm: Option<&str>, has_account: bool) -> bool {
@@ -152,7 +152,7 @@ pub const VERSION_CUTOFF_CODE: i64 = 2172;
 /// The warning 2172 the reference sends with id -1 at every API connect
 /// when the cutoff version of the logon (tag 6243) is above the client's
 /// own, with the cutoff date (tag 6244); None otherwise
-/// (code read of the reference). The text is the reference's
+///. The text is the reference's
 /// `Version_Cutoff` text with its markup removed (`<br>` becomes a space).
 pub fn version_cutoff_warning(cutoff: Option<&str>, date: Option<&str>) -> Option<String> {
     let cutoff = cutoff?;
@@ -175,25 +175,22 @@ pub fn has_feature(features: &str, feature: &str) -> bool {
 /// requests (ibx#421).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ApiFeatures {
-    /// DENYAPI: API connections are refused (code read of the reference).
+    /// DENYAPI: API connections are refused.
     pub deny_api: bool,
-    /// SECDEFTA: matching symbols requests are allowed (code read of the
-    /// reference).
+    /// SECDEFTA: matching symbols requests are allowed.
     pub matching_symbols: bool,
     /// NIGHTLY: the historical data years limit is not checked
-    /// (code read of the reference).
+    ///.
     pub nightly: bool,
     /// NOMAGNFIX: option chain strikes are not scaled by the price
-    /// magnifier (code read of the reference, ibx#440).
+    /// magnifier (ibx#440).
     pub no_magnifier_fix: bool,
     /// ISLAND2NASDAQ: NASDAQ is not left out of the option chains
-    /// (code read of the reference, ibx#440).
+    /// (ibx#440).
     pub island_to_nasdaq: bool,
-    /// BONDAPI: bond rows carry the bond fields (code read of the
-    /// reference, ibx#436).
+    /// BONDAPI: bond rows carry the bond fields (ibx#436).
     pub bond_api: bool,
-    /// EVAPI: contract rows carry the EV rule (code read of the reference,
-    /// ibx#436).
+    /// EVAPI: contract rows carry the EV rule (ibx#436).
     pub ev_api: bool,
     /// PRCEXTRAPREC: the last entry of a market data request is marked 2
     /// (ibx#648).
@@ -231,12 +228,12 @@ impl ApiFeatures {
 }
 
 /// The reference's text when DENYAPI refuses an API connection
-/// (code read of the reference, API-SESSION 1.1).
+/// (API-SESSION 1.1).
 pub const API_NOT_ALLOWED: &str = "Disconnecting API request since regular API is not allowed.";
 
 /// The account ids of the logon's account list (tag 6095, ibx#420): a
 /// comma list of `acct` or `acct/alias`, in logon order, the alias left
-/// out, empty items skipped (code read of the reference).
+/// out, empty items skipped.
 pub fn managed_accounts(tag: &str) -> Vec<String> {
     tag.split(',')
         .map(|item| item.split('/').next().unwrap_or("").trim())
@@ -248,9 +245,9 @@ pub fn managed_accounts(tag: &str) -> Vec<String> {
 /// The managed accounts text of the API callback (ibx#420): every account
 /// of the list, in its order, with a comma between two accounts, as the
 /// reference writes MANAGED_ACCTS for a client at the server version ibx
-/// takes (the protobuf form, code read of the reference; captured
+/// takes (the protobuf form; captured
 /// 02/10/2026 as message 215 at server version 214). The older text form
-/// (code read of the reference) ends with a comma when there are
+/// ends with a comma when there are
 /// several accounts; it is not the one of this server version.
 pub fn managed_accounts_text(accounts: &[String]) -> String {
     accounts.join(",")
@@ -258,17 +255,17 @@ pub fn managed_accounts_text(accounts: &[String]) -> String {
 
 /// The pending accounts of a logon reply or update (tag 8092, ibx#421):
 /// the accounts whose application is not approved yet, a comma set
-/// (code read of the reference).
+///.
 pub fn pending_accounts(tag: &str) -> Vec<String> {
     tag.split(',').map(str::trim).filter(|a| !a.is_empty()).map(String::from).collect()
 }
 
 /// Text of error 10136: an order or an exercise for an account whose
-/// application is not approved (code read of the reference).
+/// application is not approved.
 pub const PENDING_ACCOUNT: &str = "Cannot submit trades until the application is finished and approved";
 
 /// Text of error 10275 for the pending accounts `accounts`, comma joined
-/// (code read of the reference).
+///.
 pub fn positions_not_available(accounts: &[&str]) -> String {
     format!("Positions info is not available for account(s): {} until the application is finished and approved.",
         accounts.join(","))
@@ -276,23 +273,22 @@ pub fn positions_not_available(accounts: &[&str]) -> String {
 
 /// Text of warning 2134, sent with id -1 to the API clients when the data
 /// permissions changed after a market data request was refused for an API
-/// subscription (code read of the reference).
+/// subscription.
 pub const MARKET_DATA_SUBSCRIPTION_CHANGED: &str = "Market Data subscription has been changed.";
 
 /// API error code of [`MARKET_DATA_SUBSCRIPTION_CHANGED`].
 pub const MARKET_DATA_SUBSCRIPTION_CHANGED_CODE: i64 = 2134;
 
 /// A change of the data permissions within this time of the last one is
-/// ignored (code read of the reference).
+/// ignored.
 const PERMISSION_CHANGE_GUARD: std::time::Duration = std::time::Duration::from_millis(1000);
 
-/// Shortest time between two market data resubscriptions (the reference's
-/// task "ResubscribeMarketData", run at most every 30000 ms; code read
-/// of the reference).
+/// Shortest time between two market data resubscriptions (the reference
+/// resubscribes at most every 30000 ms).
 const RESUBSCRIBE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
 
-/// The reference's timing of a data permission change (ibx#421, code
-/// read): a change within 1 s of the last one is ignored; else
+/// The reference's timing of a data permission change (ibx#421): a
+/// change within 1 s of the last one is ignored; else
 /// the market data resubscription is scheduled, at once when none ran in
 /// the last 30 s, else when 30 s have passed since the last one; a
 /// resubscription already scheduled is not scheduled again.
@@ -335,13 +331,13 @@ impl PermissionChange {
 }
 
 /// Most years of a historical data request: tag 6774 of the logon when
-/// above 0, else 1 (code read of the reference).
+/// above 0, else 1.
 pub fn max_backfill_years(tag: Option<&str>) -> i32 {
     tag.and_then(|v| v.trim().parse::<i32>().ok()).filter(|n| *n > 0).unwrap_or(1)
 }
 
 /// The cause of the refusal of a duration in years above `max_years`
-/// (code read of the reference); `duration` is the normalised duration
+///; `duration` is the normalised duration
 /// (`{n} y`).
 pub fn backfill_years_refusal(duration: &str, max_years: i32) -> Option<String> {
     let (n, unit) = duration.split_once(' ')?;

@@ -13,13 +13,12 @@ use crate::auth::crypto::{aes_cbc_decrypt, aes_cbc_encrypt, hmac_sha1, strip_lea
 use crate::auth::srp::SRP_N_STR;
 use crate::protocol::ns::NS_MAGIC;
 
-/// Login text of a failed key exchange (code read of the reference).
+/// Login text of a failed key exchange.
 pub const SECURE_CONNECTION_FAILED: &str = "Unable to establish secure connection";
-/// Login text of an expired first certificate (code read of the reference).
+/// Login text of an expired first certificate.
 pub const CERTIFICATE_EXPIRED: &str =
     "The certificate has expired. Please check if your system time is set correctly and try again.";
-/// Login text of a first certificate not yet valid (code read of the
-/// reference).
+/// Login text of a first certificate not yet valid.
 pub const CERTIFICATE_NOT_YET_VALID: &str =
     "The certificate is not yet valid. Please check if your system time is set correctly and try again.";
 
@@ -578,7 +577,7 @@ mod tests {
 
     // ibx#276: the login texts of a failed check: the first certificate's
     // dates have their own texts, any other failure gives "Unable to
-    // establish secure connection" (code read of the reference); the channel keeps
+    // establish secure connection"; the channel keeps
     // no keys.
     #[test]
     fn certificate_failures_give_the_reference_login_texts() {

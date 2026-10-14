@@ -1093,9 +1093,8 @@ impl HotLoop {
         if is_smart_depth {
             // SmartDepth that the contract does not allow: the reference
             // hands the book to its single-exchange requests, where this
-            // request is not (code read: its lookup finds no entry among
-            // the single-exchange requests): the request stays, with
-            // nothing on the wire and no error.
+            // request is not: the request stays, with nothing on the wire
+            // and no error.
             log::warn!("SmartDepth req {}: not allowed for this contract; nothing is sent, as the reference", req_id);
             let msgs = self.farm.start_depth(req_id, con_id, &st, true, num_rows, 1, false, Vec::new(), None, &self.shared);
             return self.send_farm_messages(msgs);
@@ -1137,7 +1136,7 @@ impl HotLoop {
     }
 
     /// SmartDepth (#452): the contract is looked up on each of its valid
-    /// exchanges first, as the reference does (code read); its
+    /// exchanges first, as the reference does; its
     /// books and tops go out once every lookup answered, or after 10 s
     /// (`start_gathered_depth`).
     fn gather_depth_components(&mut self, req_id: ReqId, con_id: i64, sec_type: String, num_rows: i32, exchanges: Vec<String>) {
@@ -1183,14 +1182,13 @@ impl HotLoop {
     }
 
     /// The books and tops of a SmartDepth request, as the reference sorts
-    /// its components (code read of the reference): a
+    /// its components: a
     /// component found with a depth route gets a book; else one with a top
     /// route gets a top of book, unless it is the smart-routing name or its
     /// order types hold NOT2D; the others nothing. The LAST entry of a top
     /// of book goes to BEST when SMART is a valid exchange (else to the
     /// listing exchange), except on an overnight venue, which keeps its own
-    /// (code read of the reference;
-    /// captured 28/09/2026: `207=ISE|264=442` with `207=BEST|264=443`,
+    /// (captured 28/09/2026: `207=ISE|264=442` with `207=BEST|264=443`,
     /// `207=IBEOS|264=442` with `207=IBEOS|264=443`).
     fn start_smart_depth(&mut self, g: farm::DepthGather) {
         let st = g.sec_type.as_str();
@@ -1275,7 +1273,7 @@ impl HotLoop {
         if std::mem::take(&mut self.ccp.permissions_changed) && self.permission_change.change(now) {
             // The reference's API access manager: a warning to the API
             // clients when a request was refused for an API subscription
-            // since the last change (code read of the reference).
+            // since the last change.
             if self.farm.take_refused_api_subscriptions() {
                 use crate::control::logon::{MARKET_DATA_SUBSCRIPTION_CHANGED, MARKET_DATA_SUBSCRIPTION_CHANGED_CODE};
                 log::info!("Market data subscription has been changed: warning {}", MARKET_DATA_SUBSCRIPTION_CHANGED_CODE);
@@ -1299,7 +1297,7 @@ impl HotLoop {
     }
 
     /// The reference's market data resubscription after a data permission
-    /// change (ibx#421, code read): "Desubscribing all farm mkt
+    /// change (ibx#421): "Desubscribing all farm mkt
     /// data", then every streaming subscription and news entry asked again
     /// on new ids.
     fn resubscribe_market_data(&mut self) {
@@ -5658,7 +5656,7 @@ mod tests {
     }
 
     // ibx#421: a logon update with a new data permission stamp makes the
-    // reference resubscribe its market data (code read): every
+    // reference resubscribe its market data: every
     // streaming top of book and news entry cancelled, then asked again on
     // new ids, at once the first time, then at most every 30 s; a change
     // within 1 s of the last one is ignored. A refusal for an API
@@ -5709,7 +5707,7 @@ mod tests {
     }
 
     // ibx#421: a relogin's stamp is a change only when the old and the
-    // new one are both set and differ (code read of the reference).
+    // new one are both set and differ.
     #[test]
     fn relogin_data_permission_rule() {
         let mut ccp = CcpState::new();

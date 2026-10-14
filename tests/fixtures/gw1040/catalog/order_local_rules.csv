@@ -18,7 +18,7 @@ id,code,api_code,stage,text,condition
 10342-1,10342,10342,rules,The 'ImbalanceOnly' order attribute may not be specified for this order.,imbalanceOnly set and the type list has no IMB
 10274-1,10274,10274,rules,The 'PostToATS' order attribute may not be specified for this order or is invalid.,postToAts set and the type list has no POSTATS
 168-1,168,320,read,Error reading request:Discretionary amount does not conform to the minimum price variation for this contract ,discretionaryAmt < 0
-313-1,313,320,read,Error reading request:The combo details for leg '%s' are invalid.,exception while reading combo leg i
+313-1,313,320,read,Error reading request:The combo details for leg '%s' are invalid.,an error while reading combo leg i
 409-1,409,320,read,Error reading request:Invalid scale order. You should specify component order size.,message versions 22 to 25 only: old scaleNumComponents > 0
 429-1,429,320,read,Error reading request:Delta neutral orders are only supported for combos (BAG security type),deltaNeutralContract given without combo legs
 10027-1,10027,320,read,"Error reading request:Invalid combo routing tag. Valid tags are LeginPrio, MaxSegSize, DontLeginNext, ChangeToMktTime1, ChangeToMktTime2, ChangeToMktOffset, DiscretionaryPct, NonGuaranteed, CondPriceMin, CondPriceMax, and PriceCondConid.",smartComboRoutingParams tag not allowed

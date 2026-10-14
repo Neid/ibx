@@ -24,7 +24,7 @@ use crate::types::{ComboSpec, OrderId, Price, PRICE_SCALE};
 pub(crate) type Fields = Vec<(u32, String)>;
 
 /// Error 200, the reference's answer when a definition of the combo or of
-/// a leg is not found (code read of the reference).
+/// a leg is not found.
 pub(crate) const NO_DEFINITION: (i64, &str) = (200, "No security definition has been found for the request");
 
 /// One leg of a built combo.
@@ -55,7 +55,7 @@ pub(crate) struct Combo {
     pub currency: String,
     /// The BAG record's trading class (COMB).
     pub trading_class: String,
-    /// The legs in the contract's order: ascending conId (code read of the reference).
+    /// The legs in the contract's order: ascending conId.
     pub legs: Vec<Leg>,
     /// The combo multiplier the server gave (6040=36), 1 when not asked.
     pub multiplier: f64,
@@ -106,7 +106,7 @@ impl Combo {
     /// The combo key the reference shows as comboLegsDescrip: per leg in
     /// contract order its conId and its ratio, negative for a selling leg,
     /// the ratios divided by their greatest common divisor
-    /// (code read of the reference). Captured:
+    ///. Captured:
     /// `756733|1,320227571|-1`.
     pub(crate) fn legs_descrip(&self) -> String {
         let divisor = self.legs.iter().fold(0, |g, l| gcd(g, l.ratio.unsigned_abs())).max(1) as i32;
@@ -185,7 +185,7 @@ fn format_number(v: f64) -> String {
 }
 
 /// The leg category of a combo by its legs' security types
-/// (code read of the reference): 0 for options, 9 for stocks, 1 for options and
+///: 0 for options, 9 for stocks, 1 for options and
 /// stocks, 2 futures, 3 stocks and futures, 4 options and futures, 5 all
 /// three, 7 futures options, 8 futures options and futures, 11 options and
 /// cash, 12 with a warrant, 13 with a commodity, 14 with a CFD, -1 else.
@@ -543,7 +543,7 @@ impl ComboBook {
                     Some(def) => {
                         let sec_type = api_sec_type(first_tag(msg, 167).unwrap_or(""));
                         if sec_type == "STK" && !is_smart(&setup.spec.exchange) {
-                            // The reference's rule (code read).
+                            // The reference's rule.
                             Err((10125, format!(
                                 "Combos with STK legs are only supported on SMART. Please change the exchange for your BAG contract from '{}' to 'SMART'.",
                                 setup.spec.exchange)))
@@ -689,7 +689,7 @@ fn setup_combo(setup: &Setup) -> Combo {
 }
 
 /// The reference's checks of a built combo before the order goes out, in
-/// its order and with its error codes (code read of the reference): legs
+/// its order and with its error codes: legs
 /// in more than one currency (10000), a BAG
 /// symbol that is not among the legs' (478), a non-guaranteed smart combo
 /// without exactly two legs (10002).

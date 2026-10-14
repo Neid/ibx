@@ -22,7 +22,7 @@ use super::HeartbeatState;
 /// option calculation lookups.
 pub(crate) const OPTPARAMS_LOOKUP_FIRST_ID: u32 = 0xB000_0000;
 pub(crate) const OPTPARAMS_LOOKUP_IDS: u32 = 0x1000_0000;
-/// Underlyings kept before the idle ones go (code read of the reference).
+/// Underlyings kept before the idle ones go.
 const KEPT_UNDERLYINGS: usize = 100;
 /// An underlying idle this long can go once more than 100 are kept.
 const IDLE_UNDERLYING: Duration = Duration::from_secs(60);
@@ -196,7 +196,7 @@ impl OptParams {
     }
 
     /// A leg joins the underlying unless it is already filled
-    /// (code read of the reference).
+    ///.
     fn add_leg(entry: &mut Entry, kind: &'static str, exchanges: Vec<String>) {
         match entry.legs.iter_mut().find(|l| l.kind == kind) {
             Some(leg) => {
@@ -263,7 +263,7 @@ impl OptParams {
     }
 
     /// The definition lookup of a stock, future, currency or index leg
-    /// (code read of the reference): symbol, conId, type, and the futures
+    ///: symbol, conId, type, and the futures
     /// option exchange except for a future. Not sent: the leg waits, as in
     /// the reference.
     fn send_lookup_leg(
@@ -381,7 +381,7 @@ impl OptParams {
 
     /// Every leg filled: the rows of each waiting request, then its end;
     /// or 322 when the option leg (or a futures option leg) has no data
-    /// (code read of the reference).
+    ///.
     fn finish(&mut self, under: &Underlying, shared: &SharedState) {
         let Some(entry) = self.entries.get_mut(under) else { return };
         let missing = |kind: &str| entry.legs.iter().any(|l| l.kind == kind) && !entry.answers.contains_key(kind);
@@ -391,7 +391,7 @@ impl OptParams {
             return;
         }
         // Option rows when the request has no futures option exchange,
-        // else futures option rows (code read of the reference).
+        // else futures option rows.
         let kind = if under.exchange.is_empty() { "OPT" } else { "FOP" };
         let (no_magnifier_fix, island_to_nasdaq) = shared.reference.option_chain_features();
         let rows = optparams::chain_rows(entry.answers.get(kind).map(Vec::as_slice).unwrap_or(&[]), no_magnifier_fix, island_to_nasdaq);

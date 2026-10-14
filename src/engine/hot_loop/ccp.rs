@@ -31,7 +31,7 @@ const MATCHING_SYMBOLS_SEND_GAP: std::time::Duration = std::time::Duration::from
 /// contract details request has no deadline, as in the reference: its
 /// contract definition requests (with a 6 s sweep) give up only for an
 /// order's lookup (30 s), and the API request waits for its answer
-/// (code read of the reference, ibx#485).
+/// (ibx#485).
 const SECDEF_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// Whether a lookup is an internal one of ibx, not a caller's request.
@@ -213,7 +213,7 @@ fn fill_exec_of(parsed: &std::collections::HashMap<u32, String>, exec_id: &str) 
 }
 
 /// The permId of a report's order: the id part of its ClOrdID (11), as
-/// the reference gives it (code read; captured
+/// the reference gives it (captured
 /// 01/10/2026: openOrder permId 1790865742870063 for 11=1790865742870063.0).
 /// 0 for none.
 fn perm_id_of(parsed: &std::collections::HashMap<u32, String>) -> i64 {
@@ -234,8 +234,8 @@ fn report_api_order_id(parsed: &std::collections::HashMap<u32, String>) -> Order
 
 /// Note the API order id (6121) of a report for its API client (6119, 0
 /// when absent): the reference keeps the highest order id each client used,
-/// and moves it for every order it shows the client (code read of the
-/// reference). Only positive ids: the reference keeps negative ones apart.
+/// and moves it for every order it shows the client. Only positive ids:
+/// the reference keeps negative ones apart.
 fn note_reported_order_id(parsed: &std::collections::HashMap<u32, String>, shared: &SharedState) {
     let id = report_api_order_id(parsed);
     if id <= 0 || id >= i32::MAX as OrderId {
@@ -1191,7 +1191,7 @@ impl CcpState {
     /// A logon message on the logged-on auth connection (ibx#421). With a
     /// session epoch (6059) it is a solicited logon, which the reference
     /// ignores with a warning. Without one it is a logon update
-    /// (code read of the reference), whose steps run in the reference's order:
+    ///, whose steps run in the reference's order:
     /// the pending accounts (8092, when present); the feature
     /// list (6542), where DENYAPI turning on stops the API, as the
     /// reference stops its API connections; the private label misc URLs
@@ -1256,8 +1256,7 @@ impl CcpState {
 
     /// The data permission stamp of a relogin's logon reply (ibx#421): a
     /// change only when the old and the new stamp are both set and differ;
-    /// the new one is kept in any case, even unset (code read of the
-    /// reference). True when it changed.
+    /// the new one is kept in any case, even unset. True when it changed.
     pub(crate) fn relogin_data_permissions(&mut self, stamp: Option<&str>) -> bool {
         let changed = matches!((self.data_permissions.as_deref(), stamp), (Some(old), Some(new)) if old != new);
         if changed {
@@ -1298,8 +1297,7 @@ impl CcpState {
         // the reference reads the report kind from the order status unless
         // the kind field says rejected) takes the reject path, error 201
         // alone, unless it is a status report: those go to the
-        // preview's reply handling whatever their status (code read of the
-        // reference).
+        // preview's reply handling whatever their status.
         let tag = |t: u32| parsed.get(&t).map(|s| s.as_str());
         let reject = tag(150) == Some("8") || tag(39) == Some("8");
         if reject && tag(20) != Some("3") {
@@ -1315,7 +1313,7 @@ impl CcpState {
         let is_data_frame = MARGIN_TAGS.iter().any(|tag| number(*tag).is_some());
         // A frame with an order message gives an open order with that
         // message as its warning text, and the preview waits for its data
-        // frame (ibx#462, code read of the reference).
+        // frame (ibx#462).
         let warning_text = parsed.get(&6361).cloned().unwrap_or_default();
         // A status report that rejects the preview is its final reply, with
         // or without numbers: the open order, then error 201.
@@ -1448,7 +1446,7 @@ impl CcpState {
         // cancelled, by its id or by a global cancel, and its reports reach
         // it (ibx#191). The reference makes an order of any report of an
         // unknown order, with the report's API order id (6121), client id
-        // (6119) and order id (11) (code read of the reference); the
+        // (6119) and order id (11); the
         // logon replay reports an order not routed yet as 39=A (captured
         // 01/10/2026: 8 orders of earlier sessions, 150=A 20=3 39=A), which
         // was left out when only 150=0 39=0 was taken (paper 04/10/2026:
@@ -1973,7 +1971,7 @@ impl CcpState {
             // The date the openOrder shows is the one of the order as it
             // was last sent, which a status report replaces; a new-order
             // report gives the order its date but not the openOrder, until
-            // the next modify (ibx#683; code read on 10.51; observed on
+            // the next modify (ibx#683, 10.51; observed on
             // paper 13/10/2026: a STP whose only report was a new-order
             // one showed no date until its modify, a LMT whose first
             // report was a status one showed it at once). Kept when a later
@@ -2460,7 +2458,7 @@ impl CcpState {
         log::info!("Fill {} of untracked order {}: con_id={} {:?} {} @ {}, stored",
             exec_id, clord_id, con_id, side, shares, last_px);
         // The execution's reports go to its client, else to client 0
-        // (code read of the reference).
+        //.
         let mut exec = fill_exec_of(parsed, exec_id);
         let me = context.api_client_id;
         exec.other_client = me != 0 && exec.client_id != me;
@@ -2692,7 +2690,7 @@ impl CcpState {
     /// waits for that key.
     /// The trading hours of an order's contract, asked once per schedule
     /// key and session after the order's definition came, as the reference
-    /// does for every API order (ibx#636; code read on 10.51 and 10.40, the
+    /// does for every API order (ibx#636, 10.51 and 10.40, the
     /// request seen 9 to 18 ms after the order's lookup, paper 12/10/2026).
     /// The order does not wait for them; their zone is kept for the
     /// contract, and the order's start time is shown in it (#598).
@@ -4598,7 +4596,7 @@ mod tests {
         assert!(context.what_ifs.is_empty());
     }
 
-    // ibx#462 (code read of the reference): a reply with an
+    // ibx#462: a reply with an
     // order message gives an open order with that warning text, and the
     // preview waits for its data reply.
     #[test]
@@ -4625,7 +4623,7 @@ mod tests {
         assert!(context.what_ifs.is_empty());
     }
 
-    // ibx#462, from the reference's code: a reject report of a preview
+    // ibx#462: a reject report of a preview
     // (150=8 or 39=8, not a status report) gives error 201 alone; a status
     // report (20=3) with 39=8 is the preview's reply: the open order with
     // the Inactive status, then error 201 with its reason.
@@ -7112,7 +7110,7 @@ mod tests {
     }
 
     // The reports of an order go to its client, else to client 0
-    // (code read of the reference); its notices only to its client.
+    //; its notices only to its client.
     // Captured 01/10/2026: client 193 got nothing of client 0's orders.
     #[test]
     fn reports_of_another_clients_order_reach_only_its_client_or_client_0() {

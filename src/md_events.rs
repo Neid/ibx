@@ -4,8 +4,7 @@
 //! The reference sends the ticks of a market data request while it decodes
 //! each server message, one step at a time, with that message's values:
 //! the daily figures and each trade (its time, its exchange, then its price
-//! and size) in the order of the message, then each book update
-//! (code read of the reference: its decoder and its record notifications).
+//! and size) in the order of the message, then each book update.
 //! Its API socket buffers what the client has not read yet, so a client
 //! that reads slower than the messages come still gets every step, never
 //! two messages merged into one.

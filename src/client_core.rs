@@ -261,8 +261,8 @@ pub(crate) fn scanner_session(shared: &SharedState) -> crate::control::scanner_p
 /// The scanner parameters that wait for the client, each as the
 /// reference hands it to a client of this session (ibx#571). A text the
 /// rebuild refuses gets no answer, as the reference gives none when its
-/// own rebuild fails (ibx#596, decision of 11/10/2026; the reference's
-/// code run on such texts on 11/10/2026, #582).
+/// own rebuild fails (ibx#596, decision of 11/10/2026; the reference run
+/// on such texts on 11/10/2026, #582).
 ///
 /// The rebuild takes over 10 ms on a real document: this runs where the
 /// client delivers its callbacks, never on the engine thread. The same
@@ -479,7 +479,7 @@ pub const ACCOUNT_UNSUBSCRIBED: (i64, &str) = (2100, "API client has been unsubs
 
 /// A row time as update_account_time carries it: `HH:mm` in the zone of
 /// the machine, as the reference reads it with a calendar of its default
-/// zone (code read of the reference; captured 07/10/2026 on a
+/// zone (captured 07/10/2026 on a
 /// machine in Europe/Paris: 11:49 for a row of 09:49 UTC). Empty before any
 /// row time.
 pub fn format_account_time(unix_secs: i64) -> String {
@@ -493,10 +493,10 @@ pub fn format_account_time(unix_secs: i64) -> String {
 }
 
 /// The keys of a ledger row in an account summary and the tag of each
-/// value, in the reference's order (code read of the reference;
-/// ACCOUNT-SUMMARY 1.3). `Currency`, `AccountOrGroup` and `RealCurrency`
-/// are texts; InsuredDeposit is a key only with an API setting off by
-/// default, so 8174 is added to CashBalance.
+/// value, in the reference's order (ACCOUNT-SUMMARY 1.3). `Currency`,
+/// `AccountOrGroup` and `RealCurrency` are texts; InsuredDeposit is a key
+/// only with an API setting off by default, so 8174 is added to
+/// CashBalance.
 const LEDGER_SUMMARY_KEYS: &[(&str, u32)] = &[
     ("Currency", 15), ("CashBalance", 9806), ("TotalCashBalance", 9818), ("AccruedCash", 6242),
     ("StockMarketValue", 9807), ("OptionMarketValue", 9808), ("FutureOptionValue", 9809), ("FuturesPNL", 9810),
@@ -507,8 +507,7 @@ const LEDGER_SUMMARY_KEYS: &[(&str, u32)] = &[
     ("Cryptocurrency", 8406),
 ];
 
-/// The numeric tags of a ledger row the sums add up (code read of the
-/// reference).
+/// The numeric tags of a ledger row the sums add up.
 const LEDGER_SUM_TAGS: &[u32] = &[9806, 9818, 6242, 9807, 9808, 9809, 9810, 9819, 6100, 6099, 9820, 6483, 6681,
     6682, 6683, 6684, 6685, 6686, 6687, 6711, 6924, 8406, 8174, 6925, 6926, 8007, 8398];
 
@@ -541,7 +540,7 @@ fn accounts_of(rows: &[crate::bridge::LedgerRow]) -> Vec<String> {
 }
 
 /// One ledger row per currency summed over the accounts, in the order of
-/// the reference's map (code read of the reference): accounts and
+/// the reference's map: accounts and
 /// currencies are visited in their hash map order; a value missing in one
 /// row counts as missing.
 fn ledger_sums(rows: &[crate::bridge::LedgerRow]) -> Vec<crate::bridge::LedgerRow> {
@@ -658,7 +657,7 @@ pub struct AccountSummaryBatch {
 }
 
 /// The currency of `$LEDGER:ALL` in the set of ledger currencies (ibx#479,
-/// ibx#486), as the reference keeps it (code read of the reference):
+/// ibx#486), as the reference keeps it:
 /// `$LEDGER` adds `BASE`, `$LEDGER:{CCY}` adds `{CCY}`, `$LEDGER:ALL` adds
 /// `ALL`. They are one `$LEDGER` item on the wire; the choice stays in the
 /// client.
@@ -711,7 +710,7 @@ impl PositionsSubscription {
 
 /// The rows of a reqPositions snapshot in the reference's order (ibx#487):
 /// it collects the positions in a hash set and sends them as the set gives
-/// them (code read of the reference), so the order is the set's buckets:
+/// them, so the order is the set's buckets:
 /// - hash of a row: `conId ^ (961 + spec)`, the spec of a plain row being
 ///   the account's string hash;
 /// - bucket: `(h ^ h >>> 16) & (capacity - 1)`, the capacity 16 doubled
@@ -880,7 +879,7 @@ pub fn is_open_status(status: &str) -> bool {
 
 /// The average, last fill and market cap prices of an orderStatus: an
 /// order that never left (ApiCancelled) has them unset, as the reference
-/// writes them (code read of the reference; scenario
+/// writes them (scenario
 /// i105_combo_directed of 26/09/2026: MAX, MAX, MAX).
 pub fn status_prices(r: &OrderReport) -> (f64, f64, f64) {
     if r.status == "ApiCancelled" {
@@ -1109,13 +1108,12 @@ pub enum ModifyPlan {
 }
 
 /// A market data request joins a contract that runs on delayed data while
-/// this client has not enabled delayed data (ibx#444, code read of the
-/// reference).
+/// this client has not enabled delayed data (ibx#444).
 pub const MD_DELAYED_NOT_ENABLED: (i64, &str) =
     (10168, "Requested market data is not subscribed. Delayed market data is not enabled");
 
 /// The top of book of a request with the news tick was rejected; its news
-/// goes on (ibx#444, code read of the reference):
+/// goes on (ibx#444):
 /// the ticks still observed, then "; ". Whatever the reference appends
 /// after that from the reject's text is not known.
 pub const MD_TOP_REJECTED: (i64, &str) = (2117,
@@ -1123,7 +1121,7 @@ pub const MD_TOP_REJECTED: (i64, &str) = (2117,
 
 /// Headlines kept per instrument for the requests that join it, and how
 /// many of the latest a joining request gets, as the reference replays
-/// them (ibx#444, code read of the reference).
+/// them (ibx#444).
 const NEWS_KEPT: usize = 64;
 const NEWS_REPLAYED: usize = 5;
 
@@ -1372,7 +1370,7 @@ pub struct ClientCore {
     pub silent_executions: Mutex<HashSet<String>>,
     /// The highest order id this client placed (orders and what-ifs), as
     /// the reference records it for the client when an order goes on
-    /// (code read of the reference): a new order at or below
+    ///: a new order at or below
     /// it is refused with 103 (ibx#462). Shared with the thread that keeps
     /// it on disk (ibx#518).
     pub highest_order_id: Arc<AtomicI64>,
@@ -1410,7 +1408,7 @@ pub struct ClientCore {
 /// 6 -> 72, low 7 -> 73, volume 8 -> 74, close 9 -> 75, open 14 -> 76, last
 /// time 45 -> 88, halted 49 -> 90); others unchanged (ibx#447). The
 /// reference's delayed sender writes 88 and 90 where the real-time one
-/// writes 45 and 49 (ibx#446, code read of the reference).
+/// writes 45 and 49 (ibx#446).
 pub fn delayed_tick_type(tick_type: i32) -> i32 {
     match tick_type {
         1 => 66, 2 => 67, 4 => 68, 0 => 69, 3 => 70, 5 => 71,
@@ -1548,7 +1546,7 @@ const ORDER_TYPE_ALIASES: [(&str, &str); 15] = [
 ];
 
 /// The order types that can rest as post-only, the others refused with
-/// 10051 (ibx#607, code read on 10.51: each order type's own answer, up
+/// 10051 (ibx#607, 10.51: each order type's own answer, up
 /// its class chain; the types ibx supports, under the names ibx uses).
 /// Paper 12/10/2026: LMT and REL accepted, MKT refused.
 const POST_ONLY_TYPES: [&str; 16] = [
@@ -1592,7 +1590,7 @@ pub struct ConditionTime {
 }
 
 /// The API's UTC form `yyyyMMdd-HH:mm:ss`, as the reference's strict
-/// parse takes it (code read of the reference): the text unchanged, no
+/// parse takes it: the text unchanged, no
 /// space.
 fn is_utc_dash_form(s: &str) -> bool {
     let b = s.as_bytes();
@@ -1609,9 +1607,9 @@ fn is_utc_dash_form(s: &str) -> bool {
     }
 }
 
-/// A time condition's time as the reference reads it (ibx#416, code read
-/// of the reference): the UTC form `yyyyMMdd-HH:mm:ss` is kept as
-/// given; `[yyyyMMdd ]HH:mm:ss[ zone]` is read in its zone (the machine's
+/// A time condition's time as the reference reads it (ibx#416): the UTC
+/// form `yyyyMMdd-HH:mm:ss` is kept as given; `[yyyyMMdd ]HH:mm:ss[ zone]`
+/// is read in its zone (the machine's
 /// when none is written, today's date when none is given) and sent as the
 /// instant in UTC. A day past the end of its month runs into the next
 /// month, as the reference's calendar does. None when the reference
@@ -2127,8 +2125,7 @@ impl ClientCore {
             }
         };
         // `mdoff` anywhere in the list, in any case, turns the top of book
-        // off for the request, as the reference reads the list (code read,
-        // ibx#444).
+        // off for the request, as the reference reads the list (ibx#444).
         let top_off = generic_tick_list.to_ascii_lowercase().contains("mdoff");
         // Its other generic ticks (ibx#450), request codes; the news tick
         // has its own entry.
@@ -2208,7 +2205,7 @@ impl ClientCore {
         // reference's new subscriber on that record gets 10168 when its
         // client has not enabled delayed data, and is removed; else it
         // observes delayed data at once (marketDataType 3, no 10167), with
-        // delayed entries (code read of the reference, ibx#444).
+        // delayed entries (ibx#444).
         let delayed_known = self.md_delayed_known.lock().unwrap().contains(&con_id);
         if delayed_known && !self.md_modes.lock().unwrap().delayed {
             shared.orders.push_order_error(req_id, MD_DELAYED_NOT_ENABLED.0, MD_DELAYED_NOT_ENABLED.1.to_string());
@@ -2777,7 +2774,7 @@ impl ClientCore {
     /// The contract of slot `live` is frozen (ibx#447): its requests go on
     /// with the frozen top of book of slot `frozen`, as the reference's
     /// subscriber reads the record's frozen view once frozen is confirmed
-    /// (code read of the reference): marketDataType 2 (after the request
+    ///: marketDataType 2 (after the request
     /// parameters the contract kept, when the request has not had them),
     /// then every value of the frozen view as it comes, sent again from
     /// nothing (captured 07/10/2026).
@@ -2810,8 +2807,8 @@ impl ClientCore {
 
     /// The contract of the frozen slot `frozen` has real-time data again
     /// (ibx#447): its requests go back to slot `live`, marketDataType 1,
-    /// then every value of the real-time quote (code read of the reference:
-    /// the record goes back to regular, then its values are sent again).
+    /// then every value of the real-time quote (the reference's record goes
+    /// back to regular, then its values are sent again).
     fn md_thaw(&self, shared: &SharedState, frozen: InstrumentId, live: InstrumentId, notices: &mut Vec<MdNotice>) {
         self.md_frozen.lock().unwrap().retain(|_, f| *f != frozen);
         let reqs = self.instrument_to_req.lock().unwrap().remove(&frozen).unwrap_or_default();
@@ -3000,8 +2997,7 @@ impl ClientCore {
     /// The reference's local refusal of a fundamental data request
     /// (#434): only a stock may be asked, else 321.
     pub fn fundamental_refusal(sec_type: &str, fundamentals_allowed: bool) -> Option<(i32, String)> {
-        // 10358 first, without the logon's permission (ibx#674; code read
-        // on 10.51).
+        // 10358 first, without the logon's permission (ibx#674; 10.51).
         if !fundamentals_allowed {
             let (code, text) = FUNDAMENTALS_NOT_ALLOWED;
             return Some((code as i32, text.to_string()));
@@ -3197,7 +3193,7 @@ impl ClientCore {
         }
         let mut reqs = self.account_summaries.lock().unwrap();
         let cancel_sr_id = reqs.iter().position(|r| r.req_id == req_id).map(|i| reqs.remove(i).sr_id);
-        // The reference's 322 has the rule as its cause (code read of the reference, ibx#485).
+        // The reference's 322 has the rule as its cause (ibx#485).
         if reqs.len() >= ACCOUNT_SUMMARY_MAX {
             return Err((322, "Error processing request.-'b2' : cause - Maximum number of account summary requests \
                 exceeded; desubscribe to previous request first".into()));
@@ -3279,7 +3275,7 @@ impl ClientCore {
 
     /// Start req_account_updates_multi (ibx#476). A request id already
     /// running gives 322 with the duplicate id text as its cause, as the
-    /// reference (code read of the reference; ibx#485).
+    /// reference (ibx#485).
     pub fn subscribe_account_multi(&self, req_id: i64, account: &str, model_code: &str, ledger_and_nlv: bool) -> Result<(), (i64, String)> {
         let mut subs = self.account_multi.lock().unwrap();
         if subs.iter().any(|m| m.req_id == req_id) {
@@ -3501,7 +3497,7 @@ impl ClientCore {
     }
 
     /// The 321 of an invalid generic tick list of a market data request
-    /// that is not a snapshot (ibx#450, code read of the reference): checked
+    /// that is not a snapshot (ibx#450): checked
     /// first, before anything else of the request. Its "Legal ones" are
     /// those of the security type of the first list refused, as the
     /// reference computes them once.
@@ -3509,7 +3505,7 @@ impl ClientCore {
         use crate::control::generic_tick;
         // Fundamental ratios (258) without the logon's permission: 10358
         // before any other check of the list, snapshot or not (ibx#674;
-        // code read on 10.51; paper 13/10/2026, BMW with "233,236,258").
+        // 10.51; paper 13/10/2026, BMW with "233,236,258").
         if !fundamentals_allowed && generic_tick_list.split(',').any(|t| t.trim() == "258") {
             return Some((FUNDAMENTALS_NOT_ALLOWED.0, FUNDAMENTALS_NOT_ALLOWED.1.to_string()));
         }
@@ -3518,7 +3514,7 @@ impl ClientCore {
         }
         if let Some(ticks) = generic_tick::parse(generic_tick_list, sec_type) {
             // The odd-lot quotes need session level 225 and no `mdoff`
-            // (ibx#616, code read 13/10/2026).
+            // (ibx#616, 13/10/2026).
             let mdoff = generic_tick_list.split(',').any(|t| t.trim().eq_ignore_ascii_case("mdoff"));
             if ticks.iter().any(|t| t.code == generic_tick::ODD_LOT) && (!ODD_LOT_QUOTES || mdoff) {
                 return Some((10367, "Requesting \"Odd Lot Bid/Ask Quotes\" generic tick 787 is not allowed.".to_string()));
@@ -3549,7 +3545,7 @@ impl ClientCore {
                 (10167, "Requested market data is not subscribed. Displaying delayed market data.".into(), false),
             // The farm's refusal of the top of book: the message, the
             // "delayed available" sentence appended after its period
-            // without a space (code read of the reference), then the
+            // without a space, then the
             // contract and "/TOP/ALL" (the market data type and the quote;
             // captured 05/10/2026: "...availability of delayed data.Delayed
             // market data is available.7203 TSEJ (7203.T) /TOP/ALL").
@@ -3718,7 +3714,7 @@ impl ClientCore {
     /// report that came before it, to send after `exec_details`.
     /// Store an execution of another API client's order (kept for
     /// `req_executions`); its commission report is not given to this
-    /// client, as the reference does (code read of the reference).
+    /// client, as the reference does.
     pub fn push_silent_execution(&self, contract: ApiContract, execution: ApiExecution, time_secs: Option<i64>) {
         let (base, _) = crate::engine::hot_loop::ccp::split_exec_revision(&execution.exec_id);
         if !base.is_empty() {
@@ -4116,7 +4112,7 @@ impl ClientCore {
         }
     }
 
-    /// orderStatus whyHeld, as the reference gives it (code read): only for
+    /// orderStatus whyHeld, as the reference gives it: only for
     /// a PreSubmitted order (states Acked and Pending), the reasons joined
     /// with commas: "child" for an order whose parent is not done with a
     /// fill (a parent not Filled or Cancelled with a filled quantity),
@@ -4249,7 +4245,7 @@ impl ClientCore {
 
     /// The reference's answers to the order id of `place_order`.
     ///
-    /// Its id check (code read of the reference) looks the id up in the
+    /// Its id check looks the id up in the
     /// client's order book: an order found there goes on (a modify, or a
     /// what-if preview). Any other id must be above the highest id the
     /// client placed, else error 103 and nothing sent.
@@ -4326,7 +4322,7 @@ impl ClientCore {
     }
 
     /// The next valid order id, as the reference gives it in nextValidId
-    /// at the connect and to reqIds (code read of the reference):
+    /// at the connect and to reqIds:
     /// the highest order id the client used + 1, 1 when none. reqIds
     /// reserves nothing (ibx#466).
     pub fn next_valid_id(&self, shared: &SharedState) -> OrderId {
@@ -4348,7 +4344,7 @@ impl ClientCore {
     }
 
     /// The reference sends nextValidId once the orders of the logon are
-    /// known (it waits for the order list; code read): wait for
+    /// known (it waits for the order list): wait for
     /// the end of the order replay of the logon, so the ids of the earlier
     /// sessions count, at most `ORDER_REPLAY_WAIT`.
     pub fn wait_order_replay(shared: &SharedState) {
@@ -4483,7 +4479,7 @@ impl ClientCore {
     }
 
     /// The answer to an open-order request, as the reference lists it
-    /// (code read of the reference): the orders of the book in its order
+    ///: the orders of the book in its order
     /// (a hash table keyed by permId, walked bucket by bucket in insertion
     /// order; captured 01/10/2026), every client's for reqAllOpenOrders,
     /// this client's for reqOpenOrders (the order's client id equal to
@@ -4816,8 +4812,8 @@ impl ClientCore {
             stream.generation = store.generation;
         }
         // The image is the reference's cached values in the order of their
-        // map, keyed by key, "!" and currency (a sorted map; code read of
-        // the reference; captured 07/10/2026).
+        // map, keyed by key, "!" and currency (a sorted map; captured
+        // 07/10/2026).
         if first {
             fields.sort_by_cached_key(|f| format!("{}!{}", f.key, f.currency));
         }
@@ -4876,7 +4872,7 @@ impl ClientCore {
     /// Account summary rows and ends the server sent, by request (ibx#479):
     /// every row of the request's subscription, with its text and currency;
     /// the end at each end marker. Rows of a cancelled subscription are
-    /// dropped. As the reference (ibx#486, code read of the reference):
+    /// dropped. As the reference (ibx#486):
     /// - a ledger frame gives the rows of each account for the currencies
     ///   asked (not `ALL`), in the order of the reference's currency set;
     /// - with `$LEDGER:ALL`, the end marker gives first one row per
@@ -4984,9 +4980,9 @@ impl ClientCore {
     }
 
     /// postOnly, allowPreOpen and ignoreOpenAuction checked as the
-    /// reference reads the order, after the account config (ibx#607; code
-    /// read on 10.51, the placeOrder handler right after the checks of
-    /// 145; paper 12/10/2026: postOnly on MKT refused with 10051 at once,
+    /// reference reads the order, after the account config (ibx#607; 10.51,
+    /// right after the checks of 145; paper 12/10/2026: postOnly on MKT
+    /// refused with 10051 at once,
     /// its id not used). postOnly: an order type that cannot rest as
     /// post-only (10051), the IBKRATS venue (464), the time in force
     /// OVERNIGHT + DAY (10052). allowPreOpen or
@@ -5341,7 +5337,7 @@ impl ClientCore {
     /// it is not checked (ibx#421). A contract with no exchange (empty, the
     /// official API's default) is refused first after an end date the
     /// reference cannot read, but for a continuous future
-    /// (code read of the reference, HIST-BARS 1.2).
+    /// (HIST-BARS 1.2).
     #[allow(clippy::too_many_arguments)]
     pub fn historical_refusal(
         end_date_time: &str,
@@ -5367,7 +5363,7 @@ impl ClientCore {
 
     /// A reqHeadTimeStamp whose contract has no exchange (empty, the official
     /// API's default): 321, the reference's first check
-    /// (code read of the reference, HIST-BARS 4.1). Nothing is sent.
+    /// (HIST-BARS 4.1). Nothing is sent.
     pub fn head_timestamp_refusal(exchange: &str) -> Option<(i32, String)> {
         exchange.is_empty()
             .then(|| (321, "Error validating request.-'bN' : cause - Please enter exchange".to_string()))
@@ -5375,14 +5371,14 @@ impl ClientCore {
 
     /// A reqMktData whose contract has no exchange (empty, the official
     /// API's default), but a news contract: 321, the reference's first
-    /// check (code read of the reference, MKTDATA-L1 1.2). Nothing is sent.
+    /// check (MKTDATA-L1 1.2). Nothing is sent.
     pub fn market_data_exchange_refusal(exchange: &str, sec_type: &str) -> Option<(i64, String)> {
         (exchange.is_empty() && !sec_type.eq_ignore_ascii_case("NEWS"))
             .then(|| (321, "Error validating request.-'bQ' : cause - Please enter exchange".to_string()))
     }
 
     /// The reference's checks of a reqContractDetails contract
-    /// (code read of the reference, CONTRACT-DETAILS 1.2, 1.3),
+    /// (CONTRACT-DETAILS 1.2, 1.3),
     /// 321: with no conId, no symbol, local symbol nor security id (an
     /// issuer id or a news contract need none); then with no conId and no
     /// security id, a security type that is not one (empty, the official
@@ -5451,7 +5447,7 @@ impl ClientCore {
     /// (10057), a smartComboRoutingParams name the reference does not know
     /// (10027). Checking (error 321): no leg (314), a smart combo in a
     /// currency with no smart combo conId in the logon (10011), then each
-    /// leg in order (code read of the reference): a per-leg price on an order type
+    /// leg in order: a per-leg price on an order type
     /// other than LMT or REL + LMT (10055), a leg without price after a
     /// priced first leg (10056), a conId or ratio not above 0 or an action
     /// that is not BUY, SELL, SSHORT or SSHORTX, an open/close code that
@@ -5537,7 +5533,7 @@ impl ClientCore {
             return Err(refuse("Invalid leg ratio."));
         }
         // The reference 10.51's rules for combos of more than two legs
-        // (ibx#660; code read, and observed 13/10/2026,
+        // (ibx#660, and observed 13/10/2026,
         // regular hours, paper, a three-leg stock combo): non-guaranteed
         // only on two SMART legs, and a limit type needs its price.
         if non_guaranteed && (legs.len() != 2 || !smart) {
@@ -5571,7 +5567,7 @@ impl ClientCore {
 
     /// A modify of a combo order must name the legs of the working order
     /// (ibx#470): else 10059 and nothing is sent
-    /// (code read of the reference).
+    ///.
     /// The reference's refusal of a modify of an order for an algo
     /// provider's destination (ibx#505): it holds such an order as a SMART
     /// order, and a modify whose exchange and primary exchange are not
@@ -5684,7 +5680,7 @@ impl ClientCore {
     /// Whether the account of an order is one whose application is not
     /// approved yet (8092 of the logon, ibx#421): the reference refuses
     /// such an order with 10136 on a session that is not an FA one
-    /// (code read of the reference). The account
+    ///. The account
     /// is the order's on a session with several accounts, else the logon
     /// account, which the reference puts on the orders of a one-account
     /// session.
@@ -5702,11 +5698,10 @@ impl ClientCore {
         if reference.managed_accounts().len() > 1 && !given.is_empty() { given } else { logon_account }
     }
 
-    /// The pending accounts check of a reqPositions (ibx#421, code read of
-    /// the reference): the accounts of the logon's list whose
-    /// application is not approved. All of them: Err, error 10275 and the
-    /// request stops; some: Ok with the warning 10275, the request goes
-    /// on; none: Ok(None).
+    /// The pending accounts check of a reqPositions (ibx#421): the accounts
+    /// of the logon's list whose application is not approved. All of them:
+    /// Err, error 10275 and the request stops; some: Ok with the warning
+    /// 10275, the request goes on; none: Ok(None).
     pub fn positions_pending_check(reference: &crate::bridge::ReferenceState) -> Result<Option<(i64, String)>, (i64, String)> {
         let pending = reference.pending_managed_accounts();
         if pending.is_empty() {
@@ -5718,8 +5713,7 @@ impl ClientCore {
     }
 
     /// A reqPositionsMulti for an account whose application is not
-    /// approved: error 10275 and the request stops (ibx#421, code read of
-    /// the reference).
+    /// approved: error 10275 and the request stops (ibx#421).
     pub fn positions_multi_pending_refusal(account: &str, reference: &crate::bridge::ReferenceState, logon_account: &str) -> Option<(i64, String)> {
         let account = Self::request_account(account, reference, logon_account);
         reference.account_pending(account)
@@ -5727,8 +5721,7 @@ impl ClientCore {
     }
 
     /// A reqAccountUpdates for an account whose application is not
-    /// approved: the warning 10275, and the request goes on (ibx#421, code
-    /// read of the reference).
+    /// approved: the warning 10275, and the request goes on (ibx#421).
     pub fn account_updates_pending_warning(acct_code: &str, reference: &crate::bridge::ReferenceState, logon_account: &str) -> Option<(i64, String)> {
         Self::positions_multi_pending_refusal(acct_code, reference, logon_account)
     }
@@ -5736,9 +5729,8 @@ impl ClientCore {
     /// An order whose contract has no exchange (empty, the official API's
     /// default): error 452's text "Missing order exchange", sent as 321,
     /// nothing sent. The reference checks it before its other order rules
-    /// (code read of the reference: the contract's exchange null or
-    /// empty); ibx used to send the
-    /// order with no exchange.
+    /// (the contract's exchange null or empty); ibx used to send the order
+    /// with no exchange.
     fn exchange_refusal(exchange: &str) -> Option<(i64, String)> {
         exchange.is_empty()
             .then(|| (321, "Error validating request.-'v' : cause - Missing order exchange.".to_string()))
@@ -5788,9 +5780,9 @@ impl ClientCore {
             .collect()
     }
 
-    /// The zone rule of the time conditions (ibx#416, code read of the
-    /// reference): when one time is in a zone other than UTC and
-    /// the machine's, the order waits for the contract's trading hours and
+    /// The zone rule of the time conditions (ibx#416): when one time is in
+    /// a zone other than UTC and the machine's, the order waits for the
+    /// contract's trading hours and
     /// every condition time must then be in exactly the contract's zone
     /// (`contract_zone`), else error 10314 and nothing is sent (captured
     /// 02/10/2026: Asia/Tokyo on SPY). Until the contract's zone is known
@@ -5870,16 +5862,16 @@ impl ClientCore {
         }
     }
 
-    /// Whether the reference knows an order action (code read of the
-    /// reference, case ignored): BUY, SELL, SSHORT, SSHRT, SSHORTX, SSHRTX,
-    /// SELL LONG and Exchange_Action. Any other reads as side 0.
+    /// Whether the reference knows an order action (case ignored): BUY,
+    /// SELL, SSHORT, SSHRT, SSHORTX, SSHRTX, SELL LONG and Exchange_Action.
+    /// Any other reads as side 0.
     pub fn action_known(action: &str) -> bool {
         ["BUY", "SELL", "SSHORT", "SSHRT", "SSHORTX", "SSHRTX", "SELL LONG", "Exchange_Action"]
             .iter().any(|a| a.eq_ignore_ascii_case(action))
     }
 
     /// An order id the reference refuses with 10149 when no order has it:
-    /// 0 and the two int bounds (code read of the reference; ibx#485). ibx
+    /// 0 and the two int bounds (ibx#485). ibx
     /// used to take the next id
     /// for 0.
     pub fn order_id_refusal(order_id: OrderId) -> Option<(i64, String)> {
@@ -5895,7 +5887,7 @@ impl ClientCore {
         let refuse = |cause: &str| Some((321, format!("Error validating request.-'v' : cause - {}", cause)));
         let order_type = order.order_type.to_uppercase();
         // An action the reference does not know reads as side 0, refused
-        // first (code read of the reference, ibx#485).
+        // first (ibx#485).
         if !Self::action_known(&order.action) {
             return refuse("Invalid side field was entered");
         }
@@ -5904,7 +5896,7 @@ impl ClientCore {
             return refuse("Order size does not conform to market rule.");
         }
         // A stop type without its stop price, the API's unset value
-        // (code read of the reference, ibx#485): the auxPrice of STP,
+        // (ibx#485): the auxPrice of STP,
         // STP LMT and STP PRT, the trailStopPrice of a TRAIL LIMIT
         // (ib-agent#194, no final period; ibx takes 0 as unset there too)
         // and of a TRAIL LIT (ibx#469, captured 07/10/2026 by amount and
@@ -5919,19 +5911,18 @@ impl ClientCore {
             return refuse("Please enter a stop price");
         }
         // A trigger method that is not one of the reference's (ibx#263,
-        // code read of the reference, error 146's text): 0 default, 1 double
-        // bid/ask, 2 last, 3 double last, 4 bid/ask, 7 last or bid/ask,
-        // 8 midpoint.
+        // error 146's text): 0 default, 1 double bid/ask, 2 last, 3 double
+        // last, 4 bid/ask, 7 last or bid/ask, 8 midpoint.
         if !matches!(order.trigger_method, 0..=4 | 7 | 8) {
             return refuse("Invalid trigger method");
         }
-        // A what-if with transmit off (ibx#462, code read of the reference;
+        // A what-if with transmit off (ibx#462;
         // captured 02/10/2026, with this check's own 'v' in the text).
         if order.what_if && !order.transmit {
             return Some((321, "Error validating request.-'v' : cause - What-If order should have transmit flag set to TRUE.".into()));
         }
-        // The what-if type, checked next (ibx#608, level 217; code read on
-        // 10.51, paper 12/10/2026): a type without what-if, then a type
+        // The what-if type, checked next (ibx#608, level 217; 10.51, paper
+        // 12/10/2026): a type without what-if, then a type
         // outside 0..=6, or above 1 (a preview) on an account without the
         // other kinds (the paper account: 2 to 6 refused).
         if order.what_if_type != i32::MAX {
@@ -5942,8 +5933,8 @@ impl ClientCore {
                 return refuse(&format!("What-If type {} is not supported for your account configuration.", order.what_if_type));
             }
         }
-        // An account whose application is not approved (ibx#421,
-        // code read of the reference, refused with its own code 10136).
+        // An account whose application is not approved (ibx#421, refused
+        // with its own code 10136).
         if account_pending {
             return Some((10136, crate::control::logon::PENDING_ACCOUNT.to_string()));
         }
@@ -5954,9 +5945,9 @@ impl ClientCore {
         {
             return refuse("Invalid Trailing Percent value. Valid values are greater than 0 and less than 100.");
         }
-        // A stop or trigger price that is not a number (code read of the
-        // reference: error 403's text for the stop types, error 361's for
-        // MIT and LIT; the value must be finite and set; ibx#485).
+        // A stop or trigger price that is not a number (error 403's text for
+        // the stop types, error 361's for MIT and LIT; the value must be finite
+        // and set; ibx#485).
         let stop = if order_type == "TRAIL LIMIT" { order.trail_stop_price } else { order.aux_price };
         if (stop_type || order_type == "TRAIL LIMIT") && !stop.is_finite() {
             return refuse("Invalid Stop Price");
@@ -5976,7 +5967,7 @@ impl ClientCore {
             }
         }
         // Midprice outside regular hours: refused whatever the time of day
-        // (the flag alone, reference refusal 10210, code read of the reference).
+        // (the flag alone, reference refusal 10210).
         if matches!(order_type.as_str(), "MIDPRICE" | "MIDPX") && order.outside_rth {
             return refuse("Midprice orders are not supported outside of regular trading hours.");
         }
@@ -6003,14 +5994,14 @@ impl ClientCore {
         let values: Vec<(&str, &str)> = order.algo_params.iter()
             .map(|tv| (tv.tag.as_str(), tv.value.as_str())).collect();
         // An overnight order: the overnight exchanges, or includeOvernight
-        // (code read of the reference).
+        //.
         let overnight = matches!(exchange, "OVERNIGHT" | "IBEOS") || order.include_overnight;
         reference.algo_refusal(&order.algo_strategy, &values, overnight, warnings)
     }
 
     /// A limit price that is not a number is off the contract's price
     /// grid: error 110 and nothing sent, as the reference
-    /// (code read of the reference; ibx#263, captured
+    /// (ibx#263, captured
     /// 02/10/2026 on a LMT and an Adaptive LMT). ibx used to send it as
     /// a price of 0.
     pub fn price_refusal(order: &ApiOrder) -> Option<(i64, String)> {
@@ -6037,7 +6028,7 @@ impl ClientCore {
     /// Keep a what-if preview for its answer (ibx#462).
     pub fn track_what_if(&self, order_id: OrderId, contract: ApiContract, order: ApiOrder) {
         // A what-if goes through the same id record as an order, as in the
-        // reference (code read).
+        // reference.
         self.note_order_id(order_id);
         self.what_if_orders.lock().unwrap().entry(order_id).or_default().push_back((contract, order));
     }
@@ -6219,7 +6210,7 @@ impl ClientCore {
     }
 
     /// The time zone checks of an order whose contract's zone is not
-    /// known, in the reference's order (ibx#668; code read on 10.51: start
+    /// known, in the reference's order (ibx#668, 10.51: start
     /// time 337, end time 343, then the condition times 10314): each with
     /// the zones that must be the contract's. A zone that is UTC or this
     /// machine's is taken, as in the checks made at once.
@@ -7742,7 +7733,7 @@ mod tests {
 
     // An order whose contract has no exchange (empty, the official API's
     // default): 321 "Missing order exchange", before the other order rules
-    // (code read of the reference), nothing sent.
+    //, nothing sent.
     #[test]
     fn an_order_with_no_exchange_is_refused() {
         let text = "Error validating request.-'v' : cause - Missing order exchange.".to_string();
@@ -7795,7 +7786,7 @@ mod tests {
     }
 
     // ibx#607: the checks of postOnly, allowPreOpen and ignoreOpenAuction as
-    // the reference reads the order (code read on 10.51; 10051 and 10052
+    // the reference reads the order (10.51; 10051 and 10052
     // seen on paper 12/10/2026, REL and LMT accepted).
     #[test]
     fn the_open_flags_are_checked_as_the_order_is_read() {
@@ -8110,7 +8101,7 @@ mod tests {
         assert!(core.refusal_for_order_id(10, &lmt(101.0), &SharedState::new()).is_some());
     }
 
-    // ibx#466: the next valid id is the reference's (code read): the
+    // ibx#466: the next valid id is the reference's: the
     // highest order id the client used + 1, 1 for none; the ids of the
     // server's reports for this client id count (the orders of its earlier
     // sessions), those of other clients do not. reqIds reserves nothing;
@@ -8138,9 +8129,9 @@ mod tests {
         assert!(core.refusal_for_order_id(69, &lmt(100.0), &shared).is_none());
     }
 
-    // ibx#462, code read of the reference: a new order id at or below the highest
-    // id the client placed is refused with 103, also after a reconnect; a
-    // higher one goes on; a what-if counts as placed.
+    // ibx#462: a new order id at or below the highest id the client placed
+    // is refused with 103, also after a reconnect; a higher one goes on; a
+    // what-if counts as placed.
     #[test]
     fn a_new_order_at_or_below_the_highest_id_is_refused() {
         let core = ClientCore::new();

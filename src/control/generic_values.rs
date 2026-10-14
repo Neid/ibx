@@ -3,7 +3,7 @@
 //! `35=G` blocks become API ticks, as the reference does it.
 //!
 //! - Each generic tick is its own entry of the market data request, with
-//!   its request code (code read of the reference).
+//!   its request code.
 //!   A tick the reference does not hold back (101, 106, 233, 375, 456,
 //!   588) goes with the request, in a message of its own after the top of
 //!   book; the others wait for the top of book's acknowledgement
@@ -16,7 +16,7 @@
 //!   length (16-bit for the ticks of `LONG_LENGTH`) and the payload.
 //!   Each tick's decoder sets fields of the contract's record; a field
 //!   sends its API tick when its value changed (the record's change set),
-//!   in the order the reference sends them (code read), block after block.
+//!   in the order the reference sends them, block after block.
 
 use std::collections::HashMap;
 
@@ -73,13 +73,13 @@ const SENT: [i32; 24] = [
     PL_PRICE, FUNDAMENTALS, IPO_PRICES, SHORT_TERM_VOLUME, SLOW_MARK_PRICE, INDEX_FUTURE_PREMIUM,
 ];
 
-/// The ticks whose block has a 16-bit length (code read of the reference).
+/// The ticks whose block has a 16-bit length.
 const LONG_LENGTH: [i32; 29] = [
     257, 258, 256, 292, 247, 385, 386, 434, 433, 454, 481, 490, 491, 496, 546, 593, 594, 631, 628, 633, 705,
     669, 687, 691, 678, 699, 700, 703, 726,
 ];
 
-/// The ticks whose block has no length (code read of the reference).
+/// The ticks whose block has no length.
 const NO_LENGTH: [i32; 6] = [376, 320, 530, 532, 221, 619];
 
 /// How the length of a block of this tick is written: 1 or 2 bytes, 0
@@ -114,14 +114,14 @@ fn one_of(sec_type: &str, set: &[&str]) -> bool {
 
 /// Whether the tick is valid for a contract of this security type
 /// (the reference's validity check of each tick, with its security type
-/// sets; code read); a combo is valid for none. Per tick:
+/// sets); a combo is valid for none. Per tick:
 /// 100, 105, 106, 104/512: the option underlyings (STK, IND,
 /// FUT); 101: those and the options (OPT, FOP, IOPT); 165, 293 to
 /// 295, 318: any contract; 225: STK, FUT, OPT; 233, 375: a contract with a
 /// volume (not CASH, not CRYPTO); 236: STK, BOND, BILL, FIXED, IOPT; 456:
 /// STK, FUT, OPT, IND, FOP, CFD, SLB; 411, 588: FUT. 232 and
 /// 619: any contract (the reference sends them when the top of book is
-/// not restricted, code read of the reference; captured 07/10/2026 on
+/// not restricted; captured 07/10/2026 on
 /// a stock, an option and a future); 258: not CFD, FOP, FUT, IOPT, OPT,
 /// SLB, WAR (the logon's fundamentals feature is taken as
 /// on); 586: a stock; 595: any contract its list allows.
@@ -151,7 +151,7 @@ pub fn valid_for(code: i32, sec_type: &str) -> bool {
 /// routing exchange of its top of book), except the auction of a stock
 /// asked on SMART, which goes to its primary exchange when known
 /// (captured 05/10/2026: AAPL 225 on NASDAQ), and
-/// the fundamentals, always asked on `RTRSFND` (code read of the reference).
+/// the fundamentals, always asked on `RTRSFND`.
 pub fn entry_exchange<'a>(code: i32, sec_type: &str, exchange: &'a str, primary: &'a str) -> &'a str {
     if code == FUNDAMENTALS {
         return "RTRSFND";
@@ -285,7 +285,7 @@ fn price(out: &mut Vec<GenTick>, tick: i32, v: f64) {
 }
 
 /// `(double)(int)(v * 60)`, Java's d2i: a rate per second as a rate per
-/// minute (code read of the reference).
+/// minute.
 fn per_minute(v: f64) -> f64 {
     let m = v * 60.0;
     if m.is_nan() { 0.0 } else { m.clamp(i32::MIN as f64, i32::MAX as f64).trunc() }
@@ -442,7 +442,7 @@ pub fn decode(code: i32, payload: &[u8], rec: &mut GenericRecord, ctx: DecodeCtx
             }
         }
         // The price, then flags; valid with bit 0 and
-        // without bit 27 (code read of the reference), else unset. Tick 37
+        // without bit 27, else unset. Tick 37
         // (captured 07/10/2026: 334.9805908203125 gives 334.98059082).
         PL_PRICE => {
             let (Some(px), Some(flags)) = (r.double(), r.int()) else { return out };
@@ -554,8 +554,8 @@ fn rt_volume(rec: &mut GenericRecord, trade: bool, value: f64, volume: i64, coun
     // The real-time volume is asked in its share form (ibx#642): the
     // price comes from the shares traded, an odd lot included, and the
     // size and volume are given in round lots, truncated; with a lot
-    // above 1 every block gives a string (code read of the reference;
-    // observed 13/10/2026, MSFT, round lot 40, on the reference 10.51).
+    // above 1 every block gives a string (observed 13/10/2026, MSFT,
+    // round lot 40, on the reference 10.51).
     let lot = if trade || !ctx.rt_in_shares { 1 } else { ctx.round_lot.max(1) };
     if lot == 1 && d_count == 0 && d_vol == 0 && d_value == 0.0 {
         return None;
@@ -593,7 +593,7 @@ fn decimal16(v: i64) -> String {
 
 /// The decimals of a price tick (0.01: 2), the fewest decimals the
 /// market rule writes for a rule of that one increment
-/// (code read of the reference); 3 when the tick is not known.
+///; 3 when the tick is not known.
 fn tick_decimals(tick: f64) -> usize {
     if !(tick > 0.0 && tick.is_finite()) {
         return 3;
@@ -601,9 +601,8 @@ fn tick_decimals(tick: f64) -> usize {
     format!("{tick}").split_once('.').map_or(0, |(_, f)| f.len())
 }
 
-/// A price as the market rule writes it (code read of the reference:
-/// `min_decimals` to eight decimals, half even; 0 is "0"; captured
-/// 05/10/2026: AAPL "334.50").
+/// A price as the market rule writes it (`min_decimals` to eight
+/// decimals, half even; 0 is "0"; captured 05/10/2026: AAPL "334.50").
 pub fn rule_price_text(v: f64, min_decimals: usize) -> String {
     if v == 0.0 {
         return "0".into();
@@ -661,7 +660,7 @@ fn dividend_amount(v: f64) -> String {
 }
 
 /// The quote entries of a block without a length, as the top-of-book
-/// messages write them (code read of the reference): per entry one
+/// messages write them: per entry one
 /// byte (type in 5 bits, "one more follows", width - 1 in 2 bits; type 31:
 /// the type and the width in the next two bytes), then the value, its top
 /// bit the sign. (type, value) of each, and the bytes read; None when cut
@@ -698,9 +697,8 @@ fn java_hash(s: &str) -> u32 {
     s.encode_utf16().fold(0u32, |h, c| h.wrapping_mul(31).wrapping_add(c as u32))
 }
 
-/// The fundamental ratios as tick 47 gives them (code read of the
-/// reference): the `KEY=VALUE` pairs of the text
-/// joined with `;` in the order of a Java `HashMap` of their keys (bucket
+/// The fundamental ratios as tick 47 gives them: the `KEY=VALUE` pairs
+/// of the text joined with `;` in the order of a hash map of their keys (bucket
 /// of the key's hash in a table that starts at 16 and doubles while more
 /// than three quarters full; keys of one bucket in the order they came),
 /// without the contract id (`IBCONID`); the dividend per share
@@ -708,7 +706,7 @@ fn java_hash(s: &str) -> u32 {
 /// each other there. `NOTAVAIL=1`, or no pair, gives the empty text.
 /// Checked on the block and the callback captured on 07/10/2026 (AAPL: 66
 /// pairs in, 64 out and the empty place, the same text). The reference keeps the keys it knows
-/// (code read): every other key is taken as known.
+///: every other key is taken as known.
 pub fn ratios_text(text: &str) -> String {
     let mut pairs: Vec<(&str, &str)> = Vec::new();
     for part in text.split(';') {

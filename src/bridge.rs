@@ -1125,7 +1125,7 @@ pub struct OrderState {
     api_order_ids: Mutex<HashMap<OrderId, OrderId>>,
     /// The place of each order in the reference's book (insertion number)
     /// and the most orders the book held, for the order of the open-order
-    /// listings (code read of the reference).
+    /// listings.
     book_seqs: Mutex<HashMap<OrderId, u64>>,
     book_peak: std::sync::atomic::AtomicUsize,
     /// The highest API order id (6121) the server's reports gave for each
@@ -2006,7 +2006,7 @@ impl ReferenceState {
     }
 
     /// Whether `account`'s application is not approved yet (8092,
-    /// ibx#421; code read of the reference).
+    /// ibx#421).
     pub fn account_pending(&self, account: &str) -> bool {
         self.pending_accounts.lock().unwrap().iter().any(|a| a == account)
     }
@@ -3316,7 +3316,7 @@ mod tests {
 /// The provider names of the logon's algo provider list (ibx#505): entries
 /// separated by ';', each a name then '/' and its security types
 /// (`FOXRIVER/STK:...;IBALGO/...;JONES/STK:...`). The reference keeps every
-/// name, whatever its security types (code read 13/10/2026).
+/// name, whatever its security types (13/10/2026).
 pub fn algo_provider_names(raw: &str) -> Vec<String> {
     raw.split(';')
         .filter_map(|entry| entry.split('/').next())

@@ -139,11 +139,11 @@ fn per_leg_prices_not_one_per_leg() {
         &Order { order_combo_legs: vec![1.0], ..order("LMT") });
 }
 
-// By the code read of 14/10/2026 the reference answers this rule at its
-// first checks (321); ibx answers 320 when it reads the request. Not
-// observed yet: ibx#688.
+// Not observed yet (ibx#688): the reference is expected to answer this
+// rule at its first checks (321); ibx answers 320 when it reads the
+// request.
 #[test]
-#[ignore = "ibx#688: 321 by the code read, ibx sends 320; to observe"]
+#[ignore = "ibx#688: 321 expected, ibx sends 320; to observe"]
 fn unknown_combo_routing_tag() {
     refused("10027-1", &bag(vec![leg(756733, "BUY"), leg(320227571, "SELL")]), &Order {
         smart_combo_routing_params: vec![TagValue { tag: "Bogus".into(), value: "1".into() }],

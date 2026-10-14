@@ -1,6 +1,6 @@
 //! Option chain parameters (ibx#440): the reference's request checks, its
 //! derivative queries on the auth connection and the API rows it builds
-//! from the chain answers (code read of the reference).
+//! from the chain answers.
 
 use std::collections::HashMap;
 
@@ -12,7 +12,7 @@ pub const NO_DERIVATIVES_FOUND: &str = "No derivatives found";
 pub const NO_DERIVATIVES_RETURNED: &str = "no derivatives returned";
 
 /// The security type the reference reads from an API string
-/// (code read of the reference): case-insensitive, `CS` is a stock, an
+///: case-insensitive, `CS` is a stock, an
 /// unknown name is the empty type.
 pub fn sec_type_name(api: &str) -> &'static str {
     const NAMES: [&str; 24] = [
@@ -32,7 +32,7 @@ pub fn sec_type_name(api: &str) -> &'static str {
     NAMES.iter().find(|n| **n == upper && **n != "UNK").copied().unwrap_or("")
 }
 
-/// The local refusal of a request (code read of the reference): 321 when the
+/// The local refusal of a request: 321 when the
 /// underlying type is not FUT, STK, IND or CASH, when a FUT has no
 /// exchange, or when the conId is not a valid id.
 pub fn refusal(sec_type: &str, fut_fop_exchange: &str, con_id: i64) -> Option<(i64, String)> {
@@ -94,7 +94,7 @@ pub struct UnderlyingAnswer {
 impl UnderlyingAnswer {
     /// The answer can serve a later request on `con_id` without a new
     /// query: one of its underlyings is that conId and lists the
-    /// underlying's own type (code read of the reference).
+    /// underlying's own type.
     pub fn serves(&self, con_id: i64, sec_type: &str) -> bool {
         self.entries.iter().any(|e| e.con_id == con_id && e.derivative_types.iter().any(|t| t == sec_type))
     }
@@ -102,7 +102,7 @@ impl UnderlyingAnswer {
     /// The legs of a request on `con_id`, in their run order, with the
     /// futures option exchanges of the FOP leg; empty when no underlying
     /// of the answer is that conId or none lists a leg type
-    /// (code read of the reference).
+    ///.
     pub fn legs(&self, con_id: i64) -> Vec<(&'static str, Vec<String>)> {
         let mut legs: Vec<(&'static str, Vec<String>)> = Vec::new();
         for entry in self.entries.iter().filter(|e| e.con_id == con_id) {
@@ -118,7 +118,7 @@ impl UnderlyingAnswer {
 }
 
 /// The derivative query of an underlying: symbol in upper case, the conId
-/// except for CASH (code read of the reference).
+/// except for CASH.
 pub fn underlying_query(symbol: &str, sec_type: &str, con_id: i64) -> Vec<(u32, String)> {
     let mut out = vec![(6040, "5".to_string()), (55, symbol.to_uppercase()), (310, sec_type.to_string())];
     if sec_type != "CASH" {
@@ -154,7 +154,7 @@ pub fn parse_underlying_answer(msg: &[u8]) -> Option<UnderlyingAnswer> {
 // ─── The chain query (6040=138) and its answer (6040=139) ───
 
 /// The key the reference matches a chain answer to its query with
-/// (code read of the reference).
+///.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ChainKey {
     pub con_id: i64,
@@ -165,8 +165,7 @@ pub struct ChainKey {
     pub by_6457: bool,
 }
 
-/// The chain query of a key: the exchange only for a FUT type (code read
-/// of the reference).
+/// The chain query of a key: the exchange only for a FUT type.
 pub fn chain_query(key: &ChainKey) -> Vec<(u32, String)> {
     let mut out = vec![
         (6040, "138".to_string()),
@@ -228,7 +227,7 @@ struct ClassKey {
 }
 
 /// Parse a chain answer (6040=139) as the reference reads it
-/// (code read of the reference): a group exchange starts a group
+///: a group exchange starts a group
 /// and clears the trading class and multiplier; the conId of a class is
 /// the last 6346; dates (6775, 6777, 6971) and strikes, currency and rule
 /// (6997, 15, 6031) are kept per class, the last value of a tag winning;
@@ -397,7 +396,7 @@ pub fn parse_strike_scales(msg: &[u8]) -> HashMap<String, StrikeScale> {
     out
 }
 
-/// A strike as the API gets it (code read of the reference):
+/// A strike as the API gets it:
 /// unchanged with the logon feature NOMAGNFIX or without a rule; else
 /// times the rule's magnifier, rounded to its decimals (2 when not above
 /// 0, none for -3).
@@ -449,7 +448,7 @@ struct Group {
     multiplier_value: f64,
 }
 
-/// The order of the reference's rows (code read) for the
+/// The order of the reference's rows for the
 /// first row of two groups: expiry, strike, exchange, extra key, trading
 /// class, then the multiplier difference cut to an int.
 fn first_row_order(a: &Group, b: &Group) -> std::cmp::Ordering {
@@ -494,7 +493,7 @@ fn java_hashmap_order(hashes: &[i32]) -> Vec<usize> {
 }
 
 /// The API rows of a request from the chain answers of its leg, as the
-/// reference builds them (code read):
+/// reference builds them:
 /// rows for each class of an allowed group exchange, again for every
 /// allowed exchange of 6523 when the group is BEST or SMART (reported as
 /// SMART); rows grouped by exchange, conId, trading class and multiplier;

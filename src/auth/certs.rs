@@ -1,5 +1,5 @@
 //! Certificate checks of the key-exchange reply (533), as the reference
-//! makes them (code read of the reference, ibx#276).
+//! makes them (ibx#276).
 //!
 //! The reference leaves part of the work to its runtime (JRE 17): the
 //! certificate parse (`CertificateFactory`), the RSA signature verify, the

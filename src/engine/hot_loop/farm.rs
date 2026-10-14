@@ -291,7 +291,7 @@ pub(crate) struct NewsEntry {
 /// A generic tick entry of a contract (ibx#450): its own request id on the
 /// farm of the contract's route, shared by the requests that asked it, as
 /// the reference keeps one per tick in the contract's record
-/// (code read of the reference).
+///.
 #[derive(Debug, Clone)]
 pub(crate) struct GenericEntry {
     /// 0 while it waits for the top of book's acknowledgement.
@@ -1329,7 +1329,7 @@ impl FarmState {
     }
 
     /// A market data status block (ibx#447): one 32-bit value, 1 when the
-    /// contract's data is frozen (code read of the reference; captured
+    /// contract's data is frozen (captured
     /// 07/10/2026: 1 for an option
     /// before the open, 2 for a stock in the pre-market, which is not
     /// frozen). Frozen: the frozen top of book is asked, the bid/ask and
@@ -1746,7 +1746,7 @@ impl FarmState {
         // In frozen mode the contract's market data status is asked first,
         // in a message of its own, without the API source (ibx#447): the
         // reference's frozen observer registers before the request does
-        // (code read of the reference). Its sender sometimes puts the
+        //. Its sender sometimes puts the
         // entry after the pair, then with the API source (captured
         // 05/10/2026 and 07/10/2026).
         if realtime && !sub.snapshot && self.md_modes.frozen {
@@ -2088,7 +2088,7 @@ impl FarmState {
     /// The API subscription names of a refusal's API access value (6763)
     /// that needs one, kept until the next data permission change
     /// (ibx#421): the items of a `,` or `#` list, or the value itself,
-    /// without "", "0" and "none" (code read of the reference).
+    /// without "", "0" and "none".
     fn note_refused_api_subscription(&mut self, access: &str) {
         let names: Vec<&str> = if access.contains(',') {
             access.split(',').collect()
@@ -2112,7 +2112,7 @@ impl FarmState {
 
     /// A data permission change (ibx#421): true when a refusal named an
     /// API subscription since the last change (the reference then sends
-    /// 2134 to its API clients, code read); the names are cleared.
+    /// 2134 to its API clients); the names are cleared.
     pub(crate) fn take_refused_api_subscriptions(&mut self) -> bool {
         let any = !self.refused_api_subscriptions.is_empty();
         self.refused_api_subscriptions.clear();
@@ -2120,11 +2120,10 @@ impl FarmState {
     }
 
     /// The desubscription of the reference's market data resubscription
-    /// after a data permission change (ibx#421, code read of the
-    /// reference): every streaming top-of-book subscription has its
-    /// entries cancelled on their farms, and every news entry on the wire
-    /// is cancelled; the subscriptions stay, and go out again, on new
-    /// ids, with [`Self::unsent_subscriptions`] and
+    /// after a data permission change (ibx#421): every streaming top-of-book
+    /// subscription has its entries cancelled on their farms, and every
+    /// news entry on the wire is cancelled; the subscriptions stay, and go
+    /// out again, on new ids, with [`Self::unsent_subscriptions`] and
     /// [`Self::resend_news`]. Snapshots are left out. Returns the cancels.
     pub(crate) fn desubscribe_all(&mut self) -> Vec<(FarmId, Vec<(u32, String)>)> {
         let streaming: Vec<InstrumentId> = self.md_resub_info.iter()
@@ -2995,7 +2994,7 @@ pub(crate) fn overnight_venue(exchange: &str) -> bool {
 }
 
 /// The error of a refused depth book (#452), as the reference builds it
-/// (code read of the reference): 10089 when an API
+///: 10089 when an API
 /// subscription is needed, else 354, in the texts of the reference's
 /// English language file, then the contract and `/DEEP` (`suffix`).
 /// Captured: "...for more details.AAPL NASDAQ.NMS/DEEP" (25/09/2026) and
@@ -3010,8 +3009,7 @@ pub(crate) fn depth_refusal(api_subscription: bool, suffix: &str) -> (i64, Strin
     }
 }
 
-/// The contract as a refusal names it (#452, ibx#444,
-/// code read of the reference): a stock is its
+/// The contract as a refusal names it (#452, ibx#444): a stock is its
 /// symbol, then its primary exchange with the market after a dot (`AAPL
 /// NASDAQ.NMS`), then its local symbol in parentheses and a space when it
 /// differs from the symbol (`7203 TSEJ (7203.T) `, captured 05/10/2026).

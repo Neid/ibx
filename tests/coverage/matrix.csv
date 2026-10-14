@@ -526,7 +526,7 @@ rule,ORDER-COMBO 12,Differences in ibx main (87cfd98),no test
 rule,ORDER-LOCAL-VALIDATION 1,Where the checks run,no test
 rule,ORDER-LOCAL-VALIDATION 2,"Codes asked for, with the rule",no test
 rule,ORDER-LOCAL-VALIDATION 3,Other refusals on the submit path,no test
-rule,ORDER-LOCAL-VALIDATION 3.1,"Decode stage (error kept, thrown after the whole message; only the last one reaches the client)",no test
+rule,ORDER-LOCAL-VALIDATION 3.1,Reading stage (only the last error of a request reaches the client),no test
 rule,ORDER-LOCAL-VALIDATION 3.2,First checks and (hedge),no test
 rule,ORDER-LOCAL-VALIDATION 3.3,API order build and,no test
 rule,ORDER-LOCAL-VALIDATION 3.4,Order rules,no test
@@ -559,8 +559,8 @@ rule,ORDER-PRICEMGMT 4.2,Order types: (71 bytes),src/engine/hot_loop/order_build
 rule,ORDER-PRICEMGMT 4.3,Logon rule: (60 bytes),no test
 rule,ORDER-PRICEMGMT 5,"Modify, report and openOrder",src/engine/hot_loop/ccp.rs::reports_give_the_price_management_flag_and_the_bracket_key
 rule,ORDER-PRICEMGMT 6,Capture check (28/09/2026),no test
-rule,ORDER-PRICEMGMT 7,"Server answer (observed, not in the gateway code)",no test
-rule,ORDER-PRICEMGMT 8,Captures of 01/10/2026 and the preset code read,no test
+rule,ORDER-PRICEMGMT 7,"Server answer (observed, not made by the gateway)",no test
+rule,ORDER-PRICEMGMT 8,Captures of 01/10/2026 and the presets,no test
 rule,ORDER-STATUS 1,Path of an inbound 35=8,src/golden/orders.rs::premarket_order_types
 rule,ORDER-STATUS 2,Tags read by,no test
 rule,ORDER-STATUS 3,Mapping to FixOrderState and the API status string,src/golden/orders.rs::cancel_gives_pending_cancel_then_cancelled_then_202

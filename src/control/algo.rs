@@ -159,7 +159,7 @@ pub const NO_ALGO_DEFINITION: &str = "Order processing failed. Algorithm definit
 pub const ALGO_NOT_ALLOWED: &str = "Specified algorithm is not allowed for this order.";
 
 /// The reference's checks of an algo order against the definitions
-/// (ibx#263), in its order (code read of the reference):
+/// (ibx#263), in its order:
 /// - the algorithm must be defined and have its strategy selector (439);
 /// - an overnight order (`overnight`: the OVERNIGHT or IBEOS exchange, or
 ///   includeOvernight) needs an algorithm allowed overnight (442);
@@ -201,8 +201,7 @@ pub fn check(definitions: &AlgoDefinitions, algorithm: &str, values: &[(&str, &s
         let Some(param) = find(name) else {
             return Some((443, format!("Order processing failed. Unknown algo attribute:{}", name)));
         };
-        // A time parameter (the value types the reference reads as dates,
-        // code read of the reference).
+        // A time parameter (the value types the reference reads as dates).
         if matches!(param.value_class.as_str(), "Time" | "Date" | "DateTime") && !value.is_empty() {
             match crate::client_core::parse_condition_time(value, &crate::gateway::machine_time_zone()) {
                 Some(t) => {
@@ -432,8 +431,7 @@ mod tests {
     }
 
     // ib-agent#192 B9b and B10: the captured refusals, from the
-    // definitions (local rules of the gateway for 145, 443, 441 and 439,
-    // code read of the reference).
+    // definitions (local rules of the gateway for 145, 443, 441 and 439).
     #[test]
     fn refusals_follow_the_definitions() {
         let d = captured_definitions();
@@ -495,7 +493,7 @@ mod tests {
     // Time in the definitions of 02/10/2026) the reference cannot read is
     // refused with 10314 and the parameter's name, in the caller's order
     // of the parameters; one read with no zone gets the warning 2174, as
-    // the time conditions do (code read of the reference).
+    // the time conditions do.
     #[test]
     fn time_parameters_are_read_as_dates() {
         let d = definitions_of_20261002();
@@ -511,7 +509,7 @@ mod tests {
         assert_eq!(refusal(&d, "Vwap", &[("startTime", "")], false), None, "an empty value is not read");
     }
 
-    // ibx#263 (code read of the reference): an overnight order needs an
+    // ibx#263: an overnight order needs an
     // algorithm allowed overnight (442, a local rule of the gateway); the
     // first parameter in the caller's order that fails gives the refusal;
     // a number the reference cannot read is refused, and an empty value is

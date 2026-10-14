@@ -2357,7 +2357,7 @@ fn api_logon_values_live() {
 /// read is refused with 10314 and none is sent, one with no zone gets the
 /// warning 2174 and is sent; a LMT with all-or-none on SPY SMART (AON in
 /// the list) is sent, not refused with 10257; 199 years of bars ending
-/// 01/01/1978 (the earliest end date the reference reads (code read);
+/// 01/01/1978 (the earliest end date the reference reads;
 /// an earlier one is 10314) start before now minus 199 years and one day,
 /// and are refused with the second years rule (199 years on paper) and no
 /// query.

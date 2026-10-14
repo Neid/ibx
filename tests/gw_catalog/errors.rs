@@ -370,8 +370,8 @@ fn differences(raises: &[Raise], codes: &BTreeMap<i64, catalog::ErrorCode>) -> V
         };
         let Some(text) = &r.text else { continue };
         let ibx = sample(text);
-        // Only the values, or a code whose texts are written in the
-        // gateway's code (no message in its table): nothing to compare.
+        // Only the values, or a code with no message in the gateway's
+        // table: nothing to compare.
         if ibx.chars().all(|c| c == '\u{1}') || gw.texts().is_empty() {
             continue;
         }

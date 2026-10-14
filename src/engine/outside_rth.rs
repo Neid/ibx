@@ -58,8 +58,8 @@ pub(crate) struct RthTypes {
     /// has the first, not the second, paper 12/10/2026).
     pub pre_open: bool,
     pub ignore_opening: bool,
-    /// SMART is a valid exchange of the contract (tag 6046 names it BEST;
-    /// code read of the reference), for the redirect precaution (ibx#486).
+    /// SMART is a valid exchange of the contract (the definition names it BEST),
+    /// for the redirect precaution (ibx#486).
     pub smart: bool,
     /// The contract's valid exchanges, BEST named SMART; None when the
     /// definition has no list (ibx#630).
@@ -201,7 +201,7 @@ pub(crate) const ALLOW_PRE_OPEN_IGNORED: &str = "Order Event Warning:Attribute '
 pub(crate) const PRE_OPEN_AND_OUTSIDE_RTH: &str = "Order can have only one flag Outside RTH or Allow PreOpen.";
 
 /// True when allow pre-open, or ignore opening auction, stays on the order
-/// (ibx#607, code read on 10.51): the outside-RTH rule, the attribute's
+/// (ibx#607, 10.51): the outside-RTH rule, the attribute's
 /// key in the order-type list (no list allows it, as for all-or-none), and
 /// not the time in force OVERNIGHT + DAY. Ignore opening auction is also
 /// dropped on SMART with pre-open re-route, an attribute ibx never sets.
@@ -256,9 +256,8 @@ pub(crate) const ALL_OR_NONE_NOT_ALLOWED: &str = "The 'All or None' order attrib
 
 /// An order with all-or-none, checked against the order-type list: the
 /// reference refuses it with 10257 when the contract's list for the
-/// order's exchange is known and has no AON key
-/// (code read of the reference:
-/// no list, or the empty one, allows it). Some(the instrument, None for a
+/// order's exchange is known and has no AON key (no list, or the empty
+/// one, allows it). Some(the instrument, None for a
 /// replace, whose instrument is the order's) for a request with
 /// all-or-none set; None otherwise.
 pub(crate) fn all_or_none_check(req: &OrderRequest) -> Option<Option<u32>> {
@@ -277,10 +276,9 @@ pub(crate) const UNSUPPORTED_ORDER_TYPE: &str = "Unsupported order type for this
 
 /// A new order of a type checked against the order-type list, and its
 /// instrument: the reference refuses it with 387 when the contract's
-/// order-type list for its exchange lacks the type's key
-/// (code read of the reference: the type's key
-/// is not in the list and the type is not in the list's
-/// order types either). Checked for pegged to market and pegged to
+/// order-type list for its exchange lacks the type's key (the key is
+/// not in the list and the type is not in the list's order types
+/// either). Checked for pegged to market and pegged to
 /// midpoint (ib-agent#192 B8b, ibx#414), and for market and stop with
 /// protection, keys MKTPROT and STPPROT (ibx#493: neither is in the SPY
 /// list on BEST), and
@@ -368,9 +366,9 @@ mod tests {
         assert!(!open_flag_applies(stop, b'0', "CME", &fut, fut.pre_open));
     }
 
-    // Parts of the rule not captured on paper, from the code read.
+    // Parts of the rule not observed yet on paper.
     #[test]
-    fn rule_from_the_code_read() {
+    fn rule_not_observed_on_paper() {
         let t = aapl_best();
         let lmt = RthKind::of(&OrderKind::Limit { price: 1 });
         // OPG is kept only on ARCA.

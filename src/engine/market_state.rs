@@ -195,7 +195,7 @@ pub struct MarketState {
 }
 
 /// The terms of an option contract its orders carry, as the reference
-/// writes them after the symbol (code read of the reference): the
+/// writes them after the symbol: the
 /// maturity (the definition's own), the right
 /// (201: 1 call, 0 put), the strike (202) and the multiplier (231).
 #[derive(Debug, Clone, PartialEq)]

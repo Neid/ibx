@@ -44,7 +44,7 @@ pub(crate) struct HmdsState {
     pub(crate) next_rtbar_id: u32,
     pub(crate) disconnected: bool,
     /// In-flight historical bar queries: (query_id, req_id). No deadline,
-    /// as in the reference: its bar query (code read) waits
+    /// as in the reference: its bar query waits
     /// for the server's answer, an error or a cancel; only a head timestamp
     /// query times out (ibx#485; ibx#231 failed a bar request after 60 s
     /// with a text of ibx's own).
@@ -401,7 +401,7 @@ pub(crate) struct NewsQuery {
 
 /// Scanner notices of the historical data link, as the reference words
 /// them (ibx#457): the text of 165 with the notice after its colon
-/// (code read of the reference; ibx#485).
+/// (ibx#485).
 /// The scanner parameters are asked this long after their first need
 /// (ibx#553).
 pub(crate) const SCANNER_PARAMS_DELAY: std::time::Duration = std::time::Duration::from_secs(1);
@@ -735,7 +735,7 @@ impl HmdsState {
                             if let Some(secs) = crate::control::historical::parse_server_time(&resp.head_timestamp) {
                                 resp.head_timestamp = crate::control::historical::head_timestamp_text(secs, format_date);
                                 // Kept for the next request; the later of two
-                                // values stays (code read of the reference).
+                                // values stays.
                                 if let Some(key) = key {
                                     let kept = self.head_ts_cache.entry(key).or_insert(secs);
                                     *kept = (*kept).max(secs);
@@ -1753,8 +1753,8 @@ impl HmdsState {
 
     /// A head timestamp request the store answers (ibx#486): the reference
     /// answers a contract, route, data and RTH flag it was given before
-    /// with the stored value and sends no query (code read of the reference;
-    /// captured 02/10/2026, b1_431_hist_format: the second
+    /// with the stored value and sends no query (captured 02/10/2026,
+    /// b1_431_hist_format: the second
     /// TRADES head timestamp of AAPL after the contract lookup, no 35=W).
     /// False when the store has no value for it.
     #[allow(clippy::too_many_arguments)]

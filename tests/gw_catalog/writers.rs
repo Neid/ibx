@@ -1,8 +1,8 @@
 //! Tag order of the new order (35=D), replace (35=G) and cancel (35=F)
 //! messages against the gateway's writers (ibx#485 items 3 and 4).
 //!
-//! The writer table (`order_writers.csv`) lists, in the order of the
-//! gateway's code, every tag the gateway writes, with its condition; the
+//! The writer table (`order_writers.csv`) lists every tag the gateway
+//! writes, in the gateway's order, with its condition; the
 //! sub-writers are flattened, a tag listed twice is two branches, and a
 //! block (the order
 //! attributes, the algo parameters, the conditions, the combo legs) is one

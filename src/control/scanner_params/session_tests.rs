@@ -647,7 +647,7 @@ fn computed_values_and_net_items_are_the_texts_of_the_reference() {
     let cases = oracle_cases();
     assert_eq!(cases.len(), 73);
     for (name, input, want) in cases {
-        // The reference's code ran in 2026.
+        // The reference ran in 2026.
         let got = for_client_in(&input, &session(OBSERVED), 2026);
         match (got, want) {
             (Some(got), Some(want)) => assert_same(&got, &want, &name),

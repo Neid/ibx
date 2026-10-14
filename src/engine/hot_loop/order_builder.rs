@@ -73,7 +73,7 @@ fn send_orders(
             log::warn!("What-if of order {} dropped: only a single new order can be previewed", oid);
             continue;
         }
-        // A preview is never sent deactivated (ibx#607, code read on 10.51:
+        // A preview is never sent deactivated (ibx#607, 10.51:
         // the attribute applies to an order that is not a what-if).
         if what_if && let Some(attrs) = crate::engine::outside_rth::flag_attrs(&mut order_req) {
             attrs.deactivate = false;
@@ -113,7 +113,7 @@ fn send_orders(
         // the server (201 "Can't find parent order", paper 01/10/2026).
         // The cancel of an order that never left (it waits, or the
         // reference kept it pending after a refusal): ApiCancelled,
-        // nothing on the wire (code read of the reference).
+        // nothing on the wire.
         if let OrderRequest::Cancel { order_id } = order_req && api_cancel(context, shared, order_id) {
             continue;
         }
@@ -217,8 +217,8 @@ fn send_orders(
             // session whose server routes no SMART combo as
             // guaranteed (REJGNONAT): 10043 with two legs, 10045
             // with another number; the order stays in the API
-            // pending map, its cancel ApiCancelled (ibx#677; code
-            // read; observed 13/10/2026, paper, a two-leg stock
+            // pending map, its cancel ApiCancelled (ibx#677;
+            // observed 13/10/2026, paper, a two-leg stock
             // combo).
             if spec.smart_con_id > 0 && !spec.routing_attrs.iter().any(|(tag, _)| *tag == 6248)
                 && crate::control::logon::has_feature(&shared.reference.logon_features(), "REJGNONAT")
@@ -394,7 +394,7 @@ fn send_orders(
         // replacing the snapping of ibx#216). The tick comes from the
         // market-data subscription ack; without one only a negative price
         // is refused. A combo (BAG) is checked with its own rule, which
-        // allows a price at or below 0 (code read of the reference); its tick is the
+        // allows a price at or below 0; its tick is the
         // combo's, which ibx does not have, so only the sign rule applies
         // and a combo passes (ibx#470).
         let combo = order_req.combo().is_some()
@@ -1833,8 +1833,7 @@ fn cancel_fields(context: &mut Context, account_id: &str, order_id: crate::types
     fields
 }
 
-/// The reference's global cancel (API message 58, code read of the
-/// reference):
+/// The reference's global cancel (API message 58):
 /// - the orders of this client that wait to be sent end as ApiCancelled,
 ///   nothing on the wire (the client's pending orders; captured
 ///   25/09/2026: orderStatus ApiCancelled, permId 0, all remaining); the
@@ -1905,7 +1904,7 @@ fn global_cancel(
         }
         // An ended order cannot be cancelled: 161 to its client, after
         // the callbacks of the orders this cancel ended. It does not
-        // stand for its children (code read of the reference): paper
+        // stand for its children: paper
         // 09/10/2026, a bracket cancelled 5 s before gave 161 for its
         // parent and for the first of its two children.
         if ended {
@@ -1991,8 +1990,8 @@ fn api_cancel(context: &mut Context, shared: &Arc<SharedState>, order_id: OrderI
 
 /// The reference's answer to a cancel it does not send (ibx#464): the order
 /// is unknown (10147), or finished or already pending cancel (10148, with
-/// the state; "cannot" as in every captured 10148, where the message table
-/// of the JAR says "can not", ibx#485). `None` when the cancel goes out.
+/// the state; "cannot" as in every captured 10148, where the gateway's
+/// message text says "can not", ibx#485). `None` when the cancel goes out.
 ///
 /// A cancelled order and an order the server refused are known for the
 /// time the reference keeps them (ibx#551, paper 11/10/2026, market
@@ -2008,7 +2007,7 @@ fn cancel_refusal(context: &Context, order_id: crate::types::OrderId) -> Option<
     let state = match context.order(order_id) {
         // An order the server reported for another client: the reference
         // finds an API order by this client's id and the order id
-        // (code read of the reference), so not this one
+        //, so not this one
         // (ib-agent#151: an order of another client gets 10147).
         Some(_) if !context.owned(order_id) => return not_found(),
         Some(o) if o.status == OrderStatus::PendingCancel => OrderStatus::PendingCancel,
@@ -2243,7 +2242,7 @@ fn send_new_order(
     }).flatten();
     let cash_qty = (sec_type == "CASH").then(|| field(fields, 38).map(|q| format!("{q}.00"))).flatten();
     // An option's terms after its symbol, and its multiplier, where the
-    // reference writes them (code read of the reference).
+    // reference writes them.
     let option = context.market.option_terms(instrument).map(|t| (
         t.maturity.clone(),
         if t.call { "1" } else { "0" },
@@ -2273,7 +2272,7 @@ fn send_new_order(
     // carry percent (ibx#263).
     if !out.iter().any(|&(t, _)| t == 6268) && trailing_type(&out) { out.push((6268, "0")); }
     // The stop price in 6117: the stop trigger of every non-trailing stop
-    // type (code read of the reference, the adjustable stop included,
+    // type (the adjustable stop included,
     // captured ib-agent#192 B11), the touched trigger of MIT and LIT
     // (ibx#263).
     let stop_trigger = (touched_type(&out) || matches!(field(&out, 40), Some("3" | "4" | "SP")))
@@ -2315,7 +2314,7 @@ fn send_new_order(
 
 /// Whether a new order of this frame's type writes the trigger method
 /// (6115), as the reference (ibx#263): it writes it on a new order whose
-/// type is a stop or touched type (code read of the reference): STP,
+/// type is a stop or touched type: STP,
 /// STP LMT, STP PRT, TRAIL, TRAIL LIMIT, MIT,
 /// LIT, TRAIL MIT and TRAIL LIT (captured on all but STP PRT), never on a
 /// replace. A trailing stop is the pegged type with the trailing letter.
@@ -2324,7 +2323,7 @@ fn has_trigger_method(fields: &[(u32, &str)]) -> bool {
 }
 
 /// Whether the frame's type is a trailing one, which writes the trail
-/// unit (6268) on a new order and a replace (code read of the reference):
+/// unit (6268) on a new order and a replace:
 /// TRAIL, TRAIL LIMIT, TRAIL MIT, TRAIL LIT
 /// (ibx#263; captured with 6268 on all four, new orders and replaces).
 fn trailing_type(fields: &[(u32, &str)]) -> bool {
@@ -2337,7 +2336,7 @@ fn trailing_type(fields: &[(u32, &str)]) -> bool {
 
 /// Whether the frame's type is a touched one, whose stop price the
 /// reference keeps as the touched trigger and writes in 6117 among the
-/// order attributes (code read of the reference): MIT and LIT (ibx#263, captured in
+/// order attributes: MIT and LIT (ibx#263, captured in
 /// ib-agent#199 on new orders and replaces).
 fn touched_type(fields: &[(u32, &str)]) -> bool {
     matches!(field(fields, 40), Some("J" | "LT"))
@@ -2525,7 +2524,7 @@ type Fields = Vec<(u32, String)>;
 
 /// The fields of a pegged-to-market or pegged-to-midpoint order, as the
 /// reference writes them (ibx#414; pegged to midpoint captured in
-/// ib-agent#192 B8c, pegged to market from the code read): the limit
+/// ib-agent#192 B8c, pegged to market not observed yet): the limit
 /// price when set and, for pegged to market, the offset in the stop price
 /// field; then the pegged order type, the offset (always 0.00 for pegged
 /// to midpoint) and the peg instruction. Returned as the price fields
@@ -2613,8 +2612,8 @@ fn modify_fields(
     let mut stop_trigger: Option<String> = None; // restated for STP / STP LMT
     // A trailing type restates its stop price only when it differs from the
     // last one the server reported, and not before any report
-    // (code read of the reference: no reported stop, or an equal one, is
-    // not written; captured ib-agent#195 S2 with 6117, ib-agent#192 A3b without).
+    // (no reported stop, or an equal one, is not written; captured
+    // ib-agent#195 S2 with 6117, ib-agent#192 A3b without).
     let trailing_stop = |stop: crate::types::Price| (stop > 0 && reported_stop.is_some_and(|r| r != stop)).then(|| p(stop));
     let mut touched_trigger: Option<String> = None; // MIT / LIT, an attribute
     let mut trail_offset: Option<String> = None; // TRAIL LIMIT limit offset
@@ -3065,8 +3064,8 @@ fn apply_outside_rth(
 
 /// A new order with post-only that the reference refuses as it checks the
 /// order, after the contract lookup (ibx#607): on pegged to market, an
-/// order type that takes post-only but cannot keep it (496, code read on
-/// 10.51; on AAPL the type's own refusal 387 comes first, paper
+/// order type that takes post-only but cannot keep it (496 on 10.51, not
+/// observed: on AAPL the type's own refusal 387 comes first, paper
 /// 12/10/2026), with sweep-to-fill (497, paper 12/10/2026). Nothing is
 /// sent; the order is kept for its cancel, as one refused with 387.
 fn post_only_refusal(req: &OrderRequest, context: &mut Context, shared: &Arc<SharedState>) -> bool {
@@ -3118,7 +3117,7 @@ fn price_mgmt_flag(
         return Some(own);
     }
     // A directed order whose exchange's list lacks the key takes the
-    // contract's SMART definition (ibx#546; code read; observed 13/10/2026,
+    // contract's SMART definition (ibx#546; observed 13/10/2026,
     // regular hours, paper: the flag on orders for ARCA and FOXRIVER).
     match definition_on(context, conn, hb, instrument, Some("BEST")) {
         Definition::NoContract => Some(false),
@@ -3469,7 +3468,7 @@ pub(crate) fn redirect_warning(exchange: &str) -> (i64, String) {
 }
 
 /// The reference's redirect precaution for API orders
-/// (code read of the reference, ibx#486): a stock
+/// (ibx#486): a stock
 /// order whose exchange is set and is not SMART, IBDESK or ZERO, on a
 /// contract that trades on SMART, with the setting
 /// "Bypass Redirect Order warning for Stock API Orders" off (the default;
@@ -3537,7 +3536,7 @@ fn redirect_precaution(
 /// counted as SMART) is refused with 464 "Invalid exchange" and nothing is
 /// sent; kept, not working, its cancel ends it with Cancelled, 202 and 161
 /// (ibx#630; the reference 10.51 and 10.40 check it after the redirect and
-/// route-to-BBO precautions, code read; paper
+/// route-to-BBO precautions; paper
 /// 12/10 and 13/10/2026: AAPL to ISLAND refused, to NASDAQ sent). Not
 /// checked: the broker's ATS venue, AVGCOST and IBDESK, as the reference,
 /// and a definition without a list. `Some(false)` while the definition is
@@ -3620,7 +3619,7 @@ fn overnight_refusal(
 pub(crate) const OVERNIGHT_NOT_SUPPORTED: (i64, &str) = (10362, "OVERNIGHT order is not supported.");
 
 /// The reference's precaution for API orders with routeMarketableToBbo
-/// (ibx#608; code read on 10.51, the order checks of the confirmation;
+/// (ibx#608, 10.51, the order checks of the confirmation;
 /// paper 12/10/2026, on LMT and MKT): with the setting "Bypass Route
 /// Marketable to BBO Warning" off (the default;
 /// `IBX_BYPASS_ROUTE_MARKETABLE_TO_BBO_WARNING`), warning 10353, then the
@@ -3650,7 +3649,7 @@ fn route_bbo_precaution(req: &OrderRequest, context: &mut Context, shared: &Arc<
 }
 
 /// Seek price improvement is written only on an order routed to SMART
-/// (ibx#608, code read on 10.51: the attribute's own rule); elsewhere it is
+/// (ibx#608, 10.51: the attribute's own rule); elsewhere it is
 /// left out without a warning, and the order's openOrder shows it off.
 fn drop_seek_off_smart(req: &mut OrderRequest, context: &Context, shared: &Arc<SharedState>) {
     let oid = req.order_id();
@@ -3815,7 +3814,7 @@ fn push_extended_attrs(
     }
     // Customer account and professional customer, as the reference's order
     // attributes; the account config check keeps them to accounts that
-    // allow them (ibx#425, from the code read, not captured).
+    // allow them (ibx#425, not observed yet).
     if !attrs.customer_account.is_empty() {
         fields.push((6207, attrs.customer_account.clone()));
     }
@@ -4126,10 +4125,9 @@ fn send_order_ex(
             fields.push((99, o.clone()));
             fields.push((211, o));
         }
-        // Passive relative, from a code read of the reference (not
-        // captured): its own order type, the limit price when set, the
-        // offset in both fields like the retail price improvement type,
-        // no instruction.
+        // Passive relative (not observed yet): its own order type, the limit
+        // price when set, the offset in both fields like the retail price
+        // improvement type, no instruction.
         K::PassvRel { price, offset } => {
             let o = format_price_ref(offset).to_string();
             fields.push((40, "PSVR".to_string()));
@@ -5250,7 +5248,7 @@ mod tests {
     }
 
     // The preview drops the OCA group and type and keeps the parent link
-    // (ORDER-WHATIF.md 4, from the code read).
+    // (ORDER-WHATIF.md 4).
     #[test]
     fn what_if_drops_the_oca_fields() {
         let child = crate::api::types::Order { tif: "DAY".into(), action: "SELL".into(), total_quantity: 1.0, order_type: "LMT".into(),
@@ -5648,7 +5646,7 @@ mod tests {
 
     // The global cancel reaches every order of the book: this session's,
     // and those of other clients and earlier sessions, on any contract
-    // (no client filter, code read of the reference). Paper
+    // (no client filter). Paper
     // 04/10/2026: orders of earlier sessions got nothing.
     #[test]
     fn global_cancel_reaches_every_order_of_the_book() {
@@ -5695,7 +5693,7 @@ mod tests {
     }
 
     // Only the first order of an OCA group gets the cancel; the server
-    // cancels the group (code read of the reference).
+    // cancels the group.
     #[test]
     fn global_cancel_sends_one_order_of_an_oca_group() {
         let (frames, _, _) = global_cancel_of(|ctx| {
@@ -5709,7 +5707,7 @@ mod tests {
     }
 
     // A child whose parent goes in the same cancel is left to the server
-    // (code read of the reference); the parents go first. A child
+    //; the parents go first. A child
     // whose parent is not in the book gets its own cancel.
     #[test]
     fn global_cancel_leaves_a_child_to_its_parent() {
@@ -5747,7 +5745,7 @@ mod tests {
     }
 
     // The cancel of an order that waits to be sent: ApiCancelled, nothing
-    // on the wire, its other requests dropped (code read of the reference). A
+    // on the wire, its other requests dropped. A
     // combo refused with 200 stays pending: its cancel and a global cancel
     // end it as ApiCancelled too (i105_combo_directed, 26/09/2026).
     #[test]
@@ -5783,9 +5781,8 @@ mod tests {
     }
 
     // An order whose cancel is pending is not sent again: 161 at its
-    // client, with the order's permId (code read of the reference;
-    // the text as captured 01/10/2026 in pd-orders). An order of another
-    // client gives nothing to this one.
+    // client, with the order's permId (the text as captured 01/10/2026 in
+    // pd-orders). An order of another client gives nothing to this one.
     #[test]
     fn global_cancel_refuses_an_order_with_a_pending_cancel() {
         let (frames, errors, _) = global_cancel_of(|ctx| {
@@ -5805,7 +5802,7 @@ mod tests {
     }
 
     // The orders of this client that wait to be sent end as ApiCancelled,
-    // nothing on the wire (code read of the reference; captured 25/09/2026: permId
+    // nothing on the wire (captured 25/09/2026: permId
     // 0, the whole quantity remaining); the requests about them go too.
     #[test]
     fn global_cancel_ends_the_orders_that_wait() {
@@ -5952,7 +5949,7 @@ mod tests {
 
     // An order of another session kept under its API order id: its
     // cancel goes under the server's id, at the version the server gave
-    // (code read of the reference).
+    //.
     #[test]
     fn a_replayed_order_is_cancelled_under_its_server_id() {
         let tags = wire_tags_with(
@@ -5965,7 +5962,7 @@ mod tests {
     }
 
     // The reference finds an API order by the client's id and the order
-    // id (code read): an order of another client is not found
+    // id: an order of another client is not found
     // (10147, ib-agent#151) and nothing is sent.
     #[test]
     fn cancel_of_an_order_of_another_client_is_refused_with_10147() {
@@ -6361,7 +6358,7 @@ mod tests {
 
     // ibx#607: ignore opening auction is dropped without a warning where
     // it does not apply, and noted for the openOrder; a list with its key
-    // keeps it (code read on 10.51; no such list seen yet).
+    // keeps it (10.51; no such list seen yet).
     #[test]
     fn ignore_opening_auction_follows_its_key() {
         use crate::engine::outside_rth::{open_flag_applies, RthKind, RthTypes};
@@ -6384,7 +6381,7 @@ mod tests {
     }
 
     // ibx#607, paper 12/10/2026: post-only with sweep-to-fill is refused
-    // with 497 and nothing sent; on PEG MKT with 496 (code read; AAPL's
+    // with 497 and nothing sent; on PEG MKT with 496 (AAPL's
     // own list refuses the type first with 387, as here).
     #[test]
     fn post_only_refusals_after_the_lookup() {
@@ -6440,7 +6437,7 @@ mod tests {
             A { seek_price_improvement: true, ..Default::default() });
         assert_eq!(tag(&replace, 6557), Some("1"));
         // Directed away from SMART: left out, and noted for the openOrder
-        // (the attribute's own rule, code read on 10.51).
+        // (the attribute's own rule, 10.51).
         let mut context = Context::new();
         context.market.register(265598);
         context.market.set_routing(0, "STK", "ISLAND");
@@ -6567,8 +6564,8 @@ mod tests {
     }
 
     // The 26/09/2026 capture (SPY, reference QQQ on NASDAQ, DAY), on the
-    // engine's own request; a decrease goes out negative (from the code
-    // read, not captured).
+    // engine's own request; a decrease goes out negative (not observed
+    // yet).
     #[test]
     fn peg_bench_request_matches_the_reference_and_signs_a_decrease() {
         let reference = "35=D|11=x|99=721.35|1=DU1|6942=NASDAQ|6941=320227571|6939=0.10|6122=c|6938=0.10|6580=744.50|38=1|40=PB|18=R|55=SPY|167=STK|231=1.00|54=1|59=0|100=BEST|6210=BEST|6008=756733|6088=Socket|15=USD|6211=|6238=";
@@ -6699,11 +6696,11 @@ mod tests {
             (Some("3.10"), Some("3.10"), Some("100"), None));
     }
 
-    // ibx#469: a passive relative order as the reference's code writes it
-    // (not captured): its own type, the limit price when set, the offset
+    // ibx#469: a passive relative order as the reference writes it
+    // (not observed yet): its own type, the limit price when set, the offset
     // in both offset fields, 0.00 when unset, no instruction.
     #[test]
-    fn passive_relative_from_the_api_follows_the_code_read() {
+    fn passive_relative_from_the_api_follows_the_reference() {
         let order = |lmt_price: f64, aux_price: f64| crate::api::types::Order {
             action: "BUY".into(), total_quantity: 1.0, order_type: "PASSV REL".into(), tif: "DAY".into(),
             lmt_price, aux_price, ..Default::default()
@@ -6800,8 +6797,8 @@ mod tests {
             (Some("P"), Some("0.00"), Some("M"), Some("237.92"), None));
     }
 
-    // Pegged to market (from the code read, not captured on the wire:
-    // ORDER-SUBMIT.md 3.5): the limit price when
+    // Pegged to market (not observed yet on the wire: ORDER-SUBMIT.md
+    // 3.5): the limit price when
     // given, the offset in the stop price and the offset fields, the
     // market instruction.
     #[test]
@@ -7628,7 +7625,7 @@ mod tests {
     }
 
     // ibx#263: the trigger method goes on a new order of the stop and
-    // touched types only (code read of the reference), the caller's value
+    // touched types only, the caller's value
     // or the default 0; never on the
     // other types, whatever the caller set. Captured with 6115=0: STP,
     // STP LMT, TRAIL, TRAIL LIMIT, MIT, LIT (and an Adaptive STP and a
@@ -7817,7 +7814,7 @@ mod tests {
     // ibx#263: a replace of an algo order restates the algo letter in 18
     // and the algo block after the attributes, as the new order: the
     // reference's replace writes them the same way as its new order
-    // (code read of the reference). Not captured.
+    //. Not captured.
     #[test]
     fn replace_of_an_algo_order_restates_the_algo() {
         use crate::types::{AdaptivePriority, OrderAlgo, OrderAttrs, OrderKind as K};
@@ -8021,7 +8018,7 @@ mod tests {
     // TRAIL LIMIT replace restates the stop price when the server last
     // reported another one (it had moved the stop to 752.01, the order
     // still had 751.89), and not when it is the same or before any report
-    // (code read of the reference).
+    //.
     #[test]
     fn trailing_replace_restates_the_stop_price_only_when_the_server_moved_it() {
         use crate::types::{OrderAttrs, OrderKind as K};
@@ -8074,8 +8071,8 @@ mod tests {
     }
 
     // ibx#263: a price off the contract's grid is refused with 110 and
-    // nothing is sent, as the reference (code read of the reference,
-    // ib-agent#192 B5); ibx snapped it to the tick (ibx#216).
+    // nothing is sent, as the reference (ib-agent#192 B5); ibx snapped it
+    // to the tick (ibx#216).
     #[test]
     fn a_price_off_the_grid_is_refused_with_110() {
         use std::io::Read;
@@ -8100,7 +8097,7 @@ mod tests {
 
     // ibx#466: a new order goes out under a server id of the reference's
     // order id generator, as the reference's ClOrdID is its permId
-    // (code read of the reference), with its API order id in 6121; two
+    //, with its API order id in 6121; two
     // orders get two ids. Its replace and its cancel go under the same
     // server id.
     #[test]
@@ -8475,7 +8472,7 @@ mod tests {
 
     // An option order carries the option's terms after its symbol and its
     // multiplier, as the reference's new-order writer
-    // (code read of the reference): maturity 200, right 201
+    //: maturity 200, right 201
     // (1 call), strike 202, 167=OPT, 231. Without them the server refused
     // the option's conId sent as a stock (201 "Contract does not match
     // supplied contract parameters", paper 03/10/2026).

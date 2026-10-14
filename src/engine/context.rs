@@ -50,7 +50,7 @@ pub enum StatusChange {
 }
 
 /// What the reference's order book holds for an order beyond the order
-/// itself, for its global cancel (code read of the reference): the
+/// itself, for its global cancel: the
 /// place the order took in the book, its parent and OCA group, and the API
 /// client of an order of another session.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -68,12 +68,11 @@ pub(crate) struct BookEntry {
 
 /// An order that ended and that the reference's book still holds
 /// (ibx#545). A global cancel walks them with the working orders and
-/// answers 161 for each (code read of the reference):
+/// answers 161 for each:
 /// - a cancelled order stays [`CANCELLED_ORDER_KEPT`] after the report
-///   that ended it, then a timer takes it out (code read of the reference;
-///   paper 10/10/2026: 161 at 3, 6 and 9 s,
-///   none at 10.2 s and later), whether its own cancel, its parent's or a
-///   global cancel ended it;
+///   that ended it, then a timer takes it out (paper 10/10/2026: 161 at 3,
+///   6 and 9 s, none at 10.2 s and later), whether its own cancel, its
+///   parent's or a global cancel ended it;
 /// - an order the server refused (201) stays as long (paper 10/10/2026:
 ///   161 at 9 s, none at 14 and 16 s, and its cancel at 19 s finds no
 ///   order); a global cancel that answers for it does not take it out
@@ -113,7 +112,7 @@ pub(crate) fn book_table_size(peak: usize) -> usize {
 }
 
 /// The bucket of a permId in the reference's book, a Java hash map keyed
-/// by a 64-bit integer (code read of the reference): the key's hash,
+/// by a 64-bit integer: the key's hash,
 /// spread, masked by the table size. The book is walked bucket by bucket,
 /// each in insertion order.
 pub(crate) fn book_bucket(perm_id: OrderId, table: usize) -> usize {
@@ -122,7 +121,7 @@ pub(crate) fn book_bucket(perm_id: OrderId, table: usize) -> usize {
     ((h ^ (h >> 16)) as usize) & (table - 1)
 }
 
-/// The reference's order id generator (code read of the reference): the
+/// The reference's order id generator: the
 /// server's order id of each new order and preview, the id part of its
 /// ClOrdID and the permId the client sees. The API order id goes in 6121
 /// and is not this id. The first id has random high bits and the seconds
@@ -1445,7 +1444,7 @@ impl Context {
     }
 
     /// The next id of the generator that names no order held: the
-    /// reference skips the ids it gave (code read of the reference).
+    /// reference skips the ids it gave.
     pub(crate) fn new_server_id(&mut self) -> OrderId {
         loop {
             let id = OrderId::from(self.order_ids.next());
@@ -1466,9 +1465,8 @@ impl Context {
     /// Whether this client gets the reports of an order (openOrder,
     /// orderStatus, executions, commissions): those of its own orders, and
     /// as client 0 those of a client that is not connected
-    /// (code read of the reference: the order's client, else client 0; no
-    /// master client, its master client id -1 by default). ibx is the
-    /// only client of its engine.
+    /// (the order's client, else client 0; no master client, its master
+    /// client id -1 by default). ibx is the only client of its engine.
     pub(crate) fn delivered(&self, order_id: OrderId) -> bool {
         self.api_client_id == 0 || self.owned(order_id)
     }
@@ -1476,7 +1474,7 @@ impl Context {
     /// Whether this client may act on an order by its id: an order of
     /// this client, or one the server reported for this client's id. The
     /// reference finds an API order by (client id, order id)
-    /// (code read of the reference).
+    ///.
     pub(crate) fn owned(&self, order_id: OrderId) -> bool {
         self.book.get(&order_id).and_then(|e| e.owner).is_none_or(|owner| owner == self.api_client_id)
     }
@@ -2160,10 +2158,9 @@ mod tests {
         ctx.update_order_status(999, OrderStatus::Cancelled);
     }
 
-    // ibx#466: the reference's order id generator (code read of the
-    // reference): a positive first id, then one up per id; at
-    // an id the reference does not take (0, the int bounds) it starts
-    // again from a new first id.
+    // ibx#466: the reference's order id generator: a positive first id,
+    // then one up per id; at an id the reference does not take (0, the int
+    // bounds) it starts again from a new first id.
     #[test]
     fn order_ids_count_up_from_a_positive_first_id() {
         let mut ids = OrderIdGenerator::new();

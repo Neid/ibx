@@ -415,7 +415,7 @@ impl Default for Order {
 
 impl Order {
     /// Parse the action string to Side: the reference's names, case
-    /// ignored (code read of the reference; SSHRT is its short form of
+    /// ignored (SSHRT is its short form of
     /// SSHORT). An action the reference does not know is refused by it
     /// with 321 (`ClientCore::refusal_before_sending`).
     pub fn side(&self) -> Result<Side, String> {
@@ -1056,7 +1056,7 @@ impl Default for ContractDetails {
 }
 
 /// Minimum size, size increment and suggested size increment of a row
-/// (code read of the reference): from the size set of the record's market
+///: from the size set of the record's market
 /// rule; for a contract with fractional sizes (a rule increment below 1,
 /// or detail 8193) the fractional increment (the rule's when below 1,
 /// else detail 8175, else 1/10000) is the minimum and the increment.
@@ -1087,9 +1087,9 @@ fn ev_rule_text(raw: &str) -> String {
 }
 
 impl ContractDetails {
-    /// The API row of a definition, as the reference fills it (ibx#436,
-    /// code read of the reference's sender and the client's decoding). A bond row without the BONDAPI feature has most
-    /// bond texts empty and its short description as `desc_append`.
+    /// The API row of a definition, as the reference fills it (ibx#436). A
+    /// bond row without the BONDAPI feature has most bond texts empty and its
+    /// short description as `desc_append`.
     pub fn from_definition(def: &crate::control::contracts::ContractDefinition) -> Self {
         let bond = def.is_bond();
         let sec_type = def.api_sec_type();
@@ -1194,7 +1194,7 @@ impl ContractDetails {
             let b = &def.bond;
             let api = def.bond_api;
             // The request symbol when it reads as a CUSIP, else the local
-            // symbol (code read of the reference; the CUSIP feature of the
+            // symbol (the CUSIP feature of the
             // account is not known here).
             d.cusip = if def.lookup_cusip.is_empty() { def.local_symbol.clone() } else { def.lookup_cusip.clone() };
             d.maturity = if api { expiry } else { String::new() };

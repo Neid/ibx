@@ -28,10 +28,10 @@ pub const QTY_SCALE: i64 = 10_000; // 10^4
 /// 110), or not a multiple of `tick` when the tick is known (a
 /// non-positive tick: unknown, not checked). The rule allows a price at or
 /// below 0 only when it says so (the reference's check: above 0, or the
-/// rule's flag set; code read): a combo's rule does (captured BAG
+/// rule's flag set): a combo's rule does (captured BAG
 /// limit prices of -73.15 and -50.10, ibx#470), a stock's does not.
 /// The reference refuses such an order with 110 and sends nothing
-/// (code read of the reference); it does not round it.
+///; it does not round it.
 pub fn off_grid(price: Price, tick: i64, signed: bool) -> bool {
     (price < 0 && !signed) || (tick > 0 && price % tick != 0)
 }
@@ -854,9 +854,8 @@ pub enum OrderKind {
     /// (the API auxPrice, 0 when unset) in both offset fields.
     Rpi { price: Price, offset: Price },
     /// Passive relative (ibx#469): the limit price (0 = unset) and the
-    /// offset (the API auxPrice, 0 when unset) in both offset fields. Read
-    /// from the reference's code, not captured: no contract of the test
-    /// account lists the type.
+    /// offset (the API auxPrice, 0 when unset) in both offset fields. Not
+    /// observed yet: no contract of the test account lists the type.
     PassvRel { price: Price, offset: Price },
     /// Adjustable stop, same fields as `OrderRequest::SubmitAdjustableStop`.
     /// On this path it also carries parent, OCA and tif, so it can be a
@@ -874,7 +873,7 @@ pub enum OrderKind {
 
 impl OrderKind {
     /// The prices of this kind the reference checks against the price grid
-    /// (code read of the reference, ibx#263): the limit price of
+    /// (ibx#263): the limit price of
     /// every type, and the stop or offset price (the API auxPrice) of the
     /// types that have one, for a trailing type its
     /// amount, never a percent. Not checked: the trailing stop price, the
@@ -2776,8 +2775,8 @@ mod tests {
         assert!(!off_grid(15_012_345_678, 0, false));
         assert!(off_grid(-50_000_000, 0, false));
         assert!(off_grid(-50_000_000, TICK_CENT, false));
-        // A combo's rule allows a price at or below 0 (code read;
-        // captured BAG limits -73.15 and -50.10, ibx#470), on its tick.
+        // A combo's rule allows a price at or below 0 (captured BAG limits
+        // -73.15 and -50.10, ibx#470), on its tick.
         assert!(!off_grid(-7_315_000_000, 0, true));
         assert!(!off_grid(-5_010_000_000, TICK_CENT, true));
         assert!(off_grid(-5_010_500_000, TICK_CENT, true));
