@@ -69,6 +69,11 @@ pub struct StreamState {
     pub(crate) mdt_done: bool,
     /// Delayed data: delayed tick types, the delayed sender's order.
     pub(crate) delayed: bool,
+    /// On the frozen view of its contract (ibx#494): each size goes with
+    /// its price only, and a last size of 0 is not given.
+    frozen: bool,
+    /// The halted value the first frozen image gives after the ask.
+    frozen_halted: Option<i64>,
     /// The bid and ask auto-execution comes from the farm.
     farm_auto: bool,
     /// `mdoff`: no top of book ticks.
@@ -76,6 +81,18 @@ pub struct StreamState {
     /// An index streamed in real time: the reference gives it from its
     /// native top, with no bid, ask or sizes (ibx#640).
     index_top: bool,
+}
+
+impl StreamState {
+    /// The request goes on with the frozen view of its contract (ibx#494;
+    /// the reference 10.51, paper, 14/10/2026, a closed option, a stream
+    /// and a snapshot in frozen mode, two runs each): the bid and the ask
+    /// with their sizes once, the halted state -1, then the volume and the
+    /// close; no size again on its own, no last size of 0.
+    pub(crate) fn freeze(&mut self) {
+        self.frozen = true;
+        self.frozen_halted = Some(-1);
+    }
 }
 
 /// What a new request is.
@@ -312,6 +329,7 @@ fn stream_pass(st: &mut StreamState, m: &Mirror, pass: Pass, out: &mut Out) {
     let mut todo = [false; field::COUNT];
     for (idx, pending) in todo.iter_mut().enumerate() {
         *pending = match idx {
+            field::LAST_SIZE if st.frozen && fields[idx] == 0 => false,
             field::BID_SIZE | field::ASK_SIZE | field::LAST_SIZE | field::VOLUME => {
                 let kind = size_kind(idx).unwrap_or(SizeKind::Volume);
                 (m.seen(kind) || fields[idx] != 0)
@@ -342,7 +360,17 @@ fn stream_pass(st: &mut StreamState, m: &Mirror, pass: Pass, out: &mut Out) {
     // with an unset size and no auto-execution (ibx#647; the reference
     // 10.51, paper, 13/10/2026 pre-market, two option streams).
     let kept = matches!(pass, Pass::Step(MdStep::KeptQuote, _));
+    // The frozen sender, as the delayed one, sends a size with its price
+    // only (ibx#494).
+    let once = delayed || st.frozen;
     for &idx in if delayed { &STEP_ALL_DELAYED } else { &STEP_ALL } {
+        // The first frozen image gives its halted state after the bid, the
+        // ask and the last (ibx#494).
+        if idx == field::BID_SIZE && (fields[field::BID] != 0 || fields[field::ASK] != 0)
+            && let Some(value) = st.frozen_halted.take()
+        {
+            out.push(MdTick::Generic { tick_type: out.api(TICK_HALTED), value: value as f64 });
+        }
         if !todo[idx] {
             continue;
         }
@@ -374,13 +402,13 @@ fn stream_pass(st: &mut StreamState, m: &Mirror, pass: Pass, out: &mut Out) {
             // A price comes with its size; the delayed sender does not send
             // that size again on its own (captured 05/10/2026, 7203 on
             // delayed data: 66 and 69, 67 and 70, 68 and 71, once each).
-            field::BID => { out.price(TICK_BID, idx, bid_auto); out.size(TICK_BID_SIZE, field::BID_SIZE); if delayed { todo[field::BID_SIZE] = false; } }
-            field::ASK => { out.price(TICK_ASK, idx, ask_auto); out.size(TICK_ASK_SIZE, field::ASK_SIZE); if delayed { todo[field::ASK_SIZE] = false; } }
+            field::BID => { out.price(TICK_BID, idx, bid_auto); out.size(TICK_BID_SIZE, field::BID_SIZE); if once { todo[field::BID_SIZE] = false; } }
+            field::ASK => { out.price(TICK_ASK, idx, ask_auto); out.size(TICK_ASK_SIZE, field::ASK_SIZE); if once { todo[field::ASK_SIZE] = false; } }
             // No trade: a last of -1 with no size is not given; the size
             // goes on its own (ibx#671; the reference 10.51, an option with
             // no trade, 13/10/2026).
             field::LAST if !last_valid(fields) => {}
-            field::LAST => { out.price(TICK_LAST, idx, false); out.size(TICK_LAST_SIZE, field::LAST_SIZE); if delayed { todo[field::LAST_SIZE] = false; } }
+            field::LAST => { out.price(TICK_LAST, idx, false); out.size(TICK_LAST_SIZE, field::LAST_SIZE); if once { todo[field::LAST_SIZE] = false; } }
             field::BID_SIZE => out.size(TICK_BID_SIZE, idx),
             field::ASK_SIZE => out.size(TICK_ASK_SIZE, idx),
             field::LAST_SIZE => out.size(TICK_LAST_SIZE, idx),
@@ -787,11 +815,14 @@ fn pass_one(
     let complete = {
         let mut o = Out { out: &mut *out, req_id, fields: &m.fields, delayed: st.delayed, shared, instrument, seq };
         match snap {
-            Some(snap) => {
+            // A snapshot on the frozen view gives the frozen image as a
+            // stream does and ends at its time limit (ibx#494; the
+            // reference 10.51, paper, 14/10/2026, a closed option, two runs).
+            Some(snap) if !st.frozen => {
                 snapshot_pass(snap, m, pass, &mut o);
                 snap.complete()
             }
-            None => {
+            _ => {
                 stream_pass(st, m, pass, &mut o);
                 false
             }
@@ -1147,6 +1178,33 @@ mod tests {
             "price:1:1:99", "size:1:0:1",
         ]);
         assert!(poll(&core, &shared).is_empty());
+    }
+
+    // ibx#494 (the reference 10.51, paper, 14/10/2026, a closed option, a
+    // stream and a snapshot in frozen mode, two runs each): the frozen
+    // image is the bid and the ask with their sizes once, the halted state
+    // -1, the volume and the close; no size again, no last size of 0.
+    #[test]
+    fn the_frozen_image_gives_each_size_once_and_the_halted_state() {
+        let (core, shared) = (ClientCore::new(), SharedState::new());
+        stream(&core, &shared, 1, 6);
+        core.mdt_sent.lock().unwrap().insert(1);
+        core.last_quotes.lock().unwrap().get_mut(&1).unwrap().freeze();
+        let q = Quote {
+            bid: 9170 * PRICE_SCALE / 100, ask: 9385 * PRICE_SCALE / 100, bid_size: 15 * QTY_SCALE, ask_size: 17 * QTY_SCALE,
+            volume: 3 * QTY_SCALE, close: 9232 * PRICE_SCALE / 100, ..Default::default()
+        };
+        shared.market.push_test_message(6, &q, &TestMessage {
+            steps: Some(&[MdStep::CatchUp]), sizes_seen: true, ..Default::default()
+        });
+        assert_eq!(poll(&core, &shared), [
+            "price:1:1:91.7", "size:1:0:15", "price:1:2:93.85", "size:1:3:17", "generic:1:49:-1",
+            "size:1:8:3", "price:1:9:92.32",
+        ]);
+        // Later steps: a size alone when it changes, never again with no change.
+        let q = Quote { bid_size: 20 * QTY_SCALE, ..q };
+        shared.market.push_test_message(6, &q, &TestMessage { steps: Some(&[MdStep::Quote]), sizes_seen: true, ..Default::default() });
+        assert_eq!(poll(&core, &shared), ["size:1:0:20"]);
     }
 
     // ibx#681, ibx#647 (the reference 10.51, 13/10/2026, an option with

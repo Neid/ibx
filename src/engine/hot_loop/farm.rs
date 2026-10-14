@@ -1054,8 +1054,14 @@ impl FarmState {
         // gives the request parameters (ibx#449).
         if bid_ask {
             let sec_type = context.market.order_routing(instrument).0;
-            if let Some(params) = tick_req_params(instrument, min_tick, &parts, &sec_type) {
-                if let Some(con_id) = context.market.con_id(instrument) {
+            if let Some(mut params) = tick_req_params(instrument, min_tick, &parts, &sec_type) {
+                // The frozen pair of a frozen contract gives its requests no
+                // snapshot permissions (ibx#494; the reference 10.51, paper,
+                // 14/10/2026, a closed option: 0 from the frozen pair, 3 from
+                // the real-time one, the same value in both acknowledgements).
+                if self.status.iter().any(|e| e.frozen == Some(instrument)) {
+                    params.snapshot_permissions = 0;
+                } else if let Some(con_id) = context.market.con_id(instrument) {
                     self.con_params.insert(con_id, (params.min_tick, params.bbo_exchange.clone(), params.snapshot_permissions as i64));
                 }
                 shared.market.push_tick_req_params(params);
@@ -1827,6 +1833,15 @@ impl FarmState {
             if farm == PRIMARY_MD {
                 hb.last_farm_sent = Instant::now();
             }
+        }
+        // A snapshot in frozen mode asks the contract's market data status
+        // after its pair, in a message of its own (ibx#494; the reference
+        // 10.51, paper, 14/10/2026, a closed option, two runs): when frozen,
+        // the snapshot goes on with the frozen pair, as a stream does.
+        if realtime && sub.snapshot && self.md_modes.frozen
+            && let Some(msg) = self.start_status(sub, farm)
+        {
+            sink.send_comp(&borrow_tags(&msg));
         }
     }
 

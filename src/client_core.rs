@@ -2773,18 +2773,13 @@ impl ClientCore {
 
     /// The contract of slot `live` is frozen (ibx#447): its requests go on
     /// with the frozen top of book of slot `frozen`, as the reference's
-    /// subscriber reads the record's frozen view once frozen is confirmed
-    ///: marketDataType 2 (after the request
-    /// parameters the contract kept, when the request has not had them),
-    /// then every value of the frozen view as it comes, sent again from
-    /// nothing (captured 07/10/2026).
+    /// subscriber reads the record's frozen view once frozen is confirmed:
+    /// marketDataType 2, the request parameters of the frozen pair when the
+    /// request has not had any (ibx#494), then the frozen view as it comes,
+    /// sent again from nothing (captured 07/10/2026 and 14/10/2026).
     fn md_freeze(&self, shared: &SharedState, live: InstrumentId, frozen: InstrumentId, notices: &mut Vec<MdNotice>) {
         let Some(reqs) = self.instrument_to_req.lock().unwrap().remove(&live) else { return };
         shared.market.md_events.listen(live, false);
-        let params = self.instrument_params.lock().unwrap().remove(&live);
-        if let Some(p) = params.clone() {
-            self.instrument_params.lock().unwrap().insert(frozen, p);
-        }
         for iid in self.con_id_to_instrument.lock().unwrap().values_mut() {
             if *iid == live { *iid = frozen; }
         }
@@ -2795,13 +2790,18 @@ impl ClientCore {
             if !self.join_md_observers(shared, req_id, frozen, false, None, None) {
                 continue;
             }
-            if let Some((min_tick, bbo_exchange, permissions)) = params.clone()
+            if let Some(st) = self.last_quotes.lock().unwrap().get_mut(&req_id) {
+                st.freeze();
+            }
+            self.mdt_sent.lock().unwrap().insert(req_id);
+            notices.push(MdNotice::MarketDataType { req_id, market_data_type: MDT_FROZEN });
+            // The frozen pair acknowledged already: its parameters now.
+            let params = self.instrument_params.lock().unwrap().get(&frozen).cloned();
+            if let Some((min_tick, bbo_exchange, permissions)) = params
                 && self.tick_req_params_sent.lock().unwrap().insert(req_id)
             {
                 notices.push(MdNotice::TickReqParams { req_id, min_tick, bbo_exchange, permissions });
             }
-            self.mdt_sent.lock().unwrap().insert(req_id);
-            notices.push(MdNotice::MarketDataType { req_id, market_data_type: MDT_FROZEN });
         }
     }
 
@@ -3463,10 +3463,15 @@ impl ClientCore {
         }
         for p in params {
             let permissions = p.snapshot_permissions as i64;
-            // The requests of a frozen contract are on its frozen slot
-            // (ibx#447).
-            let instrument = self.md_frozen.lock().unwrap().get(&p.instrument).copied().unwrap_or(p.instrument);
+            let instrument = p.instrument;
             self.instrument_params.lock().unwrap().insert(instrument, (p.min_tick, p.bbo_exchange.clone(), permissions));
+            // The requests of a frozen contract are on its frozen slot
+            // (ibx#447) and take the frozen pair's parameters only: the
+            // real-time pair's, when they come after the switch, are not
+            // given (ibx#494; the reference 10.51, paper, 14/10/2026).
+            if self.md_frozen.lock().unwrap().contains_key(&instrument) {
+                continue;
+            }
             for req_id in self.md_requests_of(instrument) {
                 if self.tick_req_params_sent.lock().unwrap().insert(req_id) {
                     out.push((req_id, self.check_mdt_needed(req_id, true), Some((p.min_tick, p.bbo_exchange.clone(), permissions))));
