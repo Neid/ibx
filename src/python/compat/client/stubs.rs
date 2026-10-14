@@ -170,29 +170,32 @@ impl EClient {
 
     // ── Requests a session of the reference does not have (ibx#516) ──
 
-    /// Error 503 for the request, as the official client library answers
-    /// on such a session; a running contract details request goes on.
+    /// Below session level 215, error 503 for the request, as the official
+    /// client library answers; from 215 nothing (ibx#557). A running
+    /// contract details request goes on in both cases.
     fn cancel_contract_data(&self, py: Python<'_>, req_id: i64) -> PyResult<()> {
         // One API request for the pacing, whatever it sends (ibx#565).
         let _request = crate::engine::park::one_request();
         if let Some(r) = self.not_connected(req_id) { return r; }
         // The official client library's own check, on the caller's thread
         // before anything is sent: never put off (ibx#532).
-        let (code, text) = crate::client_core::CANCEL_CONTRACT_DATA_UNSUPPORTED;
-        self.wrapper.call_method1(py, "error", (req_id, code, text, ""))?;
+        if let Some((code, text)) = crate::client_core::lookup_cancel_refusal(crate::client_core::SERVER_VERSION, false) {
+            self.wrapper.call_method1(py, "error", (req_id, code, text, ""))?;
+        }
         Ok(())
     }
 
-    /// Error 503 for the request; a running historical ticks request goes
-    /// on.
+    /// Below session level 215, error 503 for the request; from 215
+    /// nothing (ibx#557). A running historical ticks request goes on.
     fn cancel_historical_ticks(&self, py: Python<'_>, req_id: i64) -> PyResult<()> {
         // One API request for the pacing, whatever it sends (ibx#565).
         let _request = crate::engine::park::one_request();
         if let Some(r) = self.not_connected(req_id) { return r; }
         // The official client library's own check, on the caller's thread
         // before anything is sent: never put off (ibx#532).
-        let (code, text) = crate::client_core::CANCEL_HISTORICAL_TICKS_UNSUPPORTED;
-        self.wrapper.call_method1(py, "error", (req_id, code, text, ""))?;
+        if let Some((code, text)) = crate::client_core::lookup_cancel_refusal(crate::client_core::SERVER_VERSION, true) {
+            self.wrapper.call_method1(py, "error", (req_id, code, text, ""))?;
+        }
         Ok(())
     }
 

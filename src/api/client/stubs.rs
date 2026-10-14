@@ -77,24 +77,26 @@ impl EClient {
 
     // ── Requests a session of the reference does not have (ibx#516) ──
 
-    /// Matches `cancelContractData` in C++. Not supported by a session of
-    /// the reference: error 503 for the request, and a running contract
-    /// details request goes on.
+    /// Matches `cancelContractData` in C++. Below session level 215, error
+    /// 503 for the request; from 215 nothing (ibx#557). A running contract
+    /// details request goes on in both cases, as on the reference.
     pub fn cancel_contract_data(&self, req_id: i64) {
         // One API request for the pacing, whatever it sends (ibx#565).
         let _request = crate::engine::park::one_request();
-        let (code, text) = crate::client_core::CANCEL_CONTRACT_DATA_UNSUPPORTED;
-        self.shared.orders.push_order_error(req_id, code, text.to_string());
+        if let Some((code, text)) = crate::client_core::lookup_cancel_refusal(crate::client_core::SERVER_VERSION, false) {
+            self.shared.orders.push_order_error(req_id, code, text.to_string());
+        }
     }
 
-    /// Matches `cancelHistoricalTicks` in C++. Not supported by a session
-    /// of the reference: error 503 for the request, and a running
-    /// historical ticks request goes on.
+    /// Matches `cancelHistoricalTicks` in C++. Below session level 215,
+    /// error 503 for the request; from 215 nothing (ibx#557). A running
+    /// historical ticks request goes on in both cases, as on the reference.
     pub fn cancel_historical_ticks(&self, req_id: i64) {
         // One API request for the pacing, whatever it sends (ibx#565).
         let _request = crate::engine::park::one_request();
-        let (code, text) = crate::client_core::CANCEL_HISTORICAL_TICKS_UNSUPPORTED;
-        self.shared.orders.push_order_error(req_id, code, text.to_string());
+        if let Some((code, text)) = crate::client_core::lookup_cancel_refusal(crate::client_core::SERVER_VERSION, true) {
+            self.shared.orders.push_order_error(req_id, code, text.to_string());
+        }
     }
 
     /// Matches `verifyRequest` in C++. A session opened without the intent

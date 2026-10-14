@@ -2145,8 +2145,8 @@ eclient,req_smart_components,,live:tests/rust_api_gt.rs::api_gt_suite ; src/gold
 eclient,req_news_providers,,live:tests/rust_api_gt.rs::api_gt_suite
 eclient,req_current_time,,src/api/client/tests.rs::req_current_time_adds_the_logon_clock_offset
 eclient,req_current_time_in_millis,,src/api/client/tests.rs::req_current_time_in_millis_adds_the_logon_clock_offset
-eclient,cancel_contract_data,,src/api/client/tests.rs::requests_the_reference_session_does_not_have
-eclient,cancel_historical_ticks,,src/api/client/tests.rs::requests_the_reference_session_does_not_have
+eclient,cancel_contract_data,,src/api/client/tests.rs::requests_the_reference_session_does_not_have ; src/client_core.rs::the_lookup_cancels_are_refused_below_level_215_and_answer_nothing_from_it
+eclient,cancel_historical_ticks,,src/api/client/tests.rs::requests_the_reference_session_does_not_have ; src/client_core.rs::the_lookup_cancels_are_refused_below_level_215_and_answer_nothing_from_it
 eclient,verify_request,,src/api/client/tests.rs::requests_the_reference_session_does_not_have
 eclient,verify_message,,src/api/client/tests.rs::requests_the_reference_session_does_not_have
 eclient,verify_and_auth_request,,src/api/client/tests.rs::requests_the_reference_session_does_not_have

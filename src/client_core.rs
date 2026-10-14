@@ -1475,6 +1475,22 @@ pub const CANCEL_CONTRACT_DATA_UNSUPPORTED: (i64, &str) =
     (503, "The TWS is out of date and must be upgraded.  It does not support contract data cancels.");
 pub const CANCEL_HISTORICAL_TICKS_UNSUPPORTED: (i64, &str) =
     (503, "The TWS is out of date and must be upgraded.  It does not support historical ticks cancels.");
+
+/// The session level from which the official client library sends
+/// cancelContractData and cancelHistoricalTicks (ibx#557).
+const LEVEL_LOOKUP_CANCELS: i32 = 215;
+
+/// The answer to cancelContractData (`ticks` false) or cancelHistoricalTicks
+/// on a session of level `level` (ibx#557). Below 215 the official client
+/// library refuses it with 503. From 215 the reference 10.51 takes it and
+/// nothing visible follows: no answer, and the running request completes
+/// (paper, 14/10/2026, level 225, two runs: lookups cancelled 0 to 0.5 s
+/// after the request, an option chain lookup at 0.3 s, a historical ticks
+/// request at 0.5 s; a cancel of an unknown id gives nothing either).
+pub fn lookup_cancel_refusal(level: i32, ticks: bool) -> Option<(i64, &'static str)> {
+    (level < LEVEL_LOOKUP_CANCELS)
+        .then_some(if ticks { CANCEL_HISTORICAL_TICKS_UNSUPPORTED } else { CANCEL_CONTRACT_DATA_UNSUPPORTED })
+}
 pub const VERIFY_REQUEST_NO_INTENT: (i64, i64, &str) =
     (-1, 544, "Verify Request Sending Error -   Intent to authenticate needs to be expressed during initial connect request.");
 pub const VERIFY_AND_AUTH_REQUEST_NO_INTENT: (i64, i64, &str) =
@@ -8298,6 +8314,16 @@ mod session_tests {
     #[test]
     fn server_version_is_the_reference_level() {
         assert_eq!(SERVER_VERSION, 214);
+    }
+
+    // ibx#557 (the reference 10.51, paper, 14/10/2026: the official client
+    // refuses at level 214, the reference answers nothing at level 225).
+    #[test]
+    fn the_lookup_cancels_are_refused_below_level_215_and_answer_nothing_from_it() {
+        assert_eq!(lookup_cancel_refusal(214, false), Some(CANCEL_CONTRACT_DATA_UNSUPPORTED));
+        assert_eq!(lookup_cancel_refusal(214, true), Some(CANCEL_HISTORICAL_TICKS_UNSUPPORTED));
+        assert_eq!(lookup_cancel_refusal(215, false), None);
+        assert_eq!(lookup_cancel_refusal(225, true), None);
     }
 
     // ibx#426: `yyyyMMdd HH:mm:ss {zone}`, local time.
