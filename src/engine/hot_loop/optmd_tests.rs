@@ -215,6 +215,27 @@ fn an_option_stream_as_the_reference() {
     assert_eq!(codes, ["737", "736", "735", "734", "733", "732", "398"]);
     assert!(msgs[4].ends_with("|263=2|146=1|262=5|6008=265598|207=IBVOL|167=CS|264=687"), "{}", msgs[4]);
     assert!(engine.farm.optmd.is_empty());
+
+    // The option asked again (ibx#646; the reference 10.51, paper,
+    // 14/10/2026 regular hours: a request after an earlier one of the same
+    // call computes 0.15 s after its first data, from the model values kept,
+    // with the volatilities and greeks, before its own values come).
+    let _ = computations(&shared);
+    engine.route_md_subscribe(&sub);
+    let _ = sent(&mut farm_side);
+    let now = Instant::now();
+    engine.service_option_models(now);
+    engine.service_option_models(now + Duration::from_millis(100));
+    assert!(computations(&shared).is_empty());
+    engine.service_option_models(now + Duration::from_millis(160));
+    let c = computations(&shared);
+    assert_eq!(c.iter().map(|c| c.tick_type).collect::<Vec<_>>(), [13, 10, 11, 12]);
+    assert_eq!(c[0].implied_vol, 0.24186426510722747);
+    assert_eq!((c[1].implied_vol, c[2].implied_vol, c[3].implied_vol), (0.2395566468611969, 0.24390056272714186, 0.24192026245757572));
+    assert!(close(c[1].delta, 0.5438673031565397, 1e-6) && c[1].und_price == 339.585, "{:?}", c[1]);
+    // Then the usual pace: a second later.
+    engine.service_option_models(now + Duration::from_millis(900));
+    assert!(computations(&shared).is_empty());
 }
 
 #[test]

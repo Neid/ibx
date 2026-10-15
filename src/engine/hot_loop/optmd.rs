@@ -45,6 +45,11 @@ const FIRST_PASS: Duration = Duration::from_millis(1000);
 const LATER_PASS: Duration = Duration::from_millis(2000);
 /// The pass after the requests moved onto the frozen slot (ibx#494).
 const SWITCH_PASS: Duration = Duration::from_millis(250);
+/// The first pass of a model that starts from the values kept from an
+/// earlier request of the option, after the request's first data (ibx#646).
+const KEPT_PASS: Duration = Duration::from_millis(150);
+/// How often a model that starts from kept values looks for its first data.
+const KEPT_POLL: Duration = Duration::from_millis(20);
 /// How long a model waits for its definitions before it is dropped.
 const START_WAIT: Duration = Duration::from_secs(10);
 /// How long a model stopped by a lost farm waits for it.
@@ -111,12 +116,30 @@ pub(crate) struct OptionModel {
     frozen_asked: bool,
     /// The frozen pair brought a trade, for the streams of the option.
     again: bool,
+    /// Started from the values kept from an earlier request of the option
+    /// (ibx#646): its first pass is computed in full.
+    seeded: bool,
+    /// Seeded, its first pass waits for the request's first data.
+    kept_wait: bool,
+    /// The price tick of the underlying's kept quote.
+    kept_tick: f64,
+}
+
+/// What a stopped model leaves for the next request of its option
+/// (ibx#646): the server's model values and the underlying's quote.
+#[derive(Debug, Clone)]
+struct KeptModel {
+    state: market::ModelState,
+    under: [Option<f64>; 3],
+    under_tick: f64,
 }
 
 impl OptionModel {
     /// The underlying price of the computations (`market::under_price`).
     pub(crate) fn under_price(&self) -> Option<f64> {
         let tick = self.entry(442, true).map_or(0.0, |e| e.min_tick);
+        // Before its own acknowledgement, the tick of the kept quote.
+        let tick = if tick > 0.0 { tick } else { self.kept_tick };
         market::under_price(self.under_bid, self.under_ask, self.under_last, |b, a| {
             // On the quote's tick grid, in whole ticks: 339.56 and 339.61
             // give 339.585, as the reference's, not a neighbour.
@@ -162,6 +185,8 @@ pub(crate) struct OptMd {
     /// reference 10.51 after hours, 13/10 and 14/10/2026: six requests of
     /// the AAPL 300 call asked it on the 340 call, asked first).
     after_frozen_option: HashMap<i64, i64>,
+    /// The values of the stopped models, by the option's conId (ibx#646).
+    kept: HashMap<i64, KeptModel>,
 }
 
 /// A price of `magnitude` ticks: divided by the ticks per unit when the
@@ -267,8 +292,23 @@ impl OptMd {
             instrument, snapshot, terms, opt_farm, under_farm, entries, vols_sent: false,
             under_bid: None, under_ask: None, under_last: None, under_wire: [None; 4], under_auto: None, under_trade: None,
             state: market::ModelState::default(), next_pass: None, passes: 0, sent: [None; 4], frozen: false,
-            frozen_asked: false, again: false,
+            frozen_asked: false, again: false, seeded: false, kept_wait: false, kept_tick: 0.0,
         };
+        // An option whose model ran earlier in the session: the new model
+        // starts from the values kept, and computes with them a moment
+        // after the request's first data, before its own values come (the
+        // reference 10.51, paper, 14/10/2026 regular hours: a snapshot after
+        // a stream and a stream after a snapshot of the same AAPL call,
+        // computations 0.15 s after the first data, with greeks; after
+        // hours on 13/10/2026 the same). A new model's first pass is
+        // seconds later and has no greeks.
+        if let Some(k) = self.kept.get(&con_id) {
+            model.state = k.state.clone();
+            [model.under_bid, model.under_ask, model.under_last] = k.under;
+            model.kept_tick = k.under_tick;
+            model.seeded = true;
+            model.kept_wait = true;
+        }
         let mut groups: Vec<Vec<(i32, bool)>> = Vec::new();
         if snapshot {
             groups.push(vec![(442, false), (443, false)]);
@@ -365,6 +405,12 @@ impl OptMd {
             return (Vec::new(), Vec::new(), Vec::new());
         };
         let m = self.models.remove(pos);
+        if m.state.greeks.is_some() {
+            let under_tick = m.entry(442, true).map_or(0.0, |e| e.min_tick);
+            self.kept.insert(m.terms.con_id, KeptModel {
+                state: m.state.clone(), under: [m.under_bid, m.under_ask, m.under_last], under_tick,
+            });
+        }
         let marks = self.entry_marks.load(std::sync::atomic::Ordering::Relaxed);
         let status = super::farm::MARKET_DATA_STATUS;
         let vols_desc = vec![
@@ -523,7 +569,7 @@ impl OptMd {
                 // later.
                 market::GREEKS => {
                     st.greeks = market::decode_greeks(payload);
-                    if m.next_pass.is_none() && st.greeks.is_some() {
+                    if m.next_pass.is_none() && !m.kept_wait && st.greeks.is_some() {
                         m.next_pass = Some(if m.snapshot { now } else { now + FIRST_PASS });
                     }
                 }
@@ -615,14 +661,24 @@ impl OptMd {
         mut inputs: impl FnMut(&OptionTerms, &mut dyn FnMut(Option<&crate::control::optcalc::ModelInputs>)),
     ) {
         for m in &mut self.models {
-            if m.next_pass.is_none_or(|t| t > now) {
-                continue;
-            }
             // The side prices from the frozen slot when the contract's
             // requests are on it (ibx#494; the reference 10.51, paper, after
             // hours 14/10/2026: ticks 11 and 12 of a snapshot in frozen mode
             // with the frozen bid and ask).
             let slot = quote_slot(m.instrument);
+            if m.kept_wait && m.next_pass.is_none_or(|t| t <= now) {
+                let q = context.quote(slot);
+                m.next_pass = Some(if q.bid > 0 || q.ask > 0 {
+                    m.kept_wait = false;
+                    now + KEPT_PASS
+                } else {
+                    now + KEPT_POLL
+                });
+                continue;
+            }
+            if m.next_pass.is_none_or(|t| t > now) {
+                continue;
+            }
             let q = context.quote(slot);
             let px = |v: i64| (v > 0).then(|| v as f64 / PRICE_SCALE as f64);
             let (bid, ask, last) = (px(q.bid), px(q.ask), px(q.last));
@@ -637,7 +693,7 @@ impl OptMd {
             let frozen = m.frozen && !(on_frozen_slot && m.snapshot);
             let form = if frozen {
                 market::Form::Volatility
-            } else if m.passes > 0 {
+            } else if m.passes > 0 || m.seeded {
                 market::Form::Computed
             } else {
                 market::Form::First
