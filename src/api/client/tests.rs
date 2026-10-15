@@ -7610,22 +7610,27 @@ fn past_the_ticker_limit_a_stream_gets_101_and_ends() {
     client.req_mkt_data(4, &eur_usd(), "", false, false).unwrap();
     client.process_msgs(&mut w);
     let errors: Vec<&String> = w.events.iter().filter(|e| e.starts_with("error:")).collect();
-    assert_eq!(errors, [
-        "error:2:101:Max number of tickers has been reached",
-        "error:4:101:Max number of tickers has been reached",
-        "error:4:101:Max number of tickers has been reached",
-    ]);
-
+    assert_eq!(errors, ["error:2:101:Max number of tickers has been reached"]);
     client.cancel_mkt_data(2).unwrap();
     client.cancel_mkt_data(1).unwrap();
     client.cancel_mkt_data(3).unwrap();
     let mut w = RecordingWrapper::default();
     client.process_msgs(&mut w);
     let errors: Vec<&String> = w.events.iter().filter(|e| e.starts_with("error:")).collect();
-    assert_eq!(errors, ["error:2:300:Can't find EId with tickerId:2"]);
+    let (mut held, others): (Vec<&String>, Vec<&String>) = errors.into_iter().partition(|e| e.contains(":101:"));
+    assert_eq!(others, ["error:2:300:Can't find EId with tickerId:2"]);
     assert_eq!(client.core.md_lines_in_use(), 0);
     let seen = engine.join().unwrap();
     assert_eq!(seen, ["subscribe:265598:0", "unsubscribe:10"]);
+    // ibx#649: the others of the pass get theirs at its end, together.
+    std::thread::sleep(crate::client_core::MD_LIMIT_PASS + std::time::Duration::from_millis(50));
+    let mut w = RecordingWrapper::default();
+    client.process_msgs(&mut w);
+    held.extend(w.events.iter().filter(|e| e.starts_with("error:")));
+    assert_eq!(held, [
+        "error:4:101:Max number of tickers has been reached",
+        "error:4:101:Max number of tickers has been reached",
+    ]);
 }
 
 // ═══════════════════════════════════════════════════════════════════

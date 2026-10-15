@@ -1176,6 +1176,10 @@ impl MdCancel {
 /// Error 101 of the reference.
 pub const MD_MAX_TICKERS: (i64, &str) = (101, "Max number of tickers has been reached");
 
+/// The slow pass of the reference's market data lines: the 101s after the
+/// first one of a pass wait for its end (ibx#649).
+pub const MD_LIMIT_PASS: std::time::Duration = std::time::Duration::from_millis(500);
+
 /// The text of 354 for a refused top of book (captured 05/10/2026), before
 /// what is appended to it.
 pub const MD_NOT_SUBSCRIBED: &str = "Requested market data is not subscribed. Check API status by selecting the Account menu \
@@ -1286,6 +1290,9 @@ pub struct ClientCore {
     /// reqSmartComponents waiting for the exchange map of their BBO
     /// exchange (ibx#441): (reqId, code, security type id, deadline).
     smart_components_waiting: Mutex<Vec<SmartComponentsWait>>,
+    /// The 101 refusals of the current pass of the ticker limit (ibx#649):
+    /// the end of the pass, and the requests whose 101 waits for it.
+    md_limit_pass: Mutex<(Option<std::time::Instant>, Vec<i64>)>,
 
     // PnL subscription state
     /// Running req_pnl requests, with the last values sent (ibx#478).
@@ -1887,6 +1894,7 @@ impl ClientCore {
             reg_snapshots: Mutex::new(Vec::new()),
             reg_snapshot_acks: Mutex::new(HashMap::new()),
             smart_components_waiting: Mutex::new(Vec::new()),
+            md_limit_pass: Mutex::new((None, Vec::new())),
             pnl_reqs: Mutex::new(HashMap::new()),
             pnl_quotes: Mutex::new(PnlQuotes::default()),
             currency_sent: Mutex::new(HashMap::new()),
@@ -1958,6 +1966,7 @@ impl ClientCore {
         self.reg_snapshots.lock().unwrap().clear();
         self.reg_snapshot_acks.lock().unwrap().clear();
         self.smart_components_waiting.lock().unwrap().clear();
+        *self.md_limit_pass.lock().unwrap() = (None, Vec::new());
         self.pnl_reqs.lock().unwrap().clear();
         *self.pnl_quotes.lock().unwrap() = PnlQuotes::default();
         self.currency_sent.lock().unwrap().clear();
@@ -2252,7 +2261,9 @@ impl ClientCore {
         // Observed 12/10/2026 (ibx#501): the request is not served when
         // lines are set free later, and a cancel of it gets 300.
         if !snapshot && self.md_over_limit(shared) {
-            shared.orders.push_order_error(req_id, MD_MAX_TICKERS.0, MD_MAX_TICKERS.1.to_string());
+            if self.md_limit_now(req_id) {
+                shared.orders.push_order_error(req_id, MD_MAX_TICKERS.0, MD_MAX_TICKERS.1.to_string());
+            }
             return Ok(None);
         }
 
@@ -2301,6 +2312,39 @@ impl ClientCore {
     }
 
     /// Every API market data line is taken (ibx#444, ibx#501).
+    /// Whether the 101 of `req_id` goes now (ibx#649). The reference
+    /// refuses past the ticker limit in the passes of its line manager: the
+    /// first request over the limit gets 101 at once, the ones refused in
+    /// the next `MD_LIMIT_PASS` get theirs together at the end of that pass
+    /// (observed 12/10/2026, two runs of 106 streams, by symbol and by
+    /// conId: 0.50 to 0.52 s later). Held ones go from `take_md_rejects`, in
+    /// request order: the order inside a pass varies on the reference.
+    fn md_limit_now(&self, req_id: i64) -> bool {
+        let now = std::time::Instant::now();
+        let mut pass = self.md_limit_pass.lock().unwrap();
+        match pass.0 {
+            Some(end) if now < end => {
+                pass.1.push(req_id);
+                false
+            }
+            _ => {
+                pass.0 = Some(now + MD_LIMIT_PASS);
+                true
+            }
+        }
+    }
+
+    /// The held 101s whose pass ended (ibx#649).
+    fn md_limit_due(&self, notices: &mut Vec<MdNotice>) {
+        let mut pass = self.md_limit_pass.lock().unwrap();
+        if pass.1.is_empty() || pass.0.is_some_and(|end| std::time::Instant::now() < end) {
+            return;
+        }
+        for req_id in std::mem::take(&mut pass.1) {
+            notices.push(MdNotice::Error { req_id, code: MD_MAX_TICKERS.0, text: MD_MAX_TICKERS.1.to_string() });
+        }
+    }
+
     fn md_over_limit(&self, shared: &SharedState) -> bool {
         self.md_lines_in_use() >= shared.reference.snapshot_rate_limit() as usize
     }
@@ -2707,6 +2751,7 @@ impl ClientCore {
     pub fn take_md_rejects(&self, shared: &SharedState) -> (Vec<MdNotice>, Vec<ControlCommand>) {
         let mut notices = Vec::new();
         let mut commands = Vec::new();
+        self.md_limit_due(&mut notices);
         let resolved = shared.market.drain_md_resolved();
         if !resolved.is_empty() {
             self.md_slot_con_ids.lock().unwrap().extend(resolved);
@@ -2802,7 +2847,10 @@ impl ClientCore {
                 } else if keeps_news && self.md_news.lock().unwrap().contains_key(&req_id) {
                     notices.push(MdNotice::Error { req_id, code: MD_TOP_REJECTED.0, text: MD_TOP_REJECTED.1.to_string() });
                 } else {
-                    notices.push(MdNotice::Error { req_id, code, text: text.to_string() });
+                    let held = matches!(reject, crate::bridge::MdReject::MaxTickers { .. }) && !self.md_limit_now(req_id);
+                    if !held {
+                        notices.push(MdNotice::Error { req_id, code, text: text.to_string() });
+                    }
                     let streaming = !self.snapshot_reqs.lock().unwrap().contains_key(&req_id);
                     let asked = self.md_news_asked.lock().unwrap().remove(&req_id);
                     commands.extend(self.drop_mkt_data(shared, req_id, false).map(MdCancel::commands).unwrap_or_default());
