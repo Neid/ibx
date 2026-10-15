@@ -41,6 +41,12 @@ impl Wrapper for Log {
     fn tick_string(&mut self, req_id: i64, tick_type: i32, value: &str) {
         self.line(format!("tickString {req_id} {tick_type} {value}"));
     }
+    fn tick_option_computation(
+        &mut self, req_id: i64, tick_type: i32, _: i32, implied_vol: f64, delta: f64, opt_price: f64, _: f64,
+        _: f64, _: f64, _: f64, und_price: f64,
+    ) {
+        self.line(format!("tickOptionComputation {req_id} {tick_type} vol={implied_vol} delta={delta} price={opt_price} und={und_price}"));
+    }
     fn tick_snapshot_end(&mut self, req_id: i64) {
         self.ended = true;
         self.line(format!("tickSnapshotEnd {req_id}"));

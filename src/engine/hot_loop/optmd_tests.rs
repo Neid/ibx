@@ -222,7 +222,15 @@ fn an_option_stream_as_the_reference() {
     // with the volatilities and greeks, before its own values come).
     let _ = computations(&shared);
     engine.route_md_subscribe(&sub);
-    let _ = sent(&mut farm_side);
+    let msgs = sent(&mut farm_side);
+    let req_of = |code: &str, con: &str| -> u32 {
+        msgs.iter().find_map(|m| {
+            let f: Vec<&str> = m.split('|').collect();
+            f.windows(5).find(|w| w[1] == format!("6008={con}") && w[4] == format!("264={code}"))
+                .and_then(|w| w[0].strip_prefix("262=")).map(|r| r.parse().unwrap())
+        }).unwrap_or_else(|| panic!("{code} {con} {msgs:#?}"))
+    };
+    let (under_req, greeks_req) = (req_of("442", "265598"), req_of("732", "692808239"));
     let now = Instant::now();
     engine.service_option_models(now);
     engine.service_option_models(now + Duration::from_millis(100));
@@ -233,8 +241,18 @@ fn an_option_stream_as_the_reference() {
     assert_eq!(c[0].implied_vol, 0.24186426510722747);
     assert_eq!((c[1].implied_vol, c[2].implied_vol, c[3].implied_vol), (0.2395566468611969, 0.24390056272714186, 0.24192026245757572));
     assert!(close(c[1].delta, 0.5438673031565397, 1e-6) && c[1].und_price == 339.585, "{:?}", c[1]);
+    // The model's own greeks: a pass at once, here with the underlying's
+    // new quote (the reference 10.51, 15/10/2026: 0.26 s after the first).
+    ack(&mut engine, 179, under_req);
+    ack(&mut engine, 494098, greeks_req);
+    ticks(&mut engine, &[(179, &[(0, 33960), (1, 33965)])]);
+    generic(&mut engine, &f["greeks"]);
+    engine.service_option_models(now + Duration::from_millis(400));
+    let c = computations(&shared);
+    assert_eq!(c.iter().map(|c| c.tick_type).collect::<Vec<_>>(), [10, 11, 12]);
+    assert_eq!(c[0].und_price, 339.625);
     // Then the usual pace: a second later.
-    engine.service_option_models(now + Duration::from_millis(900));
+    engine.service_option_models(now + Duration::from_millis(1300));
     assert!(computations(&shared).is_empty());
 
     // A snapshot of it then: 13, 10 and 11 from the kept values, 12 at the
@@ -252,6 +270,34 @@ fn an_option_stream_as_the_reference() {
     assert_eq!(computations(&shared).iter().map(|c| c.tick_type).collect::<Vec<_>>(), [13, 10, 11]);
     engine.service_option_models(now + Duration::from_millis(1200));
     assert_eq!(computations(&shared).iter().map(|c| c.tick_type).collect::<Vec<_>>(), [12]);
+
+    // A stream again, whose own greeks come before its first pass: the
+    // second pass right after the first (the reference 10.51, 14/10/2026:
+    // the two in the same millisecond).
+    engine.route_md_cancel(id);
+    let _ = sent(&mut farm_side);
+    engine.route_md_subscribe(&sub);
+    let msgs = sent(&mut farm_side);
+    let req_of = |code: &str, con: &str| -> u32 {
+        msgs.iter().find_map(|m| {
+            let f: Vec<&str> = m.split('|').collect();
+            f.windows(5).find(|w| w[1] == format!("6008={con}") && w[4] == format!("264={code}"))
+                .and_then(|w| w[0].strip_prefix("262=")).map(|r| r.parse().unwrap())
+        }).unwrap_or_else(|| panic!("{code} {con} {msgs:#?}"))
+    };
+    ack(&mut engine, 179, req_of("442", "265598"));
+    ack(&mut engine, 494098, req_of("732", "692808239"));
+    let _ = computations(&shared);
+    let now = Instant::now();
+    engine.service_option_models(now);
+    generic(&mut engine, &f["greeks"]);
+    engine.service_option_models(now + Duration::from_millis(160));
+    assert_eq!(computations(&shared).iter().map(|c| c.tick_type).collect::<Vec<_>>(), [13, 10, 11, 12]);
+    ticks(&mut engine, &[(179, &[(0, 33970), (1, 33975)])]);
+    engine.service_option_models(now + Duration::from_millis(161));
+    let c = computations(&shared);
+    assert_eq!(c.iter().map(|c| c.tick_type).collect::<Vec<_>>(), [10, 11, 12]);
+    assert_eq!(c[0].und_price, 339.725);
 }
 
 #[test]

@@ -48,6 +48,8 @@ const SWITCH_PASS: Duration = Duration::from_millis(250);
 /// The first pass of a model that starts from the values kept from an
 /// earlier request of the option, after the request's first data (ibx#646).
 const KEPT_PASS: Duration = Duration::from_millis(150);
+/// The pass after the own greeks of a model started from kept values.
+const OWN_PASS: Duration = Duration::from_millis(100);
 /// How often a model that starts from kept values looks for its first data.
 const KEPT_POLL: Duration = Duration::from_millis(20);
 /// How long a model waits for its definitions before it is dropped.
@@ -121,6 +123,11 @@ pub(crate) struct OptionModel {
     seeded: bool,
     /// Seeded, its first pass waits for the request's first data.
     kept_wait: bool,
+    /// Seeded, its own greeks did not come yet.
+    own_wait: bool,
+    /// Its own greeks came before its first pass: a second pass right
+    /// after it.
+    own_pending: bool,
     /// The price tick of the underlying's kept quote.
     kept_tick: f64,
 }
@@ -292,7 +299,7 @@ impl OptMd {
             instrument, snapshot, terms, opt_farm, under_farm, entries, vols_sent: false,
             under_bid: None, under_ask: None, under_last: None, under_wire: [None; 4], under_auto: None, under_trade: None,
             state: market::ModelState::default(), next_pass: None, passes: 0, sent: [None; 4], frozen: false,
-            frozen_asked: false, again: false, seeded: false, kept_wait: false, kept_tick: 0.0,
+            frozen_asked: false, again: false, seeded: false, kept_wait: false, own_wait: false, own_pending: false, kept_tick: 0.0,
         };
         // An option whose model ran earlier in the session: the new model
         // starts from the values kept, and computes with them a moment
@@ -308,6 +315,8 @@ impl OptMd {
             model.kept_tick = k.under_tick;
             model.seeded = true;
             model.kept_wait = true;
+            model.own_wait = true;
+            log::info!("Option model of instrument {}: starts from the values kept", instrument);
         }
         let mut groups: Vec<Vec<(i32, bool)>> = Vec::new();
         if snapshot {
@@ -572,6 +581,22 @@ impl OptMd {
                     if m.next_pass.is_none() && !m.kept_wait && st.greeks.is_some() {
                         m.next_pass = Some(if m.snapshot { now } else { now + FIRST_PASS });
                     }
+                    // A model started from kept values passes again when
+                    // its own greeks come (ibx#646; the reference 10.51,
+                    // paper, regular hours: 0.1 s after them on 15/10/2026,
+                    // 0.26 s after its first pass; in the same millisecond
+                    // as it on 14/10; after hours on 13/10/2026 with them).
+                    if m.own_wait && st.greeks.is_some() {
+                        m.own_wait = false;
+                        if !m.snapshot {
+                            if m.passes == 0 {
+                                m.own_pending = true;
+                            } else {
+                                m.next_pass = Some(now + OWN_PASS);
+                            }
+                            log::info!("Option model of instrument {}: its own greeks came, a pass", m.instrument);
+                        }
+                    }
                 }
                 market::MODEL_VOL => st.model_vol = market::decode_vol(payload),
                 market::MID_VOL => st.mid_vol = market::decode_vol(payload),
@@ -747,6 +772,9 @@ impl OptMd {
             }
             m.passes += 1;
             m.next_pass = Some(now + if m.passes == 1 { FIRST_PASS } else { LATER_PASS });
+            if std::mem::take(&mut m.own_pending) {
+                m.next_pass = Some(now);
+            }
             for (code, ticks) in [(market::COMPUTATIONS, sent), (market::COMPUTATIONS_KEPT, kept)] {
                 if !ticks.is_empty() {
                     shared.market.push_generic_ticks(crate::bridge::GenericTicks {
