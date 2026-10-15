@@ -103,6 +103,10 @@ const KNOWN_CONTROL_COMMAND_GAPS: &[(&str, &str)] = &[
         "Sent only by the regulatory snapshot fetcher of the clients (req_mkt_data with          regulatory_snapshot) when a fetch ends; the regulatory snapshot is billed on live          accounts, so no phase sends it. Exercised by unit tests",
     ),
     (
+        "PnlQuotes",
+        "Sent only by the clients' P&L requests (req_pnl, req_pnl_single, ibx#511); no phase of this          suite sends them. Exercised by the paper P&L tests and by unit tests",
+    ),
+    (
         "SubscribeAccountSummary",
         "Sent only by EClient::req_account_summary; no phase of this suite sends it \
          (phase 106 reads the account state). Exercised against the server by \

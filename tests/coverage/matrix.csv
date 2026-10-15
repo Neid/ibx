@@ -2064,8 +2064,8 @@ attribute,99994 PostToAtsDurationUnit,custom,no test
 attribute,99995 DurationUnit,custom,no test
 attribute,2147483647 ScaleComponentDisplaySize,integer,no test
 eclient,req_positions,,tests/scenario_replay.rs::combo_fill_executions_and_commissions ; src/api/client/tests.rs::req_positions_delivers_via_wrapper ; src/api/client/tests.rs::req_positions_empty_still_calls_position_end
-eclient,req_pnl,,src/api/client/tests.rs::a_pnl_request_subscribes_the_quotes_it_needs_and_cancels_them_after ; src/api/client/tests.rs::a_pnl_quote_becomes_the_callers_subscription ; src/api/client/tests.rs::no_internal_quote_when_the_caller_has_one
-eclient,cancel_pnl,,src/api/client/tests.rs::a_pnl_request_subscribes_the_quotes_it_needs_and_cancels_them_after ; src/api/client/tests.rs::a_pnl_quote_becomes_the_callers_subscription ; tests/scenarios.rs::cancel_pnl_stops_dispatch
+eclient,req_pnl,,src/api/client/tests.rs::a_pnl_request_asks_the_pnl_quotes_once_and_keeps_them ; tests/scenario_replay.rs::pnl_first_request_of_the_session
+eclient,cancel_pnl,,src/api/client/tests.rs::a_pnl_request_asks_the_pnl_quotes_once_and_keeps_them ; tests/scenarios.rs::cancel_pnl_stops_dispatch
 eclient,req_pnl_single,,tests/scenarios.rs::pnl_single_dispatches_position_info
 eclient,cancel_pnl_single,,tests/scenarios.rs::pnl_single_dispatches_position_info
 eclient,req_account_summary,,tests/scenario_replay.rs::account_summary_subscription_and_tag_rows ; src/api/client/tests.rs::account_summary_is_a_server_subscription ; src/api/client/tests.rs::account_summary_refusals_and_limit

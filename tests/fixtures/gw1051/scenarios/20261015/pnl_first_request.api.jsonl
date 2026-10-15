@@ -1,0 +1,30 @@
+{"type":"header","format":"four-leg-api/1","source":"20261015/pnl_first_request.jsonl","scenario":"pnl_first_request","decoder":"official client library 10.46.01","machine_zone":"Europe/Paris"}
+{"seq":1289,"leg":"api_out","msg_name":"START_API","request":{"clientId":198}}
+{"seq":1290,"leg":"api_in","msg_name":"MANAGED_ACCTS","callbacks":[["managedAccounts","DUXXXXXXX"]]}
+{"seq":1291,"leg":"api_in","msg_name":"NEXT_VALID_ID","callbacks":[["nextValidId",58081]]}
+{"seq":1292,"leg":"api_in","msg_name":"ERR_MSG","callbacks":[["error",-1,null,2104,"Market data farm connection is OK:usfarm",""]]}
+{"seq":1293,"leg":"api_in","msg_name":"ERR_MSG","callbacks":[["error",-1,null,2106,"HMDS data farm connection is OK:ushmds",""]]}
+{"seq":1294,"leg":"api_in","msg_name":"ERR_MSG","callbacks":[["error",-1,null,2158,"Sec-def data farm connection is OK:secdefil",""]]}
+{"seq":1295,"leg":"api_out","msg_name":"REQ_PNL","request":{"reqId":9003,"account":"DUXXXXXXX"}}
+{"seq":1296,"leg":"api_out","msg_name":"REQ_PNL_SINGLE","request":{"reqId":9004,"account":"DUXXXXXXX","conId":265598}}
+{"seq":1304,"leg":"api_in","msg_name":"PNL","callbacks":[["pnl",9003,-73.07973599999968,42.405964000000495,0.0]]}
+{"seq":1484,"leg":"api_in","msg_name":"PNL","callbacks":[["pnl",9003,0.9497729858385355,-990.9473989141641,-716.9810584]]}
+{"seq":1485,"leg":"api_in","msg_name":"ERR_MSG","callbacks":[["error",9004,null,2150,"Invalid position trade derived value",""]]}
+{"seq":1486,"leg":"api_in","msg_name":"PNL_SINGLE","callbacks":[["pnlSingle",9004,"0",-10.1955,"MAX",-10.19540495,0.0]]}
+{"seq":1494,"leg":"api_in","msg_name":"PNL","callbacks":[["pnl",9003,0.15900150146353553,-991.7381703985391,-716.9810584]]}
+{"seq":1559,"leg":"api_in","msg_name":"PNL","callbacks":[["pnl",9003,-0.08690914306771447,-991.9840810430703,-716.9810584]]}
+{"seq":1574,"leg":"api_in","msg_name":"PNL","callbacks":[["pnl",9003,-0.43157467041146447,-992.3287465704141,-716.9810584]]}
+{"seq":1582,"leg":"api_in","msg_name":"PNL","callbacks":[["pnl",9003,-0.6317699829114645,-992.5289418829141,-716.9810584]]}
+{"seq":1590,"leg":"api_in","msg_name":"PNL","callbacks":[["pnl",9003,-0.08690914306771447,-991.9840810430703,-716.9810584]]}
+{"seq":1598,"leg":"api_in","msg_name":"PNL","callbacks":[["pnl",9003,0.15900150146353553,-991.7381703985391,-716.9810584]]}
+{"seq":1606,"leg":"api_in","msg_name":"PNL","callbacks":[["pnl",9003,-0.6317699829114645,-992.5289418829141,-716.9810584]]}
+{"seq":1621,"leg":"api_in","msg_name":"PNL","callbacks":[["pnl",9003,-1.4225414672864645,-993.3197133672891,-716.9810584]]}
+{"seq":1636,"leg":"api_in","msg_name":"PNL","callbacks":[["pnl",9003,-0.5222729125989645,-992.4194448126016,-716.9810584]]}
+{"seq":1651,"leg":"api_in","msg_name":"PNL","callbacks":[["pnl",9003,0.6682788452135355,-991.2288930547891,-716.9810584]]}
+{"seq":1652,"leg":"api_out","msg_name":"CANCEL_PNL","request":{"reqId":9003}}
+{"seq":1653,"leg":"api_out","msg_name":"CANCEL_PNL_SINGLE","request":{"reqId":9004}}
+{"seq":1721,"leg":"api_out","msg_name":"REQ_PNL","request":{"reqId":9005,"account":"DUXXXXXXX"}}
+{"seq":1722,"leg":"api_in","msg_name":"PNL","callbacks":[["pnl",9005,-0.12249263916146447,-992.0196645391641,-716.9810584]]}
+{"seq":1737,"leg":"api_in","msg_name":"PNL","callbacks":[["pnl",9005,0.8684741577135355,-991.0286977422891,-716.9810584]]}
+{"seq":1745,"leg":"api_in","msg_name":"PNL","callbacks":[["pnl",9005,0.07770267333853553,-991.8194692266641,-716.9810584]]}
+{"seq":1746,"leg":"api_out","msg_name":"CANCEL_PNL","request":{"reqId":9005}}

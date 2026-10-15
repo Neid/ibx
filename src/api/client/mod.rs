@@ -343,6 +343,15 @@ impl EClient {
         self.core.con_id_to_instrument.lock().unwrap().insert(con_id, instrument);
     }
 
+    /// The P&L computed again at the next read, as one second later
+    /// (ibx#511; for tests).
+    #[doc(hidden)]
+    pub fn pnl_second_later_for_test(&self) {
+        if let Some(at) = self.core.pnl_quotes.lock().unwrap().computed_at_mut() {
+            *at -= std::time::Duration::from_secs(1);
+        }
+    }
+
     /// Send a control command to the engine. Returns `Err` if the engine has shut down.
     pub(crate) fn send(&self, cmd: ControlCommand) -> Result<(), String> {
         self.control_tx.send(cmd).map_err(|e| format!("Engine stopped: {e}"))

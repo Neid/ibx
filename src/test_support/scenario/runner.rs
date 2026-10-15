@@ -236,6 +236,35 @@ pub fn normalised(kind: &str, f: &Fields, mask_end: bool) -> String {
     }
 }
 
+/// A message of the P&L's own quotes (ibx#511): entries of the P&L price,
+/// the second price kind and the dividends on BEST, without the API
+/// source. The reference's order of its contracts changes from one process
+/// to the next (observed 15/10/2026 on two fresh processes of 10.51 with
+/// the same five positions): its entries are compared as a set.
+fn pnl_quotes_frame(f: &Fields) -> bool {
+    let e = entries(f);
+    msg_type(f) == "V" && !e.is_empty() && !f.iter().any(|(t, _)| *t == 6088)
+        && e.iter().all(|(.., exch, kind)| exch == "BEST" && matches!(kind.as_str(), "232" | "504" | "456"))
+}
+
+/// The entries of a market data message in the order of their contract
+/// and kind (ibx#511).
+fn sorted_entries(f: &Fields) -> Fields {
+    let start = f.iter().position(|(t, _)| *t == 262).unwrap_or(f.len());
+    let mut blocks: Vec<Fields> = Vec::new();
+    for (t, v) in &f[start..] {
+        if *t == 262 || blocks.is_empty() {
+            blocks.push(Vec::new());
+        }
+        blocks.last_mut().unwrap().push((*t, v.clone()));
+    }
+    let key = |b: &Fields| (tag(b, 6008).unwrap_or("").to_string(), tag(b, 264).unwrap_or("").to_string());
+    blocks.sort_by_key(key);
+    let mut out = f[..start].to_vec();
+    out.extend(blocks.into_iter().flatten());
+    out
+}
+
 /// The entries of a market data message (`35=V`): (262, 263, 6008, 207, 264).
 fn entries(f: &Fields) -> Vec<(String, String, String, String, String)> {
     let action = tag(f, 263).unwrap_or("").to_string();
@@ -1037,6 +1066,10 @@ impl Run<'_> {
             if kd == MARKET_DATA && msg_type(&b) == "V" && self.links.shared.reference.form_10_40() {
                 b = with_entry_marks(b);
             }
+            if kd == MARKET_DATA && pnl_quotes_frame(&a) && pnl_quotes_frame(&b) {
+                a = sorted_entries(&a);
+                b = sorted_entries(&b);
+            }
             (self.opts.frame_mask)(&mut a);
             (self.opts.frame_mask)(&mut b);
             let (a, b) = (normalised(kd, &a, mask_end), normalised(kd, &b, mask_end));
@@ -1076,6 +1109,17 @@ impl Run<'_> {
                 if let (Some(a), Some(b)) = (tag(gw, 11), tag(ours, 11)) {
                     self.ids.clord.entry(a.to_string()).or_insert_with(|| b.to_string());
                     self.ids.order.entry(base(a).to_string()).or_insert_with(|| base(b).to_string());
+                }
+            }
+            // The P&L's own quotes: each entry with ibx's of the same
+            // contract and kind (ibx#511).
+            MARKET_DATA if pnl_quotes_frame(gw) && pnl_quotes_frame(ours) => {
+                let mine = entries(ours);
+                for (g, _, con, _, kind) in entries(gw) {
+                    if let Some((o, ..)) = mine.iter().find(|(_, _, c, _, k)| *c == con && *k == kind) {
+                        self.ids.farm_taken.insert(o.clone());
+                        self.ids.farm.entry(g).or_insert_with(|| o.clone());
+                    }
                 }
             }
             MARKET_DATA => {

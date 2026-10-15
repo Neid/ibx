@@ -444,6 +444,10 @@ fn known_parent_id(parsed: &std::collections::HashMap<u32, String>, context: &Co
     }
 }
 
+/// The delay of the P&L partition's account request after the first P&L
+/// request (ibx#511).
+pub(crate) const PNL_PARTITION_DELAY: std::time::Duration = std::time::Duration::from_millis(1000);
+
 pub(crate) struct CcpState {
     /// The group of each account summary subscription, which its cancel
     /// restates (ibx#486).
@@ -580,6 +584,14 @@ pub(crate) struct CcpState {
     pub(crate) last_exec: Option<(String, String)>,
     /// Running number of the trades requests of the session.
     pub(crate) next_trades_request: u32,
+    /// The account request of the P&L partition (ibx#511): due 1 s after
+    /// the first P&L request of the session, then sent once.
+    pub(crate) pnl_partition_due: Option<Instant>,
+    /// Its subscription id once sent: its answers feed the partition, not
+    /// the account stream.
+    pub(crate) pnl_partition_id: Option<String>,
+    /// Running number of the partition's account requests.
+    pub(crate) next_partition_request: u32,
     /// Set by a reconnect until the end frame of the order status replay.
     pub(crate) awaiting_status_replay: bool,
     /// Set at the logon until the end frame of its order status replay:
@@ -1035,6 +1047,11 @@ impl CcpState {
             last_exec: None,
             // The login sends the first trades request.
             next_trades_request: 5,
+            pnl_partition_due: None,
+            pnl_partition_id: None,
+            // The reference's counter of its account and P&L requests was
+            // at 8 for it (observed 15/10/2026); not seen by the API.
+            next_partition_request: 8,
             awaiting_status_replay: false,
             awaiting_login_replay: false,
             fill_up_pending: None,
@@ -1365,6 +1382,10 @@ impl CcpState {
                             // P&L midnight seed — store for client-side daily P&L computation
                             handle_pnl_response(msg, shared);
                         }
+                        // The prices at midnight of the positions, after the
+                        // seeds (ibx#511; observed 15/10/2026 on the reference
+                        // 10.51): the daily P&L of a position held at midnight.
+                        "152" => handle_midnight_prices(msg, shared),
                         "20" => {
                             // Reference-data answer: inputs of the option model (ibx#442).
                             if let (Some(id), Some(xml)) = (parsed.get(&320), parsed.get(&6118)) {
@@ -1417,6 +1438,9 @@ impl CcpState {
                     }
                 }
             }
+            // The answers of the P&L partition's account request feed the
+            // partition's cash (ibx#511), not the account stream.
+            "UT" | "UM" | "RL" | "EB" | "UP" if self.is_partition_frame(msg) => {}
             "UT" | "UM" | "RL" => handle_account_update(msg, context, shared),
             "EB" => handle_account_end(msg, shared),
             "UP" => handle_portfolio_message(msg, context, shared, event_tx),
@@ -3032,6 +3056,57 @@ impl CcpState {
         self.release_ready_rows(shared, event_tx);
     }
 
+    /// The first P&L request of the session (ibx#511): the reference asks
+    /// the account of its P&L partition 1 s later, once.
+    pub(crate) fn start_pnl_partition(&mut self, now: Instant) {
+        if self.pnl_partition_due.is_none() && self.pnl_partition_id.is_none() {
+            self.pnl_partition_due = Some(now + PNL_PARTITION_DELAY);
+        }
+    }
+
+    /// The account request of the P&L partition when it is due (ibx#511),
+    /// as the reference writes it (observed 15/10/2026, 10.51, and in the
+    /// recordings of 26/09/2026 and 07/10/2026, 10.40): an account
+    /// subscription of its own id, with the partition flag and the "Core"
+    /// model, 1.0-1.1 s after the first reqPnL. It is never cancelled.
+    pub(crate) fn send_due_pnl_partition(
+        &mut self,
+        now: Instant,
+        account: &str,
+        ccp_conn: &mut Option<Connection>,
+        hb: &mut HeartbeatState,
+    ) {
+        if self.pnl_partition_due.is_none_or(|due| now < due) || self.disconnected {
+            return;
+        }
+        let Some(conn) = ccp_conn.as_mut() else { return };
+        let id = format!("AR.{}", self.next_partition_request);
+        let ts = chrono_free_timestamp();
+        if conn.send_fix(&[
+            (fix::TAG_MSG_TYPE, "U"),
+            (fix::TAG_SENDING_TIME, &ts),
+            (6040, "6"),
+            (6036, "1"),
+            (6529, &id),
+            (6095, account),
+            (8063, "1"),
+            (6700, "Core"),
+        ]).is_ok() {
+            hb.last_ccp_sent = Instant::now();
+            log::info!("Sent the P&L partition's account request {}", id);
+            self.next_partition_request += 1;
+            self.pnl_partition_id = Some(id);
+            self.pnl_partition_due = None;
+        }
+    }
+
+    /// A frame of the P&L partition's account subscription (ibx#511).
+    fn is_partition_frame(&self, msg: &[u8]) -> bool {
+        let Some(id) = &self.pnl_partition_id else { return false };
+        let Ok(text) = std::str::from_utf8(msg) else { return false };
+        text.split('').any(|p| p.strip_prefix("6529=") == Some(id.as_str()))
+    }
+
     /// Send P&L subscribe: 6040=142 with 6529=PLR.{N}|1={account}|
     pub(crate) fn send_pnl_subscribe(
         &mut self,
@@ -4509,6 +4584,24 @@ fn handle_pnl_response(msg: &[u8], shared: &SharedState) {
         seeds.push(MidnightSeed { con_id, qty_midnight_fixed: qty_midnight, money_traded, realized_pnl });
     }
     shared.portfolio.set_midnight_seeds(seeds);
+}
+
+/// The prices at midnight (ibx#511): a count, then (conId, price) for
+/// each position held at midnight.
+fn handle_midnight_prices(msg: &[u8], shared: &SharedState) {
+    let Ok(text) = std::str::from_utf8(msg) else { return };
+    let mut prices = Vec::new();
+    let mut con_id: i64 = 0;
+    for part in text.split('') {
+        if let Some(v) = part.strip_prefix("6008=") {
+            con_id = v.parse().unwrap_or(0);
+        } else if let Some(v) = part.strip_prefix("8057=") {
+            if let (true, Ok(price)) = (con_id != 0, v.parse::<f64>()) {
+                prices.push((con_id, price));
+            }
+        }
+    }
+    shared.portfolio.set_midnight_prices(prices);
 }
 
 /// Handle 6040=75 position + market price feed.

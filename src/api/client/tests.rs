@@ -5877,84 +5877,34 @@ fn positions_multi_carries_its_request_id_and_updates() {
 }
 
 // ═══════════════════════════════════════════════════════════════════
-//  Quotes ibx subscribes to for the P&L
+//  The P&L quotes (ibx#511)
 // ═══════════════════════════════════════════════════════════════════
 
-/// Answer the engine side of the internal subscriptions sent so far with
-/// instrument `iid`; returns the conIds subscribed and unsubscribed.
-fn answer_pnl_quotes(rx: &crossbeam_channel::Receiver<ControlCommand>, iid: InstrumentId) -> (Vec<i64>, Vec<InstrumentId>) {
-    let (mut subs, mut unsubs) = (Vec::new(), Vec::new());
-    for cmd in rx.try_iter() {
-        match cmd {
-            ControlCommand::Subscribe { con_id, reply_tx: Some(tx), .. } => {
-                let _ = tx.send(Ok(iid));
-                subs.push(con_id);
-            }
-            ControlCommand::Unsubscribe { instrument } => unsubs.push(instrument),
-            _ => {}
-        }
-    }
-    (subs, unsubs)
+/// The P&L quote commands sent so far: (conIds, second price kind).
+fn pnl_quote_commands(rx: &crossbeam_channel::Receiver<ControlCommand>) -> Vec<(Vec<i64>, bool)> {
+    rx.try_iter().filter_map(|cmd| match cmd {
+        ControlCommand::PnlQuotes { con_ids, second_price } => Some((con_ids, second_price)),
+        _ => None,
+    }).collect()
 }
 
+// The reference asks its P&L quotes at the first P&L request and keeps
+// them (observed 15/10/2026, 10.51): nothing at the cancel, nothing at a
+// later request.
 #[test]
-fn a_pnl_request_subscribes_the_quotes_it_needs_and_cancels_them_after() {
+fn a_pnl_request_asks_the_pnl_quotes_once_and_keeps_them() {
     let (client, rx, shared) = test_client();
-    client.core.con_id_to_instrument.lock().unwrap().clear();
     shared.portfolio.set_position_info(aapl_position(100, 336.0));
     client.req_pnl(1, "DU123", "");
     client.process_msgs(&mut RecordingWrapper::default());
-    let (subs, _) = answer_pnl_quotes(&rx, 7);
-    assert_eq!(subs, [265598], "the held position's quote");
-
-    // The reply is read on the next pass; the quote feeds the P&L only.
-    client.process_msgs(&mut RecordingWrapper::default());
-    assert_eq!(client.core.con_id_to_instrument.lock().unwrap().get(&265598), Some(&7));
-    assert!(client.core.instrument_to_req.lock().unwrap().get(&7).is_none(), "no tick callbacks");
-
-    // No P&L request left: the quote is cancelled.
+    assert_eq!(pnl_quote_commands(&rx), [(vec![265598], true)]);
     client.cancel_pnl(1);
-    if let Some(q) = client.core.pnl_quotes.lock().unwrap().checked_at_mut() { *q -= std::time::Duration::from_secs(2); }
     client.process_msgs(&mut RecordingWrapper::default());
-    let (_, unsubs) = answer_pnl_quotes(&rx, 7);
-    assert_eq!(unsubs, [7]);
-    assert!(client.core.con_id_to_instrument.lock().unwrap().get(&265598).is_none());
-}
-
-#[test]
-fn a_pnl_quote_becomes_the_callers_subscription() {
-    let (client, rx, shared) = test_client();
-    client.core.con_id_to_instrument.lock().unwrap().clear();
-    shared.portfolio.set_position_info(aapl_position(100, 336.0));
-    client.req_pnl(1, "DU123", "");
+    assert!(!rx.try_iter().any(|c| matches!(c, ControlCommand::Unsubscribe { .. } | ControlCommand::PnlQuotes { .. })),
+        "kept for the session");
+    client.req_pnl(2, "DU123", "");
     client.process_msgs(&mut RecordingWrapper::default());
-    answer_pnl_quotes(&rx, 7);
-    client.process_msgs(&mut RecordingWrapper::default());
-
-    let aapl = Contract { con_id: 265598, symbol: "AAPL".into(), sec_type: "STK".into(), exchange: "SMART".into(), ..Default::default() };
-    client.req_mkt_data(5, &aapl, "", false, false).unwrap();
-    let (subs, _) = answer_pnl_quotes(&rx, 7);
-    assert!(subs.is_empty(), "no second subscription to the server");
-    assert_eq!(client.core.instrument_to_req.lock().unwrap().get(&7), Some(&vec![5]));
-
-    // The P&L ends: the caller's subscription stays.
-    client.cancel_pnl(1);
-    if let Some(q) = client.core.pnl_quotes.lock().unwrap().checked_at_mut() { *q -= std::time::Duration::from_secs(2); }
-    client.process_msgs(&mut RecordingWrapper::default());
-    let (_, unsubs) = answer_pnl_quotes(&rx, 7);
-    assert!(unsubs.is_empty());
-}
-
-#[test]
-fn no_internal_quote_when_the_caller_has_one() {
-    let (client, rx, shared) = test_client();
-    shared.portfolio.set_position_info(aapl_position(100, 336.0));
-    client.core.con_id_to_instrument.lock().unwrap().insert(265598, 3);
-    client.core.instrument_to_req.lock().unwrap().insert(3, vec![9]);
-    client.req_pnl(1, "DU123", "");
-    client.process_msgs(&mut RecordingWrapper::default());
-    let (subs, _) = answer_pnl_quotes(&rx, 3);
-    assert!(subs.is_empty());
+    assert!(pnl_quote_commands(&rx).is_empty(), "asked already");
 }
 
 // ibx#461: popup bulletins reach every client; a subscription gets every

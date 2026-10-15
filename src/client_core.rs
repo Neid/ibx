@@ -167,6 +167,69 @@ fn auto_execution_from_farm(sec_type: &str, exchange: &str) -> bool {
     option && ["SMART", "CBOE", "AMEX", "PHLX", "PSE", "ISE"].iter().any(|e| e.eq_ignore_ascii_case(exchange))
 }
 
+/// The position rows of the P&L (ibx#511), in the order of the
+/// reference's sums: by position, then conId (the order that gives its
+/// totals to the last digit, observed 15/10/2026 on 10.51 with five
+/// positions; the same order as by market value there). Per row, as the
+/// reference:
+/// - price: the P&L price of the session's P&L quote, else the server's
+///   mark on the position; none: daily not valid, the others unknown;
+/// - daily: position × price − position at midnight × price at midnight +
+///   today's traded cash; not valid without the price at midnight of a
+///   position held at midnight;
+/// - unrealized: position × (price − average cost); exactly 0 is not valid
+///   (a closed position); unknown without an average cost;
+/// - realized: the seed's realized P&L plus this session's fills;
+/// - value: position × price.
+fn pnl_rows(shared: &SharedState) -> Vec<PnlRow> {
+    let seeds: HashMap<i64, MidnightSeed> = shared.portfolio.midnight_seeds()
+        .into_iter().map(|s| (s.con_id, s)).collect();
+    let infos: HashMap<i64, PositionInfo> = shared.portfolio.position_infos()
+        .into_iter().map(|p| (p.con_id, p)).collect();
+    let prices = shared.portfolio.pnl_prices();
+    let midnight = shared.portfolio.midnight_prices();
+    let realized_since = shared.portfolio.realized_since_seed();
+    let money_since = shared.portfolio.money_since_seed();
+    let mut con_ids: Vec<i64> = infos.keys().chain(seeds.keys()).copied().filter(|&c| c != 0).collect();
+    con_ids.sort_unstable();
+    con_ids.dedup();
+    let qty_of = |c: &i64| infos.get(c).map_or(0, |p| p.position_fixed);
+    con_ids.sort_by_key(|c| qty_of(c));
+    con_ids.into_iter().map(|con_id| {
+        let pi = infos.get(&con_id);
+        let seed = seeds.get(&con_id);
+        let qty_fixed = pi.map_or(0, |p| p.position_fixed);
+        let qty = qty_fixed as f64 / QTY_SCALE_F;
+        let avg_cost = pi.map_or(0.0, |p| p.avg_cost);
+        let qty_midnight = seed.map_or(0, |s| s.qty_midnight_fixed) as f64 / QTY_SCALE_F;
+        let price = prices.get(&con_id).copied().filter(|&p| p != f64::MAX)
+            .or_else(|| pi.map(|p| p.market_price).filter(|&p| p != 0).map(|p| p as f64 / PRICE_SCALE_F));
+        let money = money_traded_today(seed, money_since.get(&con_id).copied(), qty, avg_cost);
+        let daily = match (price, qty_midnight != 0.0) {
+            (None, _) => PnlValue::Invalid,
+            (Some(p), true) => match midnight.get(&con_id) {
+                Some(&m) => PnlValue::Valid(qty * p - qty_midnight * m + money),
+                None => PnlValue::Invalid,
+            },
+            (Some(p), false) => PnlValue::Valid(qty * p - 0.0 + money),
+        };
+        let unrealized = match price {
+            None => PnlValue::Unset,
+            Some(_) if qty != 0.0 && avg_cost == 0.0 => PnlValue::Unset,
+            Some(p) => match qty * (p - avg_cost) {
+                0.0 => PnlValue::Invalid,
+                u => PnlValue::Valid(u),
+            },
+        };
+        let realized = match (seed.map(|s| s.realized_pnl), realized_since.get(&con_id).copied()) {
+            (None, None) => PnlValue::Unset,
+            (s, f) => PnlValue::Valid(s.unwrap_or(0.0) + f.unwrap_or(0.0)),
+        };
+        let value = price.map_or(PnlValue::Unset, |p| PnlValue::Valid(qty * p));
+        PnlRow { con_id, qty_fixed, daily, unrealized, realized, value }
+    }).collect()
+}
+
 /// Net cash traded today on a position, for the daily P&L.
 /// moneyTradedSinceMidnight (wire 6822) is signed net cash: SELL positive,
 /// BUY negative (ib-agent#163). The seed's value, plus the cash of this
@@ -182,34 +245,78 @@ fn money_traded_today(seed: Option<&MidnightSeed>, since_seed: Option<f64>, qty_
     }
 }
 
-/// Quotes ibx subscribes to by itself while a P&L request runs: the P&L
-/// needs the last price and the previous close of each position, and a
-/// client that did not subscribe had none (daily P&L unset). They never
-/// reach the tick callbacks.
+/// The P&L of the session as the reference computes it (ibx#511): its own
+/// P&L quotes, asked once per position contract and kept for the session,
+/// and the rows of its P&L, computed at most once a second. The requests
+/// read the last computation.
 #[derive(Default)]
 pub struct PnlQuotes {
-    /// conId → instrument of a running internal subscription.
-    active: HashMap<i64, InstrumentId>,
-    /// conId → registration reply not received yet.
-    pending: HashMap<i64, crossbeam_channel::Receiver<Result<InstrumentId, String>>>,
-    /// Inputs of the last check: position generation, P&L requests, seeds.
-    key: (u64, usize, usize, usize),
-    checked_at: Option<std::time::Instant>,
+    /// The position contracts whose P&L quotes were asked: with the second
+    /// price kind (a reqPnL) or not.
+    asked: HashMap<i64, bool>,
+    /// The first P&L request of the session was seen.
+    started: bool,
+    /// Inputs of the last check of the quotes: position generation, P&L
+    /// requests running, single requests running, seeds.
+    key: (u64, bool, bool, usize),
+    /// When the rows were last computed.
+    computed_at: Option<std::time::Instant>,
+    /// Running number of the computations; 0 before the first.
+    generation: u64,
+    /// The rows of the last computation, in the order of the sums.
+    rows: Vec<PnlRow>,
+    /// The last computation each kind of request looked at.
+    seen_total: u64,
+    seen_single: u64,
 }
 
 impl PnlQuotes {
-    /// Time of the last check (tests move it back to force a check).
+    /// Time of the last computation (tests move it back to force one).
     #[doc(hidden)]
-    pub fn checked_at_mut(&mut self) -> Option<&mut std::time::Instant> {
-        self.checked_at.as_mut()
+    pub fn computed_at_mut(&mut self) -> Option<&mut std::time::Instant> {
+        self.computed_at.as_mut()
     }
 }
 
-/// How often the internal P&L quotes are checked when nothing else changed.
-const PNL_QUOTES_CHECK: std::time::Duration = std::time::Duration::from_secs(1);
+/// A value of the P&L as the reference keeps it (ibx#511).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum PnlValue {
+    Valid(f64),
+    /// Not known, without an error: sent as the maximum double, silently
+    /// for one position.
+    Unset,
+    /// Not valid, with a calculation error: the maximum double after error
+    /// 2150.
+    Invalid,
+}
 
-/// Last values of a P&L request before its first callback.
-const PNL_NOT_SENT: i64 = i64::MIN;
+impl PnlValue {
+    pub fn value(self) -> f64 {
+        match self {
+            PnlValue::Valid(v) => v,
+            _ => f64::MAX,
+        }
+    }
+}
+
+/// One position row of the P&L (ibx#511).
+#[derive(Debug, Clone)]
+pub struct PnlRow {
+    pub con_id: i64,
+    pub qty_fixed: Qty,
+    pub daily: PnlValue,
+    pub unrealized: PnlValue,
+    pub realized: PnlValue,
+    pub value: PnlValue,
+}
+
+/// The P&L is computed at most once in this time (ibx#511; the reference's
+/// pacer of its P&L computation: the first at once, then at most one a
+/// second while its data changes).
+const PNL_RECALC: std::time::Duration = std::time::Duration::from_millis(1000);
+
+/// The text of error 2150, given before a P&L value that is not valid.
+pub const PNL_INVALID_TEXT: &str = "Invalid position trade derived value";
 
 /// A provider code is a subscribed news source of the session; the lookup
 /// ignores case, as the reference's (ibx#459).
@@ -432,6 +539,8 @@ pub struct PnlUpdate {
     pub daily_pnl: f64,
     pub unrealized_pnl: f64,
     pub realized_pnl: f64,
+    /// Errors 2150 to give before it, one per value not valid (ibx#511).
+    pub errors: usize,
 }
 
 /// PnL single update (per-position).
@@ -442,6 +551,9 @@ pub struct PnlSingleUpdate {
     pub unrealized_pnl: f64,
     pub realized_pnl: f64,
     pub value: f64,
+    /// Errors 2150 to give before it, one per value not valid with a
+    /// calculation error (ibx#511).
+    pub errors: usize,
 }
 
 /// A single changed account field.
@@ -1331,7 +1443,8 @@ pub struct ClientCore {
 
     // PnL subscription state
     /// Running req_pnl requests, with the last values sent (ibx#478).
-    pub pnl_reqs: Mutex<HashMap<i64, [i64; 3]>>,
+    /// The running reqPnL and the bits of their last values sent.
+    pub pnl_reqs: Mutex<HashMap<i64, Option<[u64; 3]>>>,
     pub pnl_quotes: Mutex<PnlQuotes>,
     /// Contract currency already sent to the engine, by conId (ibx#466).
     pub currency_sent: Mutex<HashMap<i64, String>>,
@@ -2222,13 +2335,6 @@ impl ClientCore {
             Ok(Some(instrument))
         };
 
-        // A quote ibx subscribed to for the P&L becomes the caller's
-        // subscription: no second subscription to the server.
-        if let Some(instrument_id) = self.pnl_quotes.lock().unwrap().active.remove(&con_id) {
-            self.con_id_to_instrument.lock().unwrap().insert(con_id, instrument_id);
-            return attach(instrument_id, true);
-        }
-
         // No conId: not an identity. The engine gives the request its own
         // slot and resolves the conId before it subscribes (ibx#278); the
         // only duplicate check is the one on the request id. When the
@@ -2622,101 +2728,59 @@ impl ClientCore {
         out
     }
 
-    /// True when no P&L request runs and no P&L quote is held:
-    /// `maintain_pnl_quotes` then has nothing to do.
+    /// True when no P&L request runs: `maintain_pnl_quotes` then has
+    /// nothing to do (the P&L quotes stay for the session).
     pub fn pnl_quotes_idle(&self) -> bool {
-        self.pnl_reqs.lock().unwrap().is_empty()
-            && self.pnl_single_reqs.lock().unwrap().is_empty()
-            && {
-                let q = self.pnl_quotes.lock().unwrap();
-                q.active.is_empty() && q.pending.is_empty()
-            }
+        self.pnl_reqs.lock().unwrap().is_empty() && self.pnl_single_reqs.lock().unwrap().is_empty()
     }
 
-    /// Keep a quote for each stock position the running P&L requests need
-    /// (held now or at midnight, and each pnl_single contract), subscribed
-    /// by ibx itself when the caller has none; cancel them when no P&L
-    /// request needs them. Never waits: a registration reply is read on a
-    /// later call. Checked when positions or requests change, and every
-    /// second.
+    /// The P&L quotes of the position contracts, as the reference asks them
+    /// for its P&L (ibx#511; observed 15/10/2026, 10.51, after hours, and in
+    /// the recordings of 26/09/2026): at the first P&L request of the
+    /// session, every stock position of the account in one message, the
+    /// second price kind for a reqPnL; a contract that becomes a position
+    /// later is asked then. They are never cancelled: a cancel of the
+    /// requests leaves them, and a later request asks nothing again. The
+    /// first one also starts the P&L partition's account request (engine).
+    /// Never waits.
     pub fn maintain_pnl_quotes(&self, shared: &SharedState, control_tx: &ControlSender) {
         // Not an API request: not paced (ibx#555).
         let _internal = crate::engine::park::not_a_request();
-        let n_pnl = self.pnl_reqs.lock().unwrap().len();
-        let singles: Vec<i64> = self.pnl_single_reqs.lock().unwrap().values().copied().collect();
-        let mut q = self.pnl_quotes.lock().unwrap();
-        if n_pnl == 0 && singles.is_empty() && q.active.is_empty() && q.pending.is_empty() {
+        let total = !self.pnl_reqs.lock().unwrap().is_empty();
+        let single = !self.pnl_single_reqs.lock().unwrap().is_empty();
+        if !total && !single {
             return;
         }
-
-        let done: Vec<(i64, Result<InstrumentId, String>)> = q.pending.iter()
-            .filter_map(|(&con_id, rx)| rx.try_recv().ok().map(|r| (con_id, r)))
-            .collect();
-        for (con_id, reply) in done {
-            q.pending.remove(&con_id);
-            match reply {
-                Ok(instrument) => {
-                    q.active.insert(con_id, instrument);
-                    self.con_id_to_instrument.lock().unwrap().insert(con_id, instrument);
-                }
-                Err(e) => log::warn!("P&L quote for conId {} not subscribed: {}", con_id, e),
-            }
-        }
-
+        let mut q = self.pnl_quotes.lock().unwrap();
         let seeds = shared.portfolio.midnight_seeds();
-        let key = (shared.portfolio.position_generation(), n_pnl, singles.len(), seeds.len());
-        if key == q.key && q.checked_at.is_some_and(|t| t.elapsed() < PNL_QUOTES_CHECK) {
+        let key = (shared.portfolio.position_generation(), total, single, seeds.len());
+        if q.started && key == q.key {
             return;
         }
         q.key = key;
-        q.checked_at = Some(std::time::Instant::now());
 
         let infos: HashMap<i64, PositionInfo> = shared.portfolio.position_infos()
             .into_iter().map(|p| (p.con_id, p)).collect();
         let is_stock = |con_id: i64| infos.get(&con_id).is_none_or(|p| p.sec_type.is_empty() || p.sec_type == "STK");
-        let mut wanted: HashSet<i64> = HashSet::new();
-        if n_pnl > 0 {
-            wanted.extend(infos.values().filter(|p| p.position_fixed != 0).map(|p| p.con_id));
-            wanted.extend(seeds.iter().filter(|s| s.qty_midnight_fixed != 0).map(|s| s.con_id));
-        }
-        wanted.extend(singles.iter().copied());
-        wanted.retain(|&c| c != 0 && is_stock(c));
-
-        let caller_has = |con_id: i64| -> bool {
-            let map = self.con_id_to_instrument.lock().unwrap();
-            map.get(&con_id).is_some_and(|iid| self.instrument_to_req.lock().unwrap().contains_key(iid))
-        };
-
-        for &con_id in &wanted {
-            if q.active.contains_key(&con_id) || q.pending.contains_key(&con_id) || caller_has(con_id) {
-                continue;
-            }
-            let symbol = infos.get(&con_id).map(|p| p.symbol.clone()).unwrap_or_default();
-            let (reply_tx, reply_rx) = crossbeam_channel::bounded(1);
-            let registered = control_tx.send(ControlCommand::RegisterInstrument {
-                con_id, symbol: symbol.clone(), sec_type: "STK".into(), exchange: "SMART".into(), reply_tx: None,
-            }).and_then(|_| control_tx.send(ControlCommand::Subscribe {
-                con_id, symbol, exchange: "SMART".into(), sec_type: "STK".into(),
-                last_trade_date: String::new(), strike: 0.0, right: String::new(), multiplier: String::new(),
-                mode_9887: 0, snapshot: false, reply_tx: Some(reply_tx),
-            }));
-            if registered.is_ok() {
-                q.pending.insert(con_id, reply_rx);
-            }
-        }
-
-        let unwanted: Vec<(i64, InstrumentId)> = q.active.iter()
-            .filter(|(c, _)| !wanted.contains(c))
-            .map(|(&c, &i)| (c, i))
+        let mut con_ids: Vec<i64> = infos.keys().copied().chain(seeds.iter().map(|s| s.con_id))
+            .filter(|&c| c != 0 && is_stock(c))
             .collect();
-        for (con_id, instrument) in unwanted {
-            q.active.remove(&con_id);
-            if !caller_has(con_id) {
-                let _ = control_tx.send(ControlCommand::Unsubscribe { instrument });
-                // The engine may reuse the slot (ibx#233).
-                self.forget_instrument(instrument);
-            }
+        // Ascending, as the 10.40 recordings; the order of 10.51 is not
+        // known yet (15/10/2026: neither this nor the positions' order).
+        con_ids.sort_unstable();
+        con_ids.dedup();
+        let new: Vec<i64> = con_ids.into_iter()
+            .filter(|c| q.asked.get(c).is_none_or(|&had| total && !had))
+            .collect();
+        if q.started && new.is_empty() {
+            return;
         }
+        for &c in &new {
+            let had = q.asked.get(&c).copied().unwrap_or(false);
+            q.asked.insert(c, had || total);
+        }
+        q.started = true;
+        let _ = control_tx.send(ControlCommand::PnlQuotes { con_ids: new, second_price: total });
     }
 
     /// Unregister a market data request (ibx#444): None for an unknown
@@ -3268,7 +3332,7 @@ impl ClientCore {
     // ── PnL subscription management ──
 
     pub fn subscribe_pnl(&self, req_id: i64) {
-        self.pnl_reqs.lock().unwrap().entry(req_id).or_insert([PNL_NOT_SENT; 3]);
+        self.pnl_reqs.lock().unwrap().entry(req_id).or_insert(None);
     }
 
     pub fn unsubscribe_pnl(&self, req_id: i64) -> bool {
@@ -4790,232 +4854,133 @@ impl ClientCore {
         map.iter().flat_map(|(&iid, reqs)| reqs.iter().map(move |&req_id| (iid, req_id))).collect()
     }
 
-    /// Poll PnL and return update if values changed.
-    /// Computes daily P&L client-side from midnight seeds + live quotes.
-    /// Formula: dailyPnL = Σ(qtyNow × priceNow - qtyMidnight × prevClose - moneyTraded)
-    /// For positions opened intraday (no seed), synthesizes
-    /// moneyTraded = qtyNow × avgCost so the formula collapses to unrealized P&L.
+    /// The rows of the P&L, computed again when a second has passed since
+    /// the last computation (ibx#511), as the reference's pacer: the first
+    /// computation of the session at once, with the first row only (the
+    /// reference's first value is taken while its rows are added: one row,
+    /// observed 15/10/2026 on 10.51 and in the recordings of 26/09/2026);
+    /// then all rows. Returns the number of the last computation.
+    fn compute_pnl(&self, shared: &SharedState) -> u64 {
+        let mut q = self.pnl_quotes.lock().unwrap();
+        if !q.started || q.computed_at.is_some_and(|t| t.elapsed() < PNL_RECALC) {
+            return q.generation;
+        }
+        let mut rows = pnl_rows(shared);
+        if q.generation == 0 {
+            rows.truncate(1);
+        }
+        q.rows = rows;
+        q.generation += 1;
+        q.computed_at = Some(std::time::Instant::now());
+        q.generation
+    }
+
+    /// The reqPnL values of the last computation (ibx#511): each field the
+    /// sum of the rows where it is valid; with none valid, not valid (error
+    /// 2150, then the maximum double) when a row has an error, else unknown. Each request gets
+    /// them when they differ from what it got last; a request started
+    /// after a computation gets the next one.
     pub fn poll_pnl(&self, shared: &SharedState) -> Vec<PnlUpdate> {
         if self.pnl_reqs.lock().unwrap().is_empty() {
             return Vec::new();
         }
-        let realized_since = shared.portfolio.realized_since_seed();
-        let money_since = shared.portfolio.money_since_seed();
-
-        let seeds: HashMap<i64, MidnightSeed> = shared.portfolio.midnight_seeds()
-            .into_iter().map(|s| (s.con_id, s)).collect();
-        let positions = shared.portfolio.position_infos();
-
-        let mut con_ids: HashSet<i64> = seeds.keys().copied().collect();
-        for pi in &positions {
-            con_ids.insert(pi.con_id);
-        }
-        con_ids.extend(realized_since.keys().copied());
-        con_ids.extend(money_since.keys().copied());
-        // Sum in a fixed order: a set's order changes between polls, and the
-        // float sums with it, so the same P&L passed the change filter again
-        // and again (a callback every poll, seen on paper).
-        let mut con_ids: Vec<i64> = con_ids.into_iter().collect();
-        con_ids.sort_unstable();
-        // No early return on an empty set: an account with no position still
-        // has account-level P&L (for example realized today), delivered by the
-        // fallback below (ibx#239, ibx#301).
-
-        let con_id_map = self.con_id_to_instrument.lock().unwrap();
-        let mut total_daily: f64 = 0.0;
-        let mut total_unrealized: f64 = 0.0;
-        let mut total_realized: f64 = 0.0;
-        let mut live_priced = 0usize;
-        let mut daily_known = true;
-        let mut unrealized_known = true;
-
-        for con_id in con_ids {
-            let seed = seeds.get(&con_id);
-            let pi = shared.portfolio.position_info(con_id);
-            // Positions are fixed-point; the P&L works in shares.
-            let qty_now = pi.as_ref().map(|p| p.position_fixed).unwrap_or(0) as f64 / QTY_SCALE_F;
-            let avg_cost = pi.as_ref().map(|p| p.avg_cost).unwrap_or(0.0);
-            let qty_midnight = seed.map(|s| s.qty_midnight_fixed).unwrap_or(0) as f64 / QTY_SCALE_F;
-
-            // The seed's realized P&L, plus this session's fills (ibx#478).
-            total_realized += seed.map(|s| s.realized_pnl).unwrap_or(0.0)
-                + realized_since.get(&con_id).copied().unwrap_or(0.0);
-
-            let money_traded = money_traded_today(seed, money_since.get(&con_id).copied(), qty_now, avg_cost);
-            // A position flat at midnight and now: its daily P&L is its cash.
-            if qty_now == 0.0 && qty_midnight == 0.0 {
-                total_daily += money_traded;
-                continue;
+        let generation = self.compute_pnl(shared);
+        let (fields, errors) = {
+            let mut q = self.pnl_quotes.lock().unwrap();
+            if generation == 0 || q.seen_total == generation {
+                return Vec::new();
             }
-
-            // Price: this client's quote, else the server's mark on the
-            // position (ibx#238). The previous close comes with a quote only.
-            let quote = con_id_map.get(&con_id).map(|&iid| shared.market.quote(iid));
-            let live = quote.map(|q| q.last).filter(|&p| p != 0);
-            if live.is_some() {
-                live_priced += 1;
-            }
-            let Some(price_now) = live.or_else(|| pi.as_ref().map(|p| p.market_price).filter(|&p| p != 0)) else {
-                daily_known = false;
-                unrealized_known = false;
-                continue;
+            q.seen_total = generation;
+            let sum = |f: fn(&PnlRow) -> PnlValue| -> PnlValue {
+                let mut total: Option<f64> = None;
+                for r in &q.rows {
+                    if let PnlValue::Valid(v) = f(r) {
+                        total = Some(total.map_or(v, |t| t + v));
+                    }
+                }
+                // None valid: not valid when a row has an error, else
+                // unknown.
+                match total {
+                    Some(v) => PnlValue::Valid(v),
+                    None if q.rows.iter().any(|r| f(r) == PnlValue::Invalid) => PnlValue::Invalid,
+                    None => PnlValue::Unset,
+                }
             };
-            let prev_close = quote.map(|q| q.close).unwrap_or(0);
-
-            // Daily P&L = value change since midnight plus today's net cash.
-            // A position held at midnight needs the previous close.
-            if qty_midnight != 0.0 && prev_close == 0 {
-                daily_known = false;
-            } else {
-                let mv_now = qty_now * price_now as f64 / PRICE_SCALE_F;
-                let mv_midnight = qty_midnight * prev_close as f64 / PRICE_SCALE_F;
-                total_daily += mv_now - mv_midnight + money_traded;
-            }
-
-            if qty_now != 0.0 {
-                if avg_cost != 0.0 {
-                    total_unrealized += qty_now * (price_now as f64 / PRICE_SCALE_F - avg_cost);
-                } else {
-                    unrealized_known = false;
+            let mut fields = [sum(|r| r.daily), sum(|r| r.unrealized), sum(|r| r.realized)];
+            // No row: the server's own account P&L keys, when it sends
+            // them (ibx#239); the paper account's frames carry none.
+            if q.rows.is_empty() {
+                let rows = shared.portfolio.account_rows();
+                let server = |key: &str| rows.rows.iter()
+                    .filter(|r| r.key == key)
+                    .min_by_key(|r| r.currency != "BASE")
+                    .and_then(|r| r.value.parse::<f64>().ok());
+                if let (Some(d), Some(u), Some(r)) = (server("DailyPnL"), server("UnrealizedPnL"), server("RealizedPnL")) {
+                    fields = [PnlValue::Valid(d), PnlValue::Valid(u), PnlValue::Valid(r)];
                 }
             }
-        }
-
-        // No live quote at all: the server's own account P&L keys, when it
-        // sends them (ibx#239); the paper account's frames carry none.
-        if live_priced == 0 {
-            let rows = shared.portfolio.account_rows();
-            let server = |key: &str| rows.rows.iter()
-                .filter(|r| r.key == key)
-                .min_by_key(|r| r.currency != "BASE")
-                .and_then(|r| r.value.parse::<f64>().ok());
-            if let (Some(daily), Some(unrealized), Some(realized)) =
-                (server("DailyPnL"), server("UnrealizedPnL"), server("RealizedPnL"))
-            {
-                total_daily = daily;
-                total_unrealized = unrealized;
-                total_realized = realized;
-                daily_known = true;
-                unrealized_known = true;
-            }
-        }
-        // A value that cannot be computed is unset, as the reference (ibx#478).
-        if !daily_known {
-            total_daily = f64::MAX;
-        }
-        if !unrealized_known {
-            total_unrealized = f64::MAX;
-        }
-
-        let scaled = |v: f64| if v == f64::MAX { i64::MAX } else { (v * PRICE_SCALE_F) as i64 };
-        let pnl = [scaled(total_daily), scaled(total_unrealized), scaled(total_realized)];
-        // Every running request gets the values; each its own change filter.
+            let errors = fields.iter().filter(|f| **f == PnlValue::Invalid).count();
+            (fields.map(PnlValue::value), errors)
+        };
+        let bits = fields.map(f64::to_bits);
         let mut reqs = self.pnl_reqs.lock().unwrap();
         let mut out: Vec<PnlUpdate> = reqs.iter_mut().filter_map(|(&req_id, last)| {
-            if *last == pnl {
+            if *last == Some(bits) {
                 return None;
             }
-            *last = pnl;
-            Some(PnlUpdate {
-                req_id,
-                daily_pnl: total_daily,
-                unrealized_pnl: total_unrealized,
-                realized_pnl: total_realized,
-            })
+            *last = Some(bits);
+            Some(PnlUpdate { req_id, daily_pnl: fields[0], unrealized_pnl: fields[1], realized_pnl: fields[2], errors })
         }).collect();
         out.sort_by_key(|u| u.req_id);
         out
     }
 
-    /// Poll per-position PnL and return updates whose values changed.
-    /// Routes the quote lookup by con_id (not first-non-zero across all subscriptions),
-    /// computes daily/realized from the matching midnight seed, and synthesizes
-    /// money_traded = qty_now × avg_cost for intraday-opened positions.
+    /// The reqPnLSingle values of the last computation (ibx#511): the row
+    /// of the request's contract, when it has one; sent when the position
+    /// or a value at two decimals changed, as the reference. A value not
+    /// valid with a calculation error gives error 2150 first; an unknown
+    /// one is the maximum double, silently.
     pub fn poll_pnl_single(&self, shared: &SharedState) -> Vec<PnlSingleUpdate> {
         let reqs: Vec<(i64, i64)> = self.pnl_single_reqs.lock().unwrap()
             .iter().map(|(&r, &c)| (r, c)).collect();
         if reqs.is_empty() {
             return Vec::new();
         }
-
-        let seeds: HashMap<i64, MidnightSeed> = shared.portfolio.midnight_seeds()
-            .into_iter().map(|s| (s.con_id, s)).collect();
-        let realized_since = shared.portfolio.realized_since_seed();
-        let money_since = shared.portfolio.money_since_seed();
-        let con_id_map = self.con_id_to_instrument.lock().unwrap();
+        let generation = self.compute_pnl(shared);
+        let rows: Vec<PnlRow> = {
+            let mut q = self.pnl_quotes.lock().unwrap();
+            if generation == 0 || q.seen_single == generation {
+                return Vec::new();
+            }
+            q.seen_single = generation;
+            q.rows.clone()
+        };
+        let cents = |v: PnlValue| match v {
+            PnlValue::Valid(v) => (v * 100.0).round() as i64,
+            _ => i64::MAX,
+        };
         let mut last_cache = self.last_pnl_single.lock().unwrap();
         let mut results = Vec::new();
-
         for (req_id, con_id) in reqs {
-            let Some(pi) = shared.portfolio.position_info(con_id) else { continue; };
-            // Positions are fixed-point; the P&L works in shares.
-            let qty_fx = pi.position_fixed;
-            let qty_now = qty_fx as f64 / QTY_SCALE_F;
-            let avg_cost = pi.avg_cost;
-
-            // Price from this client's market-data subscription when there is
-            // one, else the server's own mark on the position (ibx#238). A
-            // req_pnl_single-only client has no subscription, so without the
-            // mark it never got a callback (same gap as ibx#239 for req_pnl).
-            let q = con_id_map.get(&con_id).map(|&iid| shared.market.quote(iid));
-            let price_now = match q.map(|q| q.last) {
-                Some(last) if last != 0 => last,
-                _ => pi.market_price,
-            };
-            if price_now == 0 {
-                continue;
-            }
-
-            let seed = seeds.get(&con_id);
-            let qty_midnight = seed.map(|s| s.qty_midnight_fixed).unwrap_or(0) as f64 / QTY_SCALE_F;
-            let prev_close = q.map(|q| q.close).unwrap_or(0);
-
-            let money_traded = money_traded_today(seed, money_since.get(&con_id).copied(), qty_now, avg_cost);
-
-            let mv_now = qty_now * price_now as f64 / PRICE_SCALE_F;
-            let mv_midnight = qty_midnight * prev_close as f64 / PRICE_SCALE_F;
-            // A position held at midnight needs the previous close, which
-            // comes with a quote only: without one, the daily P&L is unset.
-            let daily = if qty_midnight != 0.0 && prev_close == 0 {
-                f64::MAX
-            } else {
-                mv_now - mv_midnight + money_traded
-            };
-            // A value that cannot be computed is unset (f64::MAX), as the
-            // reference (ibx#478): no average cost, or no realized P&L on
-            // this position today (captured 25/09/2026).
-            let unrealized = if avg_cost != 0.0 {
-                qty_now * (price_now as f64 / PRICE_SCALE_F - avg_cost)
-            } else { f64::MAX };
-            let realized_fills = realized_since.get(&con_id).copied();
-            let realized = match (seed.map(|s| s.realized_pnl), realized_fills) {
-                (None, None) => f64::MAX,
-                (seed_value, fills) => seed_value.unwrap_or(0.0) + fills.unwrap_or(0.0),
-            };
-            let value = mv_now;
-
-            let scaled = |v: f64| if v == f64::MAX { i64::MAX } else { (v * PRICE_SCALE_F) as i64 };
-            let snapshot: [i64; 5] = [
-                qty_fx,
-                scaled(daily),
-                scaled(unrealized),
-                scaled(realized),
-                scaled(value),
-            ];
+            let Some(row) = rows.iter().find(|r| r.con_id == con_id) else { continue };
+            let snapshot: [i64; 5] = [row.qty_fixed, cents(row.daily), cents(row.unrealized), cents(row.realized), cents(row.value)];
             if last_cache.get(&req_id) == Some(&snapshot) {
                 continue;
             }
             last_cache.insert(req_id, snapshot);
-
+            let errors = [row.daily, row.unrealized, row.realized, row.value].iter()
+                .filter(|v| **v == PnlValue::Invalid).count();
             results.push(PnlSingleUpdate {
                 req_id,
-                pos: qty_now,
-                daily_pnl: daily,
-                unrealized_pnl: unrealized,
-                realized_pnl: realized,
-                value,
+                pos: row.qty_fixed as f64 / QTY_SCALE_F,
+                daily_pnl: row.daily.value(),
+                unrealized_pnl: row.unrealized.value(),
+                realized_pnl: row.realized.value(),
+                value: row.value.value(),
+                errors,
             });
         }
+        results.sort_by_key(|u| u.req_id);
         results
     }
 
@@ -7381,18 +7346,19 @@ mod tests {
 
     // ── poll_pnl regression tests (#166) ──
 
+    /// A position with its P&L price (`last_dollars`, from the session's
+    /// P&L quote; none when 0) and its price at midnight (`close_dollars`,
+    /// none when 0), then the P&L ready to compute again (ibx#511).
     fn seed_pnl_position(
         core: &ClientCore,
         shared: &SharedState,
         con_id: i64,
-        iid: InstrumentId,
+        _iid: InstrumentId,
         position: i64,
         avg_cost_dollars: f64,
         last_dollars: f64,
         close_dollars: f64,
     ) {
-        core.con_id_to_instrument.lock().unwrap().insert(con_id, iid);
-        core.instrument_to_req.lock().unwrap().insert(iid, vec![1]);
         shared.portfolio.set_position_info(PositionInfo {
             con_id,
             position_fixed: position as i64 * crate::types::QTY_SCALE,
@@ -7403,10 +7369,24 @@ mod tests {
             multiplier: String::new(),
             ..Default::default()
         });
-        let mut q = Quote::default();
-        q.last = (last_dollars * PRICE_SCALE_F) as i64;
-        q.close = (close_dollars * PRICE_SCALE_F) as i64;
-        shared.market.push_quote(iid, &q);
+        if last_dollars != 0.0 {
+            shared.portfolio.set_pnl_price(con_id, last_dollars);
+        }
+        if close_dollars != 0.0 {
+            let mut mids: Vec<(i64, f64)> = shared.portfolio.midnight_prices().into_iter().collect();
+            mids.retain(|(c, _)| *c != con_id);
+            mids.push((con_id, close_dollars));
+            shared.portfolio.set_midnight_prices(mids);
+        }
+        pnl_ready(core);
+    }
+
+    /// The P&L started and due for a computation of all its rows (ibx#511).
+    fn pnl_ready(core: &ClientCore) {
+        let mut q = core.pnl_quotes.lock().unwrap();
+        q.started = true;
+        q.generation = q.generation.max(1);
+        q.computed_at = None;
     }
 
     #[test]
@@ -7432,7 +7412,9 @@ mod tests {
         assert_eq!(update.req_id, 42);
         assert!((update.daily_pnl - 0.07).abs() < 1e-6, "daily={}", update.daily_pnl);
         assert!((update.unrealized_pnl - 0.07).abs() < 1e-6);
-        assert!((update.realized_pnl - 0.0).abs() < 1e-6);
+        // No seed and no fill: no realized P&L, unset without an error.
+        assert_eq!(update.realized_pnl, f64::MAX);
+        assert_eq!(update.errors, 0);
     }
 
     #[test]
@@ -7513,8 +7495,11 @@ mod tests {
         shared.portfolio.set_midnight_seeds(vec![MidnightSeed {
             con_id: 756733, qty_midnight_fixed: 31 * crate::types::QTY_SCALE, money_traded: 0.0, realized_pnl: 37.12,
         }]);
+        pnl_ready(&core);
         let u = core.poll_pnl(&shared).pop().unwrap();
+        // Held at midnight, no price at midnight: not valid, after 2150.
         assert_eq!(u.daily_pnl, f64::MAX);
+        assert_eq!(u.errors, 1);
         assert!((u.unrealized_pnl - 31.0 * (770.0 - 764.59)).abs() < 1e-3, "unreal={}", u.unrealized_pnl);
         assert!((u.realized_pnl - 37.12).abs() < 1e-9);
     }
@@ -7534,6 +7519,7 @@ mod tests {
             shared.portfolio.set_position_marks(con_id, (100.7 * PRICE_SCALE_F) as i64, 0, 0, 0);
             shared.portfolio.add_realized_since_seed(con_id, 0.1);
         }
+        pnl_ready(&core);
         assert_eq!(core.poll_pnl(&shared).len(), 1);
         for _ in 0..50 {
             assert!(core.poll_pnl(&shared).is_empty());
@@ -7555,8 +7541,10 @@ mod tests {
             con_id: 756733, qty_midnight_fixed: 31 * crate::types::QTY_SCALE, money_traded: 0.0, realized_pnl: 37.12,
         }]);
         core.subscribe_pnl_single(4, 756733);
+        pnl_ready(&core);
         let u = core.poll_pnl_single(&shared).pop().expect("a callback");
         assert_eq!(u.daily_pnl, f64::MAX);
+        assert_eq!(u.errors, 1, "2150 for the daily P&L");
         assert!((u.unrealized_pnl - 31.0 * (770.0 - 764.59)).abs() < 1e-3);
         assert!((u.realized_pnl - 37.12).abs() < 1e-9);
         assert!((u.value - 31.0 * 770.0).abs() < 1e-6);
@@ -7572,17 +7560,9 @@ mod tests {
         let shared = SharedState::new();
         core.subscribe_pnl(21);
 
-        // Open position, but NO instrument mapping and NO quote pushed.
-        shared.portfolio.set_position_info(PositionInfo {
-            con_id: 756733,
-            position_fixed: (10) as i64 * crate::types::QTY_SCALE,
-            avg_cost: 700.00,
-            symbol: "SPY".into(),
-            sec_type: "STK".into(),
-            currency: "USD".into(),
-            multiplier: String::new(),
-            ..Default::default()
-        });
+        // No position row (ibx#511: a row is priced from the P&L quote or
+        // the server's mark).
+        pnl_ready(&core);
 
         // Server-sent account-level P&L keys (the account values as sent,
         // ibx#475); only used when the server sends them.
@@ -7704,6 +7684,7 @@ mod tests {
 
         seed_pnl_position(&core, &shared, 756733, 0, 32, 764.78, 770.00, 760.00);
         shared.portfolio.add_money_since_seed(756733, -770.0);
+        pnl_ready(&core);
         let after = core.poll_pnl_single(&shared).pop().unwrap().daily_pnl;
         assert!((after - 310.0).abs() < 1e-6, "bought at the last price: no change, got {after}");
     }
@@ -7744,6 +7725,8 @@ mod tests {
         assert_eq!(ids, [1, 2]);
         assert!(core.poll_pnl(&shared).is_empty(), "unchanged: nothing");
         core.request_pnl(3, "DU1", "DU1").unwrap();
+        assert!(core.poll_pnl(&shared).is_empty(), "a new request waits for the next computation");
+        pnl_ready(&core);
         let ids: Vec<i64> = core.poll_pnl(&shared).iter().map(|u| u.req_id).collect();
         assert_eq!(ids, [3], "a new request gets the current values");
     }
@@ -7809,7 +7792,127 @@ mod tests {
         core.unsubscribe_pnl_single(7);
         // Re-subscribing with same req_id must re-emit (cache cleared on unsubscribe).
         core.subscribe_pnl_single(7, 1);
+        pnl_ready(&core);
         assert_eq!(core.poll_pnl_single(&shared).len(), 1);
+    }
+
+    /// The account of the reference run of 15/10/2026 (10.51, after hours,
+    /// `.tmp/511` case A): five positions with the server's marks, seeds and
+    /// prices at midnight (ibx#511).
+    fn pnl_account_of_15_10(shared: &SharedState) {
+        let rows: [(i64, i64, f64, f64); 5] = [
+            (265598, 0, 0.0, 341.6799927),
+            (4726868, 1, 44.8, 58.09999845),
+            (9579970, -20, 277.144285, 275.0239868),
+            (272093, -10, 463.55861895, 538.5),
+            (756733, 79, 775.3726666, 771.6192627),
+        ];
+        for (con_id, qty, avg_cost, mark) in rows {
+            shared.portfolio.set_position_info(PositionInfo {
+                con_id, position_fixed: qty * crate::types::QTY_SCALE, avg_cost,
+                sec_type: "STK".into(), ..Default::default()
+            });
+            shared.portfolio.set_position_marks(con_id, (mark * PRICE_SCALE_F).round() as i64, 0, 0, 0);
+        }
+        let seed = |con_id, qty: i64, money_traded, realized_pnl| MidnightSeed {
+            con_id, qty_midnight_fixed: qty * crate::types::QTY_SCALE, money_traded, realized_pnl,
+        };
+        shared.portfolio.set_midnight_seeds(vec![
+            seed(265598, 0, -10.1955, -10.19540495),
+            seed(272093, -10, -12.6666, -672.8368034),
+            seed(756733, 79, -10.3195, -33.94885005),
+            seed(4726868, 1, 0.0, 0.0),
+            seed(9579970, -20, 0.0, 0.0),
+        ]);
+        shared.portfolio.set_midnight_prices(vec![(272093, 533.69), (756733, 769.6), (4726868, 61.59), (9579970, 271.37)]);
+    }
+
+    // ibx#511: the reference's first value is of one row, priced at the
+    // server's mark (the run of 15/10/2026: -73.07973599999968,
+    // 42.405964000000495, 0.0 before any P&L quote); a second later, all
+    // rows at the P&L prices of the quotes (0.9497729858385355 daily, to
+    // the last digit; unrealized -990.9473989141641 there, its last digits
+    // from the reference's average costs).
+    #[test]
+    fn the_first_pnl_is_of_one_row_then_all_rows_a_second_later() {
+        let core = ClientCore::new();
+        let shared = SharedState::new();
+        pnl_account_of_15_10(&shared);
+        core.request_pnl(9003, "DU1", "DU1").unwrap();
+        core.pnl_quotes.lock().unwrap().started = true;
+        let first = core.poll_pnl(&shared).pop().expect("the first value at once");
+        assert_eq!((first.daily_pnl, first.realized_pnl), (-73.07973599999968, 0.0), "the reference's, to the last digit");
+        assert!((first.unrealized_pnl - 42.405964).abs() < 1e-9, "{}", first.unrealized_pnl);
+        assert_eq!(first.errors, 0);
+
+        for (con_id, price) in [(272093, 538.25), (756733, 771.5800170898438), (265598, 341.6099853515625),
+            (4726868, 58.099998474121094), (9579970, 275.0299987792969)] {
+            shared.portfolio.set_pnl_price(con_id, price);
+        }
+        assert!(core.poll_pnl(&shared).is_empty(), "paced: once a second");
+        *core.pnl_quotes.lock().unwrap().computed_at_mut().unwrap() -= PNL_RECALC;
+        let full = core.poll_pnl(&shared).pop().expect("all rows");
+        assert_eq!(full.daily_pnl, 0.9497729858385355);
+        assert!((full.unrealized_pnl - -990.9473989141641).abs() < 1e-9, "{}", full.unrealized_pnl);
+        assert!((full.realized_pnl - -716.9810584).abs() < 1e-9, "{}", full.realized_pnl);
+    }
+
+    // ibx#511: the position closed today (AAPL, 0 shares) of the same run:
+    // pnlSingle gives position 0, the day's cash as daily P&L, unrealized
+    // not valid after 2150, the realized P&L and a value of 0; not with the
+    // first computation, which has one row, but with the next.
+    #[test]
+    fn pnl_single_of_a_closed_position() {
+        let core = ClientCore::new();
+        let shared = SharedState::new();
+        pnl_account_of_15_10(&shared);
+        core.request_pnl_single(9004, "DU1", "DU1", 265598).unwrap();
+        core.pnl_quotes.lock().unwrap().started = true;
+        assert!(core.poll_pnl_single(&shared).is_empty(), "its row is not in the first computation");
+        shared.portfolio.set_pnl_price(265598, 341.6099853515625);
+        *core.pnl_quotes.lock().unwrap().computed_at_mut().unwrap() -= PNL_RECALC;
+        let u = core.poll_pnl_single(&shared).pop().expect("the next computation");
+        assert_eq!((u.pos, u.daily_pnl, u.unrealized_pnl, u.realized_pnl, u.value), (0.0, -10.1955, f64::MAX, -10.19540495, 0.0));
+        assert_eq!(u.errors, 1);
+        // A stock not held gets nothing (IBM in the same run).
+        core.request_pnl_single(9007, "DU1", "DU1", 8314).unwrap();
+        *core.pnl_quotes.lock().unwrap().computed_at_mut().unwrap() -= PNL_RECALC;
+        assert!(core.poll_pnl_single(&shared).is_empty());
+    }
+
+    // ibx#511: the P&L quotes go at the first P&L request, every stock
+    // position in one command, ascending, with the second price kind for a
+    // reqPnL; a later reqPnLSingle asks nothing; a new position is asked.
+    #[test]
+    fn pnl_quotes_at_the_first_request_then_for_new_positions_only() {
+        let core = ClientCore::new();
+        let shared = SharedState::new();
+        pnl_account_of_15_10(&shared);
+        let (tx, rx) = crossbeam_channel::unbounded();
+        let tx = crate::engine::park::ControlSender::from(tx);
+        core.maintain_pnl_quotes(&shared, &tx);
+        assert!(rx.try_recv().is_err(), "no request: nothing");
+        core.request_pnl(9003, "DU1", "DU1").unwrap();
+        core.maintain_pnl_quotes(&shared, &tx);
+        match rx.try_recv() {
+            Ok(ControlCommand::PnlQuotes { con_ids, second_price }) => {
+                assert_eq!(con_ids, [265598, 272093, 756733, 4726868, 9579970]);
+                assert!(second_price);
+            }
+            other => panic!("{other:?}"),
+        }
+        core.request_pnl_single(9004, "DU1", "DU1", 265598).unwrap();
+        core.cancel_pnl_request(9003);
+        core.maintain_pnl_quotes(&shared, &tx);
+        assert!(rx.try_recv().is_err(), "asked already");
+        shared.portfolio.set_position_info(PositionInfo {
+            con_id: 8314, position_fixed: crate::types::QTY_SCALE, avg_cost: 250.0, sec_type: "STK".into(), ..Default::default()
+        });
+        core.maintain_pnl_quotes(&shared, &tx);
+        match rx.try_recv() {
+            Ok(ControlCommand::PnlQuotes { con_ids, second_price }) => assert_eq!((con_ids, second_price), (vec![8314], false)),
+            other => panic!("{other:?}"),
+        }
     }
 
     // ibx#466: an order with an orderRef goes to the extended encoder,

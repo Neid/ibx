@@ -48,6 +48,7 @@ pub(crate) fn is_aside(cmd: &ControlCommand) -> bool {
         | ControlCommand::SetInstrumentCurrency { .. }
         | ControlCommand::UpdateParam { .. }
         | ControlCommand::DropSnapshot { .. }
+        | ControlCommand::PnlQuotes { .. }
         | ControlCommand::Ping
         | ControlCommand::Shutdown)
 }

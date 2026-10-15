@@ -446,8 +446,8 @@ impl EClient {
         }
 
         // P&L dispatch (via ClientCore)
-        // Quotes the P&L needs, subscribed by ibx itself when the caller has
-        // none; they never reach the tick callbacks.
+        // The P&L quotes of the positions, asked by the P&L as the
+        // reference's own (ibx#511); they never reach the tick callbacks.
         // Its sends may wait: interpreter lock released, and only when a
         // P&L request is running (ibx#271).
         if !self.core.pnl_quotes_idle() {
@@ -455,12 +455,20 @@ impl EClient {
                 py.detach(|| self.core.maintain_pnl_quotes(shared, &tx));
             }
         }
+        // A value not valid comes after error 2150 (ibx#511).
+        let invalid = crate::client_core::PNL_INVALID_TEXT;
         for update in self.core.poll_pnl(shared) {
+            for _ in 0..update.errors {
+                call_wrapper!(self.wrapper, py, "error", (update.req_id, 2150i64, invalid, ""));
+            }
             call_wrapper!(self.wrapper, py, "pnl", (update.req_id, update.daily_pnl, update.unrealized_pnl, update.realized_pnl));
         }
 
         // Per-position P&L dispatch (via ClientCore)
         for update in self.core.poll_pnl_single(shared) {
+            for _ in 0..update.errors {
+                call_wrapper!(self.wrapper, py, "error", (update.req_id, 2150i64, invalid, ""));
+            }
             call_wrapper!(self.wrapper, py, "pnl_single", (update.req_id, qty(py, update.pos)?, update.daily_pnl,
                  update.unrealized_pnl, update.realized_pnl, update.value));
         }

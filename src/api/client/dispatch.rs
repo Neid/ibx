@@ -830,15 +830,22 @@ impl EClient {
         }
 
         // PnL → pnl callback (change-detected via ClientCore)
-        // Quotes the P&L needs, subscribed by ibx itself when the caller has
-        // none; they never reach the tick callbacks.
+        // The P&L quotes of the positions, asked by the P&L as the
+        // reference's own (ibx#511); they never reach the tick callbacks.
         self.core.maintain_pnl_quotes(&self.shared, &self.control_tx);
+        // A value not valid comes after error 2150 (ibx#511).
         for update in self.core.poll_pnl(&self.shared) {
+            for _ in 0..update.errors {
+                self.local_error(wrapper, update.req_id, 2150, crate::client_core::PNL_INVALID_TEXT);
+            }
             wrapper.pnl(update.req_id, update.daily_pnl, update.unrealized_pnl, update.realized_pnl);
         }
 
         // PnL single → pnl_single callback (via ClientCore)
         for update in self.core.poll_pnl_single(&self.shared) {
+            for _ in 0..update.errors {
+                self.local_error(wrapper, update.req_id, 2150, crate::client_core::PNL_INVALID_TEXT);
+            }
             wrapper.pnl_single(update.req_id, update.pos, update.daily_pnl, update.unrealized_pnl, update.realized_pnl, update.value);
         }
 

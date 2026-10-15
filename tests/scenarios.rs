@@ -1006,9 +1006,13 @@ fn pnl_subscription_fires_on_change() {
 
     client.req_pnl(10, "DU123", "");
 
-    // 100 shares, avg cost 150, mark 155, opened today: daily 500,
-    // unrealized 500, realized 0.
+    // 100 shares, avg cost 150, mark 155, opened today (its seed: flat at
+    // midnight, 15000 paid, nothing realized): daily 500, unrealized 500,
+    // realized 0.
     set_aapl_position_marked(&shared, 155);
+    shared.portfolio.set_midnight_seeds(vec![ibx::types::MidnightSeed {
+        con_id: 265598, qty_midnight_fixed: 0, money_traded: -15000.0, realized_pnl: 0.0,
+    }]);
 
     let mut w = RecordingWrapper::default();
     client.process_msgs(&mut w);
@@ -1019,8 +1023,10 @@ fn pnl_subscription_fires_on_change() {
     client.process_msgs(&mut w);
     assert!(!w.events.iter().any(|e| e.starts_with("pnl:")), "No duplicate PnL expected");
 
-    // Changed values → fires again
+    // Changed values → fires again, at the next computation (one a
+    // second, ibx#511)
     set_aapl_position_marked(&shared, 156);
+    client.pnl_second_later_for_test();
     w.events.clear();
     client.process_msgs(&mut w);
     assert!(w.events.iter().any(|e| e == "pnl:10:600:600:0"), "Changed PnL should fire callback: {:?}", w.events);

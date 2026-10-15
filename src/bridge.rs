@@ -2537,6 +2537,12 @@ pub struct PortfolioState {
     /// Signed cash of this session's fills since the last seed, by conId
     /// (sell positive, buy negative, like the seed's money traded).
     money_since_seed: Mutex<HashMap<i64, f64>>,
+    /// The price at midnight of each position, sent by the server after
+    /// the seeds (ibx#511): the daily P&L of a position held at midnight.
+    midnight_prices: Mutex<HashMap<i64, f64>>,
+    /// The P&L price of each position from the session's own P&L quotes
+    /// (ibx#511); `f64::MAX` while the server says it is not valid.
+    pnl_prices: Mutex<HashMap<i64, f64>>,
 }
 
 impl PortfolioState {
@@ -2555,6 +2561,8 @@ impl PortfolioState {
             midnight_seeds: Mutex::new(HashMap::new()),
             realized_since_seed: Mutex::new(HashMap::new()),
             money_since_seed: Mutex::new(HashMap::new()),
+            midnight_prices: Mutex::new(HashMap::new()),
+            pnl_prices: Mutex::new(HashMap::new()),
         }
     }
 
@@ -2782,6 +2790,27 @@ impl PortfolioState {
     /// Read midnight seeds for client-side P&L computation.
     pub fn midnight_seeds(&self) -> Vec<MidnightSeed> {
         self.midnight_seeds.lock().unwrap().values().copied().collect()
+    }
+
+    /// The prices at midnight of a server message (ibx#511); each message
+    /// lists them all.
+    #[doc(hidden)] pub fn set_midnight_prices(&self, prices: Vec<(i64, f64)>) {
+        let mut map = self.midnight_prices.lock().unwrap();
+        map.clear();
+        map.extend(prices);
+    }
+
+    pub fn midnight_prices(&self) -> HashMap<i64, f64> {
+        self.midnight_prices.lock().unwrap().clone()
+    }
+
+    /// A P&L price of the session's P&L quotes (ibx#511).
+    #[doc(hidden)] pub fn set_pnl_price(&self, con_id: i64, price: f64) {
+        self.pnl_prices.lock().unwrap().insert(con_id, price);
+    }
+
+    pub fn pnl_prices(&self) -> HashMap<i64, f64> {
+        self.pnl_prices.lock().unwrap().clone()
     }
 }
 

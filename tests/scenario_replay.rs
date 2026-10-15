@@ -281,9 +281,12 @@ fn account_summary_whole_answer() {
 }
 
 // reqPnL and reqPnLSingle (26/09/2026, ibx#478): the reference subscribes
-// the market data of its positions, known since its logon.
+// the market data of its positions, known since its logon. The recording
+// starts after its session's logon: the positions, seeds and marks the P&L
+// is made from are not in it. The P&L is replayed from the recording of
+// 10.51 (pnl_first_request_of_the_session, ibx#511).
 #[test]
-#[ignore = "ibx#511: the P&L of the reference: its quotes, the account request of its partition, its first values (see session_start_first_client)"]
+#[ignore = "ibx#511: the recording has not the session state its P&L is made from; see pnl_first_request_of_the_session"]
 fn pnl_and_pnl_single() {
     check("20260926b/pnl", Options::default());
 }
@@ -501,8 +504,10 @@ fn plain_trail_follows_the_server() {
 // end), reqOpenOrders, reqAllOpenOrders, reqExecutions and the cancel of
 // the working order.
 // Left out: the version notice 2172 (from the logon frame, which the replay
-// has not); the P&L callbacks and the account request of the P&L partition
-// (the test below); the order of the position rows, which is the order of a
+// has not); the P&L callbacks and the account request of the P&L
+// partition, which follow the time of the recording, not given to the
+// client by the replay (ibx#511, ibx#515); the order of the
+// position rows, which is the order of a
 // hash set over the real account id: the rows are compared sorted; the
 // rows of reqCompletedOrders, which the reference asks the server for
 // (ibx#695; the test below), its end compared.
@@ -674,4 +679,38 @@ fn cancel_during_the_first_orders_lookups() {
         assert_same_callbacks(&o.ours[a..], &theirs[b..]);
         assert!(o.ours.iter().any(|l| l.starts_with("orderStatus|") && l.contains("|ApiCancelled|")), "{:?}", o.ours);
     }
+}
+
+// The first P&L requests of a session (15/10/2026 after hours, a fresh
+// reference 10.51 at level 214, ibx#511, case A of `.tmp/511`): reqPnL and
+// reqPnLSingle on AAPL, closed today, their cancel, then a second reqPnL.
+// The reference asks its P&L quotes of the five positions in one message
+// at the first request, their exchange maps at the acknowledgements, drops
+// the dividends at their first data and keeps the rest; nothing at the
+// cancels or at the second request.
+#[test]
+fn pnl_first_request_of_the_session() {
+    let sc = load_scenario("gw1051/20261015/pnl_first_request");
+    // The dividends' cancels: the reference split the ones of one frame
+    // into two messages there, a timing of its threads (one message for
+    // them in the unit test of the engine).
+    fn dividends_cancel(f: &Fields) -> bool {
+        f.iter().any(|(t, v)| *t == 263 && v == "2")
+            && f.iter().filter(|(t, _)| *t == 264).all(|(_, v)| v == "456")
+    }
+    let o = replay(&sc, &Options::default().compare(&[MARKET_DATA]).skip_frame(dividends_cancel));
+    if std::env::var_os("IBX_SCENARIO_DUMP").is_some() {
+        dump("gw1051/20261015/pnl_first_request", &o);
+    }
+    assert_eq!(o.frame_error, None);
+    assert_eq!(o.frames_compared, 5, "the quotes, two exchange maps and their cancels");
+    // The first value: one row, the server's mark; its daily and realized
+    // P&L to the last digit. Its unrealized P&L differs in its last digits
+    // (the reference's average cost has more digits than the server's
+    // rows, ibx#<avg>). The values of the next seconds need the time of
+    // the recording, which the replay does not give the client.
+    let fields = |l: &str| l.split('|').map(str::to_string).collect::<Vec<_>>();
+    let (ours, theirs) = (fields(&o.ours[0]), fields(&o.theirs[0].1));
+    assert_eq!((&ours[..3], &ours[4]), (&theirs[..3], &theirs[4]));
+    assert!((ours[3].parse::<f64>().unwrap() - theirs[3].parse::<f64>().unwrap()).abs() < 1e-9);
 }

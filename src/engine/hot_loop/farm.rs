@@ -423,6 +423,23 @@ pub(crate) struct ExchangeMapSub {
     pub(crate) instrument: InstrumentId,
 }
 
+/// One entry of the session's own P&L quotes (ibx#511): the P&L price
+/// (232), the second price kind of the P&L (504) and the dividends (456)
+/// of a position contract, asked by the P&L requests and never by the API.
+#[derive(Debug, Clone)]
+pub(crate) struct PnlQuoteEntry {
+    /// 0 while it waits to be sent again after a farm loss.
+    pub(crate) farm_req: u32,
+    pub(crate) con_id: i64,
+    pub(crate) code: i32,
+    /// From its acknowledgement.
+    pub(crate) tag: Option<u32>,
+}
+
+/// The second price kind of the reference's P&L quotes (ibx#511), asked
+/// for reqPnL only; its values are not used.
+pub(crate) const PNL_SECOND_PRICE: i32 = 504;
+
 /// The generic tick of the exchange map ("EXCH MAP").
 const EXCHANGE_MAP_TICK: &str = "626";
 
@@ -618,6 +635,11 @@ pub(crate) struct FarmState {
     pub(crate) refused_api_subscriptions: Vec<String>,
     /// Generic tick entries of the contracts (ibx#450).
     pub(crate) generic: Vec<GenericEntry>,
+    /// The session's own P&L quotes (ibx#511), on the primary farm.
+    pub(crate) pnl_quotes: Vec<PnlQuoteEntry>,
+    /// The contracts whose dividends the P&L asked: once per contract in
+    /// the session (ibx#511).
+    pnl_dividends_asked: std::collections::HashSet<i64>,
     /// Generic tick requests waiting for their top of book to go out.
     pub(crate) generic_waiting: Vec<GenericWaiting>,
     /// The generic tick fields of each contract, as its record keeps them.
@@ -678,6 +700,8 @@ impl FarmState {
             news_waiting: Vec::new(),
             refused_api_subscriptions: Vec::new(),
             generic: Vec::new(),
+            pnl_quotes: Vec::new(),
+            pnl_dividends_asked: std::collections::HashSet::new(),
             generic_waiting: Vec::new(),
             generic_records: std::collections::HashMap::new(),
             top_confirmed: Vec::new(),
@@ -995,6 +1019,17 @@ impl FarmState {
             log::info!("Exchange map {}:{} subscribed: server_tag {}", sub.code, sub.sec_type_id, server_tag);
             sub.server_tag = Some(server_tag);
             return;
+        }
+        // A P&L quote's ack (ibx#511): its tag carries its blocks, and its
+        // BBO exchange asks the exchange map as any registration does.
+        if rx_farm == PRIMARY_MD {
+            if let Some(i) = self.pnl_quotes.iter().position(|e| e.farm_req != 0 && e.farm_req == req_id) {
+                self.pnl_quotes[i].tag = Some(server_tag);
+                let con_id = self.pnl_quotes[i].con_id;
+                let map = self.observe_pnl_exchange_map(con_id, parts.get(5).copied(), shared);
+                self.send_after_ack(&[], map, sink, hb);
+                return;
+            }
         }
         // A news entry's ack (ibx#458): its tag carries the headlines.
         if let Some(e) = self.news.iter_mut().find(|e| e.live && e.farm == rx_farm && e.farm_req == req_id) {
@@ -1316,13 +1351,26 @@ impl FarmState {
                 Some(292)
             } else if self.status.iter().any(|e| e.farm == rx_farm && e.tag == Some(tag)) {
                 Some(MARKET_DATA_STATUS)
+            } else if let Some(e) = self.pnl_quote_of(rx_farm, tag) {
+                Some(e.code)
             } else {
                 self.generic.iter().find(|e| e.farm == rx_farm && e.tag == Some(tag)).map(|e| e.code)
                     .or_else(|| self.optmd.code_of(rx_farm, tag))
             }
         });
         let now = Instant::now();
+        let mut answered: Vec<usize> = Vec::new();
         for (tag, code, payload) in blocks {
+            // The P&L's own quotes (ibx#511); a generic tick of the API on
+            // the same server tag still gets its block.
+            if let Some(i) = self.pnl_quotes.iter().position(|e| rx_farm == PRIMARY_MD && e.tag == Some(tag)) {
+                if self.pnl_block(i, payload, shared) {
+                    answered.push(i);
+                }
+                if !self.generic.iter().any(|e| e.farm == rx_farm && e.tag == Some(tag)) {
+                    continue;
+                }
+            }
             match code {
                 Some(626) => self.handle_exchange_map(tag, payload, sink, shared, hb),
                 Some(292) => self.handle_tick_news(tag, payload, shared, event_tx),
@@ -1341,6 +1389,143 @@ impl FarmState {
                 None => log::warn!("Generic tick for server tag {} of no known request: dropped", tag),
             }
         }
+        if !answered.is_empty() {
+            self.cancel_answered_dividends(answered, sink, hb);
+        }
+    }
+
+    /// The P&L quotes of position contracts (ibx#511), as the reference
+    /// asks them at the first P&L request of the session (observed
+    /// 15/10/2026, 10.51, fresh process, five positions): one message with,
+    /// for each contract, the P&L price (232), for a reqPnL the second
+    /// price kind (504), and the dividends (456) the first time the
+    /// contract is asked; on BEST, by conId, without the API source. The
+    /// order of the two price kinds varies between versions (10.40 asked
+    /// 504 first): not a rule. Entries already asked are not asked again.
+    pub(crate) fn pnl_quotes(&mut self, con_ids: &[i64], second_price: bool) -> Vec<(FarmId, Vec<(u32, String)>)> {
+        use crate::control::generic_values::{DIVIDENDS, PL_PRICE};
+        let mut entries: Vec<PnlQuoteEntry> = Vec::new();
+        for &con_id in con_ids {
+            let mut codes = vec![PL_PRICE];
+            if second_price {
+                codes.push(PNL_SECOND_PRICE);
+            }
+            codes.retain(|&c| !self.pnl_quotes.iter().any(|e| e.con_id == con_id && e.code == c));
+            if self.pnl_dividends_asked.insert(con_id) {
+                codes.push(DIVIDENDS);
+            }
+            for code in codes {
+                entries.push(PnlQuoteEntry { farm_req: self.next_md_req_id, con_id, code, tag: None });
+                self.next_md_req_id += 1;
+            }
+        }
+        if entries.is_empty() {
+            return Vec::new();
+        }
+        let msg = pnl_quotes_message("1", &entries);
+        self.pnl_quotes.extend(entries);
+        vec![(PRIMARY_MD, msg)]
+    }
+
+    /// The P&L quote of a server tag on a farm (ibx#511).
+    fn pnl_quote_of(&self, farm: FarmId, tag: u32) -> Option<&PnlQuoteEntry> {
+        if farm != PRIMARY_MD {
+            return None;
+        }
+        self.pnl_quotes.iter().find(|e| e.tag == Some(tag))
+    }
+
+    /// A block of a P&L quote (ibx#511): the P&L price goes to the
+    /// session's P&L; true for the first data of the dividends, which ends
+    /// that entry.
+    fn pnl_block(&mut self, i: usize, payload: &[u8], shared: &SharedState) -> bool {
+        let e = &self.pnl_quotes[i];
+        match e.code {
+            crate::control::generic_values::PL_PRICE => {
+                // The price, then flags; valid with bit 0 and without bit
+                // 27, as the API's tick of it.
+                let px = payload.get(..8).map(|b| f64::from_be_bytes([b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]]));
+                let flags = payload.get(8..12).map(|b| i32::from_be_bytes([b[0], b[1], b[2], b[3]]));
+                let (Some(px), Some(flags)) = (px, flags) else { return false };
+                let valid = flags & 1 != 0 && flags & 0x0800_0000 == 0 && px.is_finite();
+                shared.portfolio.set_pnl_price(e.con_id, if valid { px } else { f64::MAX });
+                false
+            }
+            crate::control::generic_values::DIVIDENDS => true,
+            _ => false,
+        }
+    }
+
+    /// The dividends of the P&L quotes that got their first data are
+    /// cancelled (ibx#511; observed 15/10/2026, 10.51: cancelled right
+    /// after their first data; the ones of one frame in one message).
+    fn cancel_answered_dividends(&mut self, mut answered: Vec<usize>, sink: &mut dyn FixSink, hb: &mut HeartbeatState) {
+        answered.sort_unstable();
+        answered.dedup();
+        answered.retain(|&i| self.pnl_quotes[i].code == crate::control::generic_values::DIVIDENDS);
+        let mut done: Vec<PnlQuoteEntry> = answered.iter().rev().map(|&i| self.pnl_quotes.remove(i)).collect();
+        done.reverse();
+        if done.is_empty() {
+            return;
+        }
+        if sink.send_comp(&borrow_tags(&pnl_quotes_message("2", &done))) {
+            hb.last_farm_sent = Instant::now();
+        }
+    }
+
+    /// The exchange map asked at a P&L quote's acknowledgement (ibx#511),
+    /// with the rule of every registration: once per BBO exchange and
+    /// security type.
+    fn observe_pnl_exchange_map(&mut self, con_id: i64, code: Option<&str>, shared: &SharedState) -> Option<ExchangeMapSub> {
+        let code = code.map(str::trim).filter(|c| !c.is_empty() && *c != "ffffffff")?;
+        let sec_type_id = crate::types::sec_type_id("STK")?;
+        if !shared.reference.observe_exchange_map_key(code, sec_type_id)
+            || self.exchange_map_subs.iter().any(|s| s.code == code && s.sec_type_id == sec_type_id)
+        {
+            return None;
+        }
+        let sub = ExchangeMapSub {
+            req_id: self.next_md_req_id,
+            farm: PRIMARY_MD,
+            code: code.to_string(),
+            sec_type_id,
+            con_id: con_id.to_string(),
+            exchange: "BEST".into(),
+            sec_type: "CS".into(),
+            server_tag: None,
+            // No instrument: the map of a P&L quote has no API source.
+            instrument: InstrumentId::MAX,
+        };
+        self.next_md_req_id += 1;
+        log::info!("Starting to observe the exchange map {}:STK (P&L quote of conId {}, id {})", code, con_id, sub.req_id);
+        Some(sub)
+    }
+
+    /// The P&L quotes are off the wire with their farm (ibx#511): sent
+    /// again with the market data.
+    fn pnl_quotes_farm_lost(&mut self, farm: FarmId) {
+        if farm != PRIMARY_MD {
+            return;
+        }
+        for e in self.pnl_quotes.iter_mut() {
+            e.farm_req = 0;
+            e.tag = None;
+        }
+    }
+
+    /// The P&L quotes waiting since a farm loss, sent again on new ids
+    /// (ibx#511).
+    pub(crate) fn resend_pnl_quotes(&mut self) -> Vec<(FarmId, Vec<(u32, String)>)> {
+        let mut again: Vec<PnlQuoteEntry> = Vec::new();
+        for e in self.pnl_quotes.iter_mut().filter(|e| e.farm_req == 0) {
+            e.farm_req = self.next_md_req_id;
+            self.next_md_req_id += 1;
+            again.push(e.clone());
+        }
+        if again.is_empty() {
+            return Vec::new();
+        }
+        vec![(PRIMARY_MD, pnl_quotes_message("1", &again))]
     }
 
     /// A whole 35=G frame for the exchange map tests: true when it carried
@@ -2003,6 +2188,7 @@ impl FarmState {
         // acknowledgement of its code (ibx#441).
         self.exchange_map_subs.retain(|s| s.farm != farm);
         self.generic_farm_lost(farm);
+        self.pnl_quotes_farm_lost(farm);
         // The option models on it stop; they start again with their top of
         // book (ibx#502).
         let cancels = self.optmd.farm_lost(farm);
@@ -2891,6 +3077,23 @@ fn md_message_head(action: &str, n: usize) -> Vec<(u32, String)> {
     ]
 }
 
+/// A message of P&L quote entries (ibx#511), as the reference writes
+/// them: each its id, the conId, BEST, the stock type and the kind; no API
+/// source.
+fn pnl_quotes_message(action: &str, entries: &[PnlQuoteEntry]) -> Vec<(u32, String)> {
+    let mut msg = md_message_head(action, entries.len());
+    for e in entries {
+        msg.extend([
+            (262, e.farm_req.to_string()),
+            (6008, e.con_id.to_string()),
+            (207, "BEST".to_string()),
+            (167, "CS".to_string()),
+            (264, e.code.to_string()),
+        ]);
+    }
+    msg
+}
+
 /// The market data status entry as the reference writes it (ibx#447,
 /// captured 05/10/2026 and 07/10/2026): `262|6008|207|167|264=398`.
 fn status_message(e: &StatusEntry, subscribe: bool) -> Vec<(u32, String)> {
@@ -3658,6 +3861,60 @@ mod tests {
         assert_eq!(codes, ["512", "456", "236", "225", "101"]);
         assert!(!cancels[0].1.iter().any(|(t, _)| *t == 6088));
         assert!(farm.generic.is_empty());
+    }
+
+    // ibx#511: the P&L quotes as the reference asks them (observed
+    // 15/10/2026, 10.51): one message, the P&L price then the second price
+    // kind then the dividends of each contract, on BEST, no API source; an
+    // acknowledgement naming a new BBO exchange asks its map (no API source
+    // either); the P&L price goes to the session's P&L; the dividends are
+    // cancelled at their first data; nothing is asked twice.
+    #[test]
+    fn pnl_quotes_their_map_their_prices_and_the_dividends_cancel() {
+        let shared = SharedState::new();
+        let mut farm = FarmState::new();
+        let mut context = Context::new();
+        let mut hb = HeartbeatState::new();
+        let mut sink = RecordingSink(Vec::new());
+        let wire = |m: &Vec<(u32, String)>| m.iter().filter(|(t, _)| *t != fix::TAG_SENDING_TIME)
+            .map(|(t, v)| format!("{t}={v}|")).collect::<String>();
+        let msgs = farm.pnl_quotes(&[272093, 756733], true);
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(wire(&msgs[0].1), "35=V|263=1|146=6|\
+            262=1|6008=272093|207=BEST|167=CS|264=232|262=2|6008=272093|207=BEST|167=CS|264=504|\
+            262=3|6008=272093|207=BEST|167=CS|264=456|262=4|6008=756733|207=BEST|167=CS|264=232|\
+            262=5|6008=756733|207=BEST|167=CS|264=504|262=6|6008=756733|207=BEST|167=CS|264=456|");
+        assert!(farm.pnl_quotes(&[272093], true).is_empty(), "asked already");
+        assert!(farm.pnl_quotes(&[756733], false).is_empty());
+
+        // The acks of 15/10/2026: 9c for 272093, a6 for 756733.
+        for ack in ["1337,1,0.01,0,0,9c,,0,1", "2299,3,0.01,0,0,9c,,0,1", "1778,4,0.01,0,0,a6,,0,1"] {
+            farm.handle_subscription_ack(format!("8=O\x0135=Q\x01{ack}").as_bytes(), &mut sink, &mut context, &shared, &mut hb);
+        }
+        assert_eq!(sink.0.iter().map(wire).collect::<Vec<_>>(), [
+            "35=V|263=1|146=1|262=7|6008=272093|207=BEST|167=CS|264=626|",
+            "35=V|263=1|146=1|262=8|6008=756733|207=BEST|167=CS|264=626|",
+        ]);
+        sink.0.clear();
+
+        // A frame with the P&L price of 272093 (538.25, valid) and the first
+        // dividends block of 272093.
+        let mut msg = b"8=O\x019=0040\x0135=G\x01".to_vec();
+        let mut blocks = Vec::new();
+        blocks.extend_from_slice(&1337u32.to_be_bytes());
+        blocks.push(12);
+        blocks.extend_from_slice(&538.25f64.to_be_bytes());
+        blocks.extend_from_slice(&1i32.to_be_bytes());
+        blocks.extend_from_slice(&2299u32.to_be_bytes());
+        blocks.push(4);
+        blocks.extend_from_slice(b"0,0,");
+        msg.extend_from_slice(&((blocks.len() * 8) as u16).to_be_bytes());
+        msg.extend_from_slice(&blocks);
+        farm.handle_generic_frame(&msg, &mut sink, &mut context, &shared, &None, &mut hb);
+        assert_eq!(shared.portfolio.pnl_prices().get(&272093), Some(&538.25));
+        assert_eq!(sink.0.iter().map(wire).collect::<Vec<_>>(), ["35=V|263=2|146=1|262=3|6008=272093|207=BEST|167=CS|264=456|"]);
+        assert!(shared.market.take_generic_ticks(u64::MAX).is_empty(), "no API tick");
+        assert!(!farm.pnl_quotes.iter().any(|e| e.con_id == 272093 && e.code == 456));
     }
 
     // ibx#441: the "no exchange" code of a currency pair is ignored: no key,

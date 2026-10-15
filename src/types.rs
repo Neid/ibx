@@ -2146,6 +2146,11 @@ pub enum ControlCommand {
     UnsubscribeGeneric { instrument: InstrumentId, codes: Vec<i32> },
     /// Subscribe to whole-account P&L via CCP (6040=142).
     SubscribePnl { req_id: i64, account: String },
+    /// The P&L quotes of position contracts (ibx#511): asked by the P&L
+    /// requests, as the reference's own P&L does; the second price kind
+    /// for a reqPnL. The first one of the session also starts the P&L
+    /// partition's account request.
+    PnlQuotes { con_ids: Vec<i64>, second_price: bool },
     /// Cancel P&L subscription.
     CancelPnl { req_id: i64 },
     /// The currency of a contract, for the orders on its instrument

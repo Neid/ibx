@@ -1373,7 +1373,7 @@ impl HotLoop {
         let cancels = self.farm.desubscribe_all();
         self.send_farm_messages(cancels);
         self.resend_unsent_subscriptions();
-        let mut msgs = Vec::new();
+        let mut msgs = self.farm.resend_pnl_quotes();
         for farm in self.farm.news_farms_to_resend() {
             msgs.extend(self.farm.resend_news(farm));
         }
@@ -1690,6 +1690,7 @@ impl HotLoop {
             // 5c. Tell the clients about lost and restored links (ibx#399)
             self.report_link_changes();
             self.maybe_report_restored();
+            self.ccp.send_due_pnl_partition(Instant::now(), &self.account_id, &mut self.ccp_conn, &mut self.hb);
 
             // 6. Wake any waiting consumers (e.g. Python event loop): after
             //    a pass that did something and the passes behind it, and
@@ -2538,6 +2539,11 @@ impl HotLoop {
                 }
                 ControlCommand::SubscribePnl { req_id, account } => {
                     self.ccp.send_pnl_subscribe(req_id, &account, &mut self.ccp_conn, &mut self.hb);
+                }
+                ControlCommand::PnlQuotes { con_ids, second_price } => {
+                    self.ccp.start_pnl_partition(Instant::now());
+                    let msgs = self.farm.pnl_quotes(&con_ids, second_price);
+                    self.send_farm_messages(msgs);
                 }
                 ControlCommand::SetInstrumentCurrency { con_id, currency } => {
                     if let Some(id) = self.context.market.instrument_by_con_id(con_id) {

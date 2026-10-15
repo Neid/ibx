@@ -1568,34 +1568,6 @@ mod tests {
         ]);
     }
 
-    // ibx#446: a request that takes over the P&L quote (data, but no step
-    // queued) waits for the engine's catch-up, the quote as the engine has
-    // it, and gets all of it there in one step; the steps written before
-    // the catch-up are not its own.
-    #[test]
-    fn a_request_on_the_pnl_quote_starts_from_a_catch_up() {
-        let (core, shared) = (ClientCore::new(), SharedState::new());
-        let (tx, _rx) = crossbeam_channel::unbounded();
-        let tx = crate::engine::park::ControlSender::from(tx);
-        core.pnl_quotes.lock().unwrap().active.insert(756733, 5);
-        core.register_mkt_data(&shared, &tx, 1, 756733, "SPY", "SMART", "STK", "USD", &Default::default(), false, "", 0)
-            .unwrap();
-        let queue = &shared.market.md_events;
-        assert!(queue.listened(5) && queue.needs_catch_up(5));
-        book(&shared, 5, 99);
-        assert!(poll(&core, &shared).is_empty(), "waits for the catch-up");
-        let q = Quote { bid: 100 * PRICE_SCALE, last: 100 * PRICE_SCALE, last_size: 2 * QTY_SCALE, ..Default::default() };
-        let mut marks = QuoteMarks::default();
-        marks.set_halted(0);
-        queue.write_catch_ups(|id| MdEvent::catch_up(id, &q, marks));
-        assert!(!queue.needs_catch_up(5));
-        book(&shared, 5, 101);
-        assert_eq!(poll(&core, &shared), [
-            "mdt:1:1", "price:1:1:100", "size:1:0:0", "price:1:4:100", "size:1:5:2", "size:1:5:2", "generic:1:49:0",
-            "price:1:1:101", "size:1:0:1", "price:1:2:101", "size:1:3:1", "size:1:0:1", "size:1:3:1", "generic:1:49:0",
-        ]);
-    }
-
     // ibx#444, ibx#446: a request without a conId joins the subscription of
     // the contract the engine found at the moment it found it: the quote as
     // it was then, then the later steps, even when the client reads later.

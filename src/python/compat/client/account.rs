@@ -18,13 +18,12 @@ impl EClient {
         if !crate::client_core::ClientCore::ids_fit("req_pnl", &[req_id]) { return Ok(()); }
         // Several requests can run; an empty or unknown account gives 321, a
         // request id already running gives 102 (ibx#478).
+        // Nothing is sent to the server: the P&L quotes go from the next
+        // event loop pass, as for the Rust client (ibx#511).
         if let Err((code, message)) = self.core.request_pnl(req_id, account, &self.account()) {
             self.shared_state()?.orders.push_order_error(req_id, code, message);
-            return Ok(());
         }
-        let tx = self.tx()?;
-        send_cmd(py, &tx, ControlCommand::SubscribePnl { req_id, account: account.to_string() })?;
-        let _ = model_code;
+        let _ = (py, model_code);
         Ok(())
     }
 
@@ -35,12 +34,11 @@ impl EClient {
         if let Some(r) = self.not_connected(-1) { return r; }
         if !crate::client_core::ClientCore::ids_fit("cancel_pnl", &[req_id]) { return Ok(()); }
         // A request id not running gives 10185 (ibx#478).
+        // Nothing is sent: the reference keeps its P&L quotes (ibx#511).
         if let Some((code, message)) = self.core.cancel_pnl_request(req_id) {
             self.shared_state()?.orders.push_order_error(req_id, code, message);
-            return Ok(());
         }
-        let tx = self.tx()?;
-        let _ = send_cmd(py, &tx, ControlCommand::CancelPnl { req_id });
+        let _ = py;
         Ok(())
     }
 
