@@ -5616,6 +5616,67 @@ fn a_fill_gives_its_position_row_before_its_execution() {
     assert_eq!(w.events.iter().filter(|e| e.starts_with("position:")).count(), 1, "{:?}", w.events);
 }
 
+// ibx#707: req_positions_multi gets a row at a fill (before its execution)
+// and after a commission report, each only when the values changed (the
+// reference 10.51, paper, 15/10/2026, regular hours: a MSFT buy that
+// reduced the position, its commission with no row; a sale that added to
+// it, its commission with a row).
+#[test]
+fn req_positions_multi_gets_the_rows_that_changed_at_a_fill() {
+    #[derive(Default)]
+    struct W(Vec<String>);
+    impl Wrapper for W {
+        fn position_multi(&mut self, req_id: i64, _a: &str, _m: &str, c: &Contract, pos: f64, avg: f64) {
+            self.0.push(format!("multi:{req_id}:{}:{pos}:{avg}", c.con_id));
+        }
+        fn position_multi_end(&mut self, req_id: i64) {
+            self.0.push(format!("end:{req_id}"));
+        }
+        fn exec_details(&mut self, _req_id: i64, _c: &Contract, _e: &crate::api::types::Execution) {
+            self.0.push("exec".into());
+        }
+        fn commission_and_fees_report(&mut self, _r: &crate::api::types::CommissionAndFeesReport) {
+            self.0.push("commission".into());
+        }
+    }
+    let (client, _rx, shared) = test_client();
+    shared.portfolio.set_account_download_complete();
+    let mut w = W::default();
+    client.req_positions_multi(7, "DU123", "", &mut w);
+    client.process_msgs(&mut w);
+    assert_eq!(w.0, ["end:7"]);
+    let contract = Contract { con_id: 265598, symbol: "AAPL".into(), ..Default::default() };
+    let fill = |id: &str, side: &str, after: (i64, i64)| -> (crate::api::types::Execution, crate::bridge::FillExec) {
+        (crate::api::types::Execution { exec_id: id.into(), side: side.into(), shares: 1.0, order_id: 15, ..Default::default() },
+         crate::bridge::FillExec { exec_id: id.into(), position_after: Some((265598, after.0, after.1)), ..Default::default() })
+    };
+    // A buy that opens the position: a row at the fill; its commission
+    // moves the cost: a row.
+    shared.portfolio.apply_fill_to_position(265598, crate::types::QTY_SCALE, 336 * PRICE_SCALE);
+    let (e, fe) = fill("0000e0d5.6ab5f36f.01.01", "BOT", (crate::types::QTY_SCALE, 336 * PRICE_SCALE));
+    shared.orders.push_untracked_execution(contract.clone(), e, fe);
+    shared.portfolio.apply_commission_to_position(265598, 1.0);
+    shared.orders.push_commission_report(crate::api::types::CommissionAndFeesReport {
+        exec_id: "0000e0d5.6ab5f36f.01.01".into(), commission_and_fees: 1.0, currency: "USD".into(),
+        realized_pnl: f64::MAX, yield_amount: f64::MAX, yield_redemption_date: String::new(),
+    });
+    let mut w = W::default();
+    client.process_msgs(&mut w);
+    assert_eq!(w.0, ["multi:7:265598:1:336", "commission", "multi:7:265598:1:337"]);
+    // A sale that closes it: a row at the fill; its commission, with a
+    // realized P&L, changes nothing: no row.
+    shared.portfolio.apply_fill_to_position(265598, -crate::types::QTY_SCALE, 338 * PRICE_SCALE);
+    let (e, fe) = fill("0000e0d5.6ab5f370.01.01", "SLD", (0, 0));
+    shared.orders.push_untracked_execution(contract, e, fe);
+    shared.orders.push_commission_report(crate::api::types::CommissionAndFeesReport {
+        exec_id: "0000e0d5.6ab5f370.01.01".into(), commission_and_fees: 1.0, currency: "USD".into(),
+        realized_pnl: 1.0, yield_amount: f64::MAX, yield_redemption_date: String::new(),
+    });
+    let mut w = W::default();
+    client.process_msgs(&mut w);
+    assert_eq!(w.0, ["multi:7:265598:0:0", "commission"]);
+}
+
 // ibx#707 and the capture of 25/09/2026: a fill of another client's order
 // gives the observer a row at the fill and a row when its commission
 // moves the cost; a commission report with a realized P&L gives two.

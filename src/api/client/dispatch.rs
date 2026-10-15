@@ -298,6 +298,7 @@ impl EClient {
             if let Some((con_id, qty, cost)) = fill_exec.position_after {
                 let rows = self.core.position_event_rows(&self.shared, con_id, Some((qty, cost)), 1);
                 self.position_rows(wrapper, &rows);
+                self.position_multi_event(wrapper, con_id, Some((qty, cost)));
             }
             // The execution first, then openOrder and orderStatus, as the
             // reference (captured 30/09/2026 on a stock and a combo fill).
@@ -352,6 +353,7 @@ impl EClient {
             if !fill_exec.replayed && let Some((con_id, qty, cost)) = fill_exec.position_after {
                 let rows = self.core.position_event_rows(&self.shared, con_id, Some((qty, cost)), 1);
                 self.position_rows(wrapper, &rows);
+                self.position_multi_event(wrapper, con_id, Some((qty, cost)));
                 if fill_exec.other_client {
                     self.core.note_observed_fill(&exec.exec_id);
                 }

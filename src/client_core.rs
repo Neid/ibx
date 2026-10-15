@@ -3411,6 +3411,31 @@ impl ClientCore {
         self.observed_fills.lock().unwrap().contains(base)
     }
 
+    /// The req_positions_multi rows of an execution of the session: the
+    /// position at the fill (`at`, before its execDetails) or after its
+    /// commission report, for each running request whose last row differs
+    /// (the reference 10.51, paper, 15/10/2026, regular hours: a row at
+    /// each fill and after the commission of a fill that opened or added to
+    /// the position; none after the commission of a fill that reduced it).
+    pub fn position_multi_event_rows(&self, shared: &SharedState, con_id: i64, at: Option<(Qty, Price)>) -> Vec<(i64, String, String, PositionInfo)> {
+        if con_id == 0 {
+            return Vec::new();
+        }
+        let Some(mut row) = shared.portfolio.position_info(con_id) else { return Vec::new() };
+        if let Some((qty, cost)) = at {
+            row.position_fixed = qty;
+            row.avg_cost = cost;
+        }
+        let mut out = Vec::new();
+        for m in self.positions_multi.lock().unwrap().iter_mut().filter(|m| m.sub.snapshot_sent) {
+            if m.sub.sent.get(&con_id) != Some(&(row.position_fixed, row.avg_cost)) {
+                m.sub.sent.insert(con_id, (row.position_fixed, row.avg_cost));
+                out.push((m.req_id, m.account.clone(), m.model_code.clone(), row.clone()));
+            }
+        }
+        out
+    }
+
     /// The conId of a commission report's execution, from the executions
     /// given so far.
     pub fn commission_con_id(&self, report: &ApiCommissionAndFeesReport) -> Option<i64> {
@@ -3445,9 +3470,13 @@ impl ClientCore {
     pub fn subscribe_positions_multi(&self, req_id: i64, account: &str, model_code: &str) {
         let mut subs = self.positions_multi.lock().unwrap();
         subs.retain(|m| m.req_id != req_id);
+        // Rows at the session's executions and at quantities the feed
+        // moved, as reqPositions (ibx#707), each only when its values
+        // changed (the reference 10.51, paper, 15/10/2026, regular hours).
+        let mut sub = PositionsSubscription::new();
+        sub.events = true;
         subs.push(PositionsMultiSubscription {
-            req_id, account: account.to_string(), model_code: model_code.to_string(),
-            sub: PositionsSubscription::new(),
+            req_id, account: account.to_string(), model_code: model_code.to_string(), sub,
         });
     }
 

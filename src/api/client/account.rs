@@ -51,12 +51,31 @@ impl EClient {
     }
 
     /// The reqPositions rows after a commission report (ibx#707): the
-    /// position, twice when the report has a realized P&L.
+    /// position, twice when the report has a realized P&L; and the
+    /// req_positions_multi rows whose values changed.
     pub(crate) fn commission_position_rows(&self, wrapper: &mut (impl Wrapper + ?Sized), report: &crate::api::types::CommissionAndFeesReport) {
         let Some(con_id) = self.core.commission_con_id(report) else { return };
         let times = if report.realized_pnl != 0.0 && report.realized_pnl != f64::MAX { 2 } else { 1 };
         let rows = self.core.position_event_rows(&self.shared, con_id, None, times);
         self.position_rows(wrapper, &rows);
+        self.position_multi_event(wrapper, con_id, None);
+    }
+
+    /// The req_positions_multi rows of an execution's event (ibx#707).
+    pub(crate) fn position_multi_event(&self, wrapper: &mut (impl Wrapper + ?Sized), con_id: i64, at: Option<(crate::types::Qty, crate::types::Price)>) {
+        for (req_id, account, model_code, pi) in self.core.position_multi_event_rows(&self.shared, con_id, at) {
+            let account = if account.is_empty() { self.account_id.clone() } else { account };
+            let ac = self.core.position_contract(pi.con_id, &self.shared);
+            let c = Contract {
+                con_id: ac.con_id, symbol: ac.symbol, sec_type: ac.sec_type,
+                exchange: ac.exchange, primary_exchange: ac.primary_exchange,
+                currency: ac.currency, local_symbol: ac.local_symbol,
+                trading_class: ac.trading_class, multiplier: ac.multiplier,
+                ..Default::default()
+            };
+            wrapper.position_multi(req_id, &account, &model_code, &c,
+                pi.position_fixed as f64 / QTY_SCALE_F, pi.avg_cost as f64 / PRICE_SCALE_F);
+        }
     }
 
     /// Position rows of a running req_positions (ibx#477).

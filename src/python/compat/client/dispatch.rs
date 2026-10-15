@@ -108,12 +108,26 @@ impl EClient {
     }
 
     /// The reqPositions rows after a commission report (ibx#707): the
-    /// position, twice when the report has a realized P&L.
+    /// position, twice when the report has a realized P&L; and the
+    /// req_positions_multi rows whose values changed.
     fn commission_position_rows(&self, py: Python<'_>, shared: &Arc<SharedState>, cr: &ApiCommissionAndFeesReport) -> PyResult<()> {
         let Some(con_id) = self.core.commission_con_id(cr) else { return Ok(()) };
         let times = if cr.realized_pnl != 0.0 && cr.realized_pnl != f64::MAX { 2 } else { 1 };
         let rows = self.core.position_event_rows(shared, con_id, None, times);
-        self.position_rows(py, shared, &rows)
+        self.position_rows(py, shared, &rows)?;
+        self.position_multi_event(py, shared, con_id, None)
+    }
+
+    /// The req_positions_multi rows of an execution's event (ibx#707).
+    fn position_multi_event(&self, py: Python<'_>, shared: &Arc<SharedState>, con_id: i64, at: Option<(crate::types::Qty, crate::types::Price)>) -> PyResult<()> {
+        for (req_id, account, model_code, pi) in self.core.position_multi_event_rows(shared, con_id, at) {
+            let account = if account.is_empty() { self.account() } else { account };
+            let ac = self.core.position_contract(pi.con_id, shared);
+            let c_py = Py::new(py, Contract::from_api(py, &ac)?)?.into_any();
+            call_wrapper!(self.wrapper, py, "position_multi",
+                (req_id, account.as_str(), model_code.as_str(), &c_py, qty_fixed(py, pi.position_fixed)?, pi.avg_cost as f64 / PRICE_SCALE_F));
+        }
+        Ok(())
     }
 
     /// Position rows of a running req_positions (ibx#477).
@@ -611,6 +625,7 @@ impl EClient {
                         if let Some((con_id, qty, cost)) = fill_exec.position_after {
                             let rows = self.core.position_event_rows(shared, con_id, Some((qty, cost)), 1);
                             self.position_rows(py, shared, &rows)?;
+                            self.position_multi_event(py, shared, con_id, Some((qty, cost)))?;
                         }
                         // A live execution has no request: reqId -1 (ibx#474).
                         call_wrapper!(self.wrapper, py, "exec_details", (-1i64, &c_py, &exec_py));
@@ -664,6 +679,7 @@ impl EClient {
                         if !fill_exec.replayed && let Some((con_id, qty, cost)) = fill_exec.position_after {
                             let rows = self.core.position_event_rows(shared, con_id, Some((qty, cost)), 1);
                             self.position_rows(py, shared, &rows)?;
+                            self.position_multi_event(py, shared, con_id, Some((qty, cost)))?;
                             if fill_exec.other_client {
                                 self.core.note_observed_fill(&exec.exec_id);
                             }
