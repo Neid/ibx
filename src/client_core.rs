@@ -1176,6 +1176,18 @@ impl MdCancel {
 /// Error 101 of the reference.
 pub const MD_MAX_TICKERS: (i64, &str) = (101, "Max number of tickers has been reached");
 
+/// An active time of the accumulate/distribute algo: hh:mm:ss, a zone
+/// after a space allowed (ibx#623).
+fn active_time_valid(value: &str) -> bool {
+    let time = value.split(' ').next().unwrap_or("");
+    let parts: Vec<&str> = time.split(':').collect();
+    parts.len() == 3
+        && parts.iter().all(|p| (1..=2).contains(&p.len()) && p.bytes().all(|b| b.is_ascii_digit()))
+        && parts[0].parse::<u32>().is_ok_and(|h| h < 24)
+        && parts[1].parse::<u32>().is_ok_and(|m| m < 60)
+        && parts[2].parse::<u32>().is_ok_and(|s| s < 60)
+}
+
 /// The slow pass of the reference's market data lines: the 101s after the
 /// first one of a pass wait for its end (ibx#649).
 pub const MD_LIMIT_PASS: std::time::Duration = std::time::Duration::from_millis(500);
@@ -5095,8 +5107,8 @@ impl ClientCore {
     /// right after the checks of 145; paper 12/10/2026: postOnly on MKT
     /// refused with 10051 at once,
     /// its id not used). postOnly: an order type that cannot rest as
-    /// post-only (10051), the IBKRATS venue (464), the time in force
-    /// OVERNIGHT + DAY (10052). allowPreOpen or
+    /// post-only (10051), the IBKRATS venue (464), the algo AD (442), the
+    /// time in force OVERNIGHT + DAY (10052). allowPreOpen or
     /// ignoreOpenAuction: the overnight venues (464), OVERNIGHT + DAY
     /// (10052). ignoreOpenAuction with scaleAutoReset: 10340.
     pub fn open_flags_refusal(order: &ApiOrder, exchange: &str) -> Option<(i64, String)> {
@@ -5105,12 +5117,29 @@ impl ClientCore {
         const INVALID_TIF: (i64, &str) = (10052, "Invalid time in force:OVERNIGHT + DAY");
         let overnight_day = order.tif.eq_ignore_ascii_case("OVERNIGHT + DAY");
         let refuse = |(code, text): (i64, &str)| Some((code, text.to_string()));
+        // The reference's own accumulate/distribute algo checks its active
+        // times first, with or without the flags (ibx#623; paper
+        // 15/10/2026: 10315 before 442).
+        if order.algo_strategy.eq_ignore_ascii_case("AD")
+            && let Some(p) = order.algo_params.iter().find(|p| {
+                (p.tag.eq_ignore_ascii_case("activeTimeStart") || p.tag.eq_ignore_ascii_case("activeTimeEnd"))
+                    && !p.value.is_empty() && !active_time_valid(&p.value)
+            })
+        {
+            return Some((10315, format!("{}: The time entered is invalid. The correct format is hh:mm:ss. E.g.: 15:00:00 in UTC. No date should be specified, current date is assumed.", p.tag)));
+        }
         if order.post_only {
             if !POST_ONLY_TYPES.iter().any(|t| t.eq_ignore_ascii_case(&order.order_type)) {
                 return refuse((10051, "Invalid order type"));
             }
             if exchange.eq_ignore_ascii_case("IBKRATS") {
                 return refuse(INVALID_EXCHANGE);
+            }
+            // The reference's own accumulate/distribute algo, by its short
+            // name in any case (ibx#623); the server's AccuDistr is taken,
+            // without the post-only attribute.
+            if order.algo_strategy.eq_ignore_ascii_case("AD") {
+                return refuse((442, "Specified algorithm is not allowed for this order."));
             }
             if overnight_day {
                 return refuse(INVALID_TIF);
@@ -7942,6 +7971,27 @@ mod tests {
         assert_eq!(refusal(&accu, "SMART"), None);
         assert!(!accu.attrs().post_only);
         assert!(post("LMT").attrs().post_only);
+        // ibx#623: the reference's own algo AD, in any case: 442, after the
+        // venue and before the time in force.
+        for name in ["AD", "ad", "Ad"] {
+            let ad = ApiOrder { algo_strategy: name.into(), ..post("LMT") };
+            assert_eq!(ClientCore::open_flags_refusal(&ad, "SMART"),
+                Some((442, "Specified algorithm is not allowed for this order.".to_string())), "{name}");
+            assert_eq!(refusal(&ad, "IBKRATS"), Some(464));
+            assert_eq!(refusal(&ApiOrder { tif: "OVERNIGHT + DAY".into(), ..ad.clone() }, "SMART"), Some(442));
+            assert_eq!(refusal(&ApiOrder { post_only: false, ..ad }, "SMART"), None);
+        }
+        // Its active times are checked first, with or without postOnly
+        // (paper 15/10/2026: 10315 before 442).
+        let timed = |name: &str, value: &str, post_only: bool| ApiOrder {
+            algo_strategy: "AD".into(), post_only,
+            algo_params: vec![crate::api::types::TagValue { tag: name.into(), value: value.into() }], ..lmt(100.0)
+        };
+        assert_eq!(ClientCore::open_flags_refusal(&timed("activeTimeStart", "zz", true), "SMART"), Some((10315,
+            "activeTimeStart: The time entered is invalid. The correct format is hh:mm:ss. E.g.: 15:00:00 in UTC. No date should be specified, current date is assumed.".to_string())));
+        assert_eq!(refusal(&timed("activeTimeEnd", "25:00:00", false), "SMART"), Some(10315));
+        assert_eq!(refusal(&timed("activeTimeStart", "15:00:00", true), "SMART"), Some(442));
+        assert_eq!(refusal(&timed("activeTimeStart", "09:30:00 US/Eastern", false), "SMART"), None);
         let overnight = |order: ApiOrder| ApiOrder { tif: "OVERNIGHT + DAY".into(), ..order };
         assert_eq!(refusal(&overnight(post("LMT")), "SMART"), Some(10052));
         let pre_open = ApiOrder { allow_pre_open: true, ..lmt(100.0) };
