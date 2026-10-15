@@ -249,9 +249,18 @@ pub struct Context {
     pub(crate) bypass_redirect_warning: bool,
     /// Sequence of those lookups.
     pub(crate) next_order_lookup: u32,
-    /// The contracts whose second lookup before a first order was made
-    /// this session (ibx#706).
-    pub(crate) order_types_done: std::collections::HashSet<i64>,
+    /// The records of contracts the session has, by conId and the exchange
+    /// the answer named (ibx#706): an order needs the one of its exchange
+    /// (the primary exchange for SMART) and asks it when missing.
+    pub(crate) order_records: std::collections::HashSet<(i64, String)>,
+    /// Contracts whose records are taken as known on every exchange (a
+    /// replay that starts after the reference had them).
+    pub(crate) order_records_any: std::collections::HashSet<i64>,
+    /// The record lookups of orders on their way: internal name, conId,
+    /// the exchange asked.
+    pub(crate) order_record_lookups: Vec<(String, i64, String)>,
+    /// Orders whose record lookup was answered: they go on.
+    pub(crate) order_records_cleared: std::collections::HashSet<crate::types::OrderId>,
 
     /// Set while a short-side order is encoded: its short-sale fields
     /// (ibx#417).
@@ -430,7 +439,10 @@ impl Context {
             bypass_redirect_warning: crate::config::bypass_redirect_order_warning(),
             bypass_route_bbo_warning: crate::config::bypass_route_marketable_to_bbo_warning(),
             next_order_lookup: 0,
-            order_types_done: std::collections::HashSet::new(),
+            order_records: std::collections::HashSet::new(),
+            order_records_any: std::collections::HashSet::new(),
+            order_record_lookups: Vec::new(),
+            order_records_cleared: std::collections::HashSet::new(),
 
             short_sale_send: None,
             combos: Default::default(),

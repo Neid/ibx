@@ -3295,6 +3295,13 @@ impl CcpState {
                 }
                 return;
             }
+            // The record of a contract an order needs (ibx#706).
+            if super::order_builder::order_record_reply(context, rid, msg) {
+                for def in crate::control::contracts::parse_secdef_records(msg).unwrap_or_default().iter().take(1) {
+                    self.cache_definition(def, shared);
+                }
+                return;
+            }
             // Asked for the contract of an order given without a conId
             // (ibx#486): its definition is cached, not a user reply.
             if super::order_builder::order_contract_reply(context, shared, rid, msg) {

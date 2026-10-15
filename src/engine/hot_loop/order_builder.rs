@@ -132,16 +132,17 @@ fn send_orders(
             context.rth_parked.push(rewrap(order_req));
             continue;
         }
-        // The first order of a contract in the session waits for the
-        // contract's second lookup, and the orders of that contract placed
-        // meanwhile with it (ibx#706).
+        // An order whose contract's record on its exchange (the primary
+        // exchange for SMART) the session does not have waits for it, and
+        // the orders of that contract placed meanwhile with it (ibx#706).
         if order_req.new_order_qty().is_some() && order_req.combo().is_none()
-            && let Some(instrument) = order_req.instrument().filter(|i| context.market.con_id(*i).is_some_and(|c| c > 0))
-            && let Some(exchange) = order_types_exchange(context, shared, instrument)
-            && matches!(definition_on(context, conn, hb, instrument, Some(&exchange)), Definition::Waiting)
+            && let Some(instrument) = order_req.instrument()
+            && let Some(con_id) = context.market.con_id(instrument).filter(|c| *c > 0)
+            && !context.order_records_cleared.remove(&oid)
+            && let Some(exchange) = missing_order_record(context, shared, instrument, con_id)
         {
-            if let Some(con_id) = context.market.con_id(instrument) {
-                context.order_types_done.insert(con_id);
+            if !context.order_record_lookups.iter().any(|(_, c, x)| *c == con_id && *x == exchange) {
+                ask_order_record(context, conn, hb, con_id, &exchange);
             }
             context.rth_parked.push(rewrap(order_req));
             continue;
@@ -3355,6 +3356,12 @@ const RTH_LOOKUP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5
 pub(crate) fn rth_definition_reply(context: &mut Context, req_id: &str, msg: &[u8]) -> bool {
     let Some(idx) = context.rth_lookups.iter().position(|(id, _, _)| id == req_id) else { return false };
     let (_, key, _) = context.rth_lookups.swap_remove(idx);
+    // A record of the contract on the exchange the answer names (ibx#706).
+    for def in crate::control::contracts::parse_secdef_records(msg).unwrap_or_default() {
+        if def.con_id == key.0 && !def.exchange.is_empty() {
+            context.order_records.insert((key.0, def.exchange.clone()));
+        }
+    }
     store_rth_types(context, key, msg);
     release_rth_parked(context);
     true
@@ -3525,25 +3532,75 @@ pub(crate) fn hold_order(
 pub(crate) const ORDER_LOOKUP_FIRST_ID: u32 = 0xC000_0000;
 pub(crate) const ORDER_LOOKUP_IDS: u32 = 0x1000_0000;
 
-/// The exchange of the reference's second lookup before the first order of
-/// a contract in a session (ibx#706; observed in 38 recordings of 10.51,
-/// 12/10 to 15/10/2026, once per contract): the contract's primary
-/// exchange for a SMART order; the order goes out at its answer. A
-/// directed order asks the definition on its own exchange where its rules
-/// need it (`definition`), under the same name. None when the primary
-/// exchange is not known, or for a directed order: no lookup here.
-fn order_types_exchange(context: &Context, shared: &SharedState, instrument: crate::types::InstrumentId) -> Option<String> {
-    let destination = context.market.order_routing(instrument).1;
-    if !destination.is_empty() && destination != "BEST" {
+/// The exchange whose record of the contract an order needs and the
+/// session does not have (ibx#706): the contract's primary exchange for a
+/// SMART order, the order's exchange for a directed one. The reference 10.51
+/// asks it by conId before the order, and keeps a record under the exchange
+/// its answer names (38 recordings, 12/10 to 15/10/2026: once per contract
+/// for SMART orders; for every order directed to ISLAND, whose record comes
+/// back as NASDAQ's; none for a NASDAQ order after it, nor for a SMART order
+/// once contract details brought the records). None when it has it, or when
+/// the primary exchange is not known.
+fn missing_order_record(context: &Context, shared: &SharedState, instrument: crate::types::InstrumentId, con_id: i64) -> Option<String> {
+    if context.order_records_any.contains(&con_id) {
         return None;
     }
-    let con_id = context.market.con_id(instrument)?;
-    // Once per contract and session: a later order goes out at once, even
-    // when the answer did not come (the definition's wait ended it).
-    if context.order_types_done.contains(&con_id) && !context.rth_lookups.iter().any(|(_, k, _)| k.0 == con_id) {
+    // Stocks only: a future, a forex pair, a CFD and a warrant went out
+    // with no such lookup (paper, 15/10/2026, `.tmp/666`); a contract given
+    // by its conId alone, whose type its definition gives, is not seen yet.
+    let (sec_type, destination) = context.market.order_routing(instrument);
+    if !matches!(sec_type.as_str(), "STK" | "CS") || context.market.blank_symbol(instrument) {
         return None;
     }
-    shared.reference.get_contract(con_id).map(|c| c.primary_exchange).filter(|e| !e.is_empty())
+    let exchange = if destination.is_empty() || destination == "BEST" {
+        shared.reference.get_contract(con_id).map(|c| c.primary_exchange).filter(|e| !e.is_empty())?
+    } else {
+        destination
+    };
+    (!context.order_records.contains(&(con_id, exchange.clone()))).then_some(exchange)
+}
+
+/// Ask a contract's record on an exchange for an order (ibx#706).
+fn ask_order_record(context: &mut Context, conn: &mut Connection, hb: &mut HeartbeatState, con_id: i64, exchange: &str) {
+    let lookup_id = ORDER_LOOKUP_FIRST_ID + context.next_order_lookup % ORDER_LOOKUP_IDS;
+    context.next_order_lookup = context.next_order_lookup.wrapping_add(1);
+    let name = format!("{}{}", crate::control::contracts::SECDEF_ORDER_TYPES_NAME, lookup_id);
+    let con = con_id.to_string();
+    let ts = chrono_free_timestamp();
+    let _ = conn.send_fix(&[
+        (fix::TAG_MSG_TYPE, "c"), (fix::TAG_SENDING_TIME, &ts), (320, &name), (321, "2"), (146, "1"),
+        (6008, &con), (6004, exchange),
+    ]);
+    hb.last_ccp_sent = std::time::Instant::now();
+    log::info!("Order contract {}: record on {} asked ({})", con_id, exchange, name);
+    context.order_record_lookups.push((name, con_id, exchange.to_string()));
+}
+
+/// The answer to an order's record lookup (ibx#706): the records it holds
+/// are kept by the exchange they name, its order rules under the exchange
+/// asked, and the orders of the contract that waited go on. False when the
+/// reply is not for such a lookup.
+pub(crate) fn order_record_reply(context: &mut Context, req_id: &str, msg: &[u8]) -> bool {
+    let Some(at) = context.order_record_lookups.iter().position(|(name, ..)| name == req_id) else { return false };
+    let (_, con_id, asked) = context.order_record_lookups.remove(at);
+    if let Some(named) = fix::fix_parse(msg).get(&207).filter(|e| !e.is_empty()) {
+        context.order_records.insert((con_id, named.clone()));
+    }
+    for def in crate::control::contracts::parse_secdef_records(msg).unwrap_or_default() {
+        if def.con_id == con_id && !def.exchange.is_empty() {
+            context.order_records.insert((con_id, def.exchange.clone()));
+        }
+    }
+    let key = (con_id, asked);
+    if !context.rth_types.contains_key(&key) {
+        store_rth_types(context, key, msg);
+    }
+    let waiting: Vec<crate::types::OrderId> = context.rth_parked.iter()
+        .filter(|r| r.new_order_qty().is_some() && r.instrument().and_then(|i| context.market.con_id(i)) == Some(con_id))
+        .flat_map(request_order_ids).collect();
+    context.order_records_cleared.extend(waiting);
+    release_rth_parked(context);
+    true
 }
 
 /// Ask the contract of an order's slot by symbol, once per slot, as the
@@ -3644,6 +3701,11 @@ pub(crate) fn order_contract_reply(context: &mut Context, shared: &SharedState, 
             let instrument = context.market.instrument_by_con_id(con_id).unwrap_or(slot);
             let destination = context.market.order_routing(instrument).1;
             let replied = fix::fix_parse(msg).get(&207).cloned().unwrap_or_default();
+            // The session has the contract's record on the exchange the
+            // answer names (ibx#706).
+            if !replied.is_empty() {
+                context.order_records.insert((con_id, replied.clone()));
+            }
             let key = (con_id, destination);
             if replied == key.1 && !context.rth_types.contains_key(&key) {
                 store_rth_types(context, key, msg);
@@ -5127,6 +5189,7 @@ mod tests {
             context.bypass_redirect_warning = bypass;
             context.algo_providers = vec!["FOXRIVER".into()];
             let id = context.market.register(265598);
+            context.order_records_any.insert(265598);
             context.market.set_symbol(id, "AAPL".into());
             context.market.set_routing(id, "STK", exchange);
             context.rth_types.insert((265598, exchange.to_string()), crate::engine::outside_rth::RthTypes {
@@ -7189,6 +7252,7 @@ mod tests {
             let shared = Arc::new(SharedState::new());
             let mut context = Context::new();
             context.market.register(265598);
+            context.order_records_any.insert(265598);
             context.set_symbol(0, "AAPL".to_string());
             context.market.set_routing(0, "STK", exchange);
             context.pending_orders.push(req);
@@ -7250,6 +7314,7 @@ mod tests {
             let mut context = Context::new();
             context.bypass_redirect_warning = true;
             context.market.register(265598);
+            context.order_records_any.insert(265598);
             context.set_symbol(0, "AAPL".to_string());
             context.market.set_routing(0, "STK", exchange);
             context.pending_orders.push(OrderRequest::SubmitLimit {
@@ -7598,6 +7663,7 @@ mod tests {
             let shared = Arc::new(SharedState::new());
             let mut context = Context::new();
             context.market.register(265598);
+            context.order_records_any.insert(265598);
             context.set_symbol(0, "AAPL".to_string());
             context.market.set_routing(0, "STK", exchange);
             context.pending_orders.push(req);
@@ -8773,6 +8839,8 @@ mod tests {
         for (exchange, routing, second) in [("FOXRIVER", "BEST", "FOXRIVER"), ("ARCA", "ARCA", "ARCA")] {
             let (frames, _) = session_frames(|c| {
                 c.market.set_routing(0, "STK", exchange);
+                // Records known: this test is about another rule (ibx#706).
+                c.order_records_any.insert(265598);
                 c.rth_types.insert((265598, exchange.to_string()), crate::engine::outside_rth::RthTypes {
                     sec_type: "STK".into(), types_known: true, ..Default::default()
                 });
@@ -8780,6 +8848,59 @@ mod tests {
             }, vec![limit_ex(1, Side::Buy, 230 * P, Default::default())], 1);
             assert_eq!((tag(&frames[0], 100), tag(&frames[0], 6210)), (Some(routing), Some(second)), "{exchange}");
         }
+    }
+
+    // ibx#706: the record of the order's exchange, as the reference 10.51
+    // asks it (38 recordings, 12/10 to 15/10/2026): a SMART order on AAPL
+    // asks it on NASDAQ (the primary exchange) once and waits for it; an
+    // order directed to ISLAND asks it each time, the answer naming NASDAQ;
+    // an order directed to NASDAQ then asks nothing.
+    #[test]
+    fn an_order_asks_the_record_of_its_exchange_when_the_session_has_none() {
+        let (client, mut server) = crate::protocol::connection::mem_pair();
+        let mut conn = Some(Connection::new_mem(client));
+        let shared = Arc::new(SharedState::new());
+        shared.reference.cache_contract(265598, crate::api::types::Contract {
+            con_id: 265598, symbol: "AAPL".into(), primary_exchange: "NASDAQ".into(), ..Default::default()
+        });
+        let mut context = Context::new();
+        context.market.register(265598);
+        context.set_symbol(0, "AAPL".to_string());
+        let answer = |id: &str| fix::fix_build(&[(35, "d"), (320, id), (6008, "265598"), (55, "AAPL"), (167, "STK"),
+            (15, "USD"), (207, "NASDAQ"), (6523, "USSTK")], 1);
+        let place = |context: &mut Context, conn: &mut Option<Connection>, server: &mut crate::protocol::connection::MemTransport,
+                     exchange: &str, id: OrderId| -> Vec<Vec<(u32, String)>> {
+            context.market.set_routing(0, "STK", exchange);
+            context.pending_orders.push(limit_ex(id, Side::Buy, px(100.0), Default::default()));
+            drain_frames(context, &shared, conn, server)
+        };
+        let lookup = |frames: &[Vec<(u32, String)>]| -> Option<(String, String)> {
+            frames.iter().find(|f| tag(f, 35) == Some("c") && tag(f, 320).is_some_and(|n| n.starts_with(crate::control::contracts::SECDEF_ORDER_TYPES_NAME)))
+                .map(|f| (tag(f, 320).unwrap().to_string(), tag(f, 6004).unwrap_or("").to_string()))
+        };
+        let sent = |frames: &[Vec<(u32, String)>]| frames.iter().filter(|f| tag(f, 35) == Some("D")).count();
+
+        // SMART: the record on NASDAQ asked, the order waits, then goes.
+        let frames = place(&mut context, &mut conn, &mut server, "SMART", 1);
+        let (id, on) = lookup(&frames).expect("the record asked");
+        assert_eq!((on.as_str(), sent(&frames)), ("NASDAQ", 0), "{frames:?}");
+        assert!(order_record_reply(&mut context, &id, &answer(&id)));
+        assert_eq!(sent(&drain_frames(&mut context, &shared, &mut conn, &mut server)), 1);
+        // A second SMART order: nothing asked.
+        let frames = place(&mut context, &mut conn, &mut server, "SMART", 2);
+        assert_eq!((lookup(&frames), sent(&frames)), (None, 1), "{frames:?}");
+        // ISLAND, twice: asked each time, the answer naming NASDAQ.
+        for id in [3, 4] {
+            let frames = place(&mut context, &mut conn, &mut server, "ISLAND", id);
+            let (name, on) = lookup(&frames).expect("the record asked");
+            assert_eq!(on, "ISLAND");
+            assert!(order_record_reply(&mut context, &name, &answer(&name)));
+            let frames = drain_frames(&mut context, &shared, &mut conn, &mut server);
+            assert!(lookup(&frames).is_none(), "the order goes on after its answer: {frames:?}");
+        }
+        // NASDAQ: the record is there, nothing asked.
+        let frames = place(&mut context, &mut conn, &mut server, "NASDAQ", 5);
+        assert_eq!(lookup(&frames), None, "{frames:?}");
     }
 
     /// A session that allows price management, with the paper exclusion
@@ -8799,6 +8920,8 @@ mod tests {
     #[test]
     fn a_directed_order_takes_the_flag_of_the_smart_definition() {
         let (frames, _) = session_frames(|c| {
+            // Records known: this test is about another rule (ibx#706).
+            c.order_records_any.insert(265598);
             price_mgmt_session(c);
             c.market.set_routing(0, "STK", "ARCA");
             c.bypass_redirect_warning = true;
@@ -8974,6 +9097,7 @@ mod tests {
         let shared = Arc::new(SharedState::new());
         let mut context = Context::new();
         context.market.register(815824257);
+        context.order_records_any.insert(815824257);
         context.market.set_symbol(0, String::new());
         context.market.set_routing(0, "", "CME");
         context.pending_orders.push(OrderRequest::SubmitLimit { order_id: 7, instrument: 0, side: Side::Buy, qty: 1, price: 1000 * P });
