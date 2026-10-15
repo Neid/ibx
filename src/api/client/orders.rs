@@ -87,7 +87,7 @@ impl EClient {
         self.send(ControlCommand::HoldOrder {
             order_id: oid, instrument,
             qty: (order.total_quantity * crate::types::QTY_SCALE as f64).round() as crate::types::Qty,
-            parent_id: order.parent_id,
+            parent_id: order.parent_id, oca_group: order.oca_group.clone(),
         })?;
         self.core.hold_order(oid, contract.clone(), order.clone(), instrument);
         Ok(())

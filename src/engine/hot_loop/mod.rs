@@ -2230,8 +2230,8 @@ impl HotLoop {
                 ControlCommand::OrderGroup(requests) => {
                     order_builder::take_order_group(&mut self.context, requests);
                 }
-                ControlCommand::HoldOrder { order_id, instrument, qty, parent_id } => {
-                    order_builder::hold_order(&mut self.ccp_conn, &mut self.context, &mut self.hb, order_id, instrument, qty, parent_id);
+                ControlCommand::HoldOrder { order_id, instrument, qty, parent_id, oca_group } => {
+                    order_builder::hold_order(&mut self.ccp_conn, &mut self.context, &mut self.hb, order_id, instrument, qty, parent_id, &oca_group);
                 }
                 ControlCommand::RegisterInstrument { con_id, symbol, sec_type, exchange, reply_tx } => {
                     self.register_or_reject(con_id, symbol, &sec_type, &exchange, &reply_tx);

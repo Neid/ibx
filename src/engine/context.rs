@@ -372,6 +372,10 @@ pub struct Context {
     /// instrument, quantity and parent (ibx#542): the reference keeps such
     /// an order, unlisted, until its cancel ends it.
     pub(crate) unsent: HashMap<OrderId, (InstrumentId, Qty, i64)>,
+    /// The book entry of each order held with transmit off (ibx#595): the
+    /// reference keeps it in its book under its permId from its placing,
+    /// with its parent and OCA group.
+    pub(crate) held_book: HashMap<OrderId, BookEntry>,
     /// The book entry of each order held (see [`BookEntry`]).
     pub(crate) book: HashMap<OrderId, BookEntry>,
     /// The ended orders the reference's book still holds (ibx#545).
@@ -465,6 +469,7 @@ impl Context {
             next_md_lookup: 0,
             finished_orders: HashMap::new(),
             unsent: HashMap::new(),
+            held_book: HashMap::new(),
             finished_order_ids: std::collections::VecDeque::new(),
             book: HashMap::new(),
             api_pending: HashMap::new(),
@@ -1473,6 +1478,28 @@ impl Context {
                 return id;
             }
         }
+    }
+
+    /// The book entry of an order held with transmit off (ibx#595): it
+    /// takes its place in the book when first held; held again, it keeps
+    /// that place with its new links.
+    pub(crate) fn hold_entry(&mut self, order_id: OrderId, parent: OrderId, oca_group: &str) {
+        let seq = match self.held_book.get(&order_id) {
+            Some(e) => e.seq,
+            None => {
+                self.next_book_seq += 1;
+                self.next_book_seq - 1
+            }
+        };
+        self.held_book.insert(order_id, BookEntry { seq, parent, oca_group: oca_group.to_string(), owner: None });
+        self.book_peak = self.book_peak.max(self.open_orders.len() + self.ended.len() + self.unsent.len());
+    }
+
+    /// An order held with transmit off ended (ibx#595): the book keeps it
+    /// for the session in the place it had.
+    pub(crate) fn keep_held_ended(&mut self, order_id: OrderId, server_id: OrderId, entry: BookEntry) {
+        self.ended.retain(|e| e.order_id != order_id);
+        self.ended.push(EndedOrder { order_id, server_id, entry, until: None });
     }
 
     /// The parent and OCA group of a held order, when known.

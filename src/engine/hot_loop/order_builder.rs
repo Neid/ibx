@@ -1868,12 +1868,15 @@ fn global_cancel(
     shared: &Arc<SharedState>,
 ) {
     // The orders that were never sent (held with transmit off, ibx#509)
-    // end as their own cancel ends them (paper 09/10/2026).
-    let mut unsent: Vec<OrderId> = context.unsent.keys().copied().collect();
-    unsent.sort_unstable();
-    for &id in &unsent {
-        end_unsent(context, shared, id);
-    }
+    // are in the book with the others (ibx#595): they end in its walk, as
+    // their own cancel ends them (paper 09/10/2026).
+    let unsent: Vec<OrderId> = context.unsent.keys().copied().collect();
+    let held: Vec<(OrderId, crate::engine::context::BookEntry)> = unsent.iter().map(|&id| {
+        let entry = context.held_book.get(&id).cloned().unwrap_or_else(|| crate::engine::context::BookEntry {
+            parent: context.unsent.get(&id).map_or(0, |h| h.2), ..Default::default()
+        });
+        (id, entry)
+    }).collect();
     // The orders that wait (a what-if is not an order: it keeps waiting),
     // and those the reference kept pending.
     let parked = std::mem::take(&mut context.rth_parked);
@@ -1892,25 +1895,43 @@ fn global_cancel(
         api_cancelled(context, shared, &req);
     }
 
-    // The book, in its order: the working orders, and the ended ones the
-    // reference still holds (ibx#545), but for those this cancel ended.
+    // The book, in its order: the working orders, the ended ones the
+    // reference still holds (ibx#545) and the held ones (ibx#595).
+    #[derive(PartialEq)]
+    enum Kind { Working, Ended, Held }
     let kept = context.ended_orders(Instant::now());
     let table = book_table_size(context.book_peak);
-    let mut book: Vec<(OrderId, OrderId, crate::engine::context::BookEntry, bool)> = context.book.iter()
+    let mut book: Vec<(OrderId, OrderId, crate::engine::context::BookEntry, Kind)> = context.book.iter()
         .filter(|(id, _)| context.order(**id).is_some())
-        .map(|(&id, e)| (id, context.server_id(id), e.clone(), false))
-        .chain(kept.into_iter().filter(|e| !unsent.contains(&e.order_id)).map(|e| (e.order_id, e.server_id, e.entry, true)))
+        .map(|(&id, e)| (id, context.server_id(id), e.clone(), Kind::Working))
+        .chain(kept.into_iter().map(|e| (e.order_id, e.server_id, e.entry, Kind::Ended)))
+        .chain(held.into_iter().map(|(id, e)| (id, context.server_id(id), e, Kind::Held)))
         .collect();
     book.sort_by_key(|(_, server, e, _)| (book_bucket(*server, table), e.seq));
     book.sort_by_key(|(_, _, e, _)| e.parent != 0);
 
+    // The first order of an OCA group met in the walk, whatever its state,
+    // stands for its group: the others are passed over, and one held stays
+    // held (ibx#595; paper 11/10 and 15/10/2026, held orders of one group:
+    // the one met first ended, the other left held at each global cancel).
     let mut groups: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut taken: std::collections::HashSet<OrderId> = std::collections::HashSet::new();
-    for (id, server, entry, ended) in book {
+    for (id, server, entry, kind) in book {
         if !entry.oca_group.is_empty() && !groups.insert(entry.oca_group.clone()) {
             continue;
         }
         if entry.parent != 0 && taken.contains(&entry.parent) {
+            // A held child ends with its parent (not observed yet: ibx
+            // keeps what it did before ibx#595).
+            if kind == Kind::Held && end_unsent(context, shared, id) {
+                taken.insert(id);
+            }
+            continue;
+        }
+        if kind == Kind::Held {
+            if end_unsent(context, shared, id) {
+                taken.insert(id);
+            }
             continue;
         }
         // An ended order cannot be cancelled: 161 to its client, after
@@ -1918,7 +1939,7 @@ fn global_cancel(
         // stand for its children: paper
         // 09/10/2026, a bracket cancelled 5 s before gave 161 for its
         // parent and for the first of its two children.
-        if ended {
+        if kind == Kind::Ended {
             if entry.owner.is_none_or(|owner| owner == context.api_client_id) {
                 shared.orders.push_order_notice(id, 161, format!(
                     "Cancel attempted when order is not in a cancellable state.  Order permId ={}", server));
@@ -3375,9 +3396,15 @@ fn end_unsent(context: &mut Context, shared: &Arc<SharedState>, order_id: OrderI
         format!("Cancel attempted when order is not in a cancellable state.  Order permId ={}", perm_id));
     context.finish_unsent(order_id, OrderStatus::Cancelled);
     // The reference keeps it in its book for the session: a later global
-    // cancel answers 161 for it each time (ibx#545).
-    let entry = crate::engine::context::BookEntry { parent: parent_id, ..Default::default() };
-    context.keep_ended(order_id, perm_id, entry, None);
+    // cancel answers 161 for it each time (ibx#545), in the place and with
+    // the OCA group it had when held (ibx#595).
+    match context.held_book.remove(&order_id) {
+        Some(entry) => context.keep_held_ended(order_id, perm_id, entry),
+        None => {
+            let entry = crate::engine::context::BookEntry { parent: parent_id, ..Default::default() };
+            context.keep_ended(order_id, perm_id, entry, None);
+        }
+    }
     true
 }
 
@@ -3426,12 +3453,13 @@ fn group_contracts_unknown(context: &mut Context, order_id: OrderId) -> Option<V
 /// sent.
 pub(crate) fn hold_order(
     conn: &mut Option<Connection>, context: &mut Context, hb: &mut HeartbeatState,
-    order_id: OrderId, instrument: crate::types::InstrumentId, qty: crate::types::Qty, parent_id: i64,
+    order_id: OrderId, instrument: crate::types::InstrumentId, qty: crate::types::Qty, parent_id: i64, oca_group: &str,
 ) {
     // Held again with new values: the order stays on the contract it has,
     // which its lookup may have moved to another slot since.
     let instrument = context.unsent.get(&order_id).map_or(instrument, |h| h.0);
     context.unsent.insert(order_id, (instrument, qty, parent_id));
+    context.hold_entry(order_id, parent_id, oca_group);
     // Its permId is the next id when it is placed, not when it is sent
     // (paper 09/10/2026: the held orders 37333 and 37334 took the two ids
     // before the next order placed).
@@ -6003,6 +6031,62 @@ mod tests {
         assert!(notices.is_empty());
     }
 
+    // ibx#595, the reference 10.51 on paper, 15/10/2026, market closed:
+    // three cases in one session, orders held with transmit off on AAPL.
+    // The held orders are in the book under their permIds and are walked
+    // with the others; the first order of an OCA group met in the walk
+    // stands for its group, so the other one stays held (N: the first
+    // placed; AE: the second placed, met after the fourth).
+    #[test]
+    fn global_cancel_walks_the_held_orders_in_the_book() {
+        fn cancel(context: &mut Context) -> Vec<(i64, i64)> {
+            context.pending_orders.push(OrderRequest::GlobalCancel);
+            let shared = Arc::new(SharedState::new());
+            let (conn, mut peer) = crate::test_support::Peer::pair();
+            drain_and_send_orders(&mut Some(conn), context, "DU1", &mut HeartbeatState::new(), false, &shared);
+            assert!(peer.messages().is_empty());
+            shared.orders.drain_order_notices().into_iter().map(|n| (n.0, n.1)).collect()
+        }
+        fn hold(context: &mut Context, first: OrderId, perm: OrderId, n: i64, group: &[i64]) {
+            for k in 0..n {
+                let id = first + k;
+                context.unsent.insert(id, (0, crate::types::QTY_SCALE, 0));
+                context.bind_server_id(id, perm + k);
+                let oca = if group.contains(&(k + 1)) { format!("c551-{first}") } else { String::new() };
+                context.hold_entry(id, 0, &oca);
+            }
+        }
+        let ended = |ids: &[i64]| -> Vec<(i64, i64)> { ids.iter().flat_map(|&i| [(i, 202), (i, 161)]).collect() };
+        let again = |ids: &[i64]| -> Vec<(i64, i64)> { ids.iter().map(|&i| (i, 161)).collect() };
+        let mut context = Context::new();
+        context.order_ids.start_at(FIRST as i32);
+        context.api_client_id = 7;
+
+        // N: four held, the first two in one group.
+        hold(&mut context, 57714, 976194598, 4, &[1, 2]);
+        assert_eq!(cancel(&mut context), ended(&[57717, 57716, 57715]));
+        assert!(context.unsent.contains_key(&57714), "the first of the group stays held");
+        assert_eq!(cancel(&mut context), again(&[57717, 57716, 57715]));
+
+        // AD: six held alone.
+        hold(&mut context, 57718, 976194602, 6, &[]);
+        let mut want = ended(&[57723, 57722, 57721, 57720, 57719, 57718]);
+        want.extend(again(&[57717, 57716, 57715]));
+        assert_eq!(cancel(&mut context), want);
+        assert_eq!(cancel(&mut context), again(&[57723, 57722, 57721, 57720, 57719, 57718, 57717, 57716, 57715]));
+
+        // AE: five held, the second and the fourth in one group; the book
+        // has grown to 32 places.
+        hold(&mut context, 57724, 976194608, 5, &[2, 4]);
+        let mut want = again(&[57723, 57722, 57721, 57720, 57719, 57718, 57717, 57716, 57715]);
+        want.extend(ended(&[57728, 57727, 57726, 57724]));
+        assert_eq!(cancel(&mut context), want);
+        assert!(context.unsent.contains_key(&57725), "the second placed stays held");
+        assert_eq!(cancel(&mut context),
+            again(&[57723, 57722, 57721, 57720, 57719, 57718, 57717, 57716, 57715, 57728, 57727, 57726, 57724]));
+        assert!(context.unsent.contains_key(&57714) && context.unsent.contains_key(&57725));
+    }
+
     // ibx#545, the reference's run of 09/10/2026 (cases of ibx#509): a
     // held order ended by the global cancel, then 161 for the ended
     // orders of the book in the book's order, a child last. 37347 had
@@ -7226,7 +7310,7 @@ mod tests {
         let mut hb = HeartbeatState::new();
         let one = crate::types::QTY_SCALE;
         for id in [40, 41, 42] {
-            hold_order(&mut conn, &mut context, &mut hb, id, 0, one, if id == 41 { 40 } else { 0 });
+            hold_order(&mut conn, &mut context, &mut hb, id, 0, one, if id == 41 { 40 } else { 0 }, "");
         }
         assert!(drain_frames(&mut context, &shared, &mut conn, &mut server).is_empty(), "nothing sent");
         assert!(shared.orders.drain_order_updates().is_empty() && shared.orders.drain_order_errors().is_empty());
@@ -7257,7 +7341,7 @@ mod tests {
         let slot = context.market.try_register_unresolved().unwrap();
         context.set_symbol(slot, "AAPL".to_string());
         context.market.set_routing(slot, "STK", "SMART");
-        hold_order(&mut conn, &mut context, &mut hb, 43, slot, one, 0);
+        hold_order(&mut conn, &mut context, &mut hb, 43, slot, one, 0, "");
         let frames = drain_frames(&mut context, &shared, &mut conn, &mut server);
         // The internal name of the lookup, as its answer maps back (ibx#698).
         let lookup = conn.as_ref().unwrap().internal_name(tag(&frames[0], 320).unwrap());
@@ -7266,7 +7350,7 @@ mod tests {
         assert!(order_contract_reply(&mut context, &shared, &lookup, reply.replace('|', "\x01").as_bytes()));
         assert_eq!(context.unsent.get(&43).map(|h| h.0), Some(0), "the slot of the contract found");
         // Held again with another quantity, under the slot it first had.
-        hold_order(&mut conn, &mut context, &mut hb, 43, slot, 2 * one, 0);
+        hold_order(&mut conn, &mut context, &mut hb, 43, slot, 2 * one, 0, "");
         assert_eq!(context.unsent.get(&43), Some(&(0, 2 * one, 0)));
         assert!(drain_frames(&mut context, &shared, &mut conn, &mut server).is_empty(), "no second lookup");
         context.pending_orders.push(OrderRequest::SubmitLimit { order_id: 43, instrument: slot, side: Side::Buy, qty: 1, price: px(100.0) });

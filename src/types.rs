@@ -2170,7 +2170,7 @@ pub enum ControlCommand {
     /// it but the lookup of a contract given without a conId; the engine
     /// keeps it, unlisted, for its cancel. The client sends it as a new
     /// order when its group is transmitted.
-    HoldOrder { order_id: OrderId, instrument: InstrumentId, qty: Qty, parent_id: i64 },
+    HoldOrder { order_id: OrderId, instrument: InstrumentId, qty: Qty, parent_id: i64, oca_group: String },
     /// Register an instrument from external caller (bridge mode).
     RegisterInstrument { con_id: i64, symbol: String, sec_type: String, exchange: String, reply_tx: Option<crossbeam_channel::Sender<Result<InstrumentId, String>>> },
     /// A slot of its own for the contract of an order given without a
