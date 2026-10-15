@@ -428,7 +428,7 @@ fn the_error_check_finds_each_kind_of_difference() {
     let ok = [
         raise(201, "Order rejected - reason:%s"),
         raise(10147, "OrderId %s that needs to be cancelled is not found."),
-        raise(321, "Error validating request.-'v' : cause - Invalid trigger method"),
+        raise(321, "Error validating request.-'PlaceOrder(3)' : cause - Invalid trigger method"),
         raise(104, "Cannot modify a filled order."),
     ];
     assert_eq!(differences(&ok, &codes), Vec::<String>::new());
@@ -438,7 +438,7 @@ fn the_error_check_finds_each_kind_of_difference() {
     assert!(text[0].contains("is not the gateway's text"), "{text:?}");
     let wrapped = differences(&[raise(146, "Invalid trigger method")], &codes);
     assert!(wrapped[0].contains("as the cause of 321"), "{wrapped:?}");
-    let own = differences(&[raise(321, "Error validating request.-'v' : cause - Duplicate order id")], &codes);
+    let own = differences(&[raise(321, "Error validating request.-'PlaceOrder(3)' : cause - Duplicate order id")], &codes);
     assert!(own[0].contains("itself"), "{own:?}");
 }
 

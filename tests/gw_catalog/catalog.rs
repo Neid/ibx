@@ -115,14 +115,12 @@ pub fn local_rules() -> Vec<LocalRule> {
 
 /// The text of a rule as a client of the current official library gets
 /// it (ibx#548, paper 11/10/2026, sixteen rules run on the reference):
-/// the 10.40 table names the handler of the older message form; the
-/// current one is named `v`, and its text for an order without an
-/// exchange ends with a period. The 10.51 table names `PlaceOrder(3)`,
-/// seen on 10.51 from a client at session level 225; ibx answers level
-/// 214 and keeps `v` until the name at that level is observed (ibx#591).
+/// the 10.40 table names the handler of the older message form; 10.51
+/// names it `PlaceOrder(3)` at every session level (seen on 10.51 at
+/// levels 214 and 225, ibx#591), and its text for an order without an
+/// exchange ends with a period.
 fn as_a_current_client_gets_it(text: &str) -> String {
-    let text = text.replace("Error validating request.-'bH' :", "Error validating request.-'v' :")
-        .replace("Error validating request.-'PlaceOrder(3)' :", "Error validating request.-'v' :");
+    let text = text.replace("Error validating request.-'bH' :", "Error validating request.-'PlaceOrder(3)' :");
     match text.strip_suffix("cause - Missing order exchange") {
         Some(_) => text + ".",
         None => text,

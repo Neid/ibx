@@ -74,8 +74,8 @@ def test_fa_on_non_fa_session_gives_321():
     c.replace_fa(5, 1, "<ListOfGroups/>")
     c._test_dispatch_once()
     assert w.errors == [
-        (2147483647, 321, "Error validating request.-'b9' : cause - FA data operations ignored for non FA customers."),
-        (5, 321, "Error validating request.-'b1' : cause - FA data operations ignored for non FA customers."),
+        (-1, 321, "Error validating request.-'ReqFA(18)' : cause - FA data operations ignored for non FA customers."),
+        (5, 321, "Error validating request.-'ReplaceFA(19)' : cause - FA data operations ignored for non FA customers."),
     ]
 
 
@@ -159,7 +159,7 @@ def test_req_smart_components_unknown_code_is_refused():
     c.req_smart_components(1, "a]AMEX")
     c._test_dispatch_once()
     assert w.req_id is None
-    assert w.errors == [(1, 321, "Error validating request.-'V' : cause - Invalid BBO exchange/security type code")]
+    assert w.errors == [(1, 321, "Error validating request.-'ReqExchangeMapping(83)' : cause - Invalid BBO exchange/security type code")]
 
 
 def test_req_smart_components_signature():

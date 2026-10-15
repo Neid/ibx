@@ -474,21 +474,21 @@ mod tests {
         let text = |r: Option<(i64, String)>| r.map(|(code, t)| format!("{code} {t}"));
         let no_exch = crate::api::types::Contract { exchange: String::new(), ..c("OPT", 1) };
         assert_eq!(text(ClientCore::option_calc_refusal(&no_exch, true, None)).unwrap(),
-            "321 Error validating request.-'bJ' : cause - Please enter exchange");
+            "321 Error validating request.-'ReqCalcOptionPrice(55)' : cause - Please enter exchange");
         assert_eq!(text(ClientCore::option_calc_refusal(&c("STK", 0), false, None)).unwrap(),
-            "321 Error validating request.-'bI' : cause - Calculation of Implied Volatility supported for option securities only");
+            "321 Error validating request.-'ReqCalcImpliedVolatility(54)' : cause - Calculation of Implied Volatility supported for option securities only");
         assert_eq!(text(ClientCore::option_calc_refusal(&c("STK", 0), true, None)).unwrap(),
-            "321 Error validating request.-'bJ' : cause - Calculation of Option Price supported for option securities only");
+            "321 Error validating request.-'ReqCalcOptionPrice(55)' : cause - Calculation of Option Price supported for option securities only");
         // With a conId, a stock passes the local checks; the lookup answers 2114 / 2116.
         assert!(ClientCore::option_calc_refusal(&c("STK", 265598), true, None).is_none());
         assert_eq!(text(ClientCore::option_calc_refusal(&c("OPT", 0), true, None)).unwrap(),
-            "321 Error validating request.-'bJ' : cause - When the local symbol field is empty, please fill all option fields (right, strike, expiry)");
+            "321 Error validating request.-'ReqCalcOptionPrice(55)' : cause - When the local symbol field is empty, please fill all option fields (right, strike, expiry)");
         let full = crate::api::types::Contract { last_trade_date_or_contract_month: "20260306".into(), right: "C".into(), ..c("OPT", 0) };
         let features = vec!["ZEROSTRKOPT".to_string()];
         assert!(ClientCore::option_calc_refusal(&full, true, Some(&features)).is_none());
         assert!(ClientCore::option_calc_refusal(&full, true, None).is_some(), "strike 0 needs the account feature");
         assert_eq!(text(ClientCore::option_calc_refusal(&c("FOP", 0), true, None)).unwrap(),
-            "321 Error validating request.-'bJ' : cause - Please enter a local symbol or an expiry");
+            "321 Error validating request.-'ReqCalcOptionPrice(55)' : cause - Please enter a local symbol or an expiry");
         // The implied volatility request has only the first two checks.
         assert!(ClientCore::option_calc_refusal(&c("OPT", 0), false, None).is_none());
     }

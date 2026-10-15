@@ -1172,7 +1172,7 @@ fn account_summary_empty_tags_refused_with_321() {
     let mut w = RecordingWrapper::default();
     client.process_msgs(&mut w);
 
-    assert!(w.events.iter().any(|e| e == "error:7:321:Error validating request.-'b2' : cause - Tags cannot be null"), "{:?}", w.events);
+    assert!(w.events.iter().any(|e| e == "error:7:321:Error validating request.-'ReqAccountSummary(62)' : cause - Tags cannot be null"), "{:?}", w.events);
     assert!(!w.events.iter().any(|e| e.starts_with("account_summary:7:")), "{:?}", w.events);
     assert!(!w.events.iter().any(|e| e == "account_summary_end:7"), "{:?}", w.events);
 }

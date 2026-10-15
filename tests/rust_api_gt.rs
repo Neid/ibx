@@ -1366,7 +1366,7 @@ fn api_gt_suite() {
         client.process_msgs(&mut wrapper);
         let cbs = wrapper.drain();
         let refused = cbs.iter().any(|c| matches!(c, Cb::Error { req_id: 900, code: 321, msg }
-            if msg == "Error validating request.-'V' : cause - Invalid BBO exchange/security type code"));
+            if msg == "Error validating request.-'ReqExchangeMapping(83)' : cause - Invalid BBO exchange/security type code"));
         if !refused {
             println!("FAIL (no 321 for an unknown code: {:?})", cbs.len());
             fail_count += 1;
@@ -1578,7 +1578,7 @@ fn api_snapshot_live() {
     }
     client.disconnect();
 
-    let refusal = "error 704 321 Error validating request.-'bQ' : cause - Snapshot market data subscription is not applicable to generic ticks";
+    let refusal = "error 704 321 Error validating request.-'ReqMktData(1)' : cause - Snapshot market data subscription is not applicable to generic ticks";
     assert!(w.events.iter().any(|(_, e)| e == refusal), "no generic tick refusal");
     for req in [701, 702, 703] {
         let end = w.events.iter().find(|(_, e)| *e == format!("end {req}")).map(|(ms, _)| *ms);
@@ -1857,7 +1857,7 @@ fn api_smart_components_live() {
     for (req, comps) in &w.components {
         println!("  smart components {req}: {comps:?}");
     }
-    assert!(w.events.iter().any(|e| e == "error 9490 321 Error validating request.-'V' : cause - Invalid BBO exchange/security type code"));
+    assert!(w.events.iter().any(|e| e == "error 9490 321 Error validating request.-'ReqExchangeMapping(83)' : cause - Invalid BBO exchange/security type code"));
     assert!(bbo.ends_with("0001"), "AAPL bboExchange {bbo:?}");
     for req in [9492, 9493] {
         let comps = w.components.iter().find(|(r, _)| *r == req).map(|(_, c)| c.clone()).unwrap_or_default();
@@ -2220,7 +2220,7 @@ fn api_historical_b1_live() {
     let has = |p: &str| w.events.iter().any(|e| e.starts_with(p));
     assert!(has("last 9510 ") && w.events.iter().any(|e| e.starts_with("last 9510 ") && e.ends_with(" true")), "trade ticks with the end");
     assert!(has("bidask 9512 "), "bid/ask ticks");
-    assert!(has("error 9519 321 Error validating request.-'bP' : cause - Number of ticks must be > 0"));
+    assert!(has("error 9519 321 Error validating request.-'ReqHistoricalTicks(96)' : cause - Number of ticks must be > 0"));
     assert!(has("mid 9522 "), "EUR.USD trades come as midpoints");
     assert!(w.events.iter().any(|e| e.starts_with("end 9531 ") && e.ends_with(" US/Eastern")), "end strings");
     let updates = w.events.iter().filter(|e| e.starts_with("update 9531 ")).count();
@@ -2346,7 +2346,7 @@ fn api_logon_values_live() {
     let cbs = wrapper.drain();
     client.disconnect();
     assert_eq!(errors(&cbs, 120), vec![(321,
-        "Error validating request.-'bM' : cause - Historical data request for 200 year(s) rejected. Max API Backfill Years=199".to_string())]);
+        "Error validating request.-'ReqHistoricalData(20)' : cause - Historical data request for 200 year(s) rejected. Max API Backfill Years=199".to_string())]);
     assert!(cbs.iter().any(|c| matches!(c, Cb::HistoricalData { req_id: 121, .. })), "bars through the historical farm");
 }
 
@@ -2437,7 +2437,7 @@ fn api_accounts_algo_times_aon_live() {
     let hist = errors(&cbs, 130);
     println!("1978 bars: {:?}", hist);
     assert_eq!(hist.len(), 1);
-    assert!(hist[0].1.starts_with("Error validating request.-'bM' : cause - Historical data queries on this contract requesting any data earlier than 199 year(s) back from now which is "), "{:?}", hist);
+    assert!(hist[0].1.starts_with("Error validating request.-'ReqHistoricalData(20)' : cause - Historical data queries on this contract requesting any data earlier than 199 year(s) back from now which is "), "{:?}", hist);
 }
 
 // ── Depth books (ibx#451), focused ──
@@ -2668,8 +2668,8 @@ fn api_shared_requests_live() {
         assert!(w.events.iter().any(|(_, e)| e.starts_with(&format!("params {req} "))), "params of {req}");
     }
     let legal = ibx::control::generic_tick::legal_ones("STK");
-    assert!(has(&format!("error 836 321 Error validating request.-'bQ' : cause - Incorrect generic tick list of 999.  Legal ones for (STK) are: {legal}")));
-    assert!(has(&format!("error 837 321 Error validating request.-'bQ' : cause - Incorrect generic tick list of mdoff,292:.  Legal ones for (STK) are: {legal}")));
+    assert!(has(&format!("error 836 321 Error validating request.-'ReqMktData(1)' : cause - Incorrect generic tick list of 999.  Legal ones for (STK) are: {legal}")));
+    assert!(has(&format!("error 837 321 Error validating request.-'ReqMktData(1)' : cause - Incorrect generic tick list of mdoff,292:.  Legal ones for (STK) are: {legal}")));
 }
 
 // ── Option chain parameters (ibx#440), focused ──
@@ -2766,7 +2766,7 @@ fn api_option_chains_live() {
     assert!(aapl.iter().all(|r| r.2 == 265598 && r.4 == "100" && r.5 > 0 && r.6 > 0), "{aapl:?}");
     let again: Vec<_> = of(9421).into_iter().map(|r| (r.1, r.3, r.5, r.6)).collect();
     assert_eq!(again, aapl.iter().map(|r| (r.1.clone(), r.3.clone(), r.5, r.6)).collect::<Vec<_>>(), "same rows, same order");
-    assert!(w.events.contains(&"error 9422 321 Error validating request.-'cp' : cause - Invalid security type - OPT".to_string()), "{:?}", w.events);
+    assert!(w.events.contains(&"error 9422 321 Error validating request.-'ReqSecDefOptParams(78)' : cause - Invalid security type - OPT".to_string()), "{:?}", w.events);
     let es_rows = of(9424);
     assert!(front.is_some(), "ES front month");
     assert!(w.ends.contains(&9424), "end of 9424: {:?}", w.events);

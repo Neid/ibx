@@ -79,12 +79,12 @@ def test_ticks_request_local_answers():
     c.req_historical_ticks(3, aapl(), "not a date", "", 10, "TRADES", 1, False, [])
     c.req_historical_ticks(4, aapl(), t15, "", 10, "AGGTRADES", 1, False, [])
     c._test_dispatch_once()
-    errors = [(e[1], e[2], e[3][:40]) for e in w.events if e[0] == "error"]
+    errors = [(e[1], e[2], e[3][:62]) for e in w.events if e[0] == "error"]
     assert errors == [
-        (1, 321, "Error validating request.-'bP' : cause -"),
-        (2, 321, "Error validating request.-'bP' : cause -"),
-        (3, 10314, "Start Date/Time: The date, time, or time"),
-        (4, 10299, "Expected what to show is TRADES, please "),
+        (1, 321, "Error validating request.-'ReqHistoricalTicks(96)' : cause - N"),
+        (2, 321, "Error validating request.-'ReqHistoricalTicks(96)' : cause - I"),
+        (3, 10314, "Start Date/Time: The date, time, or time-zone entered is inval"),
+        (4, 10299, "Expected what to show is TRADES, please use that instead of AG"),
     ]
     texts = [e[3] for e in w.events if e[0] == "error"]
     assert texts[0].endswith("Number of ticks must be > 0")
@@ -108,6 +108,6 @@ def test_keep_up_to_date_refusals():
     c.req_historical_data(7, aapl(), "", "1 D", "1 hour", "BID_ASK", 0, 1, True, [])
     c._test_dispatch_once()
     assert [e for e in w.events if e[0] == "error"] == [
-        ("error", 6, 321, "Error validating request.-'bM' : cause - End date not supported with live updates"),
-        ("error", 7, 321, "Error validating request.-'bM' : cause - Source price not supported with live updates"),
+        ("error", 6, 321, "Error validating request.-'ReqHistoricalData(20)' : cause - End date not supported with live updates"),
+        ("error", 7, 321, "Error validating request.-'ReqHistoricalData(20)' : cause - Source price not supported with live updates"),
     ]

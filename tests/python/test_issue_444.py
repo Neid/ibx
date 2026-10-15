@@ -74,5 +74,5 @@ def test_invalid_generic_tick_list_is_refused():
     errors = [e for e in w.events if e[0] == "error"]
     assert len(errors) == 1
     assert errors[0][2] == 321
-    assert errors[0][3].startswith("Error validating request.-'bQ' : cause - Incorrect generic tick list of 999.  "
+    assert errors[0][3].startswith("Error validating request.-'ReqMktData(1)' : cause - Incorrect generic tick list of 999.  "
                                    "Legal ones for (STK) are: 100(Option Volume),101(Option Open Interest),")

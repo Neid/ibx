@@ -298,7 +298,7 @@ impl BarSize {
 /// Text of a local refusal of a bar request, as the reference sends it
 /// with error 321 (ibx#430).
 pub fn bar_request_refusal(cause: &str) -> String {
-    format!("Error validating request.-'bM' : cause - {}", cause)
+    format!("Error validating request.-'ReqHistoricalData(20)' : cause - {}", cause)
 }
 
 /// Text of error 10314 for an end date the reference cannot read.
@@ -1242,7 +1242,7 @@ impl TickSource {
 
 /// Text of the local refusals of a historical ticks request (321).
 pub fn ticks_refusal(cause: &str) -> String {
-    format!("Error validating request.-'bP' : cause - {}", cause)
+    format!("Error validating request.-'ReqHistoricalTicks(96)' : cause - {}", cause)
 }
 
 /// A historical ticks request that passed the reference checks (ibx#432).
@@ -1922,19 +1922,19 @@ mod tests {
         let code = |r: Result<CheckedBarRequest, (i32, String)>| r.unwrap_err();
         assert_eq!(code(check_bar_request("garbage", "1 D", "1 day", "TRADES", None, false, "", None, false)).0, 10314);
         assert_eq!(code(check_bar_request("", "400 D", "1 day", "TRADES", None, false, "", None, false)),
-            (321, "Error validating request.-'bM' : cause - Historical data requests for durations longer than 365 days must be made in years.".to_string()));
+            (321, "Error validating request.-'ReqHistoricalData(20)' : cause - Historical data requests for durations longer than 365 days must be made in years.".to_string()));
         assert_eq!(code(check_bar_request("20260102 10:00:00", "1 D", "1 hour", "ADJUSTED_LAST", None, false, "", None, false)).1,
-            "Error validating request.-'bM' : cause - End date not supported with adjusted last");
+            "Error validating request.-'ReqHistoricalData(20)' : cause - End date not supported with adjusted last");
         assert_eq!(code(check_bar_request("", "1 Y", "1 week", "ADJUSTED_LAST", None, false, "", None, false)).1,
-            "Error validating request.-'bM' : cause - Multi day bar size not supported with adjusted last");
+            "Error validating request.-'ReqHistoricalData(20)' : cause - Multi day bar size not supported with adjusted last");
         assert!(check_bar_request("", "1 Y", "1 day", "ADJUSTED_LAST", None, false, "", None, false).is_ok());
         assert_eq!(code(check_bar_request("", "1 D", "1 sec", "TRADES", None, false, "", None, false)).0, 321);
         assert_eq!(code(check_bar_request("", "1 D", "1 day", "YIELD", None, false, "", None, false)).1,
-            "Error validating request.-'bM' : cause - What to show value of YIELD rejected.");
+            "Error validating request.-'ReqHistoricalData(20)' : cause - What to show value of YIELD rejected.");
         assert_eq!(code(check_bar_request("", "1 D", "1 day", "TRADES", Some(4), false, "", None, false)).1,
-            "Error validating request.-'bM' : cause - Date formatting selection of 4 rejected.");
+            "Error validating request.-'ReqHistoricalData(20)' : cause - Date formatting selection of 4 rejected.");
         assert_eq!(code(check_bar_request("", "1 M", "1 hour", "SCHEDULE", None, false, "", None, false)).1,
-            "Error validating request.-'bM' : cause - Only daily resolution supported for Schedule requests");
+            "Error validating request.-'ReqHistoricalData(20)' : cause - Only daily resolution supported for Schedule requests");
         assert!(check_bar_request("", "1 M", "1 day", "SCHEDULE", None, false, "", None, false).is_ok());
         // The issue's checks: 1 year and 3 months bars over 5 Y.
         assert!(check_bar_request("", "5 Y", "1 year", "TRADES", None, false, "", None, false).is_ok());
@@ -1945,24 +1945,24 @@ mod tests {
             assert!(check_bar_request("", "1 D", size, "TRADES", Some(1), true, "STK", None, false).is_ok(), "{}", size);
         }
         assert_eq!(code(check_bar_request("20261001 10:00:00 US/Eastern", "1 D", "1 hour", "TRADES", Some(1), true, "STK", None, false)),
-            (321, "Error validating request.-'bM' : cause - End date not supported with live updates".to_string()));
+            (321, "Error validating request.-'ReqHistoricalData(20)' : cause - End date not supported with live updates".to_string()));
         for what in ["BID_ASK", "ADJUSTED_LAST", "HISTORICAL_VOLATILITY"] {
             assert_eq!(code(check_bar_request("", "1 D", "1 hour", what, Some(1), true, "STK", None, false)).1,
-                "Error validating request.-'bM' : cause - Source price not supported with live updates", "{}", what);
+                "Error validating request.-'ReqHistoricalData(20)' : cause - Source price not supported with live updates", "{}", what);
         }
         for what in ["TRADES", "MIDPOINT", "BID", "ASK"] {
             assert!(check_bar_request("", "1 D", "1 hour", what, Some(1), true, "STK", None, false).is_ok(), "{}", what);
         }
         assert_eq!(code(check_bar_request("", "1 D", "1 hour", "TRADES", Some(1), true, "BAG", None, false)).1,
-            "Error validating request.-'bM' : cause - Live updates for combos are not supported");
+            "Error validating request.-'ReqHistoricalData(20)' : cause - Live updates for combos are not supported");
         // ibx#421: years above the logon limit, after the duration checks.
         assert_eq!(code(check_bar_request("", "2 Y", "1 day", "TRADES", None, false, "", Some(1), false)).1,
-            "Error validating request.-'bM' : cause - Historical data request for 2 year(s) rejected. Max API Backfill Years=1");
+            "Error validating request.-'ReqHistoricalData(20)' : cause - Historical data request for 2 year(s) rejected. Max API Backfill Years=1");
         assert!(check_bar_request("", "199 Y", "1 month", "TRADES", None, false, "", Some(199), false).is_ok());
         assert_eq!(code(check_bar_request("", "400 D", "1 day", "TRADES", None, false, "", Some(1), false)).1,
-            "Error validating request.-'bM' : cause - Historical data requests for durations longer than 365 days must be made in years.");
+            "Error validating request.-'ReqHistoricalData(20)' : cause - Historical data requests for durations longer than 365 days must be made in years.");
         assert_eq!(code(check_bar_request("", "2 Y", "1 day", "YIELD", None, false, "", Some(1), false)).1,
-            "Error validating request.-'bM' : cause - Historical data request for 2 year(s) rejected. Max API Backfill Years=1");
+            "Error validating request.-'ReqHistoricalData(20)' : cause - Historical data request for 2 year(s) rejected. Max API Backfill Years=1");
     }
 
     // ibx#421: the second years rule: with
@@ -1984,7 +1984,7 @@ mod tests {
 
         let code = |r: Result<CheckedBarRequest, (i32, String)>| r.unwrap_err();
         let refused = check_bar_request("19900101 00:00:00", "1 D", "1 day", "TRADES", None, false, "", Some(1), false);
-        assert!(code(refused).1.starts_with("Error validating request.-'bM' : cause - Historical data queries on this contract requesting any data earlier than 1 year(s) back from now which is "));
+        assert!(code(refused).1.starts_with("Error validating request.-'ReqHistoricalData(20)' : cause - Historical data queries on this contract requesting any data earlier than 1 year(s) back from now which is "));
         assert!(check_bar_request("19900101 00:00:00", "1 D", "1 day", "TRADES", None, false, "", Some(1), true).is_ok(),
             "includeExpired");
         assert!(check_bar_request("19900101 00:00:00", "1 D", "1 day", "TRADES", None, false, "", None, false).is_ok(),
@@ -2540,9 +2540,9 @@ mod tests {
         assert!(w.is_empty());
         assert_eq!((ok.source, ok.ignore_size_filter, ok.start.unwrap().secs), (TickSource::Trades, false, ET_15H));
         let refusal = |n: i32, what: &str| ticks(t15, "", n, what, false, "STK").1.unwrap_err();
-        assert_eq!(refusal(0, "TRADES"), (321, "Error validating request.-'bP' : cause - Number of ticks must be > 0".into()));
-        assert_eq!(refusal(10, "FOO"), (321, "Error validating request.-'bP' : cause - Invalid source price".into()));
-        assert_eq!(refusal(10, ""), (321, "Error validating request.-'bP' : cause - Source price must not be empty".into()));
+        assert_eq!(refusal(0, "TRADES"), (321, "Error validating request.-'ReqHistoricalTicks(96)' : cause - Number of ticks must be > 0".into()));
+        assert_eq!(refusal(10, "FOO"), (321, "Error validating request.-'ReqHistoricalTicks(96)' : cause - Invalid source price".into()));
+        assert_eq!(refusal(10, ""), (321, "Error validating request.-'ReqHistoricalTicks(96)' : cause - Source price must not be empty".into()));
         let (w, err) = ticks("not a date", "", 10, "TRADES", false, "STK");
         assert!(w.is_empty());
         let err = err.unwrap_err();
@@ -2566,9 +2566,9 @@ mod tests {
         assert!(ticks(t15, "", 100, "BID_ASK", true, "STK").1.unwrap().ignore_size_filter);
         assert!(!ticks(t15, "", 100, "TRADES", true, "STK").1.unwrap().ignore_size_filter);
         assert_eq!(check_ticks_request(t15, "", 10, "TRADES", false, "STK", "", "UTC", ET_15H).1.unwrap_err().1,
-            "Error validating request.-'bP' : cause - Exchange must not be empty");
+            "Error validating request.-'ReqHistoricalTicks(96)' : cause - Exchange must not be empty");
         assert_eq!(ticks(t15, "", 10, "TRADES", false, "BAG").1.unwrap_err().1,
-            "Error validating request.-'bP' : cause - Combo types are not supported");
+            "Error validating request.-'ReqHistoricalTicks(96)' : cause - Combo types are not supported");
     }
 
     fn tick_query(source: TickSource, start: Option<i64>, end: Option<i64>, filter: bool) -> TickQuery {

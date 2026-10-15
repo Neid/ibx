@@ -6,8 +6,8 @@ import time
 
 from ibx import Contract, EClient, EWrapper
 
-NO_SECDEFTA = "Error validating request.-'ce' : cause - Failed to request matching symbols"
-YEARS = ("Error validating request.-'bM' : cause - Historical data request for 2 year(s) rejected. "
+NO_SECDEFTA = "Error validating request.-'ReqMatchingSymbols(81)' : cause - Failed to request matching symbols"
+YEARS = ("Error validating request.-'ReqHistoricalData(20)' : cause - Historical data request for 2 year(s) rejected. "
          "Max API Backfill Years=1")
 
 

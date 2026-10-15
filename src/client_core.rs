@@ -395,7 +395,7 @@ pub fn connection_time(at: &jiff::Zoned, zone: &str) -> String {
 /// A session whose logon feature list has no SECDEFTA (`allowed` false)
 /// is refused first, with the reference's cause (ibx#421).
 pub fn matching_symbols_pattern(pattern: &str, allowed: bool) -> Result<String, (i64, String)> {
-    let refuse = |cause: String| Err((321, format!("Error validating request.-'ce' : cause - {}", cause)));
+    let refuse = |cause: String| Err((321, format!("Error validating request.-'ReqMatchingSymbols(81)' : cause - {}", cause)));
     if !allowed {
         log::info!("Not allowed (SECDEFTA feature not set).");
         return refuse("Failed to request matching symbols".into());
@@ -842,7 +842,7 @@ pub const ACCOUNT_SUMMARY_MAX: usize = 2;
 
 /// The reference's refusals of an account summary request (ibx#479).
 fn summary_refusal(cause: &str) -> (i64, String) {
-    (321, format!("Error validating request.-'b2' : cause - {}", cause))
+    (321, format!("Error validating request.-'ReqAccountSummary(62)' : cause - {}", cause))
 }
 
 /// A single portfolio position update.
@@ -1519,15 +1519,16 @@ pub const VERIFY_AND_AUTH_REQUEST_NO_INTENT: (i64, i64, &str) =
 pub const VERIFY_MESSAGE_OUT_OF_SEQUENCE: (i64, i64, &str) =
     (-1, 10095, "ApiVerify error:ApiVerifyMessage ignored. Message sequence error. State: verifyStatus=NONE, verifyInProgress=false");
 
-/// requestFA on a session that is not FA: the reference's error, with its
-/// request id for a request that has none (ibx#481).
+/// requestFA on a session that is not FA: the reference's error, with no
+/// request id (ibx#481; 10.51 gives -1 where 10.40 gave 2147483647,
+/// paper 15/10/2026, ibx#591).
 pub const REQUEST_FA_NOT_FA: (i64, i64, &str) =
-    (2147483647, 321, "Error validating request.-'b9' : cause - FA data operations ignored for non FA customers.");
+    (-1, 321, "Error validating request.-'ReqFA(18)' : cause - FA data operations ignored for non FA customers.");
 
 /// replaceFA on a session that is not FA: the reference's error code and
 /// text; the id is the request's (ibx#481).
 pub const REPLACE_FA_NOT_FA: (i64, &str) =
-    (321, "Error validating request.-'b1' : cause - FA data operations ignored for non FA customers.");
+    (321, "Error validating request.-'ReplaceFA(19)' : cause - FA data operations ignored for non FA customers.");
 
 /// The display groups, as the reference lists them with no window open
 /// (ibx#424).
@@ -3113,7 +3114,7 @@ impl ClientCore {
             let (code, text) = FUNDAMENTALS_NOT_ALLOWED;
             return Some((code as i32, text.to_string()));
         }
-        (sec_type != "STK").then(|| (321, "Error validating request.-'bL' : cause - Please enter a valid security type".to_string()))
+        (sec_type != "STK").then(|| (321, "Error validating request.-'FundamentalsData(52)' : cause - Please enter a valid security type".to_string()))
     }
 
     /// The local checks of a tick-by-tick request, in the reference's order
@@ -3132,11 +3133,11 @@ impl ClientCore {
         let sec_type = sec_type.to_ascii_uppercase();
         if matches!(sec_type.as_str(), "BAG" | "PDC") {
             return Err((321, format!(
-                "Error validating request.-'bT' : cause - '{}' security type is not supported in ReqTickByTick(97) request",
+                "Error validating request.-'ReqTickByTick(97)' : cause - '{}' security type is not supported in ReqTickByTick(97) request",
                 sec_type)));
         }
         let Some(tbt_type) = TbtType::from_api(tick_type) else {
-            return Err((321, "Error validating request.-'bT' : cause - Tick-by-tick data type is incorrect/not set.".to_string()));
+            return Err((321, "Error validating request.-'ReqTickByTick(97)' : cause - Tick-by-tick data type is incorrect/not set.".to_string()));
         };
         let (_, off) = shared.reference.tick_by_tick_limits();
         if off {
@@ -3240,7 +3241,7 @@ impl ClientCore {
     /// Check and start a req_pnl (ibx#478), as the reference: an empty or
     /// unknown account gives 321, a request id already running gives 102.
     pub fn request_pnl(&self, req_id: i64, account: &str, own_account: &str) -> Result<(), (i64, String)> {
-        pnl_account_refusal("cj", account, own_account)?;
+        pnl_account_refusal("ReqPnl(92)", account, own_account)?;
         if self.pnl_reqs.lock().unwrap().contains_key(&req_id) {
             return Err((102, "Duplicate ticker id".into()));
         }
@@ -3250,7 +3251,7 @@ impl ClientCore {
 
     /// Check and start a req_pnl_single (ibx#478); same checks as req_pnl.
     pub fn request_pnl_single(&self, req_id: i64, account: &str, own_account: &str, con_id: i64) -> Result<(), (i64, String)> {
-        pnl_account_refusal("ck", account, own_account)?;
+        pnl_account_refusal("ReqPnlSingle(94)", account, own_account)?;
         if self.pnl_single_reqs.lock().unwrap().contains_key(&req_id) {
             return Err((102, "Duplicate ticker id".into()));
         }
@@ -3282,7 +3283,7 @@ impl ClientCore {
             return Err(summary_refusal("Group name cannot be null"));
         }
         if group != "All" && group != "AllNonProp" {
-            return Err(summary_refusal("Group name is invalid"));
+            return Err(summary_refusal("Unified group name is invalid"));
         }
         let mut ledger: Vec<String> = Vec::new();
         let mut wire: Vec<&str> = Vec::new();
@@ -3476,7 +3477,7 @@ impl ClientCore {
     /// 321 under id -1, as the reference, and changes nothing.
     pub fn set_market_data_type(&self, control_tx: &ControlSender, mdt: i32) -> Option<(i64, String)> {
         if !(1..=4).contains(&mdt) {
-            return Some((321, "Error validating request.-'b0' : cause - Invalid market data type".to_string()));
+            return Some((321, "Error validating request.-'ReqMarketDataType(59)' : cause - Invalid market data type".to_string()));
         }
         self.market_data_type.store(mdt, Ordering::Relaxed);
         self.md_modes.lock().unwrap().apply(mdt);
@@ -3505,7 +3506,7 @@ impl ClientCore {
         let (code, sec_type_id) = split_bbo_exchange(bbo_exchange);
         match shared.reference.exchange_map(&code, sec_type_id) {
             ExchangeMapState::Unknown => Some(Err((321,
-                "Error validating request.-'V' : cause - Invalid BBO exchange/security type code".to_string()))),
+                "Error validating request.-'ReqExchangeMapping(83)' : cause - Invalid BBO exchange/security type code".to_string()))),
             ExchangeMapState::Ready(map) => Some(Ok(map)),
             ExchangeMapState::Waiting => {
                 self.smart_components_waiting.lock().unwrap()
@@ -3714,7 +3715,7 @@ impl ClientCore {
     /// groups, or the text of its refusal.
     pub fn query_display_groups(req_id: i64) -> Result<&'static str, String> {
         if req_id == i32::MAX as i64 {
-            return Err(display_group_refusal("bW", format!("Invalid request ID={req_id}")));
+            return Err(display_group_refusal("QueryDisplayGroups(67)", format!("Invalid request ID={req_id}")));
         }
         Ok(DISPLAY_GROUP_LIST)
     }
@@ -3724,13 +3725,13 @@ impl ClientCore {
     /// to 7; a request id subscribes once.
     pub fn subscribe_to_group_events(&self, req_id: i64, group_id: i32) -> Result<&'static str, String> {
         if req_id == i32::MAX as i64 {
-            return Err(display_group_refusal("bX", format!("Invalid request ID={req_id}")));
+            return Err(display_group_refusal("DisplayToGroupEvents(68)", format!("Invalid request ID={req_id}")));
         }
         if !(1..=7).contains(&group_id) {
-            return Err(display_group_refusal("bX", format!("Invalid window group ID={group_id}")));
+            return Err(display_group_refusal("DisplayToGroupEvents(68)", format!("Invalid window group ID={group_id}")));
         }
         if !self.display_group_subs.lock().unwrap().insert(req_id) {
-            return Err(display_group_refusal("bX", format!("Request with ID={req_id} was already subscribed.")));
+            return Err(display_group_refusal("DisplayToGroupEvents(68)", format!("Request with ID={req_id} was already subscribed.")));
         }
         Ok(DISPLAY_GROUP_NO_CONTRACT)
     }
@@ -5335,9 +5336,9 @@ impl ClientCore {
                     "Misc options value={} is invalid for key=manual in ReqScannerSubscription(22) request. Valid values are: 0, 1", value)));
             }
         }
-        if !options.is_empty() {
-            return Err((321, "Error validating request.-'co' : cause - Historical data: 'manual' requires Verified API.".into()));
-        }
+        // A valid `manual` option is taken on 10.51 (paper 15/10/2026,
+        // session level 214: the scan is served; 10.40 refused it with 321,
+        // ibx#456, ibx#591).
 
         Ok(crate::control::scanner::ScannerSubscription {
             instrument: sub.instrument.clone(),
@@ -5355,7 +5356,7 @@ impl ClientCore {
     /// (ibx#459), all 321: every requested provider must be a subscribed
     /// source; the total, capped at 300, must be positive.
     pub fn historical_news_refusal(provider_codes: &str, total_results: i64, sources: &[String]) -> Option<(i64, String)> {
-        let refuse = |cause: String| Some((321, format!("Error validating request.-'ca' : cause - {}", cause)));
+        let refuse = |cause: String| Some((321, format!("Error validating request.-'ReqHistoricalNews(86)' : cause - {}", cause)));
         // The codes as a Java split on `+`: trailing empty codes dropped,
         // an empty text is one empty code.
         let mut codes: Vec<&str> = provider_codes.split('+').collect();
@@ -5376,7 +5377,7 @@ impl ClientCore {
     /// (else an implied volatility one); `features` is the account feature
     /// list.
     pub fn option_calc_refusal(contract: &crate::api::types::Contract, price: bool, features: Option<&[String]>) -> Option<(i64, String)> {
-        let class = if price { "bJ" } else { "bI" };
+        let class = if price { "ReqCalcOptionPrice(55)" } else { "ReqCalcImpliedVolatility(54)" };
         let refuse = |cause: &str| Some((321, format!("Error validating request.-'{}' : cause - {}", class, cause)));
         if contract.exchange.is_empty() {
             return refuse("Please enter exchange");
@@ -5423,7 +5424,7 @@ impl ClientCore {
     /// The reference's local checks of a news article request (ibx#459),
     /// both 321.
     pub fn news_article_refusal(provider_code: &str, article_id: &str, sources: &[String]) -> Option<(i64, String)> {
-        let refuse = |cause: String| Some((321, format!("Error validating request.-'cg' : cause - {}", cause)));
+        let refuse = |cause: String| Some((321, format!("Error validating request.-'ReqNewsArticle(84)' : cause - {}", cause)));
         if !news_source_subscribed(provider_code, sources) {
             return refuse(format!("Not subscribed for '{}' provider", provider_code));
         }
@@ -5506,7 +5507,7 @@ impl ClientCore {
     /// (HIST-BARS 4.1). Nothing is sent.
     pub fn head_timestamp_refusal(exchange: &str) -> Option<(i32, String)> {
         exchange.is_empty()
-            .then(|| (321, "Error validating request.-'bN' : cause - Please enter exchange".to_string()))
+            .then(|| (321, "Error validating request.-'ReqHeadTimestamp(87)' : cause - Please enter exchange".to_string()))
     }
 
     /// A reqMktData whose contract has no exchange (empty, the official
@@ -5536,7 +5537,7 @@ impl ClientCore {
 
     pub fn market_data_exchange_refusal(exchange: &str, sec_type: &str) -> Option<(i64, String)> {
         (exchange.is_empty() && !sec_type.eq_ignore_ascii_case("NEWS"))
-            .then(|| (321, "Error validating request.-'bQ' : cause - Please enter exchange".to_string()))
+            .then(|| (321, "Error validating request.-'ReqMktData(1)' : cause - Please enter exchange".to_string()))
     }
 
     /// The reference's checks of a reqContractDetails contract
@@ -5551,7 +5552,7 @@ impl ClientCore {
         if let Some(refusal) = Self::contract_text_refusal(c, "ContractDataRequest") {
             return Some(refusal);
         }
-        let refuse = |cause: &str| Some((321, format!("Error validating request.-'bK' : cause - {}", cause)));
+        let refuse = |cause: &str| Some((321, format!("Error validating request.-'ReqContractData(9)' : cause - {}", cause)));
         let sec_type = c.sec_type.trim();
         let news = sec_type.eq_ignore_ascii_case("NEWS");
         let sec_id = !c.sec_id.is_empty();
@@ -5634,7 +5635,7 @@ impl ClientCore {
             return Ok(None);
         }
         let read_error = |cause: &str| (320, format!("Error reading request:{}", cause));
-        let refuse = |cause: &str| (321, format!("Error validating request.-'v' : cause - {}", cause));
+        let refuse = |cause: &str| (321, format!("Error validating request.-'PlaceOrder(3)' : cause - {}", cause));
         let legs = &contract.combo_legs;
         let prices = &order.order_combo_legs;
         if !prices.is_empty() && prices.len() != legs.len() {
@@ -5900,7 +5901,7 @@ impl ClientCore {
     /// with no exchange.
     fn exchange_refusal(exchange: &str) -> Option<(i64, String)> {
         exchange.is_empty()
-            .then(|| (321, "Error validating request.-'v' : cause - Missing order exchange.".to_string()))
+            .then(|| (321, "Error validating request.-'PlaceOrder(3)' : cause - Missing order exchange.".to_string()))
     }
 
     /// The refusals of the reference's reading of the order, in its order
@@ -6051,7 +6052,7 @@ impl ClientCore {
     /// (it stops at the first). The text after "cause - " is
     /// the rule's; for the TRAIL LIMIT rule only its end is known.
     fn order_rule_refusal(order: &ApiOrder, account_pending: bool) -> Option<(i64, String)> {
-        let refuse = |cause: &str| Some((321, format!("Error validating request.-'v' : cause - {}", cause)));
+        let refuse = |cause: &str| Some((321, format!("Error validating request.-'PlaceOrder(3)' : cause - {}", cause)));
         let order_type = order.order_type.to_uppercase();
         // An action the reference does not know reads as side 0, refused
         // first (ibx#485).
@@ -6086,7 +6087,7 @@ impl ClientCore {
         // A what-if with transmit off (ibx#462;
         // captured 02/10/2026, with this check's own 'v' in the text).
         if order.what_if && !order.transmit {
-            return Some((321, "Error validating request.-'v' : cause - What-If order should have transmit flag set to TRUE.".into()));
+            return Some((321, "Error validating request.-'PlaceOrder(3)' : cause - What-If order should have transmit flag set to TRUE.".into()));
         }
         // The what-if type, checked next (ibx#608, level 217; 10.51, paper
         // 12/10/2026): a type without what-if, then a type
@@ -7169,7 +7170,7 @@ mod tests {
     fn smart_components_as_the_reference() {
         let core = ClientCore::new();
         let shared = SharedState::new();
-        let invalid = Err((321, "Error validating request.-'V' : cause - Invalid BBO exchange/security type code".to_string()));
+        let invalid = Err((321, "Error validating request.-'ReqExchangeMapping(83)' : cause - Invalid BBO exchange/security type code".to_string()));
         assert_eq!(core.req_smart_components(9490, "XYZ", &shared), Some(invalid.clone()));
         shared.reference.observe_exchange_map(1, "9c", 1);
         assert_eq!(core.req_smart_components(9492, "9c0001", &shared), None, "waits for the map");
@@ -7610,13 +7611,13 @@ mod tests {
     fn pnl_request_checks() {
         let core = ClientCore::new();
         assert_eq!(core.request_pnl(1, "", "DU1").unwrap_err(),
-            (321, "Error validating request.-'cj' : cause - Account must not be empty".to_string()));
+            (321, "Error validating request.-'ReqPnl(92)' : cause - Account must not be empty".to_string()));
         assert_eq!(core.request_pnl(1, "DU2", "DU1").unwrap_err(),
-            (321, "Error validating request.-'cj' : cause - Invalid account code".to_string()));
+            (321, "Error validating request.-'ReqPnl(92)' : cause - Invalid account code".to_string()));
         core.request_pnl(1, "DU1", "DU1").unwrap();
         assert_eq!(core.request_pnl(1, "DU1", "DU1").unwrap_err().0, 102);
         assert_eq!(core.request_pnl_single(5, "", "DU1", 1).unwrap_err().1,
-            "Error validating request.-'ck' : cause - Account must not be empty");
+            "Error validating request.-'ReqPnlSingle(94)' : cause - Account must not be empty");
         assert_eq!(core.cancel_pnl_request(99), Some((10185, "Failed to cancel PNL (not subscribed)".to_string())));
         assert_eq!(core.cancel_pnl_request(1), None);
         assert_eq!(core.cancel_pnl_single_request(98), Some((10186, "Failed to cancel PNL single (not subscribed)".to_string())));
@@ -7849,7 +7850,7 @@ mod tests {
     // reading errors as 320 (only the last one), the order rules as 321.
     #[test]
     fn number_rules_of_the_reference_are_refused() {
-        let rule = |cause: &str| Some((321, format!("Error validating request.-'v' : cause - {}", cause)));
+        let rule = |cause: &str| Some((321, format!("Error validating request.-'PlaceOrder(3)' : cause - {}", cause)));
         let read = |cause: &str| Some((320, format!("Error reading request:{}", cause)));
         for qty in [-1.0, 1_000_000_000.0, f64::INFINITY] {
             assert_eq!(ClientCore::refusal_before_sending(&ApiOrder { total_quantity: qty, ..lmt(100.0) }, "SMART"),
@@ -7879,7 +7880,7 @@ mod tests {
     // a number; a set price passes.
     #[test]
     fn stop_and_trigger_prices_follow_the_reference() {
-        let rule = |cause: &str| Some((321, format!("Error validating request.-'v' : cause - {}", cause)));
+        let rule = |cause: &str| Some((321, format!("Error validating request.-'PlaceOrder(3)' : cause - {}", cause)));
         let typed = |t: &str, aux: f64| ApiOrder { order_type: t.into(), aux_price: aux, ..lmt(100.0) };
         for t in ["STP", "STP LMT", "STP PRT"] {
             assert_eq!(ClientCore::refusal_before_sending(&typed(t, f64::MAX), "SMART"), rule("Please enter a stop price"), "{t}");
@@ -7903,7 +7904,7 @@ mod tests {
     //, nothing sent.
     #[test]
     fn an_order_with_no_exchange_is_refused() {
-        let text = "Error validating request.-'v' : cause - Missing order exchange.".to_string();
+        let text = "Error validating request.-'PlaceOrder(3)' : cause - Missing order exchange.".to_string();
         assert_eq!(ClientCore::refusal_before_sending(&lmt(100.0), ""), Some((321, text.clone())));
         let unknown_side = ApiOrder { action: "X".into(), ..lmt(100.0) };
         assert_eq!(ClientCore::refusal_before_sending(&unknown_side, ""), Some((321, text)));
@@ -8026,10 +8027,10 @@ mod tests {
         assert_eq!(check(false, i32::MAX), None);
         for refused in [2, 3, 4, 5, 6, 7, -1] {
             assert_eq!(check(true, refused), Some((321, format!(
-                "Error validating request.-'v' : cause - What-If type {refused} is not supported for your account configuration."))));
+                "Error validating request.-'PlaceOrder(3)' : cause - What-If type {refused} is not supported for your account configuration."))));
         }
         assert_eq!(check(false, 1), Some((321,
-            "Error validating request.-'v' : cause - What-If type specified but What-If flag is not set. Orders with whatIfType must have whatIf=true.".to_string())));
+            "Error validating request.-'PlaceOrder(3)' : cause - What-If type specified but What-If flag is not set. Orders with whatIfType must have whatIf=true.".to_string())));
         assert_eq!(check(false, 0), None);
     }
 

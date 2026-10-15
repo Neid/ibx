@@ -36,7 +36,7 @@ pub fn sec_type_name(api: &str) -> &'static str {
 /// underlying type is not FUT, STK, IND or CASH, when a FUT has no
 /// exchange, or when the conId is not a valid id.
 pub fn refusal(sec_type: &str, fut_fop_exchange: &str, con_id: i64) -> Option<(i64, String)> {
-    let refuse = |cause: String| Some((321, format!("Error validating request.-'cp' : cause - {}", cause)));
+    let refuse = |cause: String| Some((321, format!("Error validating request.-'ReqSecDefOptParams(78)' : cause - {}", cause)));
     let name = sec_type_name(sec_type);
     if !matches!(name, "FUT" | "STK" | "IND" | "CASH") {
         return refuse(format!("Invalid security type - {}", name));
@@ -585,7 +585,7 @@ mod tests {
 
     #[test]
     fn refusals_as_the_reference() {
-        let cause = |c: &str| Some((321, format!("Error validating request.-'cp' : cause - {}", c)));
+        let cause = |c: &str| Some((321, format!("Error validating request.-'ReqSecDefOptParams(78)' : cause - {}", c)));
         assert_eq!(refusal("OPT", "", 265598), cause("Invalid security type - OPT"));
         assert_eq!(refusal("xyz", "", 265598), cause("Invalid security type - "));
         assert_eq!(refusal("", "", 265598), cause("Invalid security type - "));

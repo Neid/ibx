@@ -18,11 +18,11 @@ pub const UNACKED_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// The refusal of a snapshot with generic ticks.
 pub const GENERIC_TICKS_REFUSED: &str =
-    "Error validating request.-'bQ' : cause - Snapshot market data subscription is not applicable to generic ticks";
+    "Error validating request.-'ReqMktData(1)' : cause - Snapshot market data subscription is not applicable to generic ticks";
 
 /// The refusal of a snapshot beyond the limit, for `limit` per second.
 pub fn rate_refusal(limit: u32) -> String {
-    format!("Error validating request.-'bQ' : cause - Snapshot requests limitation exceeded:{} per 1 second(s)", limit)
+    format!("Error validating request.-'ReqMktData(1)' : cause - Snapshot requests limitation exceeded:{} per 1 second(s)", limit)
 }
 
 /// The bit of an API tick type in a snapshot; 0 for the types a snapshot
@@ -320,6 +320,6 @@ mod tests {
         assert!(r.allow(1_001, 2));
         assert!(!r.allow(1_001, 2));
         assert_eq!(rate_refusal(100),
-            "Error validating request.-'bQ' : cause - Snapshot requests limitation exceeded:100 per 1 second(s)");
+            "Error validating request.-'ReqMktData(1)' : cause - Snapshot requests limitation exceeded:100 per 1 second(s)");
     }
 }

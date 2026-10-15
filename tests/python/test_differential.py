@@ -171,9 +171,9 @@ def test_a_scenario_on_the_login_of_its_batch_has_no_connect_notices(tmp_path):
 
 def test_the_class_named_by_an_error_321_is_left_out():
     theirs = [["error", 9, None, 321, "Error validating request.-'D' : cause - End date not supported", ""]]
-    ours = [["error", 9, None, 321, "Error validating request.-'bM' : cause - End date not supported", ""]]
+    ours = [["error", 9, None, 321, "Error validating request.-'ReqHistoricalData(20)' : cause - End date not supported", ""]]
     assert d.compare(theirs, ours) == []
-    ours[0][4] = "Error validating request.-'bM' : cause - Another text"
+    ours[0][4] = "Error validating request.-'ReqHistoricalData(20)' : cause - Another text"
     assert [r["field"] for r in d.compare(theirs, ours)] == ["errorString"]
 
 

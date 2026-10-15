@@ -201,7 +201,7 @@ fn send_orders(
                 Err(cause) => {
                     log::warn!("Order {} refused: {}", oid, cause);
                     shared.orders.push_order_error(oid, 321,
-                        format!("Error validating request.-'v' : cause - {}", cause));
+                        format!("Error validating request.-'PlaceOrder(3)' : cause - {}", cause));
                     continue;
                 }
             }
@@ -7514,7 +7514,7 @@ mod tests {
     }
 
     fn side_refusal(order_id: OrderId, cause: &str) -> Vec<(i64, i64, String)> {
-        vec![(order_id, 321, format!("Error validating request.-'v' : cause - {}", cause))]
+        vec![(order_id, 321, format!("Error validating request.-'PlaceOrder(3)' : cause - {}", cause))]
     }
 
     // ibx#417: a retail or paper session (no super user, no omnibus, an

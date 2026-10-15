@@ -30,7 +30,7 @@ def connected():
 
 
 def cause(text):
-    return "Error validating request.-'cp' : cause - " + text
+    return "Error validating request.-'ReqSecDefOptParams(78)' : cause - " + text
 
 
 def test_local_refusals():

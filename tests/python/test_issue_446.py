@@ -4,7 +4,7 @@ open came; a snapshot with generic ticks is refused with 321."""
 
 from ibx import Contract, EClient, EWrapper
 
-GENERIC_REFUSAL = ("Error validating request.-'bQ' : cause - "
+GENERIC_REFUSAL = ("Error validating request.-'ReqMktData(1)' : cause - "
                    "Snapshot market data subscription is not applicable to generic ticks")
 
 

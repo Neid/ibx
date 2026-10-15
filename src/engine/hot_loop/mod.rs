@@ -1096,7 +1096,7 @@ impl HotLoop {
     /// the farm of its route.
     fn route_depth_subscribe(&mut self, req_id: ReqId, con_id: i64, exchange: String, sec_type: String, num_rows: i32, is_smart_depth: bool) {
         let refuse = |shared: &SharedState, code: i64, text: String| shared.orders.push_order_error(i64::from(req_id), code, text);
-        let invalid = |cause: &str| format!("Error validating request.-'bR' : cause - {}", cause);
+        let invalid = |cause: &str| format!("Error validating request.-'ReqMktDepth(10)' : cause - {}", cause);
         if exchange.trim().is_empty() {
             return refuse(&self.shared, 321, invalid("Please enter exchange."));
         }
@@ -7268,9 +7268,9 @@ mod depth_tests {
         tx.send(ControlCommand::UnsubscribeDepth { req_id: 8 }).unwrap();
         engine.poll_once();
         assert_eq!(errors(&shared), [
-            "1:321:Error validating request.-'bR' : cause - Please enter exchange.",
-            "2:321:Error validating request.-'bR' : cause - Market depth does not support combos.",
-            "3:321:Error validating request.-'bR' : cause - Market depth rows requested must be greater than zero.",
+            "1:321:Error validating request.-'ReqMktDepth(10)' : cause - Please enter exchange.",
+            "2:321:Error validating request.-'ReqMktDepth(10)' : cause - Market depth does not support combos.",
+            "3:321:Error validating request.-'ReqMktDepth(10)' : cause - Market depth rows requested must be greater than zero.",
             "4:322:Error processing request.-'bR' : cause - Duplicate ticker id",
             "7:309:Max number (3) of market depth requests has been reached",
             "8:10092:Deep market data is not supported for this combination of security type/exchange",

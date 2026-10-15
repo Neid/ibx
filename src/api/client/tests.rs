@@ -370,8 +370,8 @@ fn req_tick_by_tick_data_types_and_local_refusals() {
     let mut w = RecordingWrapper::default();
     client.process_msgs(&mut w);
     for e in [
-        "error:20:321:Error validating request.-'bT' : cause - Tick-by-tick data type is incorrect/not set.",
-        "error:21:321:Error validating request.-'bT' : cause - 'BAG' security type is not supported in ReqTickByTick(97) request",
+        "error:20:321:Error validating request.-'ReqTickByTick(97)' : cause - Tick-by-tick data type is incorrect/not set.",
+        "error:21:321:Error validating request.-'ReqTickByTick(97)' : cause - 'BAG' security type is not supported in ReqTickByTick(97) request",
         "error:22:10189:Failed to request tick-by-tick data.AllLast tick-by-tick requests are not supported for SPY",
     ] {
         assert!(w.events.contains(&e.to_string()), "{e}: {:?}", w.events);
@@ -933,7 +933,7 @@ fn place_order_unknown_trigger_method_is_refused() {
     let mut w = RecordingWrapper::default();
     client.process_msgs(&mut w);
     for id in 3..=6 {
-        let want = format!("error:{id}:321:Error validating request.-'v' : cause - Invalid trigger method");
+        let want = format!("error:{id}:321:Error validating request.-'PlaceOrder(3)' : cause - Invalid trigger method");
         assert!(w.events.contains(&want), "{:?}", w.events);
     }
     for trigger_method in [0, 1, 2, 3, 4, 7, 8] {
@@ -1068,8 +1068,8 @@ fn fa_requests_on_a_non_fa_session_are_refused() {
     client.replace_fa(5, 1, "<ListOfGroups/>");
     let mut w = RecordingWrapper::default();
     client.process_msgs(&mut w);
-    assert!(w.events.iter().any(|e| e == "error:2147483647:321:Error validating request.-'b9' : cause - FA data operations ignored for non FA customers."), "{:?}", w.events);
-    assert!(w.events.iter().any(|e| e == "error:5:321:Error validating request.-'b1' : cause - FA data operations ignored for non FA customers."), "{:?}", w.events);
+    assert!(w.events.iter().any(|e| e == "error:-1:321:Error validating request.-'ReqFA(18)' : cause - FA data operations ignored for non FA customers."), "{:?}", w.events);
+    assert!(w.events.iter().any(|e| e == "error:5:321:Error validating request.-'ReplaceFA(19)' : cause - FA data operations ignored for non FA customers."), "{:?}", w.events);
 
     // On an FA session there is no such error.
     shared.reference.set_fa_session(true);
@@ -1222,7 +1222,7 @@ fn market_data_type_outside_one_to_four_is_refused() {
     assert_eq!(sent, [1, 2, 3, 4]);
     let mut w = RecordingWrapper::default();
     client.process_msgs(&mut w);
-    let refused = "error:-1:321:Error validating request.-'b0' : cause - Invalid market data type".to_string();
+    let refused = "error:-1:321:Error validating request.-'ReqMarketDataType(59)' : cause - Invalid market data type".to_string();
     assert_eq!(w.events.iter().filter(|e| **e == refused).count(), 2, "{:?}", w.events);
 }
 
@@ -1360,7 +1360,7 @@ fn place_order_trail_mit_trail_lit_peg_best_rpi_and_passv_rel() {
         client.place_order(id, &spy(), &no_trigger).unwrap();
         assert!(rx.try_iter().all(|c| !matches!(c, ControlCommand::Order(_))), "nothing sent");
         assert_eq!(shared.orders.drain_order_errors(),
-            [(id, 321, "Error validating request.-'v' : cause - Please enter a stop price".to_string())]);
+            [(id, 321, "Error validating request.-'PlaceOrder(3)' : cause - Please enter a stop price".to_string())]);
     }
     client.place_order(15, &spy(), &Order { trail_stop_price: f64::MAX, ..order("TRAIL MIT") }).unwrap();
     assert!(rx.try_iter().any(|c| matches!(c, ControlCommand::Order(OrderRequest::SubmitEx {
@@ -1476,7 +1476,7 @@ fn place_order_trailing_stop_limit_without_stop_price_is_refused() {
     assert!(rx.try_iter().all(|c| !matches!(c, ControlCommand::Order(_))), "nothing sent");
     let mut w = RecordingWrapper::default();
     client.process_msgs(&mut w);
-    assert!(w.events.iter().any(|e| e == "error:3:321:Error validating request.-'v' : cause - Please enter a stop price"), "{:?}", w.events);
+    assert!(w.events.iter().any(|e| e == "error:3:321:Error validating request.-'PlaceOrder(3)' : cause - Please enter a stop price"), "{:?}", w.events);
 }
 
 #[test]
@@ -1865,7 +1865,7 @@ fn what_if_with_transmit_off_is_refused() {
     assert!(rx.try_recv().is_err(), "nothing is sent");
     let errors = shared.orders.drain_order_errors();
     assert_eq!(errors.iter().map(|e| (e.0, e.1, e.2.as_str())).collect::<Vec<_>>(),
-        [(76, 321, "Error validating request.-'v' : cause - What-If order should have transmit flag set to TRUE.")]);
+        [(76, 321, "Error validating request.-'PlaceOrder(3)' : cause - What-If order should have transmit flag set to TRUE.")]);
 }
 
 // ibx#462, captured 02/10/2026: a refused what-if (a data reply with a
@@ -1991,7 +1991,7 @@ fn place_order_invalid_action_is_refused_with_321() {
     assert!(rx.try_recv().is_err(), "nothing sent");
     let mut w = RecordingWrapper::default();
     client.process_msgs(&mut w);
-    assert!(w.events.contains(&"error:1:321:Error validating request.-'v' : cause - Invalid side field was entered".to_string()),
+    assert!(w.events.contains(&"error:1:321:Error validating request.-'PlaceOrder(3)' : cause - Invalid side field was entered".to_string()),
         "{:?}", w.events);
 }
 
@@ -2082,7 +2082,7 @@ fn stop_types_with_unset_aux_price_get_the_reference_refusal() {
         assert!(rx.try_iter().all(|c| !matches!(c, ControlCommand::Order(_))), "{order_type}: nothing sent");
         let mut w = RecordingWrapper::default();
         client.process_msgs(&mut w);
-        let want = format!("error:{}:321:Error validating request.-'v' : cause - {}", i + 1, cause);
+        let want = format!("error:{}:321:Error validating request.-'PlaceOrder(3)' : cause - {}", i + 1, cause);
         assert!(w.events.contains(&want), "{order_type}: {:?}", w.events);
     }
 }
@@ -2245,8 +2245,8 @@ fn req_historical_data_refuses_unknown_what_to_show_and_format_date() {
     client.req_historical_data(7, &spy(), "2026-01-02", "2 D", "1 min", "TRADES", true, 1, false).unwrap();
     assert!(rx.try_recv().is_err());
     let errors = shared.reference.drain_historical_errors();
-    assert_eq!(errors[0], (5, 321, "Error validating request.-'bM' : cause - What to show value of TRADE rejected.".to_string()));
-    assert_eq!(errors[1], (6, 321, "Error validating request.-'bM' : cause - Date formatting selection of 5 rejected.".to_string()));
+    assert_eq!(errors[0], (5, 321, "Error validating request.-'ReqHistoricalData(20)' : cause - What to show value of TRADE rejected.".to_string()));
+    assert_eq!(errors[1], (6, 321, "Error validating request.-'ReqHistoricalData(20)' : cause - Date formatting selection of 5 rejected.".to_string()));
     assert_eq!((errors[2].0, errors[2].1), (7, 10314));
 }
 
@@ -2311,7 +2311,7 @@ fn req_historical_data_schedule_asks_for_the_trading_schedule() {
     client.req_historical_data(9, &spy(), "", "1 M", "1 hour", "SCHEDULE", true, 1, false).unwrap();
     assert!(rx.try_recv().is_err());
     assert_eq!(shared.reference.drain_historical_errors()[0].2,
-        "Error validating request.-'bM' : cause - Only daily resolution supported for Schedule requests");
+        "Error validating request.-'ReqHistoricalData(20)' : cause - Only daily resolution supported for Schedule requests");
 }
 
 #[test]
@@ -2328,9 +2328,9 @@ fn req_historical_data_streams_every_bar_size_and_refuses_as_the_reference() {
     assert!(rx.try_recv().is_err(), "no query");
     let errors: Vec<(i64, i32, String)> = shared.reference.drain_historical_errors();
     assert_eq!(errors, vec![
-        (6, 321, "Error validating request.-'bM' : cause - End date not supported with live updates".to_string()),
-        (7, 321, "Error validating request.-'bM' : cause - Source price not supported with live updates".to_string()),
-        (8, 321, "Error validating request.-'bM' : cause - Source price not supported with live updates".to_string()),
+        (6, 321, "Error validating request.-'ReqHistoricalData(20)' : cause - End date not supported with live updates".to_string()),
+        (7, 321, "Error validating request.-'ReqHistoricalData(20)' : cause - Source price not supported with live updates".to_string()),
+        (8, 321, "Error validating request.-'ReqHistoricalData(20)' : cause - Source price not supported with live updates".to_string()),
     ]);
 }
 
@@ -2502,9 +2502,9 @@ fn req_sec_def_opt_params_checks_then_sends() {
     client.process_msgs(&mut w);
     let errors: Vec<String> = w.events.iter().filter(|e| e.starts_with("error:")).cloned().collect();
     assert_eq!(errors, [
-        "error:2:321:Error validating request.-'cp' : cause - Invalid security type - OPT",
-        "error:3:321:Error validating request.-'cp' : cause - Missing exchange for security type FUT",
-        "error:4:321:Error validating request.-'cp' : cause - Invalid contract id",
+        "error:2:321:Error validating request.-'ReqSecDefOptParams(78)' : cause - Invalid security type - OPT",
+        "error:3:321:Error validating request.-'ReqSecDefOptParams(78)' : cause - Missing exchange for security type FUT",
+        "error:4:321:Error validating request.-'ReqSecDefOptParams(78)' : cause - Invalid contract id",
     ]);
 }
 
@@ -2545,11 +2545,11 @@ fn req_matching_symbols_checks_and_trims_the_pattern() {
     let mut w = RecordingWrapper::default();
     client.process_msgs(&mut w);
     let errors: Vec<String> = w.events.iter().filter(|e| e.starts_with("error:")).cloned().collect();
-    let empty = "error:2:321:Error validating request.-'ce' : cause - Pattern must not be empty";
+    let empty = "error:2:321:Error validating request.-'ReqMatchingSymbols(81)' : cause - Pattern must not be empty";
     assert_eq!(errors, [
         empty.to_string(), empty.to_string(), empty.to_string(),
-        "error:3:321:Error validating request.-'ce' : cause - Invalid pattern: 'MS\tFT'".to_string(),
-        "error:4:321:Error validating request.-'ce' : cause - Invalid pattern: 'Soci\u{e9}t\u{e9}'".to_string(),
+        "error:3:321:Error validating request.-'ReqMatchingSymbols(81)' : cause - Invalid pattern: 'MS\tFT'".to_string(),
+        "error:4:321:Error validating request.-'ReqMatchingSymbols(81)' : cause - Invalid pattern: 'Soci\u{e9}t\u{e9}'".to_string(),
     ]);
 }
 
@@ -2675,18 +2675,20 @@ fn req_scanner_subscription_refusals() {
     client.req_scanner_subscription(1, &sub, &[], &[tv("priceAbove", "")]).unwrap();
     client.req_scanner_subscription(2, &sub, &[tv("foo", "1")], &[]).unwrap();
     client.req_scanner_subscription(3, &sub, &[tv("manual", "2")], &[]).unwrap();
-    client.req_scanner_subscription(4, &sub, &[tv("manual", "1")], &[]).unwrap();
     assert!(rx.try_recv().is_err(), "nothing sent");
+    // 10.51 takes a valid manual option (ibx#591).
+    client.req_scanner_subscription(4, &sub, &[tv("manual", "1")], &[]).unwrap();
+    assert!(rx.try_recv().is_ok(), "the scan is asked");
     let mut w = RecordingWrapper::default();
     client.process_msgs(&mut w);
     for want in [
         "error:1:320:Error reading request:Not a key-value pair in generic options list: priceAbove=",
         "error:2:10337:Misc options key=foo is invalid in ReqScannerSubscription(22) request. Valid keys are: manual",
         "error:3:10338:Misc options value=2 is invalid for key=manual in ReqScannerSubscription(22) request. Valid values are: 0, 1",
-        "error:4:321:Error validating request.-'co' : cause - Historical data: 'manual' requires Verified API.",
     ] {
         assert!(w.events.iter().any(|e| e == want), "{want} not in {:?}", w.events);
     }
+    assert!(!w.events.iter().any(|e| e.starts_with("error:4:")), "{:?}", w.events);
 }
 
 #[test]
@@ -2752,11 +2754,11 @@ fn news_request_refusals() {
     let mut w = RecordingWrapper::default();
     client.process_msgs(&mut w);
     for want in [
-        "error:1:321:Error validating request.-'ca' : cause - Not subscribed for 'BZ' provider",
-        "error:2:321:Error validating request.-'ca' : cause - Not subscribed for '' provider",
-        "error:3:321:Error validating request.-'ca' : cause - Total results must be > 0",
-        "error:4:321:Error validating request.-'cg' : cause - Not subscribed for 'FLY' provider",
-        "error:5:321:Error validating request.-'cg' : cause - Article ID must not be empty",
+        "error:1:321:Error validating request.-'ReqHistoricalNews(86)' : cause - Not subscribed for 'BZ' provider",
+        "error:2:321:Error validating request.-'ReqHistoricalNews(86)' : cause - Not subscribed for '' provider",
+        "error:3:321:Error validating request.-'ReqHistoricalNews(86)' : cause - Total results must be > 0",
+        "error:4:321:Error validating request.-'ReqNewsArticle(84)' : cause - Not subscribed for 'FLY' provider",
+        "error:5:321:Error validating request.-'ReqNewsArticle(84)' : cause - Article ID must not be empty",
     ] {
         assert!(w.events.iter().any(|e| e == want), "{want} not in {:?}", w.events);
     }
@@ -2775,7 +2777,7 @@ fn req_fundamental_data_sends_fetch() {
     client.req_fundamental_data(5, &Contract { sec_type: String::new(), ..spy() }, "ReportSnapshot").unwrap();
     assert!(rx.try_recv().is_err());
     assert_eq!(shared.reference.drain_historical_errors(),
-        [(5, 321, "Error validating request.-'bL' : cause - Please enter a valid security type".to_string())]);
+        [(5, 321, "Error validating request.-'FundamentalsData(52)' : cause - Please enter a valid security type".to_string())]);
     let stock = Contract { sec_type: "STK".into(), ..spy() };
     client.req_fundamental_data(6, &stock, "ReportSnapshot").unwrap();
     let cmd = rx.try_recv().unwrap();
@@ -5507,9 +5509,9 @@ fn account_summary_refusals_and_limit() {
     let mut w = SummaryRec::default();
     client.process_msgs(&mut w);
     assert_eq!(w.events, [
-        "error:1:321:Error validating request.-'b2' : cause - Tags cannot be null",
-        "error:2:321:Error validating request.-'b2' : cause - Group name cannot be null",
-        "error:3:321:Error validating request.-'b2' : cause - Group name is invalid",
+        "error:1:321:Error validating request.-'ReqAccountSummary(62)' : cause - Tags cannot be null",
+        "error:2:321:Error validating request.-'ReqAccountSummary(62)' : cause - Group name cannot be null",
+        "error:3:321:Error validating request.-'ReqAccountSummary(62)' : cause - Unified group name is invalid",
         "error:6:322:Error processing request.-'b2' : cause - Maximum number of account summary requests exceeded; \
          desubscribe to previous request first",
     ]);
@@ -6914,7 +6916,7 @@ fn plain_snapshot_with_generic_ticks_is_refused() {
     client.req_mkt_data(2, &spy_stk(), "236", true, false).unwrap();
     let mut w = SnapRec::default();
     client.process_msgs(&mut w);
-    let refusal = "Error validating request.-'bQ' : cause - Snapshot market data subscription is not applicable to generic ticks";
+    let refusal = "Error validating request.-'ReqMktData(1)' : cause - Snapshot market data subscription is not applicable to generic ticks";
     assert_eq!(w.events.iter().filter(|e| e.starts_with("error:")).cloned().collect::<Vec<_>>(),
         vec![format!("error:1:321:{refusal}"), format!("error:2:321:{refusal}")]);
     assert_eq!(engine.join().unwrap(), vec!["subscribe:756733:true"]);
@@ -6934,7 +6936,7 @@ fn plain_snapshot_beyond_the_limit_is_refused() {
     }
     let mut w = SnapRec::default();
     client.process_msgs(&mut w);
-    let text = "Error validating request.-'bQ' : cause - Snapshot requests limitation exceeded:1 per 1 second(s)";
+    let text = "Error validating request.-'ReqMktData(1)' : cause - Snapshot requests limitation exceeded:1 per 1 second(s)";
     let refused = w.events.iter().filter(|e| e.ends_with(&format!(":321:{text}"))).count();
     // Five requests span at most two seconds: at most two go.
     assert!(refused >= 3, "{:?}", w.events);
@@ -7162,7 +7164,7 @@ fn req_matching_symbols_refused_without_the_feature() {
     let mut w = RecordingWrapper::default();
     client.process_msgs(&mut w);
     let errors: Vec<String> = w.events.iter().filter(|e| e.starts_with("error:")).cloned().collect();
-    let refused = "Error validating request.-'ce' : cause - Failed to request matching symbols";
+    let refused = "Error validating request.-'ReqMatchingSymbols(81)' : cause - Failed to request matching symbols";
     assert_eq!(errors, [format!("error:8:321:{refused}"), format!("error:9:321:{refused}")]);
 
     shared.reference.set_api_features(crate::control::logon::ApiFeatures::parse("APIELOG,SECDEFTA"));
@@ -7178,7 +7180,7 @@ fn req_historical_data_years_above_the_logon_limit() {
     client.req_historical_data(5, &spy(), "", "2 Y", "1 day", "TRADES", true, 1, false).unwrap();
     assert!(rx.try_recv().is_err());
     assert_eq!(shared.reference.drain_historical_errors(), vec![(5, 321,
-        "Error validating request.-'bM' : cause - Historical data request for 2 year(s) rejected. Max API Backfill Years=1".to_string())]);
+        "Error validating request.-'ReqHistoricalData(20)' : cause - Historical data request for 2 year(s) rejected. Max API Backfill Years=1".to_string())]);
     client.req_historical_data(6, &spy(), "", "1 Y", "1 day", "TRADES", true, 1, false).unwrap();
     assert!(matches!(rx.try_recv().unwrap(), ControlCommand::FetchHistorical { req_id: 6, .. }));
     shared.reference.set_api_features(crate::control::logon::ApiFeatures::parse("NIGHTLY"));
@@ -7488,9 +7490,9 @@ fn an_invalid_generic_tick_list_is_refused() {
     client.process_msgs(&mut w);
     let legal = crate::control::generic_tick::legal_ones("STK");
     assert_eq!(w.events, [
-        format!("error:9570:321:Error validating request.-'bQ' : cause - Incorrect generic tick list of mdoff,292:.  Legal ones for (STK) are: {legal}"),
-        format!("error:7:321:Error validating request.-'bQ' : cause - Incorrect generic tick list of 999.  Legal ones for (CASH) are: {legal}"),
-        format!("error:8:321:Error validating request.-'bQ' : cause - Incorrect generic tick list of mdoff.  Legal ones for (STK) are: {legal}"),
+        format!("error:9570:321:Error validating request.-'ReqMktData(1)' : cause - Incorrect generic tick list of mdoff,292:.  Legal ones for (STK) are: {legal}"),
+        format!("error:7:321:Error validating request.-'ReqMktData(1)' : cause - Incorrect generic tick list of 999.  Legal ones for (CASH) are: {legal}"),
+        format!("error:8:321:Error validating request.-'ReqMktData(1)' : cause - Incorrect generic tick list of mdoff.  Legal ones for (STK) are: {legal}"),
     ]);
 }
 
@@ -7654,10 +7656,10 @@ fn requests_of_a_contract_with_no_exchange_are_refused() {
     client.process_msgs(&mut w);
     let errors: Vec<&String> = w.events.iter().filter(|e| e.starts_with("error:")).collect();
     assert_eq!(errors, [
-        "error:1:321:Error validating request.-'v' : cause - Missing order exchange.",
-        "error:2:321:Error validating request.-'bQ' : cause - Please enter exchange",
-        "error:3:321:Error validating request.-'bM' : cause - Please enter exchange",
-        "error:4:321:Error validating request.-'bN' : cause - Please enter exchange",
+        "error:1:321:Error validating request.-'PlaceOrder(3)' : cause - Missing order exchange.",
+        "error:2:321:Error validating request.-'ReqMktData(1)' : cause - Please enter exchange",
+        "error:3:321:Error validating request.-'ReqHistoricalData(20)' : cause - Please enter exchange",
+        "error:4:321:Error validating request.-'ReqHeadTimestamp(87)' : cause - Please enter exchange",
     ]);
 }
 
@@ -7672,8 +7674,8 @@ fn contract_details_of_an_unset_contract() {
     client.req_contract_details(2, &Contract { symbol: "AAPL".into(), ..Default::default() }).unwrap();
     assert!(rx.try_recv().is_err(), "nothing sent");
     assert_eq!(shared.reference.drain_historical_errors(), [
-        (1, 321, "Error validating request.-'bK' : cause - The symbol or the local-symbol or the security id must be entered".to_string()),
-        (2, 321, "Error validating request.-'bK' : cause - Please enter a valid security type".to_string()),
+        (1, 321, "Error validating request.-'ReqContractData(9)' : cause - The symbol or the local-symbol or the security id must be entered".to_string()),
+        (2, 321, "Error validating request.-'ReqContractData(9)' : cause - Please enter a valid security type".to_string()),
     ]);
     client.req_contract_details(3, &Contract { symbol: "AAPL".into(), sec_type: "STK".into(), ..Default::default() }).unwrap();
     match rx.try_recv().unwrap() {
@@ -7854,11 +7856,11 @@ fn display_group_requests_as_the_reference() {
     assert_eq!(w.events, [
         "display_group_list:1:1|2|3|4|5|6|7".to_string(),
         "display_group_updated:2:none".to_string(),
-        refusal("bX", "Invalid window group ID=9"),
-        refusal("bX", "Invalid window group ID=0"),
-        refusal("bX", "Invalid window group ID=8"),
-        refusal("bX", "Invalid window group ID=-1"),
-        refusal("bX", "Request with ID=2 was already subscribed."),
+        refusal("DisplayToGroupEvents(68)", "Invalid window group ID=9"),
+        refusal("DisplayToGroupEvents(68)", "Invalid window group ID=0"),
+        refusal("DisplayToGroupEvents(68)", "Invalid window group ID=8"),
+        refusal("DisplayToGroupEvents(68)", "Invalid window group ID=-1"),
+        refusal("DisplayToGroupEvents(68)", "Request with ID=2 was already subscribed."),
         "display_group_updated:7:none".to_string(),
     ]);
 

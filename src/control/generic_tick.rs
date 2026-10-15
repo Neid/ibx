@@ -172,7 +172,7 @@ pub fn legal_ones(sec_type: &str) -> String {
 /// refuses, and gives that text to every later refusal whatever their type.
 pub fn refusal(list: &str, sec_type: &str, legal: &str) -> String {
     format!(
-        "Error validating request.-'bQ' : cause - Incorrect generic tick list of {}.  Legal ones for ({}) are: {}",
+        "Error validating request.-'ReqMktData(1)' : cause - Incorrect generic tick list of {}.  Legal ones for ({}) are: {}",
         list, sec_type_name(sec_type), legal,
     )
 }
@@ -184,7 +184,7 @@ mod tests {
     // The 321 the gateway gave for "mdoff,292:" on GOOGL (STK), 02/10/2026
     // (ibx#450, conn b1_458_news, req 9570); its protobuf client got the
     // letter of its own request class, 'E'.
-    const CAPTURED_STK: &str = "Error validating request.-'bQ' : cause - Incorrect generic tick list of mdoff,292:.  \
+    const CAPTURED_STK: &str = "Error validating request.-'ReqMktData(1)' : cause - Incorrect generic tick list of mdoff,292:.  \
         Legal ones for (STK) are: 100(Option Volume),101(Option Open Interest),105(Average Opt Volume),106(impvolat),\
         165(Misc. Stats),221/220(Creditman Mark Price),225(Auction),232/221(Pl Price),233(RTVolume),236(inventory),\
         258/47(Fundamentals),292(Wide_news),293(TradeCount),294(TradeRate),295(VolumeRate),318(LastRTHTrade),\

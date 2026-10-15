@@ -1792,7 +1792,7 @@ impl HmdsState {
                 // 321 with the text of the reference (ibx#430).
                 log::error!("head timestamp req_id={}: {}", req_id, e);
                 shared.reference.push_historical_error(
-                    req_id, 321, format!("Error validating request.-'bN' : cause - {}", e),
+                    req_id, 321, format!("Error validating request.-'ReqHeadTimestamp(87)' : cause - {}", e),
                 );
                 return;
             }
@@ -2301,7 +2301,7 @@ impl HmdsState {
             log::error!("histogram req_id={}: invalid time period {:?}", req_id, period);
             shared.reference.push_historical_error(
                 req_id, 321,
-                "Error validating request.-'bO' : cause - Invalid time period".to_string(),
+                "Error validating request.-'ReqHistogramData(88)' : cause - Invalid time period".to_string(),
             );
             return;
         }
@@ -2410,7 +2410,7 @@ impl HmdsState {
         if crate::control::historical::realtime_bar_data(what_to_show).is_none() {
             log::error!("rtbar req_id={}: whatToShow {:?} refused", req_id, what_to_show);
             shared.reference.push_historical_error(req_id, 321,
-                "Error validating request.-'bS' : cause - What to show field is missing or incorrect.".to_string());
+                "Error validating request.-'ReqRealTimeBars(50)' : cause - What to show field is missing or incorrect.".to_string());
             return;
         }
         if self.rtbar_subs.iter().any(|s| s.req_id == req_id) {
@@ -2832,7 +2832,7 @@ pub(crate) mod tests {
         assert!(hmds.pending_historical.is_empty() && hmds.live_bars.is_empty());
         // ibx#429: the reference's refusal.
         assert_eq!(shared.reference.drain_historical_errors(), vec![(12, 321,
-            "Error validating request.-'bM' : cause - Source price not supported with live updates".to_string())]);
+            "Error validating request.-'ReqHistoricalData(20)' : cause - Source price not supported with live updates".to_string())]);
     }
 
     #[test]
@@ -3141,7 +3141,7 @@ pub(crate) mod tests {
         hmds.send_histogram_request(8, 265598, "STK", "SMART", true, "abc", &mut conn, &mut hb, &shared);
         assert!(hmds.pending_histogram.is_empty(), "no query");
         assert_eq!(shared.reference.drain_historical_errors(), vec![(
-            8, 321, "Error validating request.-'bO' : cause - Invalid time period".to_string(),
+            8, 321, "Error validating request.-'ReqHistogramData(88)' : cause - Invalid time period".to_string(),
         )]);
     }
 
@@ -3293,7 +3293,7 @@ pub(crate) mod tests {
         // A request on an existing router does not add one.
         hmds.send_realtime_bar_subscribe(5, 265598, "STK", "SMART", "AAPL", "TRADES", true, &mut conn, &mut hb, &shared);
         assert_eq!(shared.reference.drain_historical_errors(), vec![
-            (1, 321, "Error validating request.-'bS' : cause - What to show field is missing or incorrect.".to_string()),
+            (1, 321, "Error validating request.-'ReqRealTimeBars(50)' : cause - What to show field is missing or incorrect.".to_string()),
             (2, 102, "Duplicate ticker id".to_string()),
             (4, 456, "Max number of real time requests has been reached".to_string()),
         ]);
@@ -3373,7 +3373,7 @@ pub(crate) mod tests {
         let errors = shared.reference.drain_historical_errors();
         assert_eq!(errors.len(), 1);
         assert_eq!(errors[0].1, 321);
-        assert!(errors[0].2.starts_with("Error validating request.-'bM' : cause - Historical data bar size setting is invalid."),
+        assert!(errors[0].2.starts_with("Error validating request.-'ReqHistoricalData(20)' : cause - Historical data bar size setting is invalid."),
             "got: {}", errors[0].2);
         assert!(shared.reference.drain_historical_data().is_empty(), "a refusal has no end");
     }
@@ -3410,7 +3410,7 @@ pub(crate) mod tests {
         hmds.send_head_timestamp_request(4, 265598, "STK", "SMART", "TRADE", true, 1, &mut conn, &mut hb, &shared);
         assert!(hmds.pending_head_ts.is_empty());
         assert_eq!(shared.reference.drain_historical_errors(), vec![(
-            4, 321, "Error validating request.-'bN' : cause - What to show value of TRADE rejected.".to_string(),
+            4, 321, "Error validating request.-'ReqHeadTimestamp(87)' : cause - What to show value of TRADE rejected.".to_string(),
         )]);
     }
 

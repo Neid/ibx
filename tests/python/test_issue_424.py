@@ -50,11 +50,11 @@ def test_subscribe_answers_none_at_once_and_refuses_bad_input():
     c._test_dispatch_once()
     assert w.events == [
         ("updated", 2, "none"),
-        refusal("bX", "Invalid window group ID=9"),
-        refusal("bX", "Invalid window group ID=0"),
-        refusal("bX", "Invalid window group ID=8"),
-        refusal("bX", "Invalid window group ID=-1"),
-        refusal("bX", "Request with ID=2 was already subscribed."),
+        refusal("DisplayToGroupEvents(68)", "Invalid window group ID=9"),
+        refusal("DisplayToGroupEvents(68)", "Invalid window group ID=0"),
+        refusal("DisplayToGroupEvents(68)", "Invalid window group ID=8"),
+        refusal("DisplayToGroupEvents(68)", "Invalid window group ID=-1"),
+        refusal("DisplayToGroupEvents(68)", "Request with ID=2 was already subscribed."),
     ]
 
 

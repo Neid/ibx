@@ -482,10 +482,33 @@ impl Outcome {
     }
 }
 
+/// A 321 of a 10.40 recording with the handler named as the reference
+/// 10.51 names it (ibx#591, observed 15/10/2026): 10.40 gave the short
+/// names of its older message form.
+pub fn handler_as_in_1051(line: &str) -> String {
+    const NAMES: &[(&str, &str)] = &[
+        ("v", "PlaceOrder(3)"), ("V", "ReqExchangeMapping(83)"), ("bQ", "ReqMktData(1)"), ("bM", "ReqHistoricalData(20)"),
+        ("bP", "ReqHistoricalTicks(96)"), ("bT", "ReqTickByTick(97)"), ("bK", "ReqContractData(9)"),
+        ("bN", "ReqHeadTimestamp(87)"), ("b0", "ReqMarketDataType(59)"),
+    ];
+    const LEAD: &str = "Error validating request.-'";
+    if let Some(a) = line.find(LEAD) {
+        let start = a + LEAD.len();
+        if let Some(len) = line[start..].find('\'')
+            && let Some((_, new)) = NAMES.iter().find(|(old, _)| *old == &line[start..start + len])
+        {
+            return format!("{}{}{}", &line[..start], new, &line[start + len..]);
+        }
+    }
+    line.to_string()
+}
+
 /// The two lists of callbacks are the same; on a difference, the first one
 /// and the callbacks around it.
 #[track_caller]
 pub fn assert_same_callbacks(ours: &[String], theirs: &[String]) {
+    let theirs: Vec<String> = theirs.iter().map(|l| handler_as_in_1051(l)).collect();
+    let theirs = theirs.as_slice();
     if std::env::var_os("IBX_GOLDEN_DUMP").is_some() {
         for k in 0..ours.len().max(theirs.len()) {
             let (a, b) = (ours.get(k).map_or("", |s| s.as_str()), theirs.get(k).map_or("", |s| s.as_str()));
