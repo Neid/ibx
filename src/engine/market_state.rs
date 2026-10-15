@@ -749,7 +749,8 @@ impl MarketState {
         let mts = price_tick;
         // In shares, or in round lots in the 10.40 form (ibx#663).
         let lot = self.round_lots[i];
-        let sizes = size_tick * if self.lot_sizes { lot } else { 1 };
+        // Saturating: a bad frame can carry any increment (robustness tests).
+        let sizes = size_tick.saturating_mul(if self.lot_sizes { lot } else { 1 });
         // Decimal places of the value (the 10.51 form's extended entries).
         let m = if tick.scale == 0 || tick.tick_type == td::O_VOLUME {
             tick.magnitude
