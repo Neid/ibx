@@ -557,7 +557,7 @@ impl HmdsState {
                         return;
                     }
                     Ok(n) => {
-                        log::info!("HMDS recv: {} bytes", n);
+                        log::trace!("HMDS recv: {} bytes", n);
                         hb.last_hmds_recv = Instant::now();
                         hb.pending_hmds_test = None;
                     }
@@ -567,8 +567,9 @@ impl HmdsState {
                 // 0 frames AND buffered_after > 0, the bytes are stuck waiting for
                 // more (incomplete FIXCOMP frame — declared tag-9 length exceeds
                 // received bytes). If buffered_after == 0, the bytes were dropped
-                // outright (no recognized header — buf.clear() path).
-                log::warn!(
+                // outright (no recognized header — buf.clear() path). At trace
+                // level: it fired on every read (ibx#701).
+                log::trace!(
                     "HMDS poll: extracted={} frames, buffered_after={}B",
                     frames.len(),
                     conn.buffered(),
@@ -644,6 +645,15 @@ impl HmdsState {
         event_tx: &Option<Sender<Event>>,
         hb: &mut HeartbeatState,
     ) {
+        // The data messages and the heartbeat are dispatched on their type
+        // alone, read from the raw bytes; the map of the fields is built for
+        // the others only (ibx#701: 0.6 us a tick message).
+        match super::fast_extract_msg_type(msg) {
+            Some(b"E") => return self.handle_tbt_data(msg, shared, event_tx),
+            Some(b"G") => return self.handle_rtbar_data(msg, shared, hmds_conn, hb),
+            Some(b"0") => return,
+            _ => {}
+        }
         let parsed = fix::fix_parse(msg);
         let msg_type = match parsed.get(&fix::TAG_MSG_TYPE) {
             Some(t) => t.as_str(),
@@ -651,6 +661,7 @@ impl HmdsState {
         };
         match msg_type {
             "E" => self.handle_tbt_data(msg, shared, event_tx),
+            "G" => self.handle_rtbar_data(msg, shared, hmds_conn, hb),
             "0" => {}
             "1" => {
                 let test_id = parsed.get(&fix::TAG_TEST_REQ_ID).cloned().unwrap_or_default();
@@ -976,7 +987,6 @@ impl HmdsState {
                     }
                 }
             }
-            "G" => self.handle_rtbar_data(msg, shared, hmds_conn, hb),
             "T" => {
                 // The routing table, when it came after the logon (#445).
                 if let Some(text) = crate::engine::routing::table_text(msg) {
