@@ -69,6 +69,7 @@ answer_kinds! {
     order_errors: (i64, i64, String) = orders.order_errors;
     order_reports: OrderReport = orders.order_reports;
     what_if_responses: WhatIfResponse = orders.what_if_responses;
+    completed_orders: crate::bridge::CompletedRow = orders.completed_rows;
     historical_ticks: (ReqId, HistoricalTickData, String, bool) = reference.historical_ticks;
     tbt_errors: (ReqId, i32, String) = market.tbt_errors;
     tbt_trades: TbtTrade = market.tbt_trades;

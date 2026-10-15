@@ -2116,6 +2116,7 @@ eclient,next_order_id,,src/api/client/tests.rs::next_order_id_monotonic ; tests/
 eclient,req_open_orders,,src/api/client/tests.rs::a_forgotten_order_leaves_without_callbacks ; src/api/client/tests.rs::open_order_requests_wait_for_the_order_replay
 eclient,req_all_open_orders,,src/api/client/tests.rs::open_order_requests_wait_for_the_order_replay
 eclient,req_completed_orders,,tests/scenarios.rs::req_completed_orders_drains_and_dispatches ; tests/scenarios.rs::req_completed_orders_empty_still_fires_end
+eclient,req_completed_orders_only,reqCompletedOrders with its apiOnly flag (ibx#695),tests/scenario_replay.rs::session_start_with_completed_orders
 eclient,req_auto_open_orders,,no test
 eclient,req_executions,,src/api/client/tests.rs::commission_report_comes_from_the_commission_frame ; src/api/client/tests.rs::an_untracked_execution_is_returned_by_req_executions_only ; src/api/client/tests.rs::req_executions_without_a_commission_report_sends_the_execution_only
 eclient,parse_algo_params,,no test

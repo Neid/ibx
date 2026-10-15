@@ -81,6 +81,10 @@ const KNOWN_CONTROL_COMMAND_GAPS: &[(&str, &str)] = &[
         "Gateway-local response path, no CCP round-trip in hot loop yet",
     ),
     (
+        "CompletedOrders",
+        "reqCompletedOrders: the server's finished orders of the day (ibx#695); replayed in tests/scenario_replay.rs",
+    ),
+    (
         "FetchSoftDollarTiers",
         "Gateway-local response path, no CCP round-trip in hot loop yet",
     ),

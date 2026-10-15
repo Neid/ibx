@@ -215,10 +215,10 @@ impl EClient {
             "Rejected" => OrderStatus::Rejected,
             _ => return Err(PyRuntimeError::new_err(format!("Invalid status: {}", status))),
         };
-        shared.orders.push_completed_order(crate::types::CompletedOrder {
-            order_id, instrument, status: st, filled_qty_fixed: filled_qty * QTY_SCALE, timestamp_ns: 100,
-        });
-        shared.orders.push_order_info(order_id, crate::bridge::RichOrderInfo {
+        let _ = (instrument, st, filled_qty);
+        // A row of the server's answer to reqCompletedOrders, then its end,
+        // as the engine writes them (ibx#695).
+        let info = crate::bridge::RichOrderInfo {
             contract: ApiContract {
                 symbol: symbol.to_string(),
                 sec_type: "STK".into(),
@@ -244,7 +244,10 @@ impl EClient {
                 ..Default::default()
             },
             last_exec: ApiExecution::default(),
-        });
+        };
+        shared.orders.push_completed_row(Some(Box::new((info.contract, info.order, info.order_state))));
+        shared.orders.push_completed_row(None);
+        shared.notify();
         Ok(())
     }
 

@@ -216,6 +216,142 @@ fn fill_exec_of(parsed: &std::collections::HashMap<u32, String>, exec_id: &str) 
 /// the reference gives it (captured
 /// 01/10/2026: openOrder permId 1790865742870063 for 11=1790865742870063.0).
 /// 0 for none.
+/// The rows of an answer of reqCompletedOrders, then its end (ibx#695);
+/// with apiOnly, the orders placed through the API only.
+fn push_completed_rows(rows: &[CompletedOrderRow], api_only: bool, shared: &SharedState) {
+    for (contract, order, state, api) in rows {
+        if api_only && !api {
+            continue;
+        }
+        shared.orders.push_completed_row(Some(Box::new((contract.clone(), order.clone(), state.clone()))));
+    }
+    shared.orders.push_completed_row(None);
+    shared.notify();
+}
+
+/// A finished order as the reference's completedOrder shows it, from the
+/// server's replayed report (ibx#695; paper, 15/10/2026 pre-market, 64
+/// orders: the contract with its conId, the smart route as SMART and its
+/// local symbol; the permanent id, no API order id or client; the status,
+/// "Cancelled by Trader" for a cancel, and the time of the report in
+/// US/Eastern).
+fn completed_row(parsed: &std::collections::HashMap<u32, String>, account_id: &str) -> CompletedOrderRow {
+    let get = |t: u32| parsed.get(&t).cloned().unwrap_or_default();
+    let num = |t: u32| parsed.get(&t).and_then(|s| s.parse::<f64>().ok());
+    let flag = |t: u32| parsed.get(&t).is_some_and(|s| s == "1");
+    let sec_type = match get(167).as_str() {
+        "CS" | "COMMON" => "STK".to_string(),
+        "FOR" => "CASH".to_string(),
+        other => other.to_string(),
+    };
+    let exchange = parsed.get(&6004).or_else(|| parsed.get(&6210)).filter(|e| !e.is_empty())
+        .map(|e| crate::control::contracts::exchange_from_fix(e).to_string())
+        .unwrap_or_default();
+    let contract = api::Contract {
+        con_id: parsed.get(&6008).and_then(|s| s.parse().ok()).unwrap_or(0),
+        symbol: get(55),
+        sec_type,
+        exchange,
+        currency: get(15),
+        local_symbol: get(6035),
+        ..Default::default()
+    };
+    let order_type = match get(40).as_str() {
+        "1" => "MKT", "2" => "LMT", "3" => "STP", "4" => "STP LMT",
+        "P" => "TRAIL", "5" => "MOC", "B" => "LOC", "J" => "MIT",
+        "K" => "MTL", "R" => "REL",
+        "TMIT" => "TRAIL MIT", "TLIT" => "TRAIL LIT", "E2M" => "PEG BEST", "PSVR" => "PASSV REL",
+        other => other,
+    }.to_string();
+    let order = api::Order {
+        action: match get(54).as_str() { "1" => "BUY", "2" => "SELL", "5" => "SSHORT", _ => "" }.to_string(),
+        // The quantity not filled: 0 for a filled order (the reference's
+        // answer of 07/10/2026: two filled orders of 1 share show 0, the
+        // cancelled ones their quantity).
+        total_quantity: (num(38).unwrap_or(0.0) - num(14).unwrap_or(0.0)).max(0.0),
+        order_type,
+        lmt_price: num(44).unwrap_or(0.0),
+        aux_price: num(99).unwrap_or(0.0),
+        tif: decode_tif(super::report_tif(parsed)).to_string(),
+        account: { let a = get(1); if a.is_empty() { account_id.to_string() } else { a } },
+        perm_id: perm_id_of(parsed),
+        filled_quantity: num(14).unwrap_or(0.0),
+        outside_rth: flag(6433),
+        post_only: flag(6605),
+        deactivate: flag(6521),
+        clearing_intent: get(6419),
+        use_price_mgmt_algo: i32::from(flag(8339)),
+        order_ref: get(6010),
+        seek_price_improvement: flag(6557),
+        // A bracket child: its OCA group and its parent's permanent id.
+        oca_group: get(583),
+        parent_perm_id: parsed.get(&6107).and_then(|s| s.split('.').next()).and_then(|s| s.parse().ok()).unwrap_or(0),
+        auto_cancel_parent: flag(6965),
+        // The stop trigger, which the reference also shows as the trailing
+        // stop price of a stop order.
+        trail_stop_price: num(6117).unwrap_or(f64::MAX),
+        good_till_date: match (parsed.get(&126), parsed.get(&432)) {
+            (Some(t), _) => utc_text_to_eastern(t),
+            (None, Some(d)) => d.clone(),
+            _ => String::new(),
+        },
+        good_after_time: parsed.get(&168).map(|t| utc_text_to_eastern(t)).unwrap_or_default(),
+        rule80a: "0".into(),
+        ..Default::default()
+    };
+    // A rejected order is cancelled, "Rejected by System" (the reference
+    // 10.51, paper, 15/10/2026: three margin refusals).
+    let status = match get(39).as_str() {
+        "2" => "Filled",
+        _ => "Cancelled",
+    };
+    let completed_status = match get(39).as_str() {
+        "2" => "Filled".to_string(),
+        "8" => format!("Rejected by System:\n{}", reworded_reject(&get(58))),
+        // Cancelled with a restatement reason (a bracket's children when
+        // the parent ends): by the system (five orders on 15/10/2026).
+        _ if parsed.contains_key(&378) => "Cancelled by System:\n".to_string(),
+        _ => parsed.get(&58).filter(|t| !t.is_empty()).cloned().unwrap_or_else(|| "Cancelled by Trader".to_string()),
+    };
+    let completed_time = parsed.get(&60).or_else(|| parsed.get(&52))
+        .and_then(|t| jiff::civil::DateTime::strptime("%Y%m%d-%H:%M:%S", t).ok())
+        .and_then(|dt| dt.to_zoned(jiff::tz::TimeZone::UTC).ok())
+        .map(|z| crate::client_core::format_exec_time(z.timestamp().as_second()))
+        .unwrap_or_default();
+    let state = api::OrderState {
+        status: status.to_string(),
+        completed_time,
+        completed_status,
+        ..Default::default()
+    };
+    let api = parsed.get(&6088).is_some_and(|s| s == "Socket");
+    (contract, order, state, api)
+}
+
+/// A server time ("yyyyMMdd-HH:mm:ss", UTC) as the reference shows an
+/// order's dates: "yyyyMMdd HH:mm:ss US/Eastern" (ibx#695).
+fn utc_text_to_eastern(text: &str) -> String {
+    jiff::civil::DateTime::strptime("%Y%m%d-%H:%M:%S", text).ok()
+        .and_then(|dt| dt.to_zoned(jiff::tz::TimeZone::UTC).ok())
+        .map(|z| crate::client_core::format_exec_time(z.timestamp().as_second()))
+        .unwrap_or_else(|| text.to_string())
+}
+
+/// The text of a refusal as the reference words it in a completed order's
+/// status (ibx#695; observed for the margin refusal, three orders on
+/// 15/10/2026). Another text is kept as the server gave it.
+fn reworded_reject(text: &str) -> String {
+    let values: Vec<&str> = text.split('[').skip(1).filter_map(|s| s.split(']').next()).collect();
+    if text.starts_with("YOUR ORDER IS NOT ACCEPTED. IN ORDER TO OBTAIN THE DESIRED POSITION YOUR EQUITY WITH LOAN VALUE")
+        && let [loan, margin] = values[..]
+    {
+        return format!("We are unable to accept your order. Your Available Funds are in sufficient to cover the change in the <br>\
+account's margin requirements if this order executes. In order to obtain the desired position your Equity with<br> \
+Loan Value [{loan}] must exceed the new total Initial Margin of  [{margin}].");
+    }
+    text.to_string()
+}
+
 fn perm_id_of(parsed: &std::collections::HashMap<u32, String>) -> i64 {
     parsed.get(&11)
         .map(|s| s.strip_prefix('C').unwrap_or(s))
@@ -414,6 +550,8 @@ pub(crate) struct CcpState {
     /// Fan-out state for by-symbol lookups: the records wait for the
     /// per-exchange replies, then become the rows (ibx#435).
     pub(crate) pending_fanout: Vec<PendingFanout>,
+    /// reqCompletedOrders (ibx#695).
+    pub(crate) completed: CompletedOrders,
     /// Counter for internal fan-out req IDs (tag 320 on per-exchange `35=c`).
     pub(crate) next_fanout_id: u32,
     /// Counter for internal secdef req IDs (auto-fetch on cold-cache positions).
@@ -556,6 +694,36 @@ impl PendingFanout {
         Some((con_id, exchange))
     }
 }
+
+/// A row of reqCompletedOrders: the order's contract, the order, its state,
+/// and whether it was placed through the API (ibx#695).
+type CompletedOrderRow = (api::Contract, api::Order, api::OrderState, bool);
+
+/// reqCompletedOrders, as the reference 10.51 makes it (ibx#695; paper,
+/// 15/10/2026 pre-market): one request to the server for the finished
+/// orders of the trading day, its rows given once the contracts they name
+/// are known; a later request of the session is answered from that answer.
+#[derive(Default)]
+pub(crate) struct CompletedOrders {
+    /// The answer being read.
+    reading: Option<Vec<CompletedOrderRow>>,
+    /// Its end came: it waits for the definitions of `defs` until
+    /// `deadline`.
+    ended: bool,
+    defs: HashSet<i64>,
+    /// Definitions to ask at the next sweep, which has the connection.
+    to_ask: Vec<i64>,
+    /// The request ids of those lookups, until their answer.
+    lookups: HashSet<ReqId>,
+    deadline: Option<Instant>,
+    /// The apiOnly flags of the requests waiting for the answer.
+    waiting: Vec<bool>,
+    /// The answer, kept for the session's later requests.
+    kept: Option<Vec<CompletedOrderRow>>,
+}
+
+/// How long the answer waits for the definitions of its contracts.
+const COMPLETED_DEFS_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// A by-symbol lookup in flight, kept for its answer (ibx#410, ibx#435).
 pub(crate) struct PendingLookup {
@@ -855,6 +1023,7 @@ impl CcpState {
             held_cancel_dates: std::collections::HashMap::new(),
             schedules: std::collections::HashMap::new(),
             pending_fanout: Vec::new(),
+            completed: CompletedOrders::default(),
             next_fanout_id: 1,
             next_internal_secdef_id: 0xF000_0000,
             auto_fetched_conids: HashSet::new(),
@@ -1437,6 +1606,28 @@ impl CcpState {
     ) {
         // This client's id, for whose reports are given to it.
         context.api_client_id = shared.reference.api_client_id();
+        // The answer of reqCompletedOrders: its replayed reports are its
+        // rows, not order updates; its end marker ends it (ibx#695).
+        if self.completed.reading.is_some() && !self.awaiting_login_replay && !self.awaiting_status_replay {
+            if parsed.get(&11).map(|s| s.as_str()) == Some("*") {
+                self.completed_end(shared);
+                return;
+            }
+            if parsed.get(&97).map(|s| s.as_str()) == Some("Y") {
+                let row = completed_row(parsed, account_id);
+                // A contract not known yet is looked up at its first
+                // report, as the reference (07/10/2026: IBM's definition
+                // asked before the end of the answer).
+                let con_id = row.0.con_id;
+                if con_id != 0 && shared.reference.get_contract(con_id).is_none() && self.completed.defs.insert(con_id) {
+                    self.completed.to_ask.push(con_id);
+                }
+                if let Some(rows) = self.completed.reading.as_mut() {
+                    rows.push(row);
+                }
+                return;
+            }
+        }
         // End markers are not orders (ibx#399): the end of a trades reply
         // (it carries the request id), and the end of the order status
         // replay (wildcard order id).
@@ -2652,6 +2843,13 @@ impl CcpState {
     /// per-exchange fan-out, has no deadline, as in the reference: it waits
     /// for its answer (ibx#485; ibx#227 gave it error 200 with a text of
     /// ibx's own).
+    pub(crate) fn sweep_contract_details_and_completed(
+        &mut self, shared: &SharedState, event_tx: &Option<Sender<Event>>, ccp_conn: &mut Option<Connection>, hb: &mut HeartbeatState,
+    ) {
+        self.sweep_completed_orders(shared, ccp_conn, hb);
+        self.sweep_contract_details(shared, event_tx, ccp_conn, hb);
+    }
+
     pub(crate) fn sweep_contract_details(
         &mut self,
         shared: &SharedState,
@@ -3222,6 +3420,12 @@ impl CcpState {
         // scanner enrichment) start at 0xF000_0000. Their replies populate
         // the contract cache but never surface as contract_details callbacks.
         if req_id >= 0xF000_0000 {
+            // The definition of a completed order's contract: its trading
+            // hours are asked next, as the reference (07/10/2026: IBM's
+            // right after its definition; ibx#695).
+            if self.completed.lookups.remove(&req_id) {
+                self.ask_order_schedule(msg, shared, ccp_conn, hb);
+            }
             return;
         }
         if single_shot {
@@ -3417,6 +3621,107 @@ impl CcpState {
         // (ibx#486).
         shared.reference.cache_market_name(def.con_id, &def.primary_suffix);
         self.try_release_scanner_enrichments(def.con_id, shared);
+        if self.completed.defs.remove(&def.con_id) && self.completed.defs.is_empty() && self.completed.ended {
+            self.completed_deliver(shared);
+        }
+    }
+
+    /// reqCompletedOrders (ibx#695): answered from the session's answer
+    /// when there is one, else asked of the server, once for the requests
+    /// that come while it is read.
+    pub(crate) fn request_completed_orders(
+        &mut self, api_only: bool, ccp_conn: &mut Option<Connection>, hb: &mut HeartbeatState, shared: &SharedState,
+    ) {
+        if let Some(rows) = &self.completed.kept {
+            push_completed_rows(rows, api_only, shared);
+            return;
+        }
+        self.completed.waiting.push(api_only);
+        if self.completed.reading.is_some() {
+            return;
+        }
+        // The trading day: from midnight to midnight on the machine's
+        // clock, in UTC (the reference at 10:59 Paris on 15/10/2026: from
+        // 14/10 22:00 to 15/10 22:00).
+        let (from, to) = match jiff::Zoned::now().start_of_day() {
+            Ok(day) => {
+                let fmt = |z: &jiff::Zoned| z.timestamp().to_zoned(jiff::tz::TimeZone::UTC).strftime("%Y%m%d-%H:%M:%S").to_string();
+                let next = day.checked_add(jiff::Span::new().days(1)).unwrap_or_else(|_| day.clone());
+                (fmt(&day), fmt(&next))
+            }
+            Err(_) => (String::new(), String::new()),
+        };
+        if let Some(conn) = ccp_conn.as_mut() {
+            let now = chrono_free_timestamp();
+            let _ = conn.send_fix(&[
+                (fix::TAG_MSG_TYPE, "H"), (fix::TAG_SENDING_TIME, &now), (11, "*"), (55, "*"), (54, "*"),
+                (6533, "1"), (6536, &from), (6537, &to),
+            ]);
+            hb.last_ccp_sent = Instant::now();
+            log::info!("Completed orders asked: {} to {}", from, to);
+        } else {
+            log::warn!("Completed orders: no auth connection; the request waits for its answer");
+        }
+        self.completed.reading = Some(Vec::new());
+    }
+
+    /// The end of the server's answer: the definitions of the contracts
+    /// not known yet are asked, as the reference asks them, and the rows
+    /// wait for them (at most `COMPLETED_DEFS_WAIT`).
+    fn completed_end(&mut self, shared: &SharedState) {
+        self.completed.ended = true;
+        if self.completed.defs.is_empty() {
+            self.completed_deliver(shared);
+            return;
+        }
+        log::info!("Completed orders: the answer waits for {} contract definitions", self.completed.defs.len());
+        self.completed.deadline = Some(Instant::now() + COMPLETED_DEFS_WAIT);
+    }
+
+    /// The answer, given to each request waiting for it, and kept.
+    fn completed_deliver(&mut self, shared: &SharedState) {
+        let mut rows = self.completed.reading.take().unwrap_or_default();
+        for row in &mut rows {
+            if let Some(known) = shared.reference.get_contract(row.0.con_id) {
+                row.0.trading_class = known.trading_class;
+            }
+        }
+        for api_only in std::mem::take(&mut self.completed.waiting) {
+            push_completed_rows(&rows, api_only, shared);
+        }
+        log::info!("Completed orders: {} rows given", rows.len());
+        self.completed.kept = Some(rows);
+        self.completed.ended = false;
+        self.completed.defs.clear();
+        self.completed.to_ask.clear();
+        self.completed.deadline = None;
+    }
+
+    /// An answer whose definitions did not all come in time is given as it
+    /// is.
+    pub(crate) fn sweep_completed_orders(&mut self, shared: &SharedState, ccp_conn: &mut Option<Connection>, hb: &mut HeartbeatState) {
+        for con_id in std::mem::take(&mut self.completed.to_ask) {
+            let req_id = self.next_internal_secdef_id;
+            self.next_internal_secdef_id = self.next_internal_secdef_id.wrapping_add(1).max(0xF000_0000);
+            if let Some(conn) = ccp_conn.as_mut() {
+                // Named in the session series of the by-conId lookups on
+                // the wire; its answer maps back to this name (ibx#698).
+                let name = format!("{}{}", crate::control::contracts::SECDEF_LIVE_ORDER_NAME, req_id);
+                let con_id_str = con_id.to_string();
+                let ts = chrono_free_timestamp();
+                let _ = conn.send_fix(&[
+                    (fix::TAG_MSG_TYPE, "c"), (fix::TAG_SENDING_TIME, &ts), (320, &name), (321, "2"), (146, "1"),
+                    (6008, &con_id_str), (6004, "BEST"),
+                ]);
+                hb.last_ccp_sent = Instant::now();
+            }
+            self.pending_secdef.push((ReqId::from(req_id), true, Instant::now() + SECDEF_TIMEOUT));
+            self.completed.lookups.insert(ReqId::from(req_id));
+        }
+        if self.completed.ended && self.completed.deadline.is_some_and(|d| Instant::now() >= d) {
+            log::warn!("Completed orders: {} definitions did not come in time", self.completed.defs.len());
+            self.completed_deliver(shared);
+        }
     }
 
     /// The rows of a lookup, in record order (ibx#435): each record gets its

@@ -429,59 +429,16 @@ impl EClient {
         Ok(())
     }
 
-    /// Request completed orders.
+    /// Request completed orders: the server's finished orders of the
+    /// trading day, as the reference asks them; given by the event loop
+    /// (ibx#695).
     #[pyo3(signature = (api_only=false))]
     fn req_completed_orders(&self, py: Python<'_>, api_only: bool) -> PyResult<()> {
         // One API request for the pacing, whatever it sends (ibx#565).
         let _request = crate::engine::park::one_request();
         if let Some(r) = self.not_connected(-1) { return r; }
-        if self.later(move |this, py| this.req_completed_orders(py, api_only)) { return Ok(()); }
-        let _ = api_only;
-        // The lock is let go before the callbacks: held across one that
-        // releases the interpreter lock (a file write, a lock, a sleep), it
-        // stops the event loop, which takes it with the interpreter lock
-        // held, and with it the whole program.
-        let shared = self.shared.lock().unwrap().clone();
-        if let Some(shared) = shared {
-            let completed = shared.orders.drain_completed_orders();
-            for co in &completed {
-                let status_str = crate::client_core::order_status_str(co.status);
-                let rich_info = shared.orders.get_order_info(co.order_id);
-
-                // Build OrderState iso with Rust API path (api/client/orders.rs:101-125):
-                // start from rich_info.order_state when available, override status with the
-                // canonical status_str, fall back to defaults otherwise.
-                let state = if let Some(info) = rich_info.as_ref() {
-                    let mut s = super::super::contract::OrderState::from_api(py, &info.order_state)?;
-                    s.status = status_str.into();
-                    s
-                } else {
-                    let mut s = super::super::contract::OrderState::default();
-                    s.status = status_str.into();
-                    s
-                };
-                let state_py = Py::new(py, state)?.into_any();
-
-                let tracked = self.core.open_orders.lock().unwrap().get(&co.order_id)
-                    .map(|o| (o.contract.clone(), o.order.clone()));
-                // The order as the reference shows it (its unset values).
-                if let Some((c, mut o)) = tracked.or_else(|| rich_info.map(|info| (info.contract, info.order))) {
-                    crate::client_core::reported_unset_values(&mut o);
-                    let c_py = Py::new(py, Contract::from_api(py, &c)?)?.into_any();
-                    let o_py = Py::new(py, Order::from_api(py, &o)?)?.into_any();
-                    self.wrapper.call_method1(py, "completed_order", (&c_py, &o_py, &state_py))?;
-                } else {
-                    let c_py = Py::new(py, Contract::default())?.into_any();
-                    let o_py = Py::new(py, Order::default())?.into_any();
-                    self.wrapper.call_method1(py, "completed_order", (&c_py, &o_py, &state_py))?;
-                }
-                // Bound `order_cache` growth: terminal entries are no longer
-                // needed once delivered through `completed_order`.
-                shared.orders.remove_order_info(co.order_id);
-            }
-            self.wrapper.call_method0(py, "completed_orders_end")?;
-        }
-        Ok(())
+        let tx = self.tx()?;
+        send_cmd(py, &tx, ControlCommand::CompletedOrders { api_only })
     }
 }
 

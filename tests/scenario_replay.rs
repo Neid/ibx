@@ -510,8 +510,9 @@ fn session_start_first_client() {
     session_start(false);
 }
 
+// The completed orders as a set: the reference's order of its rows is not
+// the server's, and not known yet (ibx#695).
 #[test]
-#[ignore = "ibx#695: reqCompletedOrders does not ask the server for the day's orders"]
 fn session_start_with_completed_orders() {
     session_start(true);
 }
@@ -535,6 +536,9 @@ fn session_start(completed: bool) {
     let sorted = |lines: Vec<String>| {
         let mut lines = lines;
         if let (Some(a), Some(b)) = (lines.iter().position(|l| l.starts_with("position|")), lines.iter().position(|l| l == "positionEnd")) {
+            lines[a..b].sort();
+        }
+        if let (Some(a), Some(b)) = (lines.iter().position(|l| l.starts_with("completedOrder|")), lines.iter().position(|l| l == "completedOrdersEnd")) {
             lines[a..b].sort();
         }
         lines

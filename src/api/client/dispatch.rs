@@ -103,6 +103,20 @@ impl EClient {
                 }
                 Kind::order_reports => self.deliver_order_reports(wrapper, run(&mut ib.order_reports, until), &mut reported),
                 Kind::what_if_responses => self.deliver_what_ifs(wrapper, run(&mut ib.what_if_responses, until)),
+                // The server's finished orders of the day, then the end
+                // (ibx#695).
+                Kind::completed_orders => {
+                    for row in run(&mut ib.completed_orders, until) {
+                        match row {
+                            Some(row) => {
+                                let (contract, mut order, state) = *row;
+                                crate::client_core::reported_unset_values(&mut order);
+                                wrapper.completed_order(&contract, &order, &state);
+                            }
+                            None => wrapper.completed_orders_end(),
+                        }
+                    }
+                }
                 Kind::historical_ticks => self.deliver_historical_ticks(wrapper, run(&mut ib.historical_ticks, until)),
                 Kind::tbt_errors => {
                     // Tick-by-tick requests that ended with an error

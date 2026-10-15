@@ -1187,6 +1187,10 @@ impl Run<'_> {
                             // An order the server had before the recording
                             // (the logon replay): the same id for ibx.
                             None if matches!(t, 11 | 41) && v != "*" && !self.placed_here(base(v)) => {}
+                            // The wildcard of an end marker (the end of an
+                            // order replay, of a completed orders answer):
+                            // the same for ibx (ibx#695).
+                            None if v == "*" => {}
                             None if matches!(t, 11 | 41) => known = false,
                             None => {}
                         }

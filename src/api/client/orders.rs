@@ -318,44 +318,16 @@ impl EClient {
     /// Delivers all archived completed orders, then calls
     /// `completed_orders_end`, through `process_msgs` (ibx#532).
     pub fn req_completed_orders(&self, _wrapper: &mut impl Wrapper) {
-        // One API request for the pacing, whatever it sends (ibx#565).
-        let _request = crate::engine::park::one_request();
-        // Answered here: after the requests made before it (ibx#561).
-        self.shared.command_clock().take_turn();
-        // Given by `process_msgs` at its place among the answers (ibx#532).
-        self.later(|this, wrapper| this.answer_completed_orders(wrapper));
+        self.req_completed_orders_only(false);
     }
 
-    fn answer_completed_orders(&self, wrapper: &mut dyn Wrapper) {
-        for order in self.shared.orders.drain_completed_orders() {
-            let status_str = crate::client_core::order_status_str(order.status);
-            if let Some(info) = self.shared.orders.get_order_info(order.order_id) {
-                let mut state = info.order_state;
-                state.status = status_str.into();
-                // Enrich contract with secdef cache at read time
-                let contract = if info.contract.con_id != 0 {
-                    self.core.get_contract(info.contract.con_id, &self.shared).unwrap_or(info.contract)
-                } else {
-                    info.contract
-                };
-                // The order as the reference shows it (its unset values).
-                let mut order = info.order;
-                crate::client_core::reported_unset_values(&mut order);
-                wrapper.completed_order(&contract, &order, &state);
-            } else {
-                let contract = Contract::default();
-                let api_order = Order { order_id: order.order_id, ..Default::default() };
-                let state = crate::api::types::OrderState {
-                    status: status_str.into(),
-                    ..Default::default()
-                };
-                wrapper.completed_order(&contract, &api_order, &state);
-            }
-            // Bound `order_cache` growth: terminal entries are no longer needed
-            // once delivered through `completed_order`.
-            self.shared.orders.remove_order_info(order.order_id);
-        }
-        wrapper.completed_orders_end();
+    /// reqCompletedOrders with its apiOnly flag (ibx#695): the server's
+    /// finished orders of the trading day, as the reference asks them;
+    /// given by `process_msgs`.
+    pub fn req_completed_orders_only(&self, api_only: bool) {
+        // One API request for the pacing, whatever it sends (ibx#565).
+        let _request = crate::engine::park::one_request();
+        let _ = self.send(ControlCommand::CompletedOrders { api_only });
     }
 
     // ── Executions ──

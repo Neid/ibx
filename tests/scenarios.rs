@@ -953,39 +953,34 @@ fn mixed_all_data_types_single_process() {
 //  COMPLETED ORDERS
 // ═══════════════════════════════════════════════════════════════════════
 
+// ibx#695: reqCompletedOrders asks the engine, which asks the server for
+// the day's finished orders; its rows, then the end, are given by
+// process_msgs in the order written.
 #[test]
 fn req_completed_orders_drains_and_dispatches() {
-    let (client, _rx, shared) = test_client();
-
-    shared.orders.push_completed_order(CompletedOrder {
-        order_id: 100, instrument: 0, status: OrderStatus::Filled,
-        filled_qty_fixed: (50) as i64 * ibx::types::QTY_SCALE, timestamp_ns: 1000,
-    });
-    shared.orders.push_completed_order(CompletedOrder {
-        order_id: 200, instrument: 0, status: OrderStatus::Cancelled,
-        filled_qty_fixed: (0) as i64 * ibx::types::QTY_SCALE, timestamp_ns: 2000,
-    });
-
+    let (client, rx, shared) = test_client();
     let mut w = RecordingWrapper::default();
     client.req_completed_orders(&mut w);
-    client.process_msgs(&mut w);
+    assert!(rx.try_iter().any(|c| matches!(c, ControlCommand::CompletedOrders { api_only: false })));
 
-    assert_eq!(w.events.iter().filter(|e| *e == "completed_order").count(), 2);
-    assert!(w.events.iter().any(|e| e == "completed_orders_end"));
-
-    // Second call should return empty (already drained)
-    w.events.clear();
-    client.req_completed_orders(&mut w);
+    let row = |id: i64, status: &str| Some(Box::new((
+        ibx::api::types::Contract { symbol: "AAPL".into(), ..Default::default() },
+        ibx::api::types::Order { perm_id: id, ..Default::default() },
+        ibx::api::types::OrderState { status: status.into(), ..Default::default() },
+    )));
+    shared.orders.push_completed_row(row(100, "Filled"));
+    shared.orders.push_completed_row(row(200, "Cancelled"));
+    shared.orders.push_completed_row(None);
     client.process_msgs(&mut w);
-    assert_eq!(w.events.iter().filter(|e| *e == "completed_order").count(), 0);
-    assert!(w.events.iter().any(|e| e == "completed_orders_end"));
+    assert_eq!(w.events, vec!["completed_order", "completed_order", "completed_orders_end"]);
 }
 
 #[test]
 fn req_completed_orders_empty_still_fires_end() {
-    let (client, _rx, _shared) = test_client();
+    let (client, _rx, shared) = test_client();
     let mut w = RecordingWrapper::default();
     client.req_completed_orders(&mut w);
+    shared.orders.push_completed_row(None);
     client.process_msgs(&mut w);
     assert_eq!(w.events, vec!["completed_orders_end"]);
 }

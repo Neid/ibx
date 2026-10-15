@@ -24,6 +24,10 @@ use crate::control::contracts::MarketRule;
 use crate::types::*;
 use crate::api::types as api;
 
+/// One answer of reqCompletedOrders (ibx#695): a finished order, or the end
+/// of the list (None).
+pub type CompletedRow = Option<Box<(api::Contract, api::Order, api::OrderState)>>;
+
 /// Enriched order info from CCP execution reports, for open_order / completed_order callbacks.
 #[derive(Clone, Debug)]
 pub struct RichOrderInfo {
@@ -1142,6 +1146,8 @@ pub struct OrderState {
     error_tap: ErrorTap,
     pub(crate) what_if_responses: SeqQueue<WhatIfResponse>,
     completed_orders: Mutex<Vec<CompletedOrder>>,
+    /// The answers of reqCompletedOrders, from the server (ibx#695).
+    pub(crate) completed_rows: SeqQueue<CompletedRow>,
     /// Enriched order info from CCP exec reports (order_id -> RichOrderInfo).
     order_cache: Mutex<HashMap<OrderId, RichOrderInfo>>,
     /// Set from the logon, or from a lost auth link, to the end of the order
@@ -1183,6 +1189,7 @@ impl OrderState {
             error_tap: ErrorTap::default(),
             what_if_responses: SeqQueue::new(&stamp),
             completed_orders: Mutex::new(Vec::with_capacity(64)),
+            completed_rows: SeqQueue::new(&stamp),
             order_cache: Mutex::new(HashMap::new()),
             open_orders_held: AtomicBool::new(false),
             login_orders_end: AtomicBool::new(false),
@@ -1468,8 +1475,21 @@ impl OrderState {
 
     #[doc(hidden)] pub fn push_completed_order(&self, order: CompletedOrder) {
         let copy = self.error_tap.copy(&order);
-        self.completed_orders.lock().unwrap().push(order);
+        {
+            // reqCompletedOrders asks the server (ibx#695): this list only
+            // feeds the event channel and the tests; it keeps the latest.
+            let mut kept = self.completed_orders.lock().unwrap();
+            if kept.len() >= 1024 {
+                kept.drain(..512);
+            }
+            kept.push(order);
+        }
         self.error_tap.emit(copy.map(|order| Event::CompletedOrder(order)));
+    }
+
+    /// A row of the answer of reqCompletedOrders, or its end (ibx#695).
+    #[doc(hidden)] pub fn push_completed_row(&self, row: CompletedRow) {
+        self.completed_rows.push(row);
     }
 
     #[doc(hidden)] pub fn push_order_info(&self, order_id: OrderId, info: RichOrderInfo) {

@@ -2377,6 +2377,9 @@ pub enum ControlCommand {
     FetchSmartComponents { req_id: ReqId, bbo_exchange: String },
     /// Request soft dollar tiers.
     FetchSoftDollarTiers { req_id: ReqId },
+    /// reqCompletedOrders (ibx#695): the server's finished orders of the
+    /// trading day, asked once per session.
+    CompletedOrders { api_only: bool },
     /// Request user info.
     FetchUserInfo { req_id: ReqId },
     /// Graceful shutdown.

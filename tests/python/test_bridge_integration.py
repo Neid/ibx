@@ -781,7 +781,10 @@ class TestReqCompletedOrdersOrderState:
             threading.Thread(target=c.run, daemon=True).start()
             time.sleep(0.05)
             c.req_completed_orders(False)
-            c._test_dispatch_once()
+            # The answer comes through the event loop (ibx#695): wait for its end.
+            deadline = time.time() + 5
+            while "end" not in w.seen and time.time() < deadline:
+                time.sleep(0.01)
             print(",".join(w.seen))
         ''')
         done = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, timeout=30)

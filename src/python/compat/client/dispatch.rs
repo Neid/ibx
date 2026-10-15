@@ -799,6 +799,23 @@ impl EClient {
                         }
                     }
                     }
+                    Kind::completed_orders => {
+                    // The server's finished orders of the day, then the end
+                    // (ibx#695).
+                    for row in run(&mut ib.completed_orders, until) {
+                        match row {
+                            Some(row) => {
+                                let (contract, mut order, state) = *row;
+                                crate::client_core::reported_unset_values(&mut order);
+                                let c_py = Py::new(py, super::super::contract::Contract::from_api(py, &contract)?)?.into_any();
+                                let o_py = Py::new(py, super::super::contract::Order::from_api(py, &order)?)?.into_any();
+                                let s_py = Py::new(py, super::super::contract::OrderState::from_api(py, &state)?)?.into_any();
+                                call_wrapper!(self.wrapper, py, "completed_order", (&c_py, &o_py, &s_py));
+                            }
+                            None => call_wrapper!(self.wrapper, py, "completed_orders_end", ()),
+                        }
+                    }
+                    }
                     Kind::what_if_responses => {
                     // Drain what-if responses -> open_order(contract, order, OrderState)
                     // only, as the reference answers a preview; a refused one then gets

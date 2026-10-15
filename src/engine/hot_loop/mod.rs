@@ -1306,7 +1306,7 @@ impl HotLoop {
         );
         self.ccp.sweep_pending_schedule_pairs(&self.shared, &self.event_tx);
         self.ccp.sweep_scanner_enrichments(&self.shared);
-        self.ccp.sweep_contract_details(&self.shared, &self.event_tx, &mut self.ccp_conn, &mut self.hb);
+        self.ccp.sweep_contract_details_and_completed(&self.shared, &self.event_tx, &mut self.ccp_conn, &mut self.hb);
         self.ccp.optcalc.progress(&mut self.ccp_conn, &mut self.hb, &self.shared);
         self.ccp.pump_matching_symbols(Instant::now(), &mut self.ccp_conn, &mut self.hb, &self.shared);
         order_builder::sweep_rth_lookups(&mut self.context);
@@ -2346,6 +2346,9 @@ impl HotLoop {
                     if let Some(pos) = self.hmds.pending_head_ts.iter().position(|(_, rid, _)| *rid == req_id) {
                         self.hmds.pending_head_ts.remove(pos);
                     }
+                }
+                ControlCommand::CompletedOrders { api_only } => {
+                    self.ccp.request_completed_orders(api_only, &mut self.ccp_conn, &mut self.hb, &self.shared);
                 }
                 ControlCommand::FetchMatchingSymbols { req_id, pattern } => {
                     self.ccp.send_matching_symbols_request(req_id, &pattern, &mut self.ccp_conn, &mut self.hb, &self.shared);
