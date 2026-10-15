@@ -780,6 +780,9 @@ pub const SECDEF_UNDERLYING_NAME: &str = "UnderlyingECNoDupsNDReqByConid";
 /// Name of the lookup of a finished order's contract not known yet, on
 /// BEST (ibx#695; the reference's reqCompletedOrders of 07/10/2026).
 pub const SECDEF_LIVE_ORDER_NAME: &str = "LiveOrderNDReqByConid";
+/// Name of the lookup the reference makes before the first order of a
+/// contract in a session, on its primary exchange (ibx#706).
+pub const SECDEF_ORDER_TYPES_NAME: &str = "IBTypesNDReqByConid";
 
 /// Industry, category and subcategory of a company, set on a definition
 /// that has none (ibx#436).
@@ -800,6 +803,7 @@ pub fn secdef_request_number(req_id: &str) -> Option<crate::types::ReqId> {
         .or_else(|| req_id.strip_prefix(SECDEF_PREFERRED_NAME))
         .or_else(|| req_id.strip_prefix(SECDEF_MSG_NAME))
         .or_else(|| req_id.strip_prefix(SECDEF_LIVE_ORDER_NAME))
+        .or_else(|| req_id.strip_prefix(SECDEF_ORDER_TYPES_NAME))
         .unwrap_or(req_id)
         .parse()
         .ok()

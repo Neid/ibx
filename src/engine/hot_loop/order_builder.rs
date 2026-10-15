@@ -132,6 +132,20 @@ fn send_orders(
             context.rth_parked.push(rewrap(order_req));
             continue;
         }
+        // The first order of a contract in the session waits for the
+        // contract's second lookup, and the orders of that contract placed
+        // meanwhile with it (ibx#706).
+        if order_req.new_order_qty().is_some() && order_req.combo().is_none()
+            && let Some(instrument) = order_req.instrument().filter(|i| context.market.con_id(*i).is_some_and(|c| c > 0))
+            && let Some(exchange) = order_types_exchange(context, shared, instrument)
+            && matches!(definition_on(context, conn, hb, instrument, Some(&exchange)), Definition::Waiting)
+        {
+            if let Some(con_id) = context.market.con_id(instrument) {
+                context.order_types_done.insert(con_id);
+            }
+            context.rth_parked.push(rewrap(order_req));
+            continue;
+        }
         // Once the contract is known: what the reference checks then, read
         // by the client when the order was placed (the algo checks with
         // their warnings, the price, the time zones), the order dropped
@@ -2944,7 +2958,9 @@ fn definition_on<'a>(
     let key = (con_id, destination);
     if !context.rth_types.contains_key(&key) {
         if !context.rth_lookups.iter().any(|(_, k, _)| *k == key) {
-            let id = format!("ibxrth{}", context.next_rth_lookup);
+            // The reference's name of this lookup (ibx#706); the session's
+            // number is given on the wire.
+            let id = format!("{}{}", crate::control::contracts::SECDEF_ORDER_TYPES_NAME, context.next_rth_lookup);
             context.next_rth_lookup = context.next_rth_lookup.wrapping_add(1);
             let ts = chrono_free_timestamp();
             let con_id_str = con_id.to_string();
@@ -3508,6 +3524,27 @@ pub(crate) fn hold_order(
 /// of their own, below the historical-data lookups (0xD000_0000).
 pub(crate) const ORDER_LOOKUP_FIRST_ID: u32 = 0xC000_0000;
 pub(crate) const ORDER_LOOKUP_IDS: u32 = 0x1000_0000;
+
+/// The exchange of the reference's second lookup before the first order of
+/// a contract in a session (ibx#706; observed in 38 recordings of 10.51,
+/// 12/10 to 15/10/2026, once per contract): the contract's primary
+/// exchange for a SMART order; the order goes out at its answer. A
+/// directed order asks the definition on its own exchange where its rules
+/// need it (`definition`), under the same name. None when the primary
+/// exchange is not known, or for a directed order: no lookup here.
+fn order_types_exchange(context: &Context, shared: &SharedState, instrument: crate::types::InstrumentId) -> Option<String> {
+    let destination = context.market.order_routing(instrument).1;
+    if !destination.is_empty() && destination != "BEST" {
+        return None;
+    }
+    let con_id = context.market.con_id(instrument)?;
+    // Once per contract and session: a later order goes out at once, even
+    // when the answer did not come (the definition's wait ended it).
+    if context.order_types_done.contains(&con_id) && !context.rth_lookups.iter().any(|(_, k, _)| k.0 == con_id) {
+        return None;
+    }
+    shared.reference.get_contract(con_id).map(|c| c.primary_exchange).filter(|e| !e.is_empty())
+}
 
 /// Ask the contract of an order's slot by symbol, once per slot, as the
 /// reference asks it before each API order (ibx#486; captured: the
@@ -5151,7 +5188,7 @@ mod tests {
         assert!(order_contract_reply(&mut context, &shared, &id, reply.as_bytes()));
         assert!(context.rth_types.get(&(265598, "BEST".to_string())).is_some_and(|t| t.price_chk && t.smart));
         let frames = drain_frames(&mut context, &shared, &mut conn, &mut server);
-        assert!(frames.iter().all(|f| !tag(f, 320).is_some_and(|v| v.starts_with("ibxrth"))), "{frames:?}");
+        assert!(frames.iter().all(|f| !tag(f, 320).is_some_and(|v| v.starts_with(crate::control::contracts::SECDEF_ORDER_TYPES_NAME))), "{frames:?}");
     }
 
     // ibx#667: an order for the broker's ATS venue given by symbol is
@@ -6431,7 +6468,14 @@ mod tests {
             let Some((t, v)) = text.split_once('=') else { continue };
             let Ok(t) = t.parse::<u32>() else { continue };
             if t == 8 { frames.push(Vec::new()); }
-            if let Some(f) = frames.last_mut() { f.push((t, v.to_string())); }
+            // The definition by conId on an exchange goes out under the
+            // session's number (ibx#706); its answer comes back under ibx's
+            // own, as the connection maps it.
+            let v = match (t, conn.as_ref()) {
+                (320, Some(c)) if v.starts_with(crate::control::contracts::SECDEF_ORDER_TYPES_NAME) => c.internal_name(v),
+                _ => v.to_string(),
+            };
+            if let Some(f) = frames.last_mut() { f.push((t, v)); }
         }
         frames
     }

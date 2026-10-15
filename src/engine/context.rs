@@ -249,6 +249,10 @@ pub struct Context {
     pub(crate) bypass_redirect_warning: bool,
     /// Sequence of those lookups.
     pub(crate) next_order_lookup: u32,
+    /// The contracts whose second lookup before a first order was made
+    /// this session (ibx#706).
+    pub(crate) order_types_done: std::collections::HashSet<i64>,
+
     /// Set while a short-side order is encoded: its short-sale fields
     /// (ibx#417).
     pub(crate) short_sale_send: Option<crate::types::ShortSale>,
@@ -426,6 +430,8 @@ impl Context {
             bypass_redirect_warning: crate::config::bypass_redirect_order_warning(),
             bypass_route_bbo_warning: crate::config::bypass_route_marketable_to_bbo_warning(),
             next_order_lookup: 0,
+            order_types_done: std::collections::HashSet::new(),
+
             short_sale_send: None,
             combos: Default::default(),
             combo_send: None,

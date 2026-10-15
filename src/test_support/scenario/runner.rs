@@ -718,6 +718,20 @@ pub fn run(sc: &Scenario, opts: &Options, links: &mut Links, driver: &mut dyn Dr
         links.shared.reference.set_api_features(crate::control::logon::ApiFeatures::parse(features));
     }
     let recs = prepare(sc, opts);
+    // The contracts the recording orders on with no second lookup before
+    // its first order: the reference made it earlier in its session
+    // (ibx#706).
+    {
+        let con_of = |r: &Rec| r.get(6008).and_then(|v| v.parse::<i64>().ok());
+        let looked_up: HashSet<i64> = recs.iter()
+            .filter(|r| r.leg == "fix_out" && r.msg == "c" && r.get(320).is_some_and(|n| n.starts_with(crate::control::contracts::SECDEF_ORDER_TYPES_NAME)))
+            .filter_map(con_of).collect();
+        for con_id in recs.iter().filter(|r| r.leg == "fix_out" && r.msg == "D").filter_map(con_of) {
+            if !looked_up.contains(&con_id) {
+                links.engine.mark_order_types_done(con_id);
+            }
+        }
+    }
     if opts.positions_of_the_recording {
         for r in recs.iter().filter(|r| r.msg == "POSITION_DATA") {
             if recs.iter().any(|e| e.msg == "POSITION_END" && e.seq < r.seq) {

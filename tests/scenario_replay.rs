@@ -662,3 +662,30 @@ fn fill_then_positions() {
         assert_eq!(ours_rest.iter().filter(|l| l.starts_with("position|")).count(), 5);
     }
 }
+
+// A market-to-limit BUY 1 SPY cancelled 0.3 s after it was placed, during
+// the lookups of the contract's first order of the session (15/10/2026 in
+// RTH, the reference 10.51 at level 214, ibx#706): the symbol lookup, the
+// cancel (ApiCancelled, nothing sent), the second lookup; then a market
+// SELL 1 SPY goes out after the first lookup alone. reqPositions runs
+// (ibx#707). The lookups are answered at their recorded points, so the
+// cancel comes while the order waits, as on the reference.
+#[test]
+fn cancel_during_the_first_orders_lookups() {
+    let sc = load_scenario("gw1051/20261015/cancel_during_lookup");
+    for opts in [orders().positions_of_the_recording().lookups_at_their_point(),
+                 orders().positions_of_the_recording().lookups_at_their_point().paced()] {
+        let o = replay(&sc, &opts.mask(position_cost_6));
+        assert!(o.frame_error.is_none(), "{:?}", o.frame_error);
+        assert_eq!(o.frames_compared, 1, "the sale only");
+        let theirs: Vec<String> = o.theirs.iter().map(|(_, l)| l.clone()).collect();
+        let end = |v: &[String]| v.iter().position(|l| l == "positionEnd").expect("the first answer");
+        let (a, b) = (end(&o.ours), end(&theirs));
+        let (mut ours_first, mut theirs_first) = (o.ours[..a].to_vec(), theirs[..b].to_vec());
+        ours_first.sort();
+        theirs_first.sort();
+        assert_eq!(ours_first, theirs_first);
+        assert_same_callbacks(&o.ours[a..], &theirs[b..]);
+        assert!(o.ours.iter().any(|l| l.starts_with("orderStatus|") && l.contains("|ApiCancelled|")), "{:?}", o.ours);
+    }
+}

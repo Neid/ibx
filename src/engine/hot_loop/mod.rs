@@ -277,6 +277,13 @@ impl HotLoop {
         self.hmds.form_10_40 = on;
     }
 
+    /// A contract whose second lookup before a first order was made earlier
+    /// in the session (ibx#706): a replay of a recording that starts after
+    /// the reference made it.
+    pub fn mark_order_types_done(&mut self, con_id: i64) {
+        self.context.order_types_done.insert(con_id);
+    }
+
     /// The logon's price management feature and exclusion list (ibx#492).
     pub fn set_price_mgmt(&mut self, on: bool, exclusions: Option<&str>) {
         self.context.price_mgmt_feature = on;
