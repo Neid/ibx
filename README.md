@@ -78,6 +78,7 @@ fn main() {
         host: "your_ib_host".into(),
         paper: true,
         core_id: None,
+        client_id: 0,
     }).unwrap();
 
     // Market data

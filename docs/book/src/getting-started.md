@@ -52,6 +52,7 @@ fn main() {
         host: "cdc1.ibllc.com".into(),
         paper: true,
         core_id: None,
+        client_id: 0,
     }).unwrap();
 
     let spy = Contract { con_id: 756733, symbol: "SPY".into(), sec_type: "STK".into(), exchange: "SMART".into(), currency: "USD".into(), ..Default::default() };

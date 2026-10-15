@@ -52,6 +52,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         host: "cdc1.ibllc.com".into(),
         paper: true,
         core_id: None,
+        client_id: 0,
     })?;
 
     let order_id = client.next_order_id();

@@ -60,6 +60,7 @@ fn main() {
     let client = EClient::connect(&EClientConfig {
         username: env::var("IB_USERNAME").unwrap(), password: env::var("IB_PASSWORD").unwrap(),
         host: "cdc1.ibllc.com".into(), paper: true, core_id: None,
+        client_id: 0,
     }).unwrap();
     if !client.account_id.starts_with("DU") { client.disconnect(); panic!("not a paper account"); }
     let spy = Contract { con_id: 756733, symbol: "SPY".into(), sec_type: "STK".into(), exchange: "SMART".into(), currency: "USD".into(), ..Default::default() };

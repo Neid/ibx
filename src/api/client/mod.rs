@@ -20,6 +20,7 @@
 //!     host: "your_ib_host".into(),
 //!     paper: true,
 //!     core_id: None,
+//!     client_id: 0,
 //! }).unwrap();
 //!
 //! client.req_mkt_data(1, &Contract { con_id: 756733, symbol: "SPY".into(), sec_type: "STK".into(), exchange: "SMART".into(), currency: "USD".into(), ..Default::default() },
@@ -102,6 +103,11 @@ pub struct EClientConfig {
     /// rests while there is nothing to do and is woken by the first byte
     /// received or the first command sent (ibx#530).
     pub core_id: Option<usize>,
+    /// The client id, as the official `connect(host, port, clientId)`
+    /// takes it: every order of this client reports it in `openOrder` and
+    /// `orderStatus`, and the order ids of its earlier sessions are kept
+    /// per client id. 0 by default (ibx#704).
+    pub client_id: i32,
 }
 
 /// Give the engine the caller's host and credentials for auto-reconnect. The
@@ -262,8 +268,12 @@ impl EClient {
             .stack_size(crate::engine::hot_loop::ENGINE_STACK)
             .spawn(move || { hot_loop.run_with_panic_recovery(); })?;
 
-        // The highest order id of this client's earlier sessions (ibx#518).
+        // The client id of this client's orders and executions (ibx#704,
+        // as the Python client: ibx#466, ibx#474), then the highest order id
+        // of this client id's earlier sessions (ibx#518).
         let core = ClientCore::new();
+        core.client_id.store(i64::from(config.client_id), std::sync::atomic::Ordering::Relaxed);
+        shared.reference.set_api_client_id(i64::from(config.client_id));
         core.keep_order_ids(&account_id);
 
         Ok(Self {

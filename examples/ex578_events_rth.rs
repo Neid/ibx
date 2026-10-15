@@ -26,6 +26,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         username: env::var("IB_USERNAME")?, password: env::var("IB_PASSWORD")?,
         host: env::var("IB_HOST").unwrap_or_else(|_| "cdc1.ibllc.com".into()),
         paper: true, core_id: None,
+        client_id: 0,
     }, 8192)?;
     if !client.account_id.starts_with("DU") {
         client.disconnect();

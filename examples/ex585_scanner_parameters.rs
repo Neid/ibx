@@ -26,6 +26,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         username: env::var("IB_USERNAME")?, password: env::var("IB_PASSWORD")?,
         host: env::var("IB_HOST").unwrap_or_else(|_| "cdc1.ibllc.com".into()),
         paper: true, core_id: None,
+        client_id: 0,
     })?;
     println!("logged in paper (account {})", client.account_id);
 

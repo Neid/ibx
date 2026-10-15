@@ -950,6 +950,8 @@ fn session(case: &str, base: Option<i64>, out_dir: &str) -> Result<(), Box<dyn s
         username: env::var("IB_USERNAME")?, password: env::var("IB_PASSWORD")?,
         host: env::var("IB_HOST").ok().filter(|h| !h.is_empty()).unwrap_or_else(|| "cdc1.ibllc.com".into()),
         paper: true, core_id: None,
+        // The case scripts connect as client 198 (ibx#704).
+        client_id: 198,
     };
     let client = match EClient::connect(&config) {
         Ok(c) => c,

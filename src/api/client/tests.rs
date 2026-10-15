@@ -44,6 +44,7 @@ fn connect_caches_reconnect_credentials() {
         host: "gw.example".into(),
         paper: true,
         core_id: None,
+        client_id: 0,
     };
     cache_reconnect_credentials(&mut hot_loop, &config);
     assert!(hot_loop.has_reconnect_host());

@@ -28,6 +28,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         username: env::var(user)?, password: env::var(pass)?,
         host: env::var("IB_HOST").unwrap_or_else(|_| "cdc1.ibllc.com".into()),
         paper: !live, core_id: None,
+        client_id: 0,
     })?;
     println!("logged in {} (account {})", if live { "LIVE" } else { "paper" }, client.account_id);
     client.req_soft_dollar_tiers(1, &mut W);
