@@ -7832,7 +7832,7 @@ mod tests {
     // 42.405964000000495, 0.0 before any P&L quote); a second later, all
     // rows at the P&L prices of the quotes (0.9497729858385355 daily, to
     // the last digit; unrealized -990.9473989141641 there, its last digits
-    // from the reference's average costs).
+    // from the reference's average costs, ibx#713).
     #[test]
     fn the_first_pnl_is_of_one_row_then_all_rows_a_second_later() {
         let core = ClientCore::new();

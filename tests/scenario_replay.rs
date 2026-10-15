@@ -707,7 +707,7 @@ fn pnl_first_request_of_the_session() {
     // The first value: one row, the server's mark; its daily and realized
     // P&L to the last digit. Its unrealized P&L differs in its last digits
     // (the reference's average cost has more digits than the server's
-    // rows, ibx#<avg>). The values of the next seconds need the time of
+    // rows, ibx#713). The values of the next seconds need the time of
     // the recording, which the replay does not give the client.
     let fields = |l: &str| l.split('|').map(str::to_string).collect::<Vec<_>>();
     let (ours, theirs) = (fields(&o.ours[0]), fields(&o.theirs[0].1));
