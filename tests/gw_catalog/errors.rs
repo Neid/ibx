@@ -28,6 +28,8 @@ const CLIENT_CODES: &[(i64, &str)] = &[
 const OBSERVED_TEXTS: &[(i64, &str, &str)] = &[
     (391, "%s: The date, time, or time-zone entered is invalid.",
         "a goodTillDate that cannot be read (ibx#548, paper 11/10/2026)"),
+    (200, "The contract description specified for %s is ambiguous.",
+        "a tick-by-tick request with no exchange whose contract is listed on several exchanges (ibx#702, paper 15/10/2026)"),
 ];
 
 /// One place where ibx raises an error.

@@ -3597,6 +3597,19 @@ impl CcpState {
             }
             return true;
         }
+        // A tick-by-tick request with no exchange whose lookup lists the
+        // contract more than once (on several exchanges): 200, the
+        // description is ambiguous (the reference 10.51, paper 15/10/2026:
+        // AAPL with no exchange, answered at +0.1 s, ibx#702).
+        if let crate::types::ControlCommand::SubscribeTbt { exchange, symbol, .. } = &pending.request
+            && exchange.is_empty()
+            && records.iter().filter(|def| def.con_id != 0).count() > 1
+        {
+            log::info!("Contract lookup {}: req_id={} {} records with no exchange: ambiguous", lookup_id, pending.req_id, records.len());
+            shared.reference.push_historical_error(pending.req_id, 200,
+                format!("The contract description specified for {} is ambiguous.", symbol));
+            return true;
+        }
         let mut con_ids: Vec<i64> = Vec::new();
         for def in &records {
             if def.con_id != 0 && !con_ids.contains(&def.con_id) {
@@ -8315,6 +8328,28 @@ mod reconnect_tests {
             }
             assert_eq!(ccp.pending_resolves.len(), 1);
             assert!(HIST_LOOKUP_FIRST_ID + HIST_LOOKUP_IDS <= crate::engine::hot_loop::farm::MD_LOOKUP_FIRST_ID);
+        }
+
+        // ibx#702 (the reference 10.51, paper 15/10/2026): a tick-by-tick
+        // request with no exchange whose lookup lists AAPL on several
+        // exchanges gets 200 "ambiguous" and nothing is subscribed.
+        #[test]
+        fn a_tick_by_tick_request_with_no_exchange_is_ambiguous() {
+            let (mut ccp, shared) = (CcpState::new(), SharedState::new());
+            let request = crate::types::ControlCommand::SubscribeTbt {
+                req_id: 7113, con_id: 0, symbol: "AAPL".into(), exchange: String::new(), sec_type: "STK".into(),
+                tbt_type: crate::types::TbtType::Last, number_of_ticks: 0, ignore_size: false, reply_tx: None,
+            };
+            let lookup = crate::types::ContractLookup { symbol: "AAPL".into(), sec_type: "STK".into(), currency: "USD".into(), ..Default::default() };
+            ccp.start_contract_resolve(7113, lookup, request, &mut None, &mut HeartbeatState::new());
+            let id = format!("FixSecDefReqBySymbol{}", ccp.pending_resolves[0].lookup_id);
+            let reply = pipe_msg(&format!("35=d|43=N|320={id}|322=*|323=4|55=AAPL|167=STK|207=BEST|6008=265598|15=USD|\
+55=AAPL|167=STK|207=NASDAQ|6008=265598|15=USD|55=AAPL|167=STK|207=ARCA|6008=265598|15=USD"));
+            assert!(ccp.contract_resolve_reply(&id, &reply, &shared));
+            assert!(ccp.resolved_requests.is_empty(), "nothing subscribed");
+            let errors = shared.reference.drain_historical_errors();
+            assert_eq!(errors.iter().map(|e| (e.0, e.1, e.2.as_str())).collect::<Vec<_>>(),
+                [(7113, 200, "The contract description specified for AAPL is ambiguous.")]);
         }
 
         // ibx#485: no deadline, as the reference: the request waits for the

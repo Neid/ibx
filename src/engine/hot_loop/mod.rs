@@ -2250,6 +2250,18 @@ impl HotLoop {
                     }
                 }
                 ControlCommand::ResolveContract { req_id, lookup, request } => {
+                    // A depth request with no exchange is refused before any
+                    // lookup, as the reference refuses it at once (ibx#702:
+                    // +6 ms there, ibx answered after its lookup).
+                    if let ControlCommand::SubscribeDepth { req_id, con_id, exchange, sec_type, num_rows, is_smart_depth } = *request {
+                        if exchange.trim().is_empty() {
+                            self.route_depth_subscribe(req_id, con_id, exchange, sec_type, num_rows, is_smart_depth);
+                        } else {
+                            let request = ControlCommand::SubscribeDepth { req_id, con_id, exchange, sec_type, num_rows, is_smart_depth };
+                            self.ccp.start_contract_resolve(req_id, lookup, request, &mut self.ccp_conn, &mut self.hb);
+                        }
+                        continue;
+                    }
                     // Look the contract up first (ibx#427); the request comes
                     // back through `resolved_requests` with its conId.
                     self.ccp.start_contract_resolve(req_id, lookup, *request, &mut self.ccp_conn, &mut self.hb);
@@ -4784,26 +4796,26 @@ mod tests {
         tx.send(ControlCommand::Ping).unwrap();
         // The queue is read at once after each pass: reading the peer
         // would let time pass.
-        engine.poll_control_commands();
+        engine.poll_once();
         assert_eq!(engine.cmd_queue.len(), 3, "the first request only");
-        engine.poll_control_commands();
+        engine.poll_once();
         assert_eq!(engine.cmd_queue.len(), 3, "the others wait for the next step");
 
         engine.set_pace_clock(start + ms(99));
-        engine.poll_control_commands();
+        engine.poll_once();
         assert_eq!(engine.cmd_queue.len(), 3, "not before the step");
         engine.set_pace_clock(start + ms(105));
-        engine.poll_control_commands();
+        engine.poll_once();
         assert_eq!(engine.cmd_queue.len(), 2, "one more in the second step");
         engine.set_pace_clock(start + ms(205));
-        engine.poll_control_commands();
+        engine.poll_once();
         assert!(engine.cmd_queue.is_empty(), "the third, and the command behind it that is not a request");
 
         // At rest again: a request alone is taken at once.
         engine.set_pace_clock(start + ms(210));
-        engine.poll_control_commands();
+        engine.poll_once();
         tx.send(scanner_cmd(5, 7, "TOP_PERC_GAIN")).unwrap();
-        engine.poll_control_commands();
+        engine.poll_once();
         assert!(engine.cmd_queue.is_empty());
         let sent = plain_messages_sent(&mut server);
         let ids: Vec<&str> = sent.iter().map(|m| {
@@ -4817,7 +4829,7 @@ mod tests {
         tx.send(scanner_cmd(6, 7, "TOP_PERC_GAIN")).unwrap();
         tx.send(scanner_cmd(8, 7, "TOP_PERC_GAIN")).unwrap();
         tx.send(ControlCommand::Shutdown).unwrap();
-        engine.poll_control_commands();
+        engine.poll_once();
         assert!(engine.cmd_queue.is_empty());
         assert!(!engine.running);
     }
@@ -4837,7 +4849,7 @@ mod tests {
         };
         let (cmd, reply) = ask(265598);
         tx.send(cmd).unwrap();
-        engine.poll_control_commands();
+        engine.poll_once();
         let slot = reply.try_recv().unwrap().unwrap();
         assert_eq!(engine.md_slots_told, [(265598, slot)]);
         // Nothing runs on the slot yet: it is not given back.
@@ -4850,7 +4862,7 @@ mod tests {
             last_trade_date: String::new(), strike: 0.0, right: String::new(), multiplier: String::new(),
             mode_9887: 0, snapshot: false, reply_tx: Some(reply_tx),
         }).unwrap();
-        engine.poll_control_commands();
+        engine.poll_once();
         assert_eq!(reply_rx.try_recv().unwrap(), Ok(slot), "the subscribe takes the slot told");
         assert!(engine.md_slots_told.is_empty());
 
@@ -4868,7 +4880,7 @@ mod tests {
         let (second, second_reply) = by_symbol("NVDA");
         tx.send(first).unwrap();
         tx.send(second).unwrap();
-        engine.poll_control_commands();
+        engine.poll_once();
         let (a, b) = (first_reply.try_recv().unwrap().unwrap(), second_reply.try_recv().unwrap().unwrap());
         assert_ne!(a, b);
         assert_eq!(engine.md_slots_told, [(0, a), (0, b)]);
@@ -4881,7 +4893,7 @@ mod tests {
             con_id: 265598, symbol: "AAPL".into(), sec_type: "STK".into(), exchange: "SMART".into(),
             mode_9887: 0, snapshot: true, plain: true, reply_tx,
         }).unwrap();
-        engine.poll_control_commands();
+        engine.poll_once();
         assert_eq!(reply_rx.try_recv().unwrap(), Ok(slot), "the slot of the conId");
         assert_eq!(engine.take_told_slot(265598), Some(slot));
     }
@@ -4917,19 +4929,19 @@ mod tests {
         };
         // The client's two commands reach the queue.
         std::thread::sleep(Duration::from_millis(20));
-        engine.poll_control_commands();
+        engine.poll_once();
         assert_eq!(engine.cmd_queue.len(), 3, "the second request, the error, the turn");
         assert!(shared.orders.drain_order_errors().is_empty(), "the error waits for its turn");
         engine.set_pace_clock(start + ms(100));
-        engine.poll_control_commands();
+        engine.poll_once();
         assert!(shared.orders.drain_order_errors().is_empty());
         engine.set_pace_clock(start + ms(200));
-        engine.poll_control_commands();
+        engine.poll_once();
         assert_eq!(shared.orders.drain_order_errors(), [(9, 321, "refused".to_string())]);
         std::thread::sleep(Duration::from_millis(5));
         assert!(!client.is_finished(), "the turn of the call has not come");
         engine.set_pace_clock(start + ms(300));
-        engine.poll_control_commands();
+        engine.poll_once();
         client.join().unwrap();
         assert!(engine.cmd_queue.is_empty());
         clock.set_running(false);
@@ -4943,7 +4955,7 @@ mod tests {
         // ibx#565: a ticket tells when the turn has come, without a wait;
         // the commands of one call count once.
         engine.set_pace_clock(start + ms(305));
-        engine.poll_control_commands();
+        engine.poll_once();
         clock.set_running(true);
         tx.send(scanner_cmd(3, 7, "TOP_PERC_GAIN")).unwrap();
         let (ticket, late) = std::thread::spawn({
@@ -4957,10 +4969,10 @@ mod tests {
             }
         }).join().unwrap();
         assert!(late.elapsed() < Duration::from_millis(50));
-        engine.poll_control_commands();
+        engine.poll_once();
         assert!(ticket.try_recv().is_err(), "the request before it was taken; its turn is the next step");
         engine.set_pace_clock(start + ms(410));
-        engine.poll_control_commands();
+        engine.poll_once();
         assert!(ticket.try_recv().is_ok());
         assert_eq!(shared.orders.drain_order_errors(), [(11, 321, "refused".to_string())], "with its turn, not a step later");
         assert!(engine.cmd_queue.is_empty());
@@ -4995,7 +5007,7 @@ mod tests {
         let (mut engine, mut server, tx) = scanner_engine(&shared);
         tx.send(scanner_cmd(9005, 198, "TOP_PERC_GAIN")).unwrap();
         tx.send(scanner_cmd(9006, 198, "MOST_ACTIVE")).unwrap();
-        engine.poll_control_commands();
+        engine.poll_once();
         let sent = plain_messages_sent(&mut server);
         assert_eq!(sent.len(), 1, "{sent:?}");
         assert!(sent[0].contains("6040=10001|"), "parameters first: {sent:?}");
@@ -5016,7 +5028,7 @@ mod tests {
         for req_id in [9005, 9006, 99] {
             tx.send(ControlCommand::CancelScanner { req_id }).unwrap();
         }
-        engine.poll_control_commands();
+        engine.poll_once();
         assert_eq!(errors(&shared), [
             "9005:162:Historical Market Data Service error message:API scanner subscription cancelled: 9005",
             "9006:162:Historical Market Data Service error message:API scanner subscription cancelled: 9006",
@@ -5038,7 +5050,7 @@ mod tests {
         let (mut engine, _server, tx) = scanner_engine(&shared);
         tx.send(scanner_cmd(1, 7, "TOP_PERC_GAIN")).unwrap();
         tx.send(scanner_cmd(2, 7, "MOST_ACTIVE")).unwrap();
-        engine.poll_control_commands();
+        engine.poll_once();
         let result = |xml: &str| crate::protocol::fix::fix_build(&[(35, "U"), (6040, "10005"), (6118, xml)], 1);
         engine.inject_hmds_message(&result("<ScanResponse><id>APISCAN3:1</id><Contracts>\
             <Contract><contractID>1</contractID></Contract></Contracts></ScanResponse>"));
@@ -5067,7 +5079,7 @@ mod tests {
         tx.send(scanner_cmd(1, 0, "A")).unwrap();
         tx.send(scanner_cmd(2, 0, "B")).unwrap();
         tx.send(scanner_cmd(3, 0, "C")).unwrap();
-        engine.poll_control_commands();
+        engine.poll_once();
         assert_eq!(errors(&shared), [
             "1:322:Error processing request.-'co' : cause - Duplicate ticker ID for API scanner subscription",
             "3:322:Error processing request.-'co' : cause - Only 2 simultaneous API scanner subscriptions are allowed.",
@@ -5084,19 +5096,19 @@ mod tests {
         let (mut engine, mut server, tx) = scanner_engine(&shared);
         tx.send(ControlCommand::FetchScannerParams).unwrap();
         tx.send(ControlCommand::FetchScannerParams).unwrap();
-        engine.poll_control_commands();
+        engine.poll_once();
         let sent = plain_messages_sent(&mut server);
         assert_eq!(sent.iter().filter(|m| m.contains("6040=10001|")).count(), 1, "{sent:?}");
         let reply = crate::protocol::fix::fix_build(&[(35, "U"), (6040, "10002"), (6118, "<ScanParameterResponse/>")], 1);
         engine.inject_hmds_message(&reply);
         assert_eq!(shared.reference.drain_scanner_params().len(), 2);
         tx.send(ControlCommand::FetchScannerParams).unwrap();
-        engine.poll_control_commands();
+        engine.poll_once();
         assert_eq!(shared.reference.drain_scanner_params(), ["<ScanParameterResponse/>"]);
         assert!(plain_messages_sent(&mut server).is_empty(), "answered from the cache");
         engine.hmds.scanner_link_lost(&shared);
         tx.send(ControlCommand::FetchScannerParams).unwrap();
-        engine.poll_control_commands();
+        engine.poll_once();
         assert!(shared.reference.drain_scanner_params().is_empty());
         assert_eq!(plain_messages_sent(&mut server).len(), 1, "asked again");
     }
@@ -5164,7 +5176,7 @@ mod tests {
             for req_id in 9001..=9008 {
                 tx.send(scanner_cmd(req_id, 198, "TOP_PERC_GAIN")).unwrap();
             }
-            engine.poll_control_commands();
+            engine.poll_once();
             assert_eq!(plain_messages_sent(&mut server).len(), 1, "the parameters request");
             load_scanner_params_keep(&mut engine, "<ScanParameterResponse/>");
             // Answered: the request has left the table.
@@ -5189,13 +5201,13 @@ mod tests {
         engine.pace_requests();
         engine.set_pace_clock(start);
         tx.send(scanner_cmd(1, 0, "TOP_PERC_GAIN")).unwrap();
-        engine.poll_control_commands();
+        engine.poll_once();
         engine.sweep_scanner_params();
         assert!(plain_messages_sent(&mut server).is_empty(), "nothing at once");
 
         engine.set_pace_clock(start + ms(600));
         tx.send(ControlCommand::FetchScannerParams).unwrap();
-        engine.poll_control_commands();
+        engine.poll_once();
         engine.set_pace_clock(start + ms(999));
         engine.sweep_scanner_params();
         assert!(plain_messages_sent(&mut server).is_empty(), "nothing before 1 s");
@@ -5216,10 +5228,10 @@ mod tests {
         assert_eq!(plain_messages_sent(&mut server).len(), 1, "the waiting subscription goes out");
         // Known now: answered and sent at once.
         tx.send(ControlCommand::FetchScannerParams).unwrap();
-        engine.poll_control_commands();
+        engine.poll_once();
         engine.set_pace_clock(start + ms(1900));
         tx.send(scanner_cmd(2, 0, "MOST_ACTIVE")).unwrap();
-        engine.poll_control_commands();
+        engine.poll_once();
         assert_eq!(shared.reference.drain_scanner_params().len(), 1);
         assert_eq!(plain_messages_sent(&mut server).len(), 1);
     }
@@ -5243,7 +5255,7 @@ mod tests {
         tx.send(cmd(1, "NOT_A_SCAN_CODE", Vec::new())).unwrap();
         tx.send(cmd(2, "TOP_PERC_GAIN", vec![("notAFilter".into(), "1".into())])).unwrap();
         tx.send(cmd(3, "TOP_PERC_GAIN", vec![("moodyRatingAbove".into(), "AAA".into())])).unwrap();
-        engine.poll_control_commands();
+        engine.poll_once();
         assert_eq!(plain_messages_sent(&mut server).len(), 1, "parameters request only");
         load_scanner_params_keep(&mut engine, "<ScanParameterResponse><ScanTypeList>\
             <ScanType><scanCode>TOP_PERC_GAIN</scanCode></ScanType></ScanTypeList>\
@@ -5274,7 +5286,7 @@ mod tests {
         tx.send(cmd(4, "TOP_PERC_GAIN", 3)).unwrap();
         tx.send(cmd(5, "TOP_PERC_GAIN", 3)).unwrap();
         tx.send(ControlCommand::CancelScanner { req_id: 5 }).unwrap();
-        engine.poll_control_commands();
+        engine.poll_once();
         assert_eq!(plain_messages_sent(&mut server).len(), 1, "parameters request only");
         assert_eq!(errors(&shared), ["5:162:Historical Market Data Service error message:API scanner subscription cancelled: 5"]);
         load_scanner_params_keep(&mut engine, "<ScanParameterResponse><ScanTypeList><ScanType>\
@@ -5310,7 +5322,7 @@ mod tests {
         let (mut engine, mut server, tx) = scanner_engine(&shared);
         load_scanner_params(&mut engine, &mut server, "<ScanParameterResponse/>");
         tx.send(scanner_cmd(4, 1, "TOP_PERC_GAIN")).unwrap();
-        engine.poll_control_commands();
+        engine.poll_once();
         assert_eq!(plain_messages_sent(&mut server).len(), 1);
         engine.hmds.scanner_link_lost(&shared);
         engine.hmds.scanner_connect_failed(&shared);
@@ -5391,7 +5403,7 @@ mod tests {
             }).unwrap();
         }
         tx.send(ControlCommand::FetchNewsArticle { req_id: 4, provider_code: "BRFG".into(), article_id: "A1".into() }).unwrap();
-        engine.poll_control_commands();
+        engine.poll_once();
         let sent = plain_messages_sent(&mut server);
         assert_eq!(sent.len(), 3, "the equal request shares the query: {sent:?}");
         assert!(sent[0].contains("<id>1-history;;NewsQuery;;0;;true;;0;;U</id>"), "{}", sent[0]);
@@ -5423,7 +5435,7 @@ mod tests {
         load_scanner_params(&mut engine, &mut server, "<ScanParameterResponse/>");
         tx.send(scanner_cmd(460, 0, "TOP_PERC_GAIN")).unwrap();
         tx.send(ControlCommand::FetchFundamentalData { req_id: 470, con_id: 265598, report_type: "ReportSnapshot".into() }).unwrap();
-        engine.poll_control_commands();
+        engine.poll_once();
         let sent = plain_messages_sent(&mut server);
         let fund = sent.iter().find(|m| m.contains("6040=10010|")).expect("fundamentals request sent");
         let a = fund.find("<id>").unwrap() + 4;
@@ -5440,7 +5452,7 @@ mod tests {
         assert_eq!(rows, [(460, 1), (460, 2)]);
         assert!(errors(&shared).is_empty());
         tx.send(ControlCommand::CancelScanner { req_id: 460 }).unwrap();
-        engine.poll_control_commands();
+        engine.poll_once();
 
         let fund: Vec<ReqId> = shared.reference.drain_fundamental_data().into_iter().map(|(r, _)| r).collect();
         assert_eq!(fund, [470]);
@@ -7250,6 +7262,18 @@ mod depth_tests {
 
     fn errors(shared: &SharedState) -> Vec<String> {
         shared.orders.drain_order_errors().into_iter().map(|(id, code, text)| format!("{}:{}:{}", id, code, text)).collect()
+    }
+
+    // ibx#702 (the reference 10.51, paper 15/10/2026: +6 ms): a depth
+    // request by symbol with no exchange is refused before any lookup.
+    #[test]
+    fn a_depth_request_by_symbol_with_no_exchange_is_refused_before_its_lookup() {
+        let (mut engine, shared, _side, tx) = engine();
+        let lookup = crate::types::ContractLookup { symbol: "AAPL".into(), sec_type: "STK".into(), currency: "USD".into(), ..Default::default() };
+        tx.send(ControlCommand::ResolveContract { req_id: 7107, lookup, request: Box::new(depth(7107, 0, "", "STK", 5, false)) }).unwrap();
+        engine.poll_once();
+        assert_eq!(errors(&shared), ["7107:321:Error validating request.-'ReqMktDepth(10)' : cause - Please enter exchange."]);
+        assert!(engine.ccp.pending_resolves.is_empty(), "no lookup");
     }
 
     // #452: the reference's local refusals, in its order.
