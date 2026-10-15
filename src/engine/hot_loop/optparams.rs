@@ -581,7 +581,8 @@ mod tests {
             }
             let got = sent(&mut server);
             match k {
-                0 => assert_eq!(got, [outs[1].replace(&recorded_id, &own_id)], "the stock leg lookup"),
+                // Named in the session series on the wire (ibx#698).
+                0 => assert_eq!(got, [outs[1].replace(&recorded_id, "FixSecDefReqBySymbol1")], "the stock leg lookup"),
                 1 => assert_eq!(got, [outs[2].clone()], "the option leg query after the lookup answer"),
                 _ => assert!(got.is_empty(), "{got:?}"),
             }
@@ -665,7 +666,8 @@ mod tests {
             ccp.process_ccp_message(text.replace('|', "\x01").as_bytes(), conn, &mut context, &shared, &None, hb, "DU1");
         };
         feed("8=FIX.4.1|9=1|35=U|52=20260928-14:11:14|6040=5|55=XYZ|6457=99|6070=OPT;STK;|10=0|", &mut conn, &mut hb);
-        let id = format!("FixSecDefReqBySymbol{}", OPTPARAMS_LOOKUP_FIRST_ID);
+        // Named in the session series on the wire; its answer maps back (ibx#698).
+        let id = "FixSecDefReqBySymbol1";
         assert_eq!(sent(&mut server), [format!("35=c|320={id}|321=2|55=XYZ|6457=99|167=CS")]);
         feed(&format!("8=FIX.4.1|9=1|35=d|52=20260928-14:11:14|320={id}|322=*|323=4|55=XYZ|167=STK|207=BEST|6008=99|15=USD|10=0|"), &mut conn, &mut hb);
         assert_eq!(sent(&mut server), ["35=U|6040=138|55=XYZ|310=STK|6346=99|6320=1|6994=1"]);
@@ -704,7 +706,8 @@ mod tests {
         assert_eq!(sent(&mut server), ["35=U|6040=5|55=XYZ|310=STK|6457=99|6320=1"]);
         op.underlying_reply(answer.replace('|', "\x01").as_bytes(), &mut conn, true, &mut hb, &shared);
         let lookup = sent(&mut server);
-        assert_eq!(lookup, [format!("35=c|320=FixSecDefReqBySymbol{}|321=2|55=XYZ|6457=99|167=CS", OPTPARAMS_LOOKUP_FIRST_ID)]);
+        // Named in the session series on the wire (ibx#698).
+        assert!(lookup.len() == 1 && lookup[0].starts_with("35=c|320=FixSecDefReqBySymbol") && lookup[0].ends_with("|321=2|55=XYZ|6457=99|167=CS"), "{lookup:?}");
         assert!(op.leg_reply(&format!("FixSecDefReqBySymbol{}", OPTPARAMS_LOOKUP_FIRST_ID), &mut conn, true, &mut hb, &shared));
         assert_eq!(shared.reference.drain_option_chains(), [(3, vec![])]);
         // The answer is forgotten when the auth link drops.

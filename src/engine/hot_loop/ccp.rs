@@ -1155,7 +1155,9 @@ impl CcpState {
                         "20" => {
                             // Reference-data answer: inputs of the option model (ibx#442).
                             if let (Some(id), Some(xml)) = (parsed.get(&320), parsed.get(&6118)) {
-                                let (id, xml) = (id.clone(), xml.clone());
+                                // Its internal name (ibx#698).
+                                let id = ccp_conn.as_ref().map_or_else(|| id.clone(), |c| c.internal_name(id));
+                                let xml = xml.clone();
                                 self.optcalc.xml_reply(&id, &xml, ccp_conn, hb, shared);
                             }
                         }
@@ -3022,7 +3024,10 @@ impl CcpState {
         hb: &mut HeartbeatState,
     ) {
         use crate::control::contracts;
-        let response_req_id = contracts::secdef_response_req_id(msg);
+        // The internal name of the request, which the connection renamed in
+        // the session series (ibx#698).
+        let response_req_id = contracts::secdef_response_req_id(msg)
+            .map(|rid| ccp_conn.as_ref().map_or_else(|| rid.clone(), |c| c.internal_name(&rid)));
         // Asked for an order's outside RTH (ibx#465): not a user reply.
         if let Some(rid) = response_req_id.as_deref() {
             // Asked to build a combo (ibx#470): not a user reply.
@@ -5685,11 +5690,11 @@ mod tests {
         f.strike = 342.8;
         ccp.send_secdef_request_by_symbol(9, "AAPL", "OPT", "SMART", "USD", &f, &mut conn, &mut hb);
         assert_eq!(ccp_messages_sent(&mut server),
-            ["35=c|320=FixSecDefReqBySymbol9|321=2|55=AAPL|167=OPT|541=20261005|201=1|202=342.8|100=BEST|15=USD"]);
+            ["35=c|320=FixSecDefReqBySymbol1|321=2|55=AAPL|167=OPT|541=20261005|201=1|202=342.8|100=BEST|15=USD"]);
 
         ccp.process_ccp_message(&empty_secdef_reply("9"), &mut conn, &mut context, &shared, &None, &mut hb, "DU1");
         assert_eq!(ccp_messages_sent(&mut server),
-            ["35=c|320=FixSecDefReqBySymbol9|321=2|55=AAPL|167=OPT|541=20261005|201=1|202=3.428|100=BEST|15=USD"]);
+            ["35=c|320=FixSecDefReqBySymbol2|321=2|55=AAPL|167=OPT|541=20261005|201=1|202=3.428|100=BEST|15=USD"]);
         assert!(shared.reference.drain_historical_errors().is_empty(), "no error before the retry answers");
         assert_eq!(ccp.pending_secdef.len(), 1);
 
@@ -5847,9 +5852,10 @@ mod tests {
         // Known or asked already: nothing more is sent.
         ccp.optcalc.start(9102, 692807782, "SMART", kind, 250.0, &mut conn, &mut hb, &shared);
         let first = super::super::optcalc::OPTCALC_LOOKUP_FIRST_ID;
+        // Named in the session series of the by-conId lookups (ibx#698).
         assert_eq!(ccp_messages_sent(&mut server), [
-            format!("35=c|320=SecDefReqMsgReqByConid{first}|321=2|6088=Socket|146=1|6008=692807782|6004=BEST"),
-            format!("35=c|320=SecDefReqMsgReqByConid{}|321=2|6088=Socket|146=1|6008=692807783|6004=CBOE", first + 1),
+            "35=c|320=SecDefReqMsgReqByConid1|321=2|6088=Socket|146=1|6008=692807782|6004=BEST",
+            "35=c|320=SecDefReqMsgReqByConid2|321=2|6088=Socket|146=1|6008=692807783|6004=CBOE",
         ]);
         // The answer is read by the name of the request.
         let reply = pipe_msg(&format!(
@@ -6172,7 +6178,7 @@ mod tests {
         let mut hb = HeartbeatState::new();
         ccp.market_rule_by_exchange.insert((515416632, "CME".into()), 67);
         ccp.send_secdef_request_by_symbol(9480, "ES", "CONTFUT", "CME", "USD", &Default::default(), &mut conn, &mut hb);
-        assert_eq!(ccp_messages_sent(&mut server), ["35=c|320=FixSecDefReqBySymbol9480|321=2|55=ES|167=FUT|6857=2|100=CME|15=USD"]);
+        assert_eq!(ccp_messages_sent(&mut server), ["35=c|320=FixSecDefReqBySymbol1|321=2|55=ES|167=FUT|6857=2|100=CME|15=USD"]);
         let reply = future_reply("FixSecDefReqBySymbol9480", &[future_listing("515416632", "ESZ6", "202612")]);
         ccp.process_ccp_message(&reply, &mut conn, &mut context, &shared, &None, &mut hb, "DU1");
         let rows = shared.reference.drain_contract_details();
@@ -6196,11 +6202,11 @@ mod tests {
             ccp.market_rule_by_exchange.insert((con_id, "CME".into()), 67);
         }
         ccp.send_secdef_request_by_symbol(9481, "ES", "FUT+CONTFUT", "CME", "USD", &Default::default(), &mut conn, &mut hb);
-        assert_eq!(ccp_messages_sent(&mut server), ["35=c|320=FixSecDefReqBySymbol9481|321=2|55=ES|167=FUT|6857=2|100=CME|15=USD"]);
+        assert_eq!(ccp_messages_sent(&mut server), ["35=c|320=FixSecDefReqBySymbol1|321=2|55=ES|167=FUT|6857=2|100=CME|15=USD"]);
         let front = future_listing("515416632", "ESZ6", "202612");
         ccp.process_ccp_message(&future_reply("FixSecDefReqBySymbol9481", std::slice::from_ref(&front)), &mut conn, &mut context, &shared, &None, &mut hb, "DU1");
         assert!(shared.reference.drain_contract_details().is_empty(), "the rows wait for the futures lookup");
-        assert_eq!(ccp_messages_sent(&mut server), ["35=c|320=FixSecDefReqBySymbol9481|321=2|6088=Socket|55=ES|167=FUT|100=CME|15=USD"]);
+        assert_eq!(ccp_messages_sent(&mut server), ["35=c|320=FixSecDefReqBySymbol2|321=2|6088=Socket|55=ES|167=FUT|100=CME|15=USD"]);
         let futures = future_reply("FixSecDefReqBySymbol9481", &[front, future_listing("586139767", "ESZ7", "202712")]);
         ccp.process_ccp_message(&futures, &mut conn, &mut context, &shared, &None, &mut hb, "DU1");
         let rows: Vec<(i64, String)> = shared.reference.drain_contract_details().iter()
@@ -6236,8 +6242,8 @@ mod tests {
         ccp.send_secdef_request_by_symbol(9488, "", "BOND", "", "USD", &f, &mut conn, &mut hb);
         ccp.send_secdef_request_by_symbol(9489, "", "", "", "", &f, &mut conn, &mut hb);
         assert_eq!(ccp_messages_sent(&mut server), [
-            "35=c|320=FixSecDefReqBySymbol9488|321=2|6088=Socket|167=FIXED|15=USD|6454=e1400789",
-            "35=c|320=FixSecDefReqBySymbol9489|321=2|6088=Socket|167=FIXED|6454=e1400789",
+            "35=c|320=FixSecDefReqBySymbol1|321=2|6088=Socket|167=FIXED|15=USD|6454=e1400789",
+            "35=c|320=FixSecDefReqBySymbol2|321=2|6088=Socket|167=FIXED|6454=e1400789",
         ]);
     }
 
@@ -6254,9 +6260,10 @@ mod tests {
         ccp.send_contract_details_by_con_id(9484, 265598, "", &mut conn, &mut hb);
         ccp.send_contract_details_by_con_id(9485, 265598, "SMART", &mut conn, &mut hb);
         assert_eq!(ccp_messages_sent(&mut server), [
-            "35=c|320=socket-reqContractDetailsReqByConid9483|321=2|6088=Socket|6320=1|146=1|6008=265598|6004=ISLAND",
-            "35=c|320=PreferredReqByConid9484|321=2|146=1|6008=265598|6004=ANYEXCH",
-            "35=c|320=socket-reqContractDetailsReqByConid9485|321=2|6088=Socket|6320=1|146=1|6008=265598|6004=BEST",
+            // Named in the session series of the by-conId lookups (ibx#698).
+            "35=c|320=socket-reqContractDetailsReqByConid1|321=2|6088=Socket|6320=1|146=1|6008=265598|6004=ISLAND",
+            "35=c|320=PreferredReqByConid2|321=2|146=1|6008=265598|6004=ANYEXCH",
+            "35=c|320=socket-reqContractDetailsReqByConid3|321=2|6088=Socket|6320=1|146=1|6008=265598|6004=BEST",
         ]);
         let reply = pipe_msg(
             "35=d|43=N|320=socket-reqContractDetailsReqByConid9483|322=*|323=4|\

@@ -236,7 +236,7 @@ const NOT_DECODERS: &[&str] = &[
     "connection::write_error", "connection::flush_queued", "connection::send_fix", "connection::send_fix_unsequenced",
     "connection::send_fixcomp", "connection::send_raw", "connection::buffered", "connection::inject_buf",
     "connection::mem_pair", "connection::set_read_timeout", "connection::set_nonblocking",
-    "connection::set_write_capacity", "connection::unread_output",
+    "connection::set_write_capacity", "connection::unread_output", "connection::internal_name",
     "depth_decoder::api", "depth_decoder::book_side",
     "fix::fmt_pipe", "fix::fix_checksum", "fix::fix_build", "fix::xml_layout", "fix::xor_fold", "fix::fix_sign",
     "fixcomp::fixcomp_build",

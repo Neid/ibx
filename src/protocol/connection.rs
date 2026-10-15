@@ -183,6 +183,9 @@ pub struct Connection {
     /// The first write error. The connection is unusable from then on: the
     /// owner drops it and reconnects; no frame is written again.
     write_error: Option<(io::ErrorKind, String)>,
+    /// The session series of the request names of symbol lookups and
+    /// reference-data queries (ibx#698).
+    query_names: QueryNames,
     /// The socket is in non-blocking mode for good (ibx#530): a read with
     /// nothing to read returns at once. Set with the queued writes, on a
     /// socket only.
@@ -217,6 +220,7 @@ impl Connection {
             queued_writes: false,
             held: false,
             write_error: None,
+            query_names: QueryNames::default(),
             nonblocking: false,
             bytes_in: 0,
         }
@@ -615,6 +619,22 @@ impl Connection {
     /// error makes the connection unusable: it is dropped and reconnected,
     /// the frame is never retried, as in the reference (ibx#254).
     pub fn send_fix(&mut self, fields: &[(u32, &str)]) -> io::Result<()> {
+        // A symbol lookup or a reference-data query takes the next name of
+        // the session series (ibx#698).
+        if let Some(renamed) = self.query_names.rename(fields) {
+            let fields: Vec<(u32, &str)> = renamed.iter().map(|(t, v)| (*t, v.as_str())).collect();
+            return self.send_fix_named(&fields);
+        }
+        self.send_fix_named(fields)
+    }
+
+    /// The internal name of a request the series renamed, from the name an
+    /// answer carries; another name as it is (ibx#698).
+    pub fn internal_name(&self, wire: &str) -> String {
+        self.query_names.internal(wire).unwrap_or(wire).to_string()
+    }
+
+    fn send_fix_named(&mut self, fields: &[(u32, &str)]) -> io::Result<()> {
         let next_seq = self.seq + 1;
         let msg = fix::fix_build(fields, next_seq);
         if log::log_enabled!(log::Level::Trace) {
@@ -927,9 +947,93 @@ mod mem {
     }
 }
 
+
+/// The names the reference gives its requests on the auth connection, in
+/// two session series (ibx#698; the reference 10.51's messages of 12/10 and
+/// 13/10/2026): its symbol lookups and reference-data queries share one,
+/// "FixSecDefReqBySymbol{n}" and "SubMsgXMLQuery{n}" (FixSecDefReqBySymbol14,
+/// SubMsgXMLQuery20, FixSecDefReqBySymbol21 ...); its lookups by conId share
+/// the other, each kind keeping its name ("...ReqByConid{n}": 1, 2, 3 ...).
+/// ibx names them internally by the request that asked; the internal name
+/// of the recent ones is kept for their answers.
+#[derive(Debug, Default)]
+struct QueryNames {
+    next: u32,
+    next_by_con_id: u32,
+    sent: VecDeque<(String, String)>,
+}
+
+impl QueryNames {
+    /// The names kept for answers (a lookup answers within seconds).
+    const KEPT: usize = 4096;
+    const PREFIXES: [&'static str; 2] = ["FixSecDefReqBySymbol", "SubMsgXMLQuery"];
+    const BY_CON_ID: &'static str = "ReqByConid";
+
+    /// The prefix of a name of the series and which series, None for
+    /// another name.
+    fn series(name: &str) -> Option<(&str, bool)> {
+        if let Some(p) = Self::PREFIXES.iter().find(|p| name.starts_with(**p)) {
+            return Some((p, false));
+        }
+        let end = name.find(Self::BY_CON_ID)? + Self::BY_CON_ID.len();
+        name[end..].bytes().all(|b| b.is_ascii_digit()).then(|| (&name[..end], true))
+    }
+
+    /// The fields with the request name of its series, None for a message
+    /// that is not such a request.
+    fn rename(&mut self, fields: &[(u32, &str)]) -> Option<Vec<(u32, String)>> {
+        if !matches!(fields.first(), Some((35, "c" | "U"))) {
+            return None;
+        }
+        let (at, prefix, by_con_id) = fields.iter().enumerate()
+            .find_map(|(i, &(t, v))| (t == 320).then(|| Self::series(v).map(|(p, c)| (i, p, c))).flatten())?;
+        let number = if by_con_id { &mut self.next_by_con_id } else { &mut self.next };
+        *number += 1;
+        let wire = format!("{prefix}{number}");
+        if self.sent.len() >= Self::KEPT {
+            self.sent.pop_front();
+        }
+        self.sent.push_back((wire.clone(), fields[at].1.to_string()));
+        Some(fields.iter().enumerate()
+            .map(|(i, &(t, v))| (t, if i == at { wire.clone() } else { v.to_string() })).collect())
+    }
+
+    fn internal(&self, wire: &str) -> Option<&str> {
+        self.sent.iter().rev().find(|(w, _)| w == wire).map(|(_, internal)| internal.as_str())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ibx#698: symbol lookups and reference-data queries share one session
+    // series, as the reference numbers them; other messages keep their
+    // ids; an answer's name maps back to the internal one.
+    #[test]
+    fn lookups_and_queries_share_one_session_series() {
+        let mut names = QueryNames::default();
+        let name = |f: &Option<Vec<(u32, String)>>| f.as_ref().and_then(|v| v.iter().find(|(t, _)| *t == 320)).map(|(_, v)| v.clone());
+        let lookup = names.rename(&[(35, "c"), (320, "FixSecDefReqBySymbol101"), (55, "AAPL")]);
+        let query = names.rename(&[(35, "U"), (6040, "106"), (320, "SubMsgXMLQuery1"), (6256, "k")]);
+        let order_lookup = names.rename(&[(35, "c"), (320, "FixSecDefReqBySymbol3221225472")]);
+        assert_eq!([name(&lookup), name(&query), name(&order_lookup)],
+            [Some("FixSecDefReqBySymbol1".into()), Some("SubMsgXMLQuery2".into()), Some("FixSecDefReqBySymbol3".into())]);
+        assert_eq!(lookup.unwrap()[2], (55, "AAPL".to_string()), "the other fields as given");
+        // The by-conId lookups: their own series, each kind its name.
+        let by_con_id = names.rename(&[(35, "c"), (320, "PreferredReqByConid40")]);
+        let rule = names.rename(&[(35, "c"), (320, "getECsForConidExchangePairsReqByConid9")]);
+        assert_eq!([name(&by_con_id), name(&rule)],
+            [Some("PreferredReqByConid1".into()), Some("getECsForConidExchangePairsReqByConid2".into())]);
+        assert_eq!(names.internal("getECsForConidExchangePairsReqByConid2"), Some("getECsForConidExchangePairsReqByConid9"));
+        // Not renamed: another request name, another message type.
+        assert!(names.rename(&[(35, "c"), (320, "ibxrth4")]).is_none());
+        assert!(names.rename(&[(35, "D"), (320, "FixSecDefReqBySymbol5")]).is_none());
+        assert_eq!(names.internal("FixSecDefReqBySymbol1"), Some("FixSecDefReqBySymbol101"));
+        assert_eq!(names.internal("SubMsgXMLQuery2"), Some("SubMsgXMLQuery1"));
+        assert_eq!(names.internal("FixSecDefReqBySymbol3"), Some("FixSecDefReqBySymbol3221225472"));
+        assert_eq!(names.internal("FixSecDefReqBySymbol7"), None, "an unknown name is not mapped");
+    }
     use crate::protocol::fix::fix_build;
     use crate::protocol::fixcomp::fixcomp_build;
 

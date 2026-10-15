@@ -5136,7 +5136,8 @@ mod tests {
         assert_eq!(frames.len(), 1, "{frames:?}");
         let lookup: Vec<(u32, String)> = frames[0].iter().filter(|(t, _)| !matches!(*t, 8 | 9 | 34 | 52 | 10)).cloned().collect();
         let id = format!("FixSecDefReqBySymbol{}", ORDER_LOOKUP_FIRST_ID);
-        let want: Vec<(u32, String)> = [(35, "c"), (320, id.as_str()), (321, "2"), (6088, "Socket"), (55, "AAPL"), (167, "CS"), (100, "BEST"), (15, "USD")]
+        // Named in the session series on the wire (ibx#698).
+        let want: Vec<(u32, String)> = [(35, "c"), (320, "FixSecDefReqBySymbol1"), (321, "2"), (6088, "Socket"), (55, "AAPL"), (167, "CS"), (100, "BEST"), (15, "USD")]
             .iter().map(|(t, v)| (*t, v.to_string())).collect();
         assert_eq!(lookup, want);
         assert_eq!(context.rth_parked.len(), 1);
@@ -7258,7 +7259,8 @@ mod tests {
         context.market.set_routing(slot, "STK", "SMART");
         hold_order(&mut conn, &mut context, &mut hb, 43, slot, one, 0);
         let frames = drain_frames(&mut context, &shared, &mut conn, &mut server);
-        let lookup = tag(&frames[0], 320).unwrap().to_string();
+        // The internal name of the lookup, as its answer maps back (ibx#698).
+        let lookup = conn.as_ref().unwrap().internal_name(tag(&frames[0], 320).unwrap());
         assert_eq!((frames.len(), tag(&frames[0], 35), tag(&frames[0], 55)), (1, Some("c"), Some("AAPL")));
         let reply = format!("35=d|320={lookup}|322=*|323=4|55=AAPL|167=STK|6008=265598|");
         assert!(order_contract_reply(&mut context, &shared, &lookup, reply.replace('|', "\x01").as_bytes()));
@@ -7310,7 +7312,8 @@ mod tests {
         let frames = drain_frames(&mut context, &shared, &mut conn, &mut server);
         assert_eq!(frames.iter().map(|f| tag(f, 35).unwrap().to_string()).collect::<Vec<_>>(), ["c"],
             "one lookup, and the parent waits for it too");
-        let lookup = tag(&frames[0], 320).unwrap().to_string();
+        // The internal name of the lookup, as its answer maps back (ibx#698).
+        let lookup = conn.as_ref().unwrap().internal_name(tag(&frames[0], 320).unwrap());
         let reply = format!("35=d|320={lookup}|322=*|323=4|55=AAPL|167=STK|6008=265598|");
         assert!(order_contract_reply(&mut context, &shared, &lookup, reply.replace('|', "").as_bytes()));
         let frames = drain_frames(&mut context, &shared, &mut conn, &mut server);

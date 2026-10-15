@@ -5535,8 +5535,9 @@ mod tests {
         assert_eq!(asked.len(), 3, "{asked:?}");
         assert!(asked[0].contains("|35=c|") && asked[0].contains("|321=2|6088=Socket|55=QQQ|167=CS|100=BEST|15=USD|"), "{}", asked[0]);
         assert!(farm_messages_sent(&mut farm_side).is_empty(), "nothing subscribed before the conId is known");
+        // The internal names of the lookups, as their answers map back (ibx#698).
         let ids: Vec<String> = asked.iter()
-            .map(|m| m.split('|').find_map(|p| p.strip_prefix("320=")).unwrap().to_string()).collect();
+            .map(|m| engine.ccp_conn.as_ref().unwrap().internal_name(m.split('|').find_map(|p| p.strip_prefix("320=")).unwrap())).collect();
 
         let reply = |id: &str, body: &str| pipe_msg(&format!("35=d|43=N|320={id}|322=*|323=4|{body}"));
         let mut context = std::mem::replace(&mut engine.context, Context::new());
@@ -5593,8 +5594,9 @@ mod tests {
         engine.poll_once();
         let (qqq, spy) = (a1.recv().unwrap().unwrap(), a2.recv().unwrap().unwrap());
         let asked = plain_messages_sent(&mut ccp_side);
+        // The internal names of the lookups, as their answers map back (ibx#698).
         let ids: Vec<String> = asked.iter()
-            .map(|m| m.split('|').find_map(|p| p.strip_prefix("320=")).unwrap().to_string()).collect();
+            .map(|m| engine.ccp_conn.as_ref().unwrap().internal_name(m.split('|').find_map(|p| p.strip_prefix("320=")).unwrap())).collect();
         let reply = |id: &str, body: &str| pipe_msg(&format!("35=d|43=N|320={id}|322=*|323=4|{body}"));
         let mut context = std::mem::replace(&mut engine.context, Context::new());
         assert!(farm::md_contract_reply(&mut context, &shared, &ids[0], &reply(&ids[0], "55=QQQ|167=STK|207=BEST|6008=320227571|15=USD|")));
@@ -5612,7 +5614,7 @@ mod tests {
         engine.poll_once();
         let again = a3.recv().unwrap().unwrap();
         let asked = plain_messages_sent(&mut ccp_side);
-        let id: String = asked.last().unwrap().split('|').find_map(|p| p.strip_prefix("320=")).unwrap().to_string();
+        let id: String = asked.last().unwrap().split('|').find_map(|p| p.strip_prefix("320=")).map(|n| engine.ccp_conn.as_ref().unwrap().internal_name(n)).unwrap();
         let mut context = std::mem::replace(&mut engine.context, Context::new());
         assert!(farm::md_contract_reply(&mut context, &shared, &id, &reply(&id, "55=QQQ|167=STK|207=BEST|6008=320227571|15=USD|")));
         engine.context = context;
@@ -6407,7 +6409,7 @@ mod news_tests {
             let mut chunk = [0u8; 8192];
             while let Ok(n) = ccp_side.read(&mut chunk) { if n == 0 { break; } buf.extend_from_slice(&chunk[..n]); }
             String::from_utf8_lossy(&buf).replace('\x01', "|").split("|320=").skip(1)
-                .map(|m| m.split('|').next().unwrap().to_string()).collect()
+                .map(|m| engine.ccp_conn.as_ref().unwrap().internal_name(m.split('|').next().unwrap())).collect()
         };
         assert_eq!(asked.len(), 2, "{asked:?}");
         let reply = |id: &str, body: &str| pipe_msg(&format!("35=d|43=N|320={id}|322=*|323=4|{body}"));
