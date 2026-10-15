@@ -668,7 +668,14 @@ impl OptMd {
                 }
                 m.sent[slot] = Some(c);
                 let tick = crate::control::generic_values::GenTick::Option(c);
-                if frozen && !((snapshot || on_frozen_slot) && c.tick_type == market::MODEL) {
+                // On the frozen slot a stream gets tick 13 only (the
+                // reference 10.51, paper, 15/10/2026 pre-market, case A).
+                let keep = if c.tick_type == market::MODEL {
+                    frozen && !(snapshot || on_frozen_slot)
+                } else {
+                    frozen || (on_frozen_slot && !snapshot)
+                };
+                if keep {
                     kept.push(tick);
                 } else {
                     sent.push(tick);

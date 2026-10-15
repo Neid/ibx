@@ -1197,7 +1197,15 @@ impl Drain<'_> {
                 return true;
             }
             let delayed = streams.get(&req_id).is_some_and(|st| st.delayed);
-            if let Some((&instrument, _)) = observers.iter().find(|(_, reqs)| reqs.contains(&req_id)) {
+            // A snapshot on the frozen view ends with tick 13 again, and
+            // nothing of 10 to 12 (ibx#494; the reference 10.51, paper,
+            // 14/10/2026 after hours and 15/10/2026 pre-market, case B).
+            let frozen = streams.get(&req_id).is_some_and(|st| st.frozen);
+            if frozen && let Some((&instrument, _)) = observers.iter().find(|(_, reqs)| reqs.contains(&req_id)) {
+                for c in known_computations(core, instrument).into_iter().filter(|c| c.tick_type == market::MODEL) {
+                    out.push(MdOut::Tick(req_id, option_tick(&c, delayed)));
+                }
+            } else if let Some((&instrument, _)) = observers.iter().find(|(_, reqs)| reqs.contains(&req_id)) {
                 for c in known_computations(core, instrument) {
                     if snap.take(option_tick_type(c.tick_type, delayed)) {
                         out.push(MdOut::Tick(req_id, option_tick(&c, delayed)));
