@@ -216,9 +216,17 @@ impl OptCalc {
         true
     }
 
-    fn send_xml_query(&mut self, query: &str, target: XmlTarget, conn: &mut Option<Connection>, hb: &mut HeartbeatState) {
+    /// The id of the next reference-data request: one series for the
+    /// option model's queries and the trading-hours requests, as the
+    /// reference names both (ibx#670).
+    pub(crate) fn next_query_id(&mut self) -> String {
         let id = format!("{}{}", XML_QUERY_PREFIX, self.next_xml);
         self.next_xml = self.next_xml.wrapping_add(1);
+        id
+    }
+
+    fn send_xml_query(&mut self, query: &str, target: XmlTarget, conn: &mut Option<Connection>, hb: &mut HeartbeatState) {
+        let id = self.next_query_id();
         if let Some(c) = conn.as_mut() {
             let ts = chrono_free_timestamp();
             let _ = c.send_fix(&[

@@ -411,8 +411,6 @@ pub(crate) struct CcpState {
     /// (ibx#683): the one the order holds, which its openOrder shows only
     /// from a status report or a modify on.
     pub(crate) held_cancel_dates: std::collections::HashMap<crate::types::OrderId, String>,
-    /// Counter for internal schedule subscribe req IDs.
-    pub(crate) next_schedule_sub_id: u32,
     /// Fan-out state for by-symbol lookups: the records wait for the
     /// per-exchange replies, then become the rows (ibx#435).
     pub(crate) pending_fanout: Vec<PendingFanout>,
@@ -829,7 +827,6 @@ impl CcpState {
             order_zone_waits: Vec::new(),
             held_cancel_dates: std::collections::HashMap::new(),
             schedules: std::collections::HashMap::new(),
-            next_schedule_sub_id: 1,
             pending_fanout: Vec::new(),
             next_fanout_id: 1,
             next_internal_secdef_id: 0xF000_0000,
@@ -2602,9 +2599,11 @@ impl CcpState {
         hb: &mut HeartbeatState,
     ) {
         if let Some(conn) = ccp_conn.as_mut() {
-            let sub_id = self.next_schedule_sub_id;
-            self.next_schedule_sub_id += 1;
-            let sub_id_str = format!("SchedSub.{}", sub_id);
+            // Named as the reference names it, in the series of the option
+            // model's queries (ibx#670; the reference's messages of
+            // 12/10 and 13/10/2026: "SubMsgXMLQuery" with a number of the
+            // series it shares with its symbol lookups).
+            let sub_id_str = self.optcalc.next_query_id();
             let ts = chrono_free_timestamp();
             let _ = conn.send_fix(&[
                 (fix::TAG_MSG_TYPE, "U"),
@@ -5981,6 +5980,10 @@ mod tests {
         let sent: Vec<String> = ccp_messages_sent(&mut server).into_iter().filter(|m| m.contains("6040=106")).collect();
         assert_eq!(sent.len(), 1, "one request for the key: {sent:?}");
         assert!(sent[0].contains(&format!("6256={key}")), "{}", sent[0]);
+        // Named as the reference names it, in the series of the option
+        // model's queries (ibx#670).
+        assert!(sent[0].contains("320=SubMsgXMLQuery1"), "{}", sent[0]);
+        assert_eq!(ccp.optcalc.next_query_id(), "SubMsgXMLQuery2");
         assert_eq!(shared.reference.time_zone_id(265598), None, "the order does not wait for it");
         let schedule = pipe_msg(&format!("35=U|6040=107|6256={key}|6734=US/Eastern|6840=0"));
         ccp.handle_schedule_reply(&schedule, &shared, &None);
