@@ -470,7 +470,7 @@ pub(crate) struct CcpState {
     /// commission window.
     pub(crate) exec_realized: std::collections::HashMap<String, (i64, f64)>,
     /// Order messages already reported as 399, by order and text (ibx#465).
-    pub(crate) order_messages_sent: HashSet<(OrderId, String)>,
+    pub(crate) order_messages_sent: HashMap<OrderId, Vec<String>>,
     /// The per-leg prices (6879) of the report being read, in leg order
     /// (ibx#470): the parsed map keeps one value per tag.
     pub(crate) report_leg_prices: Vec<f64>,
@@ -994,7 +994,7 @@ impl CcpState {
             fill_event_order: VecDeque::new(),
             held_commission_events: VecDeque::new(),
             exec_realized: std::collections::HashMap::with_capacity(256),
-            order_messages_sent: HashSet::new(),
+            order_messages_sent: HashMap::new(),
             report_leg_prices: Vec::new(),
             exec_realized_order: VecDeque::with_capacity(256),
             disconnected: false,
@@ -1606,6 +1606,11 @@ impl CcpState {
     ) {
         // This client's id, for whose reports are given to it.
         context.api_client_id = shared.reference.api_client_id();
+        // What is kept for the orders gone for good (ibx#700).
+        for order_id in context.purged_orders.drain(..) {
+            self.held_cancel_dates.remove(&order_id);
+            self.order_messages_sent.remove(&order_id);
+        }
         // The answer of reqCompletedOrders: its replayed reports are its
         // rows, not order updates; its end marker ends it (ibx#695).
         if self.completed.reading.is_some() && !self.awaiting_login_replay && !self.awaiting_status_replay {
@@ -2052,7 +2057,9 @@ impl CcpState {
         // in the capture) did not reach the API.
         if parsed.get(&6360).map(|s| s.as_str()) == Some("TIME") && context.order(clord_id).is_some() && owned {
             if let Some(text) = parsed.get(&6361).filter(|t| !t.is_empty()) {
-                if self.order_messages_sent.insert((clord_id, text.clone())) {
+                let sent = self.order_messages_sent.entry(clord_id).or_default();
+                if !sent.contains(text) {
+                    sent.push(text.clone());
                     let message = order_message_399(parsed, text, context, clord_id, shared, combo_view.as_ref().map(|v| &v.contract));
                     shared.orders.push_order_error(clord_id, 399, message);
                 }
@@ -6280,6 +6287,34 @@ mod tests {
         assert_eq!((c.symbol.as_str(), c.sec_type.as_str(), c.last_trade_date_or_contract_month.as_str(), c.strike, c.right.as_str(),
             c.multiplier.as_str(), c.local_symbol.as_str(), c.currency.as_str()),
             ("SAP", "WAR", "20261215", 85.0, "C", "0.1", "HE0DGD", "EUR"));
+    }
+
+    // ibx#700: what is kept per order goes when the order is gone for good
+    // (out of the ring of ended orders), not before: an ended parent's
+    // ClOrdID is still read for its children's reports.
+    #[test]
+    fn the_records_of_an_order_go_with_it() {
+        use crate::engine::context::FINISHED_ORDERS_MAX;
+        let (mut ccp, mut context, shared) = u186_test_state();
+        let total = FINISHED_ORDERS_MAX as i64 + 10;
+        for id in 1..=total {
+            context.modify_versions.insert(id, 1);
+            context.last_clord.insert(id, format!("{id}.1"));
+            ccp.held_cancel_dates.insert(id, "20261015-16:00:00".into());
+            ccp.order_messages_sent.insert(id, vec!["text".into()]);
+            context.finish_unsent(id, crate::types::OrderStatus::Cancelled);
+        }
+        assert_eq!(context.last_clord.len(), FINISHED_ORDERS_MAX);
+        assert_eq!(context.modify_versions.len(), FINISHED_ORDERS_MAX);
+        assert!(!context.last_clord.contains_key(&10) && context.last_clord.contains_key(&11), "the oldest go first");
+        assert_eq!(context.finished_status(11), Some(crate::types::OrderStatus::Cancelled));
+        // The order connection drops its own records at its next report.
+        let report = pipe_msg("35=8|11=99999999.0|17=x|150=0|39=0|55=AAPL|54=1|38=1|151=1|14=0");
+        let parsed = crate::protocol::fix::fix_parse(&report);
+        ccp.handle_exec_report(&parsed, &mut context, &shared, &None, "DU1");
+        assert!(context.purged_orders.is_empty());
+        assert_eq!((ccp.held_cancel_dates.len(), ccp.order_messages_sent.len()), (FINISHED_ORDERS_MAX, FINISHED_ORDERS_MAX));
+        assert!(!ccp.held_cancel_dates.contains_key(&1) && ccp.order_messages_sent.contains_key(&total));
     }
 
     #[test]

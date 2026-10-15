@@ -1716,7 +1716,7 @@ fn send_orders(
                 // See: https://github.com/deepentropy/ibx/issues/116
                 log::error!("Failed to send order {}: {} — notifying application", oid, e);
                 if oid != 0 {
-                    context.remove_order(oid);
+                    context.drop_unsent_order(oid);
                     shared.orders.push_order_update(OrderUpdate {
                         avg_fill_price: 0,
                         order_id: oid,

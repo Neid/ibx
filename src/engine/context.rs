@@ -197,6 +197,9 @@ pub struct Context {
     /// it appeared on the wire. Used as the OrigClOrdID on cancel/modify so that
     /// legacy orders recorded without a `.{ver}` suffix still match — see ibx#179.
     pub(crate) last_clord: HashMap<OrderId, String>,
+    /// Orders gone for good since the order connection last looked: the
+    /// records it keeps for them are dropped there (ibx#700).
+    pub(crate) purged_orders: Vec<OrderId>,
     /// The server's order id (the id part of the ClOrdID) of each order
     /// held under another key, to that key: the orders of this session,
     /// kept under their API order id (ibx#466), and the orders of an
@@ -403,6 +406,7 @@ impl Context {
             pending_orders: OrderBuffer::new(),
             modify_versions: HashMap::new(),
             last_clord: HashMap::new(),
+            purged_orders: Vec::new(),
             recovered_keys: HashMap::new(),
             server_ids: HashMap::new(),
             recovered: std::collections::HashSet::new(),
@@ -1623,14 +1627,7 @@ impl Context {
         }
         if self.finished_orders.insert(order_id, status).is_none() {
             self.finished_order_ids.push_back(order_id);
-            while self.finished_order_ids.len() > FINISHED_ORDERS_MAX {
-                if let Some(old) = self.finished_order_ids.pop_front() {
-                    self.finished_orders.remove(&old);
-                    if let Some(server) = self.server_ids.remove(&old) {
-                        self.recovered_keys.remove(&server);
-                    }
-                }
-            }
+            self.trim_finished();
         }
     }
 
@@ -1639,7 +1636,40 @@ impl Context {
     pub(crate) fn finish_unsent(&mut self, order_id: OrderId, status: OrderStatus) {
         if self.finished_orders.insert(order_id, status).is_none() {
             self.finished_order_ids.push_back(order_id);
+            self.trim_finished();
         }
+    }
+
+    /// The oldest ended orders past the last `FINISHED_ORDERS_MAX` are gone
+    /// for good, with everything kept for them (ibx#700). An ended order's
+    /// last ClOrdID stays until then: a child's report can name a parent
+    /// that has ended (`parent_order_id`).
+    fn trim_finished(&mut self) {
+        while self.finished_order_ids.len() > FINISHED_ORDERS_MAX {
+            let Some(old) = self.finished_order_ids.pop_front() else { break };
+            self.finished_orders.remove(&old);
+            if let Some(server) = self.server_ids.remove(&old) {
+                self.recovered_keys.remove(&server);
+            }
+            self.purge_order_records(old);
+        }
+    }
+
+    /// Drop what is kept for an order no report names again: its modify
+    /// version and last ClOrdID here, and (through `purged_orders`) what
+    /// the order connection keeps for it (ibx#700).
+    fn purge_order_records(&mut self, order_id: OrderId) {
+        self.modify_versions.remove(&order_id);
+        self.last_clord.remove(&order_id);
+        self.purged_orders.push(order_id);
+    }
+
+    /// An order that failed to send: removed with everything kept for it;
+    /// it never reached the server, so no report names it (ibx#116,
+    /// ibx#700).
+    pub(crate) fn drop_unsent_order(&mut self, order_id: OrderId) {
+        self.forget_order(order_id);
+        self.purge_order_records(order_id);
     }
 
     /// Keep an ended order as the reference's book does (ibx#545), in the
