@@ -322,6 +322,10 @@ pub(crate) struct RtBarSub {
 /// How the bars of a bar request are written (ibx#431): formatDate, bars
 /// shorter than a day or not, the instrument zone (the contract's trading
 /// hours zone when known, else the reply's zone), and the start and end
+/// Warning 2188, given before the end of an answer of delayed data
+/// (ibx#703).
+const DELAYED_HISTORY: &str = "Up-to-the-second historical data requires additional subscription for the API.";
+
 /// of the request in Unix seconds for historicalDataEnd.
 #[derive(Debug, Clone)]
 pub(crate) struct BarRequestInfo {
@@ -331,6 +335,9 @@ pub(crate) struct BarRequestInfo {
     pub(crate) zone: Option<String>,
     pub(crate) start: i64,
     pub(crate) end: i64,
+    /// The answer said its data are delayed: warning 2188 before the end
+    /// (ibx#703).
+    pub(crate) delayed: bool,
 }
 
 /// A keepUpToDate bar request (ibx#429): its query, the 5-second router
@@ -714,6 +721,16 @@ impl HmdsState {
                                 live.history_done |= is_complete;
                                 if live.reply_zone.is_empty() {
                                     live.reply_zone = resp.timezone.clone();
+                                }
+                            }
+                            // An answer of delayed data (its first part says how
+                            // late): warning 2188 just before the end, as the
+                            // reference 10.51 (paper 15/10/2026, daily bars of
+                            // Japanese, Canadian and Australian stocks; ibx#703).
+                            if let Some(info) = self.bar_requests.iter_mut().find(|r| r.req_id == req_id) {
+                                info.delayed |= xml_tag.contains("<delay>");
+                                if is_complete && info.delayed {
+                                    shared.reference.push_historical_error(req_id, 2188, DELAYED_HISTORY.to_string());
                                 }
                             }
                             self.write_bar_times(req_id, &mut resp, is_complete);
@@ -1512,6 +1529,7 @@ impl HmdsState {
             zone,
             start: crate::control::historical::duration_start(end, duration, &machine_zone),
             end,
+            delayed: false,
         });
         let end_date_time = crate::control::historical::server_time(end);
         let qid = self.next_hmds_query_id;
@@ -3472,6 +3490,7 @@ pub(crate) mod tests {
         hmds.keep_up_to_date_reqs.insert(req_id);
         hmds.bar_requests.push(BarRequestInfo {
             req_id, format_date: 1, intraday: bar_size.is_intraday(), zone: Some("US/Eastern".into()), start: 0, end: 0,
+            delayed: false,
         });
         hmds.live_bars.push(LiveBars {
             req_id, window_id: window_id.to_string(), query_id: format!("{window_id};;AAPL@SMART {label};;1;;true;;0;;I"),
@@ -3604,7 +3623,9 @@ pub(crate) mod tests {
             hmds.pending_historical.push((w.to_string(), req));
             let duration = if intraday { "1 d" } else { "1 m" };
             hmds.bar_requests.push(BarRequestInfo { req_id: req, format_date, intraday, zone: Some("US/Eastern".into()),
-                start: crate::control::historical::duration_start(end, duration, "Europe/Paris"), end });
+                start: crate::control::historical::duration_start(end, duration, "Europe/Paris"), end,
+            delayed: false,
+        });
         }
         hmds.pending_head_ts.push(("TickHeadClient1".to_string(), 9544, Instant::now() + HEAD_TIMESTAMP_TIMEOUT));
         hmds.head_ts_format.insert(9544, 2);
@@ -3631,6 +3652,37 @@ pub(crate) mod tests {
         // The answered requests are not running any more: 366.
         assert!(hmds.cancel_bar_request(9540, &shared).is_empty());
         assert_eq!(shared.reference.drain_historical_errors()[0].1, 366);
+    }
+
+    // ibx#703 (the reference 10.51, paper 15/10/2026, daily bars of 7203 on
+    // TSEJ): an answer whose first part says its data are delayed gets
+    // warning 2188 just before its end; an answer without it gets none.
+    #[test]
+    fn delayed_bars_get_2188_before_their_end() {
+        let mut hmds = HmdsState::new();
+        let shared = SharedState::new();
+        let mut hb = HeartbeatState::new();
+        let mut conn: Option<Connection> = None;
+        let part = |id: &str, eoq: bool, head: &str, bar: bool| {
+            let bars = if bar {
+                "<Bar><time>20261014-00:00:00</time><open>1</open><close>1</close><high>1</high><low>1</low><weightedAvg>1</weightedAvg><volume>-1</volume><count>-1</count></Bar>"
+            } else { "" };
+            let xml = format!("<ResultSetBar><id>{id};;7203.T@SMART Midpoint;;1;;true;;0;;I</id><eoq>{eoq}</eoq>{head}<Events>{bars}</Events></ResultSetBar>");
+            crate::protocol::fix::fix_build(&[(35, "W"), (6118, xml.as_str())], 1)
+        };
+        for (w, req) in [("cf16", 7303), ("cf20", 7304)] {
+            hmds.pending_historical.push((w.to_string(), req));
+            hmds.bar_requests.push(BarRequestInfo { req_id: req, format_date: 1, intraday: false, zone: None, start: 0, end: 0, delayed: false });
+        }
+        for msg in [part("cf16", false, "<tz>Japan</tz><delay>1200</delay>", false), part("cf16", true, "", true),
+            part("cf20", false, "<tz>MET</tz>", false), part("cf20", true, "", true)]
+        {
+            hmds.process_hmds_message(&msg, &mut conn, &shared, &None, &mut hb);
+        }
+        assert_eq!(shared.reference.drain_historical_errors(), [(7303, 2188,
+            "Up-to-the-second historical data requires additional subscription for the API.".to_string())]);
+        let ends: Vec<ReqId> = shared.reference.drain_historical_data().iter().filter(|(_, d)| d.is_complete).map(|(r, _)| *r).collect();
+        assert_eq!(ends, [7303, 7304]);
     }
 
     #[test]

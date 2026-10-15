@@ -3618,6 +3618,19 @@ impl CcpState {
         }
         if let [con_id] = con_ids.as_slice() {
             log::info!("Contract lookup {}: req_id={} con_id={}", lookup_id, pending.req_id, con_id);
+            // A contract of market 1 (its schedule key "1/...", the US
+            // exchanges) has the zone US/Eastern without its schedule being
+            // asked: the end of a daily-bar request by symbol is written in
+            // it. Other markets' zones are not known until their schedule
+            // comes (the reference 10.51, paper 15/10/2026: AAPL in
+            // US/Eastern; SAP, VOD, 7203, RY and BHP in the machine's zone;
+            // ibx#703).
+            if matches!(pending.request, crate::types::ControlCommand::FetchHistorical { .. })
+                && shared.reference.time_zone_id(*con_id).is_none()
+                && records.iter().find(|d| d.con_id == *con_id).is_some_and(|d| d.join_key.starts_with("1/"))
+            {
+                shared.reference.cache_time_zone_id(*con_id, "US/Eastern");
+            }
             self.resolved_requests.push(request_with_con_id(pending.request, *con_id));
         } else {
             log::info!("Contract lookup {}: req_id={} found {} contracts", lookup_id, pending.req_id, con_ids.len());
@@ -8350,6 +8363,24 @@ mod reconnect_tests {
             let errors = shared.reference.drain_historical_errors();
             assert_eq!(errors.iter().map(|e| (e.0, e.1, e.2.as_str())).collect::<Vec<_>>(),
                 [(7113, 200, "The contract description specified for AAPL is ambiguous.")]);
+        }
+
+        // ibx#703 (the reference 10.51, paper 15/10/2026): a daily-bar
+        // request by symbol on a contract of market 1 (schedule key "1/...")
+        // takes the zone US/Eastern; another market's stays unknown.
+        #[test]
+        fn a_us_contract_resolved_for_bars_has_the_us_eastern_zone() {
+            let (mut ccp, shared) = (CcpState::new(), SharedState::new());
+            for (req, symbol, key, con_id) in [(7300, "AAPL", "1/STK/NASDAQ#LITE", "265598"),
+                (7301, "SAP", "6/STK/IBIS#LTH2RTH", "14204")]
+            {
+                ccp.start_contract_resolve(req, lookup(), bars(req), &mut None, &mut HeartbeatState::new());
+                let id = format!("FixSecDefReqBySymbol{}", ccp.pending_resolves.last().unwrap().lookup_id);
+                let reply = pipe_msg(&format!("35=d|43=N|320={id}|322=*|323=4|55={symbol}|167=STK|207=BEST|6008={con_id}|6256={key}|15=USD"));
+                assert!(ccp.contract_resolve_reply(&id, &reply, &shared));
+            }
+            assert_eq!(shared.reference.time_zone_id(265598).as_deref(), Some("US/Eastern"));
+            assert_eq!(shared.reference.time_zone_id(14204), None);
         }
 
         // ibx#485: no deadline, as the reference: the request waits for the
