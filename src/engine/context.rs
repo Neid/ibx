@@ -261,6 +261,11 @@ pub struct Context {
     pub(crate) order_record_lookups: Vec<(String, i64, String)>,
     /// Orders whose record lookup was answered: they go on.
     pub(crate) order_records_cleared: std::collections::HashSet<crate::types::OrderId>,
+    /// The clearing rule lookups to send, and those on their way, and how
+    /// many the session made (ibx#709).
+    pub(crate) order_clearing_to_send: Vec<(i64, String)>,
+    pub(crate) order_clearing_lookups: Vec<String>,
+    pub(crate) next_clearing_rule: u32,
 
     /// Set while a short-side order is encoded: its short-sale fields
     /// (ibx#417).
@@ -443,6 +448,9 @@ impl Context {
             order_records_any: std::collections::HashSet::new(),
             order_record_lookups: Vec::new(),
             order_records_cleared: std::collections::HashSet::new(),
+            order_clearing_to_send: Vec::new(),
+            order_clearing_lookups: Vec::new(),
+            next_clearing_rule: 0,
 
             short_sale_send: None,
             combos: Default::default(),

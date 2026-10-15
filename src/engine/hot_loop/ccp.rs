@@ -3295,11 +3295,18 @@ impl CcpState {
                 }
                 return;
             }
-            // The record of a contract an order needs (ibx#706).
+            // The record of a contract an order needs (ibx#706), and the
+            // clearing rule it may ask then (ibx#709).
             if super::order_builder::order_record_reply(context, rid, msg) {
                 for def in crate::control::contracts::parse_secdef_records(msg).unwrap_or_default().iter().take(1) {
                     self.cache_definition(def, shared);
                 }
+                if let Some(conn) = ccp_conn.as_mut() {
+                    super::order_builder::send_clearing_rules(context, conn, hb);
+                }
+                return;
+            }
+            if super::order_builder::order_clearing_reply(context, rid) {
                 return;
             }
             // Asked for the contract of an order given without a conId

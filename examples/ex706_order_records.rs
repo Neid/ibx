@@ -1,13 +1,16 @@
-//! ibx#706 probe through the Rust client, any session where an order rests:
-//! the record of the order's exchange asked before an order (by conId on
-//! the primary exchange for SMART, on the order's exchange when directed).
-//! Paper account only.
+//! ibx#706 and ibx#709 probe through the Rust client, any session where an
+//! order rests: the records an order needs (its own exchange's and the
+//! primary exchange's), asked by conId when the session has none, and the
+//! clearing rule asked after an answer naming another exchange. Paper
+//! account only.
 //!
 //! Far limit BUY 1 AAPL at 100, given by symbol, each cancelled 2 s after
-//! it was placed: twice on SMART (the record asked before the first only),
-//! twice directed to ISLAND (asked each time: the answer names NASDAQ),
-//! then directed to NASDAQ (not asked). The directed orders are discarded
-//! by the redirect precaution unless it is bypassed. Run with `IBX_LOG_DIR`
+//! it was placed. By default: twice on SMART (the primary's record asked
+//! before the first only), twice directed to ISLAND (asked each time: the
+//! answer names NASDAQ; then the clearing rule), then directed to NASDAQ
+//! (nothing asked). `IBX706_EXCHANGES` sets the list, e.g. ARCA,NYSE,ISLAND
+//! (ARCA: the primary NASDAQ asked; NYSE: nothing). The directed orders are
+//! discarded by the redirect precaution unless it is bypassed. Run with `IBX_LOG_DIR`
 //! and `IBX_LOG_LEVEL=info` to read the lookups in the engine log.
 //!
 //! Prints every order callback with its time from the start.
@@ -71,7 +74,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         action: "BUY".into(), total_quantity: 1.0, order_type: "LMT".into(), tif: "DAY".into(),
         lmt_price: 100.0, transmit: true, ..Default::default()
     };
-    for exchange in ["SMART", "SMART", "ISLAND", "ISLAND", "NASDAQ"] {
+    let exchanges = env::var("IBX706_EXCHANGES").unwrap_or_else(|_| "SMART,SMART,ISLAND,ISLAND,NASDAQ".into());
+    for exchange in exchanges.split(',').map(str::trim).filter(|e| !e.is_empty()) {
         let contract = Contract {
             symbol: "AAPL".into(), sec_type: "STK".into(), exchange: exchange.into(), currency: "USD".into(),
             ..Default::default()

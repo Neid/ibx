@@ -3533,14 +3533,16 @@ pub(crate) const ORDER_LOOKUP_FIRST_ID: u32 = 0xC000_0000;
 pub(crate) const ORDER_LOOKUP_IDS: u32 = 0x1000_0000;
 
 /// The exchange whose record of the contract an order needs and the
-/// session does not have (ibx#706): the contract's primary exchange for a
-/// SMART order, the order's exchange for a directed one. The reference 10.51
-/// asks it by conId before the order, and keeps a record under the exchange
-/// its answer names (38 recordings, 12/10 to 15/10/2026: once per contract
-/// for SMART orders; for every order directed to ISLAND, whose record comes
-/// back as NASDAQ's; none for a NASDAQ order after it, nor for a SMART order
-/// once contract details brought the records). None when it has it, or when
-/// the primary exchange is not known.
+/// session does not have (ibx#706, ibx#709). The reference 10.51 keeps a
+/// contract's records under the exchange their answer names and needs two
+/// before an order: the record of the order's own exchange (BEST for a
+/// SMART order, which the order's symbol lookup brings) and the record of
+/// the contract's primary exchange; it asks the missing one by conId
+/// (observed, paper, 15/10/2026: directed to ARCA, the symbol lookup named
+/// ARCA, the primary NASDAQ asked; to NYSE next, nothing; to ISLAND, the
+/// symbol lookup named NASDAQ, ISLAND asked, its answer naming NASDAQ; to
+/// NASDAQ, nothing; 38 recordings of SMART orders: the primary asked once).
+/// None when it has them, or when the primary exchange is not known.
 fn missing_order_record(context: &Context, shared: &SharedState, instrument: crate::types::InstrumentId, con_id: i64) -> Option<String> {
     if context.order_records_any.contains(&con_id) {
         return None;
@@ -3552,12 +3554,12 @@ fn missing_order_record(context: &Context, shared: &SharedState, instrument: cra
     if !matches!(sec_type.as_str(), "STK" | "CS") || context.market.blank_symbol(instrument) {
         return None;
     }
-    let exchange = if destination.is_empty() || destination == "BEST" {
-        shared.reference.get_contract(con_id).map(|c| c.primary_exchange).filter(|e| !e.is_empty())?
-    } else {
-        destination
-    };
-    (!context.order_records.contains(&(con_id, exchange.clone()))).then_some(exchange)
+    let missing = |exchange: &str| !context.order_records.contains(&(con_id, exchange.to_string()));
+    if !destination.is_empty() && destination != "BEST" && missing(&destination) {
+        return Some(destination);
+    }
+    let primary = shared.reference.get_contract(con_id).map(|c| c.primary_exchange).filter(|e| !e.is_empty())?;
+    missing(&primary).then_some(primary)
 }
 
 /// Ask a contract's record on an exchange for an order (ibx#706).
@@ -3576,6 +3578,35 @@ fn ask_order_record(context: &mut Context, conn: &mut Connection, hb: &mut Heart
     context.order_record_lookups.push((name, con_id, exchange.to_string()));
 }
 
+/// The clearing rule lookups an order's record answer asked for (ibx#709),
+/// by conId on the exchange asked, named as the reference names them
+/// (`ClearingRule<k>ND`, k counting them in the session).
+pub(crate) fn send_clearing_rules(context: &mut Context, conn: &mut Connection, hb: &mut HeartbeatState) {
+    for (con_id, exchange) in std::mem::take(&mut context.order_clearing_to_send) {
+        let lookup_id = ORDER_LOOKUP_FIRST_ID + context.next_order_lookup % ORDER_LOOKUP_IDS;
+        context.next_order_lookup = context.next_order_lookup.wrapping_add(1);
+        let name = format!("ClearingRule{}NDReqByConid{}", context.next_clearing_rule, lookup_id);
+        context.next_clearing_rule = context.next_clearing_rule.wrapping_add(1);
+        let con = con_id.to_string();
+        let ts = chrono_free_timestamp();
+        let _ = conn.send_fix(&[
+            (fix::TAG_MSG_TYPE, "c"), (fix::TAG_SENDING_TIME, &ts), (320, &name), (321, "2"), (146, "1"),
+            (6008, &con), (6004, &exchange),
+        ]);
+        hb.last_ccp_sent = std::time::Instant::now();
+        log::info!("Order contract {}: clearing rule on {} asked ({})", con_id, exchange, name);
+        context.order_clearing_lookups.push(name);
+    }
+}
+
+/// The answer to a clearing rule lookup (ibx#709): taken, nothing waits
+/// for it. False when the reply is not for one.
+pub(crate) fn order_clearing_reply(context: &mut Context, req_id: &str) -> bool {
+    let Some(at) = context.order_clearing_lookups.iter().position(|name| name == req_id) else { return false };
+    context.order_clearing_lookups.remove(at);
+    true
+}
+
 /// The answer to an order's record lookup (ibx#706): the records it holds
 /// are kept by the exchange they name, its order rules under the exchange
 /// asked, and the orders of the contract that waited go on. False when the
@@ -3585,6 +3616,15 @@ pub(crate) fn order_record_reply(context: &mut Context, req_id: &str, msg: &[u8]
     let (_, con_id, asked) = context.order_record_lookups.remove(at);
     if let Some(named) = fix::fix_parse(msg).get(&207).filter(|e| !e.is_empty()) {
         context.order_records.insert((con_id, named.clone()));
+    }
+    // An answer naming another exchange than the one asked (ISLAND, answered
+    // as NASDAQ): the reference then asks the clearing rule of the exchange
+    // asked, and goes on without its answer (ibx#709; nine orders directed
+    // to ISLAND, 12/10 to 15/10/2026; none after an answer naming the
+    // exchange asked).
+    let named = fix::fix_parse(msg).get(&207).cloned().unwrap_or_default();
+    if !named.is_empty() && named != asked {
+        context.order_clearing_to_send.push((con_id, asked.clone()));
     }
     for def in crate::control::contracts::parse_secdef_records(msg).unwrap_or_default() {
         if def.con_id == con_id && !def.exchange.is_empty() {
@@ -3758,7 +3798,8 @@ pub(crate) fn redirect_warning(exchange: &str) -> (i64, String) {
 /// "Bypass Redirect Order warning for Stock API Orders" off (the default;
 /// `IBX_BYPASS_REDIRECT_ORDER_WARNING`): 10311 (10329 for OVERNIGHT and
 /// IBEOS), then the order is discarded: orderStatus Cancelled with nothing
-/// filled, then 201 "Order was discarded." (captured 28/09/2026 on OVERNIGHT, 25/09/2026 on ISLAND, named NASDAQ).
+/// filled, then 201 "Order was discarded." (captured 28/09/2026 on OVERNIGHT, 25/09/2026 on ISLAND, named NASDAQ by
+/// 10.40; 10.51 names it ISLAND, 15/10/2026).
 /// Its permId is the id it would have gone out under. `Some(false)` while
 /// the contract's definition on that exchange is asked, `Some(true)` when
 /// discarded, `None` to go on.
@@ -3793,8 +3834,10 @@ fn redirect_precaution(
         Definition::Known(types, _) if !types.smart => None,
         Definition::Known(..) => {
             let oid = req.order_id();
-            // The reference names the exchange as it keeps it.
-            let shown = if exchange == "ISLAND" { "NASDAQ" } else { exchange.as_str() };
+            // 10.51 names the exchange as the order gives it (paper,
+            // 15/10/2026, regular hours: "routed to ISLAND", twice); 10.40
+            // named ISLAND as NASDAQ (captured 25/09/2026).
+            let shown = if exchange == "ISLAND" && shared.reference.form_10_40() { "NASDAQ" } else { exchange.as_str() };
             let (code, text) = redirect_warning(shown);
             log::warn!("Order {} discarded: directed to {} (redirect precaution)", oid, exchange);
             shared.orders.push_order_error(oid, code, text);
@@ -5215,7 +5258,8 @@ mod tests {
         let (sent, errors, ..) = run("ISLAND", true, false);
         assert!(!sent);
         assert_eq!(errors[0].1, 10311);
-        assert!(errors[0].2.starts_with("This order will be directly routed to NASDAQ. Direct routed orders may result in higher trade fees.\n"));
+        // 10.51 names the exchange as given (ibx#709; 10.40 named it NASDAQ).
+        assert!(errors[0].2.starts_with("This order will be directly routed to ISLAND. Direct routed orders may result in higher trade fees.\n"));
         let (sent, errors, statuses, _) = run("ISLAND", true, true);
         assert!(sent && errors.is_empty() && statuses.is_empty(), "bypassed");
         let (sent, errors, ..) = run("ISLAND", false, false);
@@ -6535,7 +6579,7 @@ mod tests {
             // session's number (ibx#706); its answer comes back under ibx's
             // own, as the connection maps it.
             let v = match (t, conn.as_ref()) {
-                (320, Some(c)) if v.starts_with(crate::control::contracts::SECDEF_ORDER_TYPES_NAME) => c.internal_name(v),
+                (320, Some(c)) if v.starts_with(crate::control::contracts::SECDEF_ORDER_TYPES_NAME) || v.starts_with("ClearingRule") => c.internal_name(v),
                 _ => v.to_string(),
             };
             if let Some(f) = frames.last_mut() { f.push((t, v)); }
@@ -8889,18 +8933,60 @@ mod tests {
         // A second SMART order: nothing asked.
         let frames = place(&mut context, &mut conn, &mut server, "SMART", 2);
         assert_eq!((lookup(&frames), sent(&frames)), (None, 1), "{frames:?}");
-        // ISLAND, twice: asked each time, the answer naming NASDAQ.
-        for id in [3, 4] {
+        // ISLAND, twice: asked each time, the answer naming NASDAQ; then the
+        // clearing rule of ISLAND (ibx#709), not waited for.
+        for (k, id) in [(0, 3), (1, 4)] {
             let frames = place(&mut context, &mut conn, &mut server, "ISLAND", id);
             let (name, on) = lookup(&frames).expect("the record asked");
             assert_eq!(on, "ISLAND");
             assert!(order_record_reply(&mut context, &name, &answer(&name)));
+            assert_eq!(context.order_clearing_to_send, [(265598, "ISLAND".to_string())]);
+            send_clearing_rules(&mut context, conn.as_mut().unwrap(), &mut HeartbeatState::new());
             let frames = drain_frames(&mut context, &shared, &mut conn, &mut server);
+            let clearing = frames.iter().find(|f| tag(f, 320).is_some_and(|n| n.starts_with("ClearingRule")))
+                .expect("the clearing rule asked");
+            assert!(tag(clearing, 320).unwrap().starts_with(&format!("ClearingRule{k}NDReqByConid")), "{clearing:?}");
+            assert_eq!(tag(clearing, 6004), Some("ISLAND"));
             assert!(lookup(&frames).is_none(), "the order goes on after its answer: {frames:?}");
+            assert!(order_clearing_reply(&mut context, tag(clearing, 320).unwrap()));
         }
         // NASDAQ: the record is there, nothing asked.
         let frames = place(&mut context, &mut conn, &mut server, "NASDAQ", 5);
         assert_eq!(lookup(&frames), None, "{frames:?}");
+    }
+
+    // ibx#709: an order directed to ARCA whose symbol lookup named ARCA
+    // asks the record of the primary exchange (the reference 10.51, paper,
+    // 15/10/2026, regular hours: NASDAQ asked, its answer naming NASDAQ, no
+    // clearing rule).
+    #[test]
+    fn a_directed_order_asks_the_primary_record_when_its_own_is_there() {
+        let (client, mut server) = crate::protocol::connection::mem_pair();
+        let mut conn = Some(Connection::new_mem(client));
+        let shared = Arc::new(SharedState::new());
+        shared.reference.cache_contract(265598, crate::api::types::Contract {
+            con_id: 265598, symbol: "AAPL".into(), primary_exchange: "NASDAQ".into(), ..Default::default()
+        });
+        let mut context = Context::new();
+        context.market.register(265598);
+        context.set_symbol(0, "AAPL".to_string());
+        context.market.set_routing(0, "STK", "ARCA");
+        // The symbol lookup named ARCA: the record and its order rules.
+        context.order_records.insert((265598, "ARCA".to_string()));
+        context.rth_types.insert((265598, "ARCA".to_string()), crate::engine::outside_rth::RthTypes {
+            sec_type: "STK".into(), types_known: true, ..Default::default()
+        });
+        context.pending_orders.push(limit_ex(1, Side::Buy, px(100.0), Default::default()));
+        let frames = drain_frames(&mut context, &shared, &mut conn, &mut server);
+        let asked = frames.iter().find(|f| tag(f, 320).is_some_and(|n| n.starts_with(crate::control::contracts::SECDEF_ORDER_TYPES_NAME)))
+            .expect("the primary's record asked");
+        assert_eq!(tag(asked, 6004), Some("NASDAQ"));
+        let name = tag(asked, 320).unwrap().to_string();
+        let answer = fix::fix_build(&[(35, "d"), (320, &name), (6008, "265598"), (55, "AAPL"), (167, "STK"), (207, "NASDAQ")], 1);
+        assert!(order_record_reply(&mut context, &name, &answer));
+        assert!(context.order_clearing_to_send.is_empty(), "the answer named the exchange asked");
+        let frames = drain_frames(&mut context, &shared, &mut conn, &mut server);
+        assert!(frames.iter().all(|f| !tag(f, 320).is_some_and(|n| n.starts_with(crate::control::contracts::SECDEF_ORDER_TYPES_NAME))), "{frames:?}");
     }
 
     /// A session that allows price management, with the paper exclusion
