@@ -1332,6 +1332,17 @@ impl CcpState {
             "3" => {
                 let reason = parsed.get(&58).map(|s| s.as_str()).unwrap_or("unknown");
                 let ref_tag = parsed.get(&371).map(|s| s.as_str()).unwrap_or("?");
+                // A refusal naming an order's contract lookup: its orders get
+                // 200 with the server's text and are dropped, as the
+                // reference (ibx#710; paper, 15/10/2026: an AAPL order to
+                // ARCA with primary exchange NASDAQ, "Invalid destination
+                // exchange specified").
+                if let Some(id) = parsed.get(&320) {
+                    let id = ccp_conn.as_ref().map_or_else(|| id.clone(), |c| c.internal_name(id));
+                    if super::order_builder::order_lookup_refused(context, shared, &id, reason) {
+                        return;
+                    }
+                }
                 // The reject carries no request id: like the reference, it is
                 // only logged, and a lookup it hit gets neither an error nor
                 // an end from it (ibx#400). Such a lookup stays pending, as

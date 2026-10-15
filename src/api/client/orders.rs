@@ -77,7 +77,8 @@ impl EClient {
                 &self.control_tx, oid, false,
                 contract.con_id, &contract.symbol, &contract.exchange, &contract.sec_type, &contract.currency,
                 crate::types::SecDefFilters {
-                    primary_exchange: String::new(), local_symbol: contract.local_symbol.clone(),
+                    // The primary exchange goes into the order's lookup (ibx#710).
+                    primary_exchange: contract.primary_exchange.clone(), local_symbol: contract.local_symbol.clone(),
                     last_trade_date_or_contract_month: contract.last_trade_date_or_contract_month.clone(),
                     strike: contract.strike, right: contract.right.clone(), multiplier: contract.multiplier.clone(),
                     trading_class: contract.trading_class.clone(), ..Default::default()

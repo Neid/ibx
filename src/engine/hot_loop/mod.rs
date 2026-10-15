@@ -2250,6 +2250,11 @@ impl HotLoop {
                         self.context.market.set_currency(id, &currency);
                         if !matches!(sec_type.to_ascii_uppercase().as_str(), "" | "STK" | "CS") {
                             self.context.order_lookup_filters.insert(id, *filters);
+                        } else if !filters.primary_exchange.is_empty() {
+                            // A stock's primary exchange goes into its lookup,
+                            // as the reference writes it (ibx#710).
+                            let primary = crate::types::SecDefFilters { primary_exchange: filters.primary_exchange.clone(), ..Default::default() };
+                            self.context.order_lookup_filters.insert(id, primary);
                         } else {
                             self.context.order_lookup_filters.remove(&id);
                         }

@@ -3689,6 +3689,37 @@ fn look_up_order_contract(context: &mut Context, conn: &mut Connection, hb: &mut
     context.order_lookups.push((lookup_id, instrument));
 }
 
+/// The server refused an order's contract lookup (ibx#710): the orders that
+/// waited for it get 200 with the server's text and are not kept (their
+/// cancel gives 10147), as the reference. False when the refusal is not of
+/// such a lookup.
+pub(crate) fn order_lookup_refused(context: &mut Context, shared: &SharedState, req_id: &str, text: &str) -> bool {
+    let Some(number) = crate::control::contracts::secdef_request_number(req_id) else { return false };
+    let slots: Vec<crate::types::InstrumentId> = context.order_lookups.iter()
+        .filter(|(id, _)| crate::types::ReqId::from(*id) == number).map(|(_, slot)| *slot).collect();
+    if slots.is_empty() {
+        return false;
+    }
+    context.order_lookups.retain(|(id, _)| crate::types::ReqId::from(*id) != number);
+    for slot in slots {
+        log::warn!("Order contract lookup {} refused: {}", req_id, text);
+        let (refused, kept): (Vec<OrderRequest>, Vec<OrderRequest>) = std::mem::take(&mut context.rth_parked).into_iter()
+            .partition(|r| r.instrument() == Some(slot) && !matches!(r, OrderRequest::CancelAll { .. }));
+        context.rth_parked = kept;
+        for r in refused {
+            shared.orders.push_order_error(r.order_id(), 200, text.to_string());
+        }
+        for group in context.order_groups.iter_mut() {
+            group.retain(|m| m.1 != slot);
+        }
+        if !context.unsent.values().any(|h| h.0 == slot) {
+            context.market.unregister(slot);
+        }
+    }
+    release_rth_parked(context);
+    true
+}
+
 /// The answer to an order's contract lookup (ibx#486): one contract gives
 /// the slot its conId (or the waiting orders the slot of that conId when
 /// there is one already); none or several give error 200 to the waiting
@@ -5362,6 +5393,35 @@ mod tests {
         assert!(order_contract_reply(&mut context, &shared, "FixSecDefReqBySymbol3221225473", empty.as_bytes()));
         assert!(context.rth_parked.is_empty() && !context.api_pending.contains_key(&7));
         assert_eq!(shared.orders.drain_order_errors(), [(7, 200, "No security definition has been found for the request".to_string())]);
+    }
+
+    // ibx#710: an order whose contract gives a primary exchange carries it
+    // in its lookup, after the exchange, as the reference wrote it (paper,
+    // 15/10/2026: AAPL on ARCA with primary exchange NASDAQ); the server's
+    // refusal of the lookup gives the order 200 with its text, and the
+    // order is not kept.
+    #[test]
+    fn an_order_lookup_carries_the_primary_exchange_and_its_refusal_drops_the_order() {
+        let mut context = Context::new();
+        let slot = context.market.try_register_unresolved().unwrap();
+        context.market.set_symbol(slot, "AAPL".into());
+        context.market.set_routing(slot, "STK", "ARCA");
+        context.market.set_currency(slot, "USD");
+        context.order_lookup_filters.insert(slot, crate::types::SecDefFilters { primary_exchange: "NASDAQ".into(), ..Default::default() });
+        context.pending_orders.push(OrderRequest::SubmitLimit { order_id: 9, instrument: slot, side: Side::Buy, qty: 1, price: 100 * P });
+        let shared = Arc::new(SharedState::new());
+        let (client, mut server) = crate::protocol::connection::mem_pair();
+        let mut conn = Some(Connection::new_mem(client));
+        let frames = drain_frames(&mut context, &shared, &mut conn, &mut server);
+        let lookup: Vec<(u32, String)> = frames[0].iter().filter(|(t, _)| !matches!(*t, 8 | 9 | 34 | 52 | 10)).cloned().collect();
+        let want: Vec<(u32, String)> = [(35, "c"), (320, "FixSecDefReqBySymbol1"), (321, "2"), (6088, "Socket"), (55, "AAPL"), (167, "CS"),
+            (100, "ARCA"), (207, "NASDAQ"), (15, "USD")].iter().map(|(t, v)| (*t, v.to_string())).collect();
+        assert_eq!(lookup, want);
+        let id = format!("FixSecDefReqBySymbol{}", ORDER_LOOKUP_FIRST_ID);
+        assert!(order_lookup_refused(&mut context, &shared, &id, "Invalid destination exchange specified"));
+        assert!(context.rth_parked.is_empty() && context.order_lookups.is_empty());
+        assert_eq!(shared.orders.drain_order_errors(), [(9, 200, "Invalid destination exchange specified".to_string())]);
+        assert!(!order_lookup_refused(&mut context, &shared, &id, "again"), "a lookup refused once");
     }
 
     // ── Replace (ibx#247 ibx#324 ibx#334 ibx#349) ──
