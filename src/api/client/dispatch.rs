@@ -293,6 +293,12 @@ impl EClient {
             // Finished before its callbacks: a modify made from them gets
             // 104 (ibx#544).
             self.core.finish_before_report(fill.order_id, status, remaining_f);
+            // The reqPositions row of the fill, before its execution
+            // (ibx#707).
+            if let Some((con_id, qty, cost)) = fill_exec.position_after {
+                let rows = self.core.position_event_rows(&self.shared, con_id, Some((qty, cost)), 1);
+                self.position_rows(wrapper, &rows);
+            }
             // The execution first, then openOrder and orderStatus, as the
             // reference (captured 30/09/2026 on a stock and a combo fill).
             // A live execution has no request: reqId -1 (ibx#474).
@@ -302,6 +308,7 @@ impl EClient {
             // first is sent now.
             if let Some(report) = self.core.push_execution(-1, c, exec, fill_exec.time_secs) {
                 wrapper.commission_and_fees_report(&report);
+                self.commission_position_rows(wrapper, &report);
             }
 
             // openOrder then orderStatus for every report of a known order
@@ -338,6 +345,17 @@ impl EClient {
         for (contract, mut exec, fill_exec) in items {
             let order_id = exec.order_id;
             self.core.apply_fill_exec(&mut exec, &fill_exec, order_id);
+            // A live fill moves the position: its reqPositions row, also for
+            // an order of another client (ibx#707; the capture of
+            // 25/09/2026). The day's executions given again at the logon
+            // move nothing.
+            if !fill_exec.replayed && let Some((con_id, qty, cost)) = fill_exec.position_after {
+                let rows = self.core.position_event_rows(&self.shared, con_id, Some((qty, cost)), 1);
+                self.position_rows(wrapper, &rows);
+                if fill_exec.other_client {
+                    self.core.note_observed_fill(&exec.exec_id);
+                }
+            }
             // An execution of another client's order: nothing for this one.
             if fill_exec.other_client || fill_exec.replayed {
                 self.core.push_silent_execution(contract, exec, fill_exec.time_secs);
@@ -358,6 +376,10 @@ impl EClient {
                     self.repeat_order_report(wrapper, order_id, &last);
                 }
                 wrapper.commission_and_fees_report(&report);
+                self.commission_position_rows(wrapper, &report);
+            } else if self.core.is_observed_fill(&report) {
+                // Another client's commission: its position rows only.
+                self.commission_position_rows(wrapper, &report);
             }
         }
     }

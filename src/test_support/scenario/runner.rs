@@ -339,6 +339,9 @@ pub struct Options {
     /// Farms of the recording played on the historical link (see
     /// [`Options::hmds_farms`]).
     pub hmds_farms: Vec<&'static str>,
+    /// The account's positions before the replay, from the reference's
+    /// first reqPositions answer (see [`Options::positions_of_the_recording`]).
+    pub positions_of_the_recording: bool,
 }
 
 impl Default for Options {
@@ -357,11 +360,20 @@ impl Default for Options {
             lookups_at_their_point: false,
             farms: Vec::new(),
             hmds_farms: Vec::new(),
+            positions_of_the_recording: false,
         }
     }
 }
 
 impl Options {
+    /// The account's positions before the replay are those of the
+    /// reference's first reqPositions answer in the recording: its logon
+    /// held them, the recording does not (ibx#515, ibx#707).
+    pub fn positions_of_the_recording(mut self) -> Self {
+        self.positions_of_the_recording = true;
+        self
+    }
+
     /// Replay with the pacing of requests and the market data passes on,
     /// by the times of the recording (ibx#563). A message ibx sends later
     /// than the reference did is waited for: the order is compared, not
@@ -706,6 +718,27 @@ pub fn run(sc: &Scenario, opts: &Options, links: &mut Links, driver: &mut dyn Dr
         links.shared.reference.set_api_features(crate::control::logon::ApiFeatures::parse(features));
     }
     let recs = prepare(sc, opts);
+    if opts.positions_of_the_recording {
+        for r in recs.iter().filter(|r| r.msg == "POSITION_DATA") {
+            if recs.iter().any(|e| e.msg == "POSITION_END" && e.seq < r.seq) {
+                break;
+            }
+            for cb in r.callbacks.as_array().into_iter().flatten() {
+                let (Some(contract), Some(pos), Some(avg)) = (cb.get(2), cb.get(3), cb.get(4)) else { continue };
+                let num = |v: &serde_json::Value| v.as_f64().or_else(|| v.as_str().and_then(|s| s.parse().ok())).unwrap_or(0.0);
+                links.shared.portfolio.set_position_info(crate::types::PositionInfo {
+                    con_id: contract["conId"].as_i64().unwrap_or(0),
+                    position_fixed: (num(pos) * crate::types::QTY_SCALE as f64).round() as i64,
+                    avg_cost: (num(avg) * crate::types::PRICE_SCALE as f64).round() as i64,
+                    symbol: contract["symbol"].as_str().unwrap_or("").to_string(),
+                    sec_type: contract["secType"].as_str().unwrap_or("").to_string(),
+                    currency: contract["currency"].as_str().unwrap_or("").to_string(),
+                    ..Default::default()
+                });
+            }
+        }
+        links.shared.portfolio.set_account_download_complete();
+    }
     if opts.paced {
         links.pace();
     }

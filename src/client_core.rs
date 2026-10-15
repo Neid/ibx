@@ -692,6 +692,14 @@ pub struct PositionsSubscription {
     /// Position and average cost last sent, by conId.
     sent: HashMap<i64, (Qty, Price)>,
     generation: u64,
+    /// The rows of reqPositions (ibx#707): after the snapshot, one at each
+    /// fill and commission report of the session (`ClientCore::
+    /// position_event_rows`) and one for each quantity the server's
+    /// position feed moved; false for reqPositionsMulti, which gives one
+    /// row per change (not observed with fills yet).
+    events: bool,
+    /// The last feed move read.
+    feed_seen: u64,
 }
 
 impl PositionsSubscription {
@@ -704,7 +712,7 @@ impl PositionsSubscription {
 
 impl PositionsSubscription {
     fn new() -> Self {
-        Self { requested_at: std::time::Instant::now(), snapshot_sent: false, sent: HashMap::new(), generation: 0 }
+        Self { requested_at: std::time::Instant::now(), snapshot_sent: false, sent: HashMap::new(), generation: 0, events: false, feed_seen: 0 }
     }
 }
 
@@ -770,6 +778,7 @@ fn advance_positions(sub: &mut PositionsSubscription, shared: &SharedState, acco
             return None;
         }
         sub.generation = shared.portfolio.position_generation();
+        sub.feed_seen = shared.portfolio.feed_moves_last();
         let mut rows = shared.portfolio.position_infos();
         rows.sort_by_key(|p| p.con_id);
         if let Some(account) = account {
@@ -778,6 +787,20 @@ fn advance_positions(sub: &mut PositionsSubscription, shared: &SharedState, acco
         sub.sent = rows.iter().map(|p| (p.con_id, (p.position_fixed, p.avg_cost))).collect();
         sub.snapshot_sent = true;
         return Some(PositionsBatch { rows, end: true, error: None });
+    }
+    if sub.events {
+        let (moved, last) = shared.portfolio.feed_moves_after(sub.feed_seen);
+        sub.feed_seen = last;
+        let mut rows: Vec<PositionInfo> = Vec::new();
+        for con_id in moved {
+            if let Some(p) = shared.portfolio.position_info(con_id)
+                && sub.sent.get(&con_id).map(|s| s.0) != Some(p.position_fixed)
+            {
+                sub.sent.insert(con_id, (p.position_fixed, p.avg_cost));
+                rows.push(p);
+            }
+        }
+        return (!rows.is_empty()).then_some(PositionsBatch { rows, end: false, error: None });
     }
     let generation = shared.portfolio.position_generation();
     if generation == sub.generation {
@@ -1387,6 +1410,9 @@ pub struct ClientCore {
     /// Executions of other clients' orders, by execution id without its
     /// revision: their commission reports are not given.
     pub silent_executions: Mutex<HashSet<String>>,
+    /// Executions of other clients' orders seen live: their commission
+    /// reports give reqPositions rows, not callbacks (ibx#707).
+    pub observed_fills: Mutex<HashSet<String>>,
     /// The highest order id this client placed (orders and what-ifs), as
     /// the reference records it for the client when an order goes on
     ///: a new order at or below
@@ -1940,6 +1966,7 @@ impl ClientCore {
             finished_orders: Mutex::new(HashSet::new()),
             modified_orders: Mutex::new(HashSet::new()),
             silent_executions: Mutex::new(HashSet::new()),
+            observed_fills: Mutex::new(HashSet::new()),
             highest_order_id: Arc::new(AtomicI64::new(0)),
             order_id_saver: Mutex::new(None),
             reserved_order_id: AtomicI64::new(0),
@@ -3347,7 +3374,50 @@ impl ClientCore {
     /// Start req_positions: a subscription, as the reference. One per
     /// client; a new request replaces the running one.
     pub fn subscribe_positions(&self) {
-        *self.positions_sub.lock().unwrap() = Some(PositionsSubscription::new());
+        let mut sub = PositionsSubscription::new();
+        sub.events = true;
+        *self.positions_sub.lock().unwrap() = Some(sub);
+    }
+
+    /// The reqPositions rows of an execution of the session (ibx#707; the
+    /// reference 10.51, paper, 15/10/2026, regular hours, six fills): at
+    /// the fill, before its execDetails, the position right after it
+    /// (`at`); after its commission report, the position then, twice when
+    /// the report has a realized P&L. None before the snapshot was given.
+    pub fn position_event_rows(&self, shared: &SharedState, con_id: i64, at: Option<(Qty, Price)>, times: usize) -> Vec<PositionInfo> {
+        let mut guard = self.positions_sub.lock().unwrap();
+        let Some(sub) = guard.as_mut().filter(|s| s.events && s.snapshot_sent && con_id != 0) else { return Vec::new() };
+        let Some(mut row) = shared.portfolio.position_info(con_id) else { return Vec::new() };
+        if let Some((qty, cost)) = at {
+            row.position_fixed = qty;
+            row.avg_cost = cost;
+        }
+        sub.sent.insert(con_id, (row.position_fixed, row.avg_cost));
+        vec![row; times]
+    }
+
+    /// An execution of another client's order seen live (ibx#707).
+    pub fn note_observed_fill(&self, exec_id: &str) {
+        let (base, _) = crate::engine::hot_loop::ccp::split_exec_revision(exec_id);
+        if !base.is_empty() {
+            self.observed_fills.lock().unwrap().insert(base.to_string());
+        }
+    }
+
+    /// Whether a commission report is of an execution of another client's
+    /// order seen live.
+    pub fn is_observed_fill(&self, report: &ApiCommissionAndFeesReport) -> bool {
+        let (base, _) = crate::engine::hot_loop::ccp::split_exec_revision(&report.exec_id);
+        self.observed_fills.lock().unwrap().contains(base)
+    }
+
+    /// The conId of a commission report's execution, from the executions
+    /// given so far.
+    pub fn commission_con_id(&self, report: &ApiCommissionAndFeesReport) -> Option<i64> {
+        let (base, _) = crate::engine::hot_loop::ccp::split_exec_revision(&report.exec_id);
+        self.executions.lock().unwrap().iter().rev()
+            .find(|e| crate::engine::hot_loop::ccp::split_exec_revision(&e.execution.exec_id).0 == base)
+            .map(|e| e.contract.con_id)
     }
 
     pub fn unsubscribe_positions(&self) {

@@ -5083,6 +5083,7 @@ fn captured_fill_exec() -> crate::bridge::FillExec {
         combo: None,
         other_client: false,
         replayed: false,
+        position_after: None,
     }
 }
 
@@ -5534,11 +5535,12 @@ fn aapl_position(qty: i64, avg: i64) -> PositionInfo {
     }
 }
 
-// The capture of 25/09/2026: after a fill of BUY 100 AAPL for another
-// client, the observer got a position row, then a second one when the
-// average cost moved, with no new req_positions.
+// ibx#707: after the snapshot, a row for a quantity the server's position
+// feed moves; none when the feed only moves the average cost (the
+// reference 10.51, 15/10/2026: no row at the server's update after a
+// fill); none after cancel_positions.
 #[test]
-fn req_positions_sends_a_row_on_each_change() {
+fn req_positions_sends_a_row_when_the_feed_moves_a_quantity() {
     let (client, _rx, shared) = test_client();
     shared.portfolio.set_account_download_complete();
     let mut w = RecordingWrapper::default();
@@ -5549,14 +5551,9 @@ fn req_positions_sends_a_row_on_each_change() {
     shared.portfolio.set_position_info(aapl_position(100, 33625 * PRICE_SCALE / 100));
     let mut w = RecordingWrapper::default();
     client.process_msgs(&mut w);
-    assert_eq!(w.events.iter().filter(|e| e.starts_with("position:")).count(), 1, "{:?}", w.events);
-    assert!(!w.events.iter().any(|e| e == "position_end"), "no end after the snapshot");
+    assert_eq!(w.events, ["position:DU123:265598:100:336.25"]);
 
-    // Average cost moves: another row. Same values again: nothing.
-    shared.portfolio.set_position_info(aapl_position(100, 336_260_003 * PRICE_SCALE / 1_000_000));
-    let mut w = RecordingWrapper::default();
-    client.process_msgs(&mut w);
-    assert_eq!(w.events.iter().filter(|e| e.starts_with("position:")).count(), 1);
+    // The average cost alone moves: no row. Same values again: nothing.
     shared.portfolio.set_position_info(aapl_position(100, 336_260_003 * PRICE_SCALE / 1_000_000));
     let mut w = RecordingWrapper::default();
     client.process_msgs(&mut w);
@@ -5568,6 +5565,104 @@ fn req_positions_sends_a_row_on_each_change() {
     let mut w = RecordingWrapper::default();
     client.process_msgs(&mut w);
     assert!(w.events.is_empty(), "{:?}", w.events);
+}
+
+// ibx#707: the average cost after a fill and after its commission, as the
+// reference 10.51 gave them (paper, 15/10/2026, regular hours, case D):
+// MSFT -10 at 397.54161, bought 1 at 539.87 (reduces: unchanged), sold 1
+// at 539.59 (adds: weighted), commission 1.011119 (into the cost); AAPL
+// flat, bought 1 at 343.39 (the fill price), commission 1.000003, sold 1
+// (closed: 0).
+#[test]
+fn the_average_cost_moves_as_the_reference_s() {
+    let shared = SharedState::new();
+    let px = |v: f64| (v * PRICE_SCALE as f64).round() as i64;
+    let q = |n: i64| n * crate::types::QTY_SCALE;
+    let cost = |con_id: i64| shared.portfolio.position_info(con_id).unwrap().avg_cost as f64 / PRICE_SCALE as f64;
+    shared.portfolio.set_position_info(PositionInfo { con_id: 272093, position_fixed: q(-10), avg_cost: px(397.54161), ..Default::default() });
+    shared.portfolio.apply_fill_to_position(272093, q(1), px(539.87));
+    assert_eq!(cost(272093), 397.54161);
+    shared.portfolio.apply_fill_to_position(272093, q(-1), px(539.59));
+    assert_eq!(cost(272093), 411.746449);
+    shared.portfolio.apply_commission_to_position(272093, 1.011119);
+    assert_eq!(cost(272093), 411.6453371);
+    shared.portfolio.apply_fill_to_position(265598, q(1), px(343.39));
+    assert_eq!(cost(265598), 343.39);
+    shared.portfolio.apply_commission_to_position(265598, 1.000003);
+    assert_eq!(cost(265598), 344.390003);
+    shared.portfolio.apply_fill_to_position(265598, q(-1), px(343.35));
+    assert_eq!((shared.portfolio.position_info(265598).unwrap().position_fixed, cost(265598)), (0, 0.0));
+}
+
+// ibx#707: a fill of this session gives the reqPositions row before its
+// execution (the reference 10.51, 15/10/2026, six fills).
+#[test]
+fn a_fill_gives_its_position_row_before_its_execution() {
+    let (client, _rx, shared) = test_client();
+    shared.portfolio.set_account_download_complete();
+    let mut w = RecordingWrapper::default();
+    client.req_positions(&mut w);
+    client.process_msgs(&mut w);
+    let at = (265598, 100 * crate::types::QTY_SCALE, 336 * PRICE_SCALE);
+    shared.portfolio.apply_fill_to_position(265598, 100 * crate::types::QTY_SCALE, 336 * PRICE_SCALE);
+    shared.orders.push_fill_with_exec(aapl_fill(7), crate::bridge::FillExec {
+        exec_id: "0000e0d5.6ab5f36f.01.01".into(), position_after: Some(at), ..Default::default()
+    });
+    let mut w = RecordingWrapper::default();
+    client.process_msgs(&mut w);
+    let pos = w.events.iter().position(|e| e == "position:DU123:265598:100:336").expect("position row");
+    let exec = w.events.iter().position(|e| e.starts_with("exec_details:-1:")).expect("execution");
+    assert!(pos < exec, "{:?}", w.events);
+    assert_eq!(w.events.iter().filter(|e| e.starts_with("position:")).count(), 1, "{:?}", w.events);
+}
+
+// ibx#707 and the capture of 25/09/2026: a fill of another client's order
+// gives the observer a row at the fill and a row when its commission
+// moves the cost; a commission report with a realized P&L gives two.
+#[test]
+fn another_clients_fill_gives_rows_at_the_fill_and_the_commission() {
+    let (client, _rx, shared) = test_client();
+    shared.portfolio.set_account_download_complete();
+    let mut w = RecordingWrapper::default();
+    client.req_positions(&mut w);
+    client.process_msgs(&mut w);
+    let contract = Contract { con_id: 265598, symbol: "AAPL".into(), ..Default::default() };
+    let exec = crate::api::types::Execution {
+        exec_id: "0000e0d5.6ab5f36f.01.01".into(), side: "BOT".into(), shares: 100.0, order_id: 15, ..Default::default()
+    };
+    shared.portfolio.apply_fill_to_position(265598, 100 * crate::types::QTY_SCALE, 33625 * PRICE_SCALE / 100);
+    let fe = crate::bridge::FillExec {
+        exec_id: "0000e0d5.6ab5f36f.01.01".into(), client_id: 261, other_client: true,
+        position_after: Some((265598, 100 * crate::types::QTY_SCALE, 33625 * PRICE_SCALE / 100)), ..Default::default()
+    };
+    shared.orders.push_untracked_execution(contract.clone(), exec, fe);
+    let mut w = RecordingWrapper::default();
+    client.process_msgs(&mut w);
+    assert_eq!(w.events, ["position:DU123:265598:100:336.25"]);
+
+    shared.portfolio.apply_commission_to_position(265598, 1.0003);
+    shared.orders.push_commission_report(captured_report());
+    let mut w = RecordingWrapper::default();
+    client.process_msgs(&mut w);
+    assert_eq!(w.events, ["position:DU123:265598:100:336.260003"]);
+
+    // A sale of it, with a realized P&L: the fill's row, then two.
+    let exec = crate::api::types::Execution {
+        exec_id: "0000e0d5.6ab5f370.01.01".into(), side: "SLD".into(), shares: 100.0, order_id: 16, ..Default::default()
+    };
+    shared.portfolio.apply_fill_to_position(265598, -100 * crate::types::QTY_SCALE, 337 * PRICE_SCALE);
+    let fe = crate::bridge::FillExec {
+        exec_id: "0000e0d5.6ab5f370.01.01".into(), client_id: 261, other_client: true,
+        position_after: Some((265598, 0, 0)), ..Default::default()
+    };
+    shared.orders.push_untracked_execution(contract, exec, fe);
+    shared.orders.push_commission_report(crate::api::types::CommissionAndFeesReport {
+        exec_id: "0000e0d5.6ab5f370.01.01".into(), commission_and_fees: 1.0, currency: "USD".into(),
+        realized_pnl: 72.0, yield_amount: f64::MAX, yield_redemption_date: String::new(),
+    });
+    let mut w = RecordingWrapper::default();
+    client.process_msgs(&mut w);
+    assert_eq!(w.events, ["position:DU123:265598:0:0"; 3]);
 }
 
 // Before the position data is in, req_positions returns at once; the

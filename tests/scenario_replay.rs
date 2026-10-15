@@ -14,6 +14,7 @@
 
 use ibx::test_support::scenario::runner::{HISTORICAL, LOOKUP, MARKET_DATA, ORDER, SCANNER, SUBSCRIPTION};
 use ibx::test_support::scenario::{load_scenario, replay, Options, Outcome};
+use ibx::test_support::scenario::runner::assert_same_callbacks;
 use ibx::test_support::Fields;
 
 /// Known differences the order scenarios mask on both sides, each with its
@@ -616,4 +617,48 @@ fn generic_ticks_in_one_list() {
     let theirs: Vec<String> = o.theirs.iter().map(|(_, l)| l.clone()).collect();
     ibx::test_support::scenario::assert_same_callbacks(&o.ours, &theirs);
     assert!(o.ours.len() >= 5, "{:?}", o.ours);
+}
+
+/// A position row with its average cost to 6 decimals: ibx keeps 8, the
+/// reference's cost after a commission has more (ibx#708).
+fn position_cost_6(line: &str) -> String {
+    let line = known(line);
+    if !line.starts_with("position|") {
+        return line;
+    }
+    let mut f: Vec<String> = line.split('|').map(str::to_string).collect();
+    if let Some(cost) = f.last().and_then(|c| c.parse::<f64>().ok()) {
+        *f.last_mut().unwrap() = format!("{cost:.6}");
+    }
+    f.join("|")
+}
+
+// A market-to-limit BUY 1 SPY filled before its cancel, then a market SELL
+// 1 back, with reqPositions running (15/10/2026 in RTH, the reference 10.51
+// at level 214, ibx#515, ibx#707): the cancel refused at once with 10148
+// and nothing sent; a position row at each fill before its execution, one
+// after the buy's commission report, two after the sale's (it realized
+// P&L). The account's positions are those of the reference's first
+// answer; its rows are compared as a set, their order coming from the
+// account id the recording masks.
+#[test]
+fn fill_then_positions() {
+    let sc = load_scenario("gw1051/20261015/fill_then_positions");
+    for opts in [orders().positions_of_the_recording(), orders().positions_of_the_recording().paced()] {
+        let o = replay(&sc, &opts.mask(position_cost_6));
+        assert!(o.frame_error.is_none(), "{:?}", o.frame_error);
+        assert_eq!(o.frames_compared, 2, "the buy and the sale");
+        let snapshot = |lines: &[String]| -> (Vec<String>, Vec<String>) {
+            let end = lines.iter().position(|l| l == "positionEnd").expect("the first answer");
+            let mut first = lines[..end].to_vec();
+            first.sort();
+            (first, lines[end..].to_vec())
+        };
+        let theirs: Vec<String> = o.theirs.iter().map(|(_, l)| l.clone()).collect();
+        let (ours_first, ours_rest) = snapshot(&o.ours);
+        let (theirs_first, theirs_rest) = snapshot(&theirs);
+        assert_eq!(ours_first, theirs_first);
+        assert_same_callbacks(&ours_rest, &theirs_rest);
+        assert_eq!(ours_rest.iter().filter(|l| l.starts_with("position|")).count(), 5);
+    }
 }

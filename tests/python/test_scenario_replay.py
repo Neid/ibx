@@ -342,6 +342,36 @@ def test_modify_of_a_cancelled_order(name, first):
     assert theirs[-1].startswith("error|") and "|104|" in theirs[-1]
 
 
+# A market-to-limit BUY 1 SPY filled before its cancel, then a market SELL 1
+# back, with reqPositions running (15/10/2026 in RTH, the reference 10.51,
+# ibx#515, ibx#707). As the Rust test: the first answer's rows compared as a
+# set, the average costs to 6 decimals (ibx#708).
+def test_fill_then_positions():
+    out = replay("gw1051/20261015/fill_then_positions", compare=["order"], positions_of_the_recording=True)
+    assert out["frames_compared"] == 2
+
+    def six(line):
+        line = known(line)
+        if line.startswith("position|"):
+            f = line.split("|")
+            f[-1] = f"{float(f[-1]):.6f}"
+            line = "|".join(f)
+        return line
+
+    def split(lines):
+        end = lines.index("positionEnd")
+        return sorted(lines[:end]), lines[end:]
+
+    assert out["frame_error"] is None, out["frame_error"]
+    ours_first, ours_rest = split([six(l) for l in out["ours"]])
+    theirs_first, theirs_rest = split([six(l) for l in out["theirs"]])
+    assert ours_first == theirs_first
+    for k, (a, b) in enumerate(zip(ours_rest, theirs_rest)):
+        assert a == b, f"callback {k}:\n  ours      {a}\n  reference {b}"
+    assert len(ours_rest) == len(theirs_rest)
+    assert sum(1 for l in ours_rest if l.startswith("position|")) == 5
+
+
 # SPY then QQQ top of book in the session (28/09/2026), up to the second SPY
 # request (src/golden/l1.rs `spy_and_qqq_in_the_session`).
 def test_top_of_book_in_the_session():

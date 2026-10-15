@@ -95,16 +95,32 @@ impl EClient {
         Ok(())
     }
 
-    /// Position rows of a running req_positions (ibx#477).
-    pub(crate) fn dispatch_positions(&self, py: Python<'_>, shared: &Arc<SharedState>) -> PyResult<()> {
+    /// Position rows of req_positions, as `position` callbacks.
+    fn position_rows(&self, py: Python<'_>, shared: &Arc<SharedState>, rows: &[crate::types::PositionInfo]) -> PyResult<()> {
         let account = self.account();
-        let Some(batch) = self.core.prepare_positions(shared, &account) else { return Ok(()) };
-        for pi in &batch.rows {
+        for pi in rows {
             let ac = self.core.position_contract(pi.con_id, shared);
             let c_py = Py::new(py, Contract::from_api(py, &ac)?)?.into_any();
             call_wrapper!(self.wrapper, py, "position",
                 (account.as_str(), &c_py, qty_fixed(py, pi.position_fixed)?, pi.avg_cost as f64 / PRICE_SCALE_F));
         }
+        Ok(())
+    }
+
+    /// The reqPositions rows after a commission report (ibx#707): the
+    /// position, twice when the report has a realized P&L.
+    fn commission_position_rows(&self, py: Python<'_>, shared: &Arc<SharedState>, cr: &ApiCommissionAndFeesReport) -> PyResult<()> {
+        let Some(con_id) = self.core.commission_con_id(cr) else { return Ok(()) };
+        let times = if cr.realized_pnl != 0.0 && cr.realized_pnl != f64::MAX { 2 } else { 1 };
+        let rows = self.core.position_event_rows(shared, con_id, None, times);
+        self.position_rows(py, shared, &rows)
+    }
+
+    /// Position rows of a running req_positions (ibx#477).
+    pub(crate) fn dispatch_positions(&self, py: Python<'_>, shared: &Arc<SharedState>) -> PyResult<()> {
+        let account = self.account();
+        let Some(batch) = self.core.prepare_positions(shared, &account) else { return Ok(()) };
+        self.position_rows(py, shared, &batch.rows)?;
         if batch.end {
             call_wrapper!(self.wrapper, py, "position_end", ());
         }
@@ -590,11 +606,18 @@ impl EClient {
                         // thread they wake, gets 104 (ibx#544).
                         self.core.finish_before_report(fill.order_id, status, remaining);
                         let exec_py = Py::new(py, exec_obj)?.into_any();
+                        // The reqPositions row of the fill, before its
+                        // execution (ibx#707).
+                        if let Some((con_id, qty, cost)) = fill_exec.position_after {
+                            let rows = self.core.position_event_rows(shared, con_id, Some((qty, cost)), 1);
+                            self.position_rows(py, shared, &rows)?;
+                        }
                         // A live execution has no request: reqId -1 (ibx#474).
                         call_wrapper!(self.wrapper, py, "exec_details", (-1i64, &c_py, &exec_py));
 
                         if let Some(cr) = early_report {
                             self.send_commission_report(py, &cr)?;
+                            self.commission_position_rows(py, shared, &cr)?;
                         }
 
                         // The execution first, then openOrder and orderStatus for every
@@ -636,6 +659,15 @@ impl EClient {
                     for (contract, mut exec, fill_exec) in run(&mut ib.untracked_executions, until) {
                         let order_id = exec.order_id;
                         self.core.apply_fill_exec(&mut exec, &fill_exec, order_id);
+                        // A live fill moves the position: its reqPositions
+                        // row, also for another client's order (ibx#707).
+                        if !fill_exec.replayed && let Some((con_id, qty, cost)) = fill_exec.position_after {
+                            let rows = self.core.position_event_rows(shared, con_id, Some((qty, cost)), 1);
+                            self.position_rows(py, shared, &rows)?;
+                            if fill_exec.other_client {
+                                self.core.note_observed_fill(&exec.exec_id);
+                            }
+                        }
                         // An execution of another client's order: nothing for this one.
                         if fill_exec.other_client || fill_exec.replayed {
                             self.core.push_silent_execution(contract, exec, fill_exec.time_secs);
@@ -656,6 +688,10 @@ impl EClient {
                                 self.repeat_order_report(py, order_id, &last)?;
                             }
                             self.send_commission_report(py, &cr)?;
+                            self.commission_position_rows(py, shared, &cr)?;
+                        } else if self.core.is_observed_fill(&cr) {
+                            // Another client's commission: its position rows only.
+                            self.commission_position_rows(py, shared, &cr)?;
                         }
                     }
                     }

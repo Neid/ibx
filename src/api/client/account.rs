@@ -35,10 +35,9 @@ impl EClient {
         self.later(|this, wrapper| this.dispatch_positions(wrapper));
     }
 
-    /// Position rows of a running req_positions (ibx#477).
-    pub(crate) fn dispatch_positions(&self, wrapper: &mut (impl Wrapper + ?Sized)) {
-        let Some(batch) = self.core.prepare_positions(&self.shared, &self.account_id) else { return };
-        for pi in &batch.rows {
+    /// Position rows of req_positions, as `position` callbacks.
+    pub(crate) fn position_rows(&self, wrapper: &mut (impl Wrapper + ?Sized), rows: &[crate::types::PositionInfo]) {
+        for pi in rows {
             let ac = self.core.position_contract(pi.con_id, &self.shared);
             let c = Contract {
                 con_id: ac.con_id, symbol: ac.symbol, sec_type: ac.sec_type,
@@ -49,6 +48,21 @@ impl EClient {
             };
             wrapper.position(&self.account_id, &c, pi.position_fixed as f64 / QTY_SCALE_F, pi.avg_cost as f64 / PRICE_SCALE_F);
         }
+    }
+
+    /// The reqPositions rows after a commission report (ibx#707): the
+    /// position, twice when the report has a realized P&L.
+    pub(crate) fn commission_position_rows(&self, wrapper: &mut (impl Wrapper + ?Sized), report: &crate::api::types::CommissionAndFeesReport) {
+        let Some(con_id) = self.core.commission_con_id(report) else { return };
+        let times = if report.realized_pnl != 0.0 && report.realized_pnl != f64::MAX { 2 } else { 1 };
+        let rows = self.core.position_event_rows(&self.shared, con_id, None, times);
+        self.position_rows(wrapper, &rows);
+    }
+
+    /// Position rows of a running req_positions (ibx#477).
+    pub(crate) fn dispatch_positions(&self, wrapper: &mut (impl Wrapper + ?Sized)) {
+        let Some(batch) = self.core.prepare_positions(&self.shared, &self.account_id) else { return };
+        self.position_rows(wrapper, &batch.rows);
         if batch.end {
             wrapper.position_end();
         }

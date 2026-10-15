@@ -70,6 +70,9 @@ pub struct FillExec {
     /// as the reference's API clients get none for them (ibx#487, captured
     /// 07/10/2026 and 30/09/2026).
     pub replayed: bool,
+    /// The position right after this fill, for the reqPositions row given
+    /// with it (ibx#707).
+    pub position_after: Option<(i64, Qty, Price)>,
 }
 
 /// The execution of a combo report (ibx#470): the reference shows the
@@ -2520,6 +2523,11 @@ pub struct PortfolioState {
     position_infos: Mutex<HashMap<i64, PositionInfo>>,
     /// Bumped when a position or its average cost changes (ibx#477).
     position_generation: AtomicU64,
+    /// The positions whose quantity the server's position feed moved, in
+    /// order, with a running number (ibx#707): a reqPositions row each. A
+    /// fill of this session moves its position itself, so the feed's
+    /// report of it moves nothing.
+    feed_moves: Mutex<Vec<(u64, i64)>>,
     positions: [AtomicU64; MAX_INSTRUMENTS],
     /// Midnight seeds from 6040=143 for client-side daily P&L computation.
     midnight_seeds: Mutex<HashMap<i64, MidnightSeed>>,
@@ -2542,6 +2550,7 @@ impl PortfolioState {
             account_download_complete: AtomicBool::new(false),
             position_infos: Mutex::new(HashMap::new()),
             position_generation: AtomicU64::new(0),
+            feed_moves: Mutex::new(Vec::new()),
             positions: std::array::from_fn(|_| AtomicU64::new(0)),
             midnight_seeds: Mutex::new(HashMap::new()),
             realized_since_seed: Mutex::new(HashMap::new()),
@@ -2627,21 +2636,60 @@ impl PortfolioState {
 
     /// Move a position by a fill of this session (`delta` fixed-point,
     /// signed). The reference's position store moves with the execution, so
-    /// the position row and the P&L see the fill at once; the server's
-    /// average cost comes with the next position feed. A position opened by
-    /// the fill takes the fill price as average cost, as the reference's
-    /// first row did (captured 25/09/2026: avgCost 336.25, then 336.260003).
-    #[doc(hidden)] pub fn apply_fill_to_position(&self, con_id: i64, delta: Qty, price: Price) {
+    /// the position row and the P&L see the fill at once. Its average cost
+    /// (the reference 10.51, paper, 15/10/2026, regular hours, ibx#707): the
+    /// fill price for a position the fill opens or turns over (captured
+    /// 25/09/2026 too: avgCost 336.25, then 336.260003); the weighted
+    /// average when it adds to the position (MSFT -9 at 397.54161, sold 1 at
+    /// 539.59: -10 at 411.746449); unchanged when it reduces it; 0 when it
+    /// closes it. The position after the fill.
+    #[doc(hidden)] pub fn apply_fill_to_position(&self, con_id: i64, delta: Qty, price: Price) -> Option<PositionInfo> {
         if delta == 0 {
-            return;
+            return None;
         }
         let mut map = self.position_infos.lock().unwrap();
         let entry = map.entry(con_id).or_insert_with(|| PositionInfo { con_id, ..Default::default() });
-        if entry.position_fixed == 0 {
-            entry.avg_cost = price;
-        }
-        entry.position_fixed += delta;
+        let old = entry.position_fixed;
+        let new = old + delta;
+        entry.avg_cost = if new == 0 {
+            0
+        } else if old == 0 || (old > 0) != (new > 0) {
+            price
+        } else if (old > 0) == (delta > 0) {
+            let total = entry.avg_cost as i128 * old.unsigned_abs() as i128 + price as i128 * delta.unsigned_abs() as i128;
+            let n = new.unsigned_abs() as i128;
+            ((total + n / 2) / n) as Price
+        } else {
+            entry.avg_cost
+        };
+        entry.position_fixed = new;
         self.position_generation.fetch_add(1, Ordering::AcqRel);
+        Some(entry.clone())
+    }
+
+    /// The commission of a fill that opened or added to a position goes
+    /// into its average cost, per share and signed (ibx#707; the reference
+    /// 10.51, 15/10/2026: AAPL 1 at 343.39, commission 1.000003, then
+    /// 344.390003; MSFT -10 at 411.746449, commission 1.011119, then
+    /// 411.6453371). A fill that realized P&L leaves it.
+    #[doc(hidden)] pub fn apply_commission_to_position(&self, con_id: i64, commission: f64) {
+        let mut map = self.position_infos.lock().unwrap();
+        let Some(entry) = map.get_mut(&con_id).filter(|e| e.position_fixed != 0) else { return };
+        let per_share = commission / (entry.position_fixed as f64 / QTY_SCALE as f64);
+        entry.avg_cost += (per_share * PRICE_SCALE as f64).round() as Price;
+        self.position_generation.fetch_add(1, Ordering::AcqRel);
+    }
+
+    /// The running number of the last feed move (0: none yet).
+    pub fn feed_moves_last(&self) -> u64 {
+        self.feed_moves.lock().unwrap().last().map_or(0, |m| m.0)
+    }
+
+    /// The feed moves since `after` (running numbers), and the last number.
+    pub fn feed_moves_after(&self, after: u64) -> (Vec<i64>, u64) {
+        let moves = self.feed_moves.lock().unwrap();
+        let last = moves.last().map_or(after, |m| m.0.max(after));
+        (moves.iter().filter(|m| m.0 > after).map(|m| m.1).collect(), last)
     }
 
     #[doc(hidden)] pub fn set_position_info(&self, info: PositionInfo) {
@@ -2650,6 +2698,15 @@ impl PortfolioState {
             .is_none_or(|e| e.position_fixed != info.position_fixed || e.avg_cost != info.avg_cost);
         if changed {
             self.position_generation.fetch_add(1, Ordering::AcqRel);
+        }
+        if map.get(&info.con_id).map_or(info.position_fixed != 0, |e| e.position_fixed != info.position_fixed) {
+            let mut moves = self.feed_moves.lock().unwrap();
+            let next = moves.last().map_or(1, |m| m.0 + 1);
+            moves.push((next, info.con_id));
+            // Kept short: a subscription reads them at its next pass.
+            if moves.len() > 256 {
+                moves.drain(..128);
+            }
         }
         match map.get_mut(&info.con_id) {
             Some(existing) => {

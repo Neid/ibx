@@ -2071,7 +2071,7 @@ eclient,cancel_pnl_single,,tests/scenarios.rs::pnl_single_dispatches_position_in
 eclient,req_account_summary,,tests/scenario_replay.rs::account_summary_subscription_and_tag_rows ; src/api/client/tests.rs::account_summary_is_a_server_subscription ; src/api/client/tests.rs::account_summary_refusals_and_limit
 eclient,cancel_account_summary,,tests/scenario_replay.rs::account_summary_subscription_and_tag_rows ; src/api/client/tests.rs::account_summary_is_a_server_subscription ; tests/scenarios.rs::cancel_account_summary_prevents_delivery
 eclient,req_account_updates,,src/api/client/tests.rs::process_msgs_delivers_update_portfolio ; src/api/client/tests.rs::account_updates_send_the_image_then_the_end_once ; src/api/client/tests.rs::a_second_subscribe_sends_nothing
-eclient,cancel_positions,,tests/scenario_replay.rs::combo_fill_executions_and_commissions ; src/api/client/tests.rs::req_positions_sends_a_row_on_each_change
+eclient,cancel_positions,,tests/scenario_replay.rs::combo_fill_executions_and_commissions ; src/api/client/tests.rs::req_positions_sends_a_row_when_the_feed_moves_a_quantity
 eclient,req_managed_accts,,no test
 eclient,req_account_updates_multi,,src/api/client/tests.rs::a_key_also_in_the_ledger_is_a_ledger_key ; src/api/client/tests.rs::account_updates_multi_carries_its_request_id_and_model_code
 eclient,cancel_account_updates_multi,,src/api/client/tests.rs::account_updates_multi_carries_its_request_id_and_model_code

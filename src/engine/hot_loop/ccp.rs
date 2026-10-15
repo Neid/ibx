@@ -209,6 +209,7 @@ fn fill_exec_of(parsed: &std::collections::HashMap<u32, String>, exec_id: &str) 
         combo: None,
         other_client: false,
         replayed: parsed.get(&97).is_some_and(|v| v == "Y"),
+        position_after: None,
     }
 }
 
@@ -1152,6 +1153,11 @@ impl CcpState {
             yield_redemption_date: parsed.get(&696).filter(|s| s.len() == 8).cloned().unwrap_or_default(),
         };
         log::info!("Commission report: exec={} commission={} {}", report.exec_id, report.commission_and_fees, report.currency);
+        // The commission of a fill that realized nothing goes into its
+        // position's average cost (ibx#707).
+        if report.realized_pnl == 0.0 && let Some((con_id, _)) = self.exec_realized.get(split_exec_revision(exec_id).0) {
+            shared.portfolio.apply_commission_to_position(*con_id, report.commission_and_fees);
+        }
         // The realized P&L of a fill of this session adds to P&L (ibx#478);
         // a higher revision replaces the amount counted before.
         if report.realized_pnl != f64::MAX {
@@ -2142,9 +2148,10 @@ impl CcpState {
                         };
                         shared.portfolio.add_money_since_seed(con_id, cash);
                         // The position moves with the fill, as the reference's
-                        // position store does; the server's average cost follows
-                        // with its position feed.
-                        shared.portfolio.apply_fill_to_position(con_id, delta, fill.price);
+                        // position store does; the fill carries it for its
+                        // reqPositions row (ibx#707).
+                        exec.position_after = shared.portfolio.apply_fill_to_position(con_id, delta, fill.price)
+                            .map(|p| (con_id, p.position_fixed, p.avg_cost));
                     }
                 }
                 fill_out = Some((fill, exec));
@@ -2701,7 +2708,8 @@ impl CcpState {
             Side::Sell | Side::ShortSell => shares * last_px,
         };
         shared.portfolio.add_money_since_seed(con_id, cash);
-        shared.portfolio.apply_fill_to_position(con_id, delta, (last_px * PRICE_SCALE as f64) as i64);
+        let position_after = shared.portfolio.apply_fill_to_position(con_id, delta, (last_px * PRICE_SCALE as f64) as i64)
+            .map(|p| (con_id, p.position_fixed, p.avg_cost));
 
         // The placing client's order id when the report carries it.
         let order_id = parsed.get(&6121).and_then(|s| s.parse().ok()).unwrap_or(clord_id);
@@ -2711,6 +2719,7 @@ impl CcpState {
         // The execution's reports go to its client, else to client 0
         //.
         let mut exec = fill_exec_of(parsed, exec_id);
+        exec.position_after = position_after;
         let me = context.api_client_id;
         exec.other_client = me != 0 && exec.client_id != me;
         Some((execution, exec))
