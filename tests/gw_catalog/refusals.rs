@@ -65,9 +65,9 @@ fn order(order_type: &str) -> Order {
 
 // ── The reading of the order: 320 with the rule text, or the date codes ──
 
-// A date that cannot be read is refused with the table's text under the
-// code 391 (ibx#548, paper 11/10/2026: "not a date"); 343 is the code of a
-// zone that is not the contract's.
+// A date that cannot be read is refused with the table's text: 343 on
+// 10.51 (ibx#688, paper 15/10/2026), as a zone that is not the
+// contract's; 391 on 10.40 (ibx#548, paper 11/10/2026: "not a date").
 #[test]
 fn good_till_date_not_a_date() {
     let mut engine = Engine::start();
@@ -80,13 +80,13 @@ fn good_till_date_not_a_date() {
         errors.extend(engine.errors().into_iter().filter(|e| e.0 == REFUSED));
         std::thread::sleep(std::time::Duration::from_millis(2));
     }
-    assert!(errors.iter().any(|(_, code, text)| *code == 391 && matches_template(&rule.text, text, false)), "{errors:?}");
+    assert!(errors.iter().any(|(_, code, text)| *code == 343 && matches_template(&rule.text, text, false)), "{errors:?}");
 }
 
-// A start time that cannot be read is left out by a current client's
-// reference, and the order is sent (ibx#594, paper 11/10/2026); a time
-// alone is today's (ibx#598). The table's text is the refusal of a zone
-// that is not the contract's.
+// A start time that cannot be read is refused with 337 at once on 10.51
+// (ibx#688, paper 15/10/2026; 10.40 sent the order without it, ibx#594);
+// a time alone is today's (ibx#598). The table's text is the same as the
+// refusal of a zone that is not the contract's.
 #[test]
 fn good_after_time_not_a_date() {
     let mut engine = Engine::start();
@@ -96,10 +96,9 @@ fn good_after_time_not_a_date() {
     let mut engine = Engine::start();
     engine.client.place_order(6, &aapl(), &Order { good_after_time: "15:30:00".into(), ..order("LMT") }).unwrap();
     assert_eq!(field(&engine.orders(1)[0], 6121), Some("6"), "a time alone is sent");
+    let mut engine = Engine::start();
     engine.client.place_order(REFUSED, &aapl(), &Order { good_after_time: "after lunch".into(), ..order("LMT") }).unwrap();
-    let frames = engine.orders(2);
-    assert_eq!(field(&frames[1], 6121), Some("7"), "the order is sent");
-    assert!(engine.errors().iter().all(|e| e.0 != REFUSED));
+    assert_refused(&mut engine, REFUSED, "337-1");
 }
 
 #[test]

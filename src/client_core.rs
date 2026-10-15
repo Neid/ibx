@@ -5826,30 +5826,42 @@ impl ClientCore {
     /// error code and text. Nothing is sent for such an order. `exchange`
     /// is the contract's.
     pub fn refusal_before_sending(order: &ApiOrder, exchange: &str) -> Option<(i64, String)> {
-        Self::refusal_before_sending_for(order, exchange, false)
+        Self::refusal_before_sending_for(order, exchange, false, false)
     }
 
     /// [`Self::refusal_before_sending`] for an order whose account's
     /// application is not approved yet when `account_pending` (see
     /// [`Self::order_account_pending`], ibx#421).
-    pub fn refusal_before_sending_for(order: &ApiOrder, exchange: &str, account_pending: bool) -> Option<(i64, String)> {
+    /// `form_10_40`: the rules of the reference 10.40, for its replays.
+    pub fn refusal_before_sending_for(order: &ApiOrder, exchange: &str, account_pending: bool, form_10_40: bool) -> Option<(i64, String)> {
         Self::read_refusal(order)
             .or_else(|| Self::exchange_refusal(exchange))
-            .or_else(|| Self::order_rule_refusal(order, account_pending))
+            .or_else(|| Self::order_rule_refusal(order, account_pending, form_10_40))
             .or_else(|| Self::fractional_quantity_refusal(order))
-            .or_else(|| Self::good_till_date_unreadable(order))
+            .or_else(|| Self::good_till_date_unreadable(order, form_10_40))
+            .or_else(|| Self::good_after_time_unreadable(order, form_10_40))
     }
 
-    /// A goodTillDate that cannot be read, or whose zone does not exist:
-    /// error 391 with the text of the invalid date, among the checks made
-    /// before the order id is looked at (ibx#548, paper 11/10/2026: "not a
-    /// date" and "20261230 16:00:00 Nowhere/Zone" give 391, and the same
-    /// id placed again is a new order). A zone that exists and is not the
-    /// contract's is refused later, with 343
+    /// A goodTillDate that cannot be read, or whose zone does not exist,
+    /// among the checks made before the order id is looked at: 343 on the
+    /// reference 10.51 (paper, 15/10/2026: "not a date", an unknown zone,
+    /// "99:99:99" and a date with dashes; ibx#688), 391 on 10.40 (ibx#548,
+    /// paper 11/10/2026); the same id placed again is a new order. A zone
+    /// that exists and is not the contract's is refused later, with 343
     /// ([`Self::good_till_date_refusal`]).
-    fn good_till_date_unreadable(order: &ApiOrder) -> Option<(i64, String)> {
+    fn good_till_date_unreadable(order: &ApiOrder, form_10_40: bool) -> Option<(i64, String)> {
         crate::config::parse_ib_expiry_zoned(&order.good_till_date).is_err()
-            .then(|| (391, INVALID_DATE_TIME.replace("%s", "End Time")))
+            .then(|| (if form_10_40 { 391 } else { 343 }, INVALID_DATE_TIME.replace("%s", "End Time")))
+    }
+
+    /// A goodAfterTime that is not a time ibx reads (a date alone, an
+    /// impossible time, dashes, an unknown zone): 337 at once on the
+    /// reference 10.51 (paper, 15/10/2026, five orders; ibx#688). Not
+    /// checked in the 10.40 form, as ibx did then.
+    fn good_after_time_unreadable(order: &ApiOrder, form_10_40: bool) -> Option<(i64, String)> {
+        (!form_10_40 && !order.good_after_time.trim().is_empty()
+            && crate::config::good_after_dated(&order.good_after_time, &crate::gateway::machine_time_zone()).is_none())
+            .then(|| (337, INVALID_DATE_TIME.replace("%s", "Start Time")))
     }
 
     /// Whether the account of an order is one whose application is not
@@ -6058,7 +6070,7 @@ impl ClientCore {
     /// 321 with the rule text (ibx#468), in the reference's order
     /// (it stops at the first). The text after "cause - " is
     /// the rule's; for the TRAIL LIMIT rule only its end is known.
-    fn order_rule_refusal(order: &ApiOrder, account_pending: bool) -> Option<(i64, String)> {
+    fn order_rule_refusal(order: &ApiOrder, account_pending: bool, form_10_40: bool) -> Option<(i64, String)> {
         let refuse = |cause: &str| Some((321, format!("Error validating request.-'PlaceOrder(3)' : cause - {}", cause)));
         let order_type = order.order_type.to_uppercase();
         // An action the reference does not know reads as side 0, refused
@@ -6077,13 +6089,23 @@ impl ClientCore {
         // and of a TRAIL LIT (ibx#469, captured 07/10/2026 by amount and
         // by percent; a TRAIL MIT without one is sent).
         let stop_type = matches!(order_type.as_str(), "STP" | "STP LMT" | "STP PRT");
-        // A MIT or a LIT without its trigger price gets the same text
-        // (paper 11/10/2026, ibx#548).
-        if ((stop_type || matches!(order_type.as_str(), "MIT" | "LIT")) && order.aux_price == f64::MAX)
-            || (matches!(order_type.as_str(), "TRAIL LIMIT" | "TRAIL LIT")
-                && (order.trail_stop_price == f64::MAX || order.trail_stop_price == 0.0))
-        {
+        // A MIT or a LIT without its trigger price asks for it, a trailing
+        // limit type for its trailing stop price, on the reference 10.51
+        // (paper, 15/10/2026, ibx#688: MIT, LIT and TRAIL LIMIT); 10.40
+        // asked for a stop price (paper 11/10/2026, ibx#548).
+        if stop_type && order.aux_price == f64::MAX {
             return refuse("Please enter a stop price");
+        }
+        if matches!(order_type.as_str(), "MIT" | "LIT") && order.aux_price == f64::MAX {
+            return refuse(if form_10_40 { "Please enter a stop price" } else { "Please enter a trigger price" });
+        }
+        // A TRAIL LIT keeps the text recorded for it (captured 07/10/2026,
+        // 10.40; not observed on 10.51 yet).
+        if matches!(order_type.as_str(), "TRAIL LIMIT" | "TRAIL LIT")
+            && (order.trail_stop_price == f64::MAX || order.trail_stop_price == 0.0)
+        {
+            let trailing = order_type == "TRAIL LIMIT" && !form_10_40;
+            return refuse(if trailing { "Please enter a trailing stop price" } else { "Please enter a stop price" });
         }
         // A trigger method that is not one of the reference's (ibx#263,
         // error 146's text): 0 default, 1 double bid/ask, 2 last, 3 double
@@ -6353,7 +6375,7 @@ impl ClientCore {
         // paper 11/10/2026: after 439, 343 or 110 the same id placed again
         // gets 103, and its cancel 10147; after 321, 391 or 145 it is a
         // new order).
-        let refusal = Self::refusal_before_sending_for(order, exchange, account_pending)
+        let refusal = Self::refusal_before_sending_for(order, exchange, account_pending, shared.reference.form_10_40())
             .or_else(|| Self::account_config_refusal(order, shared.reference.account_features().as_deref(), account))
             .or_else(|| Self::open_flags_refusal(order, exchange))
             .or_else(|| Self::overnight_tif_refusal(order, &shared.reference))
@@ -7819,10 +7841,13 @@ mod tests {
         assert_eq!(refused("20260930 16:00:00 US/Central", Some("US/Central")), None);
         assert_eq!(refused("20260930 16:00:00 America/Chicago", None), None);
         assert_eq!(refused("20260930 16:00:00 Nowhere/Zone", None), Some(343));
-        // What cannot be read is refused before, with 391 (ibx#548).
+        // What cannot be read is refused before, with 343 on 10.51
+        // (ibx#688), 391 on 10.40 (ibx#548).
         let unreadable = |s: &str| ClientCore::refusal_before_sending(&gtd(s), "SMART").map(|(code, _)| code);
-        assert_eq!(unreadable("not a date"), Some(391));
-        assert_eq!(unreadable("20260930 16:00:00 Nowhere/Zone"), Some(391));
+        assert_eq!(unreadable("not a date"), Some(343));
+        assert_eq!(unreadable("20260930 16:00:00 Nowhere/Zone"), Some(343));
+        let unreadable_10_40 = |s: &str| ClientCore::refusal_before_sending_for(&gtd(s), "SMART", false, true).map(|(code, _)| code);
+        assert_eq!(unreadable_10_40("not a date"), Some(391));
         assert_eq!(unreadable("20260930 16:00:00 Asia/Tokyo"), None);
         assert_eq!(unreadable(""), None);
         let machine = crate::gateway::machine_time_zone();
@@ -7894,10 +7919,12 @@ mod tests {
             assert_eq!(ClientCore::refusal_before_sending(&typed(t, f64::NAN), "SMART"), rule("Invalid Stop Price"), "{t}");
             assert_eq!(ClientCore::refusal_before_sending(&typed(t, 90.0), "SMART"), None, "{t}");
         }
-        // A MIT without its trigger price gets the text of the stop
-        // price (ibx#548, paper 11/10/2026).
+        // A MIT or a LIT without its trigger price asks for it on 10.51
+        // (ibx#688, paper 15/10/2026), for a stop price on 10.40 (ibx#548,
+        // paper 11/10/2026).
         for t in ["MIT", "LIT"] {
-            assert_eq!(ClientCore::refusal_before_sending(&typed(t, f64::MAX), "SMART"), rule("Please enter a stop price"), "{t}");
+            assert_eq!(ClientCore::refusal_before_sending(&typed(t, f64::MAX), "SMART"), rule("Please enter a trigger price"), "{t}");
+            assert_eq!(ClientCore::refusal_before_sending_for(&typed(t, f64::MAX), "SMART", false, true), rule("Please enter a stop price"), "{t}");
             assert_eq!(ClientCore::refusal_before_sending(&typed(t, f64::INFINITY), "SMART"), rule("Invalid Trigger Price"), "{t}");
             assert_eq!(ClientCore::refusal_before_sending(&typed(t, 90.0), "SMART"), None, "{t}");
         }
@@ -8026,7 +8053,7 @@ mod tests {
     fn the_what_if_type_is_checked_as_the_order_is_read() {
         let check = |what_if: bool, what_if_type: i32| {
             let order = ApiOrder { what_if, what_if_type, ..lmt(100.0) };
-            ClientCore::refusal_before_sending_for(&order, "SMART", false)
+            ClientCore::refusal_before_sending_for(&order, "SMART", false, false)
         };
         for ok in [i32::MAX, 0, 1] {
             assert_eq!(check(true, ok), None, "{ok}");
@@ -8239,8 +8266,8 @@ mod tests {
         assert_eq!(checks(8, &lmt(100.0)), None, "the next id is free");
         // What cannot be read, and a rule of the order: before the id check.
         let unread = ApiOrder { tif: "GTD".into(), good_till_date: "not a date".into(), ..lmt(100.0) };
-        assert_eq!(checks(9, &unread), Some(391));
-        assert_eq!(checks(9, &unread), Some(391));
+        assert_eq!(checks(9, &unread), Some(343));
+        assert_eq!(checks(9, &unread), Some(343));
         let side = ApiOrder { action: "FOO".into(), ..lmt(100.0) };
         assert_eq!(checks(9, &side), Some(321));
         let customer = ApiOrder { customer_account: "X123".into(), ..lmt(100.0) };
@@ -8260,12 +8287,13 @@ mod tests {
         assert_eq!(checks(10, &lmt(f64::NAN)), Some(110));
         assert_eq!(checks(10, &lmt(100.0)), Some(103));
 
-        // ibx#594: a goodAfterTime that cannot be read is left out; a zone
-        // that is not the contract's is refused with 337.
+        // ibx#688 (10.51, paper 15/10/2026): a goodAfterTime that cannot be
+        // read is refused with 337 before the id check (10.40 left it out,
+        // ibx#594); a zone that is not the contract's is refused with 337
+        // after it.
         let after = |s: &str| ApiOrder { good_after_time: s.into(), ..lmt(100.0) };
         for unread in ["not a date", "20261230 99:99:99", "20261230", "2026-12-30 10:00:00", "20261230 10:00:00 Nowhere/Zone"] {
-            assert_eq!(checks(11, &after(unread)), None, "{unread}");
-            assert_eq!(after(unread).attrs().good_after, 0, "{unread}: no start time is sent");
+            assert_eq!(checks(11, &after(unread)), Some(337), "{unread}");
         }
         assert_eq!(checks(11, &after(&format!("20261230 10:00:00 {other}"))), Some(337));
         assert_eq!(checks(12, &after("20261230 10:00:00 US/Eastern")), None);

@@ -1370,11 +1370,12 @@ fn place_order_trail_mit_trail_lit_peg_best_rpi_and_passv_rel() {
     assert!(client.place_order(11, &spy(), &Order { aux_price: 0.0, ..order("TRAIL LIT") }).is_err());
 }
 
-// ibx#594 (paper 11/10/2026): a goodAfterTime that cannot be read is left
-// out and the order is sent without a start time, as the reference sends
-// it; a time alone is today's (ibx#598). A good one is sent.
+// ibx#688 (the reference 10.51, paper 15/10/2026): a goodAfterTime that
+// cannot be read is refused at once with 337, nothing sent (10.40 sent the
+// order without it, ibx#594); a time alone is today's (ibx#598). A good
+// one is sent.
 #[test]
-fn place_order_unreadable_good_after_time_is_left_out() {
+fn place_order_unreadable_good_after_time_is_refused() {
     let (client, rx, shared) = test_client();
     shared.market.set_instrument_count(1);
     let order = |gat: &str| Order {
@@ -1383,16 +1384,13 @@ fn place_order_unreadable_good_after_time_is_left_out() {
     };
     for (id, bad) in [(4, "tomorrow"), (5, "20261230"), (6, "20261230 25:00:00 US/Eastern"), (7, "20261230 09:30:00 Nowhere/Zone")] {
         client.place_order(id, &spy(), &order(bad)).unwrap();
-        let sent: Vec<ControlCommand> = rx.try_iter().filter(|c| matches!(c, ControlCommand::Order(_))).collect();
-        match sent.as_slice() {
-            [ControlCommand::Order(OrderRequest::SubmitLimit { .. })] => {}
-            [ControlCommand::Order(OrderRequest::SubmitLimitEx { attrs, .. })] => assert_eq!(attrs.good_after, 0, "{bad}"),
-            other => panic!("{bad}: one plain order expected, got {other:?}"),
-        }
+        assert!(rx.try_iter().all(|c| !matches!(c, ControlCommand::Order(_))), "{bad}: nothing sent");
     }
     let mut w = RecordingWrapper::default();
     client.process_msgs(&mut w);
-    assert!(!w.events.iter().any(|e| (4..=7).any(|id| e.starts_with(&format!("error:{id}:")))), "{:?}", w.events);
+    for id in 4..=7 {
+        assert!(w.events.iter().any(|e| e.starts_with(&format!("error:{id}:337:Start Time: The date, time, or time-zone entered is invalid.\n"))), "{id}: {:?}", w.events);
+    }
     client.place_order(8, &spy(), &order("20261230 09:30:00 US/Eastern")).unwrap();
     match rx.try_recv().unwrap() {
         ControlCommand::Order(OrderRequest::SubmitLimitEx { attrs, .. }) => assert_eq!(attrs.good_after, 1_798_641_000),
@@ -1445,7 +1443,8 @@ fn place_order_bad_good_till_date_is_refused() {
     let mut w = RecordingWrapper::default();
     client.process_msgs(&mut w);
     for (id, _) in &refused {
-        let code = if *id < 6 { 391 } else { 343 };
+        // 343 for what cannot be read too, on 10.51 (ibx#688).
+        let code = 343;
         assert!(w.events.iter().any(|e| e.starts_with(&format!(
             "error:{id}:{code}:End Time: The date, time, or time-zone entered is invalid.\n"))),
             "{id}: {:?}", w.events);
@@ -1476,7 +1475,7 @@ fn place_order_trailing_stop_limit_without_stop_price_is_refused() {
     assert!(rx.try_iter().all(|c| !matches!(c, ControlCommand::Order(_))), "nothing sent");
     let mut w = RecordingWrapper::default();
     client.process_msgs(&mut w);
-    assert!(w.events.iter().any(|e| e == "error:3:321:Error validating request.-'PlaceOrder(3)' : cause - Please enter a stop price"), "{:?}", w.events);
+    assert!(w.events.iter().any(|e| e == "error:3:321:Error validating request.-'PlaceOrder(3)' : cause - Please enter a trailing stop price"), "{:?}", w.events);
 }
 
 #[test]
@@ -2070,7 +2069,7 @@ fn stop_types_with_unset_aux_price_get_the_reference_refusal() {
     shared.market.set_instrument_count(1);
     let cases = [
         ("STP", "Please enter a stop price"), ("STP LMT", "Please enter a stop price"),
-        ("STP PRT", "Please enter a stop price"), ("MIT", "Please enter a stop price"), ("LIT", "Please enter a stop price"),
+        ("STP PRT", "Please enter a stop price"), ("MIT", "Please enter a trigger price"), ("LIT", "Please enter a trigger price"),
     ];
     for (i, (order_type, cause)) in cases.iter().enumerate() {
         let order = Order {

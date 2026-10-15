@@ -716,7 +716,7 @@ error,330,Only FA or STL customers can request managed accounts list.,no test
 error,331,Internal error. FA or STL does not have any managed accounts.,no test
 error,333,Invalid share allocation syntax.,no test
 error,336,The time entered is invalid. The correct format is hh:mm:ss E.g.: 15:59:00 Time zone associated with the financial instrument is assumed.,no test
-error,337,"%s: The date, time, or time-zone entered is invalid. The correct format is yyyymmdd hh:mm:ss xx/xxxx where yyyymmdd and xx/xxxx are optional",tests/gw_catalog/errors.rs::every_error_ibx_raises_is_the_gateways ; src/api/client/tests.rs::place_order_unreadable_good_after_time_is_left_out
+error,337,"%s: The date, time, or time-zone entered is invalid. The correct format is yyyymmdd hh:mm:ss xx/xxxx where yyyymmdd and xx/xxxx are optional",tests/gw_catalog/errors.rs::every_error_ibx_raises_is_the_gateways ; src/api/client/tests.rs::place_order_unreadable_good_after_time_is_refused
 error,341,"The delta is invalid. Valid values are from 1 to 100. You can set the delta from the ""Pegged to Stock"" section of the Order Ticket Panel, or",no test
 error,343,"%s: The date, time, or time-zone entered is invalid. The correct format is yyyymmdd hh:mm:ss xx/xxxx where yyyymmdd and xx/xxxx are optional",tests/gw_catalog/errors.rs::every_error_ibx_raises_is_the_gateways ; src/api/client/tests.rs::place_order_bad_good_till_date_is_refused ; src/client_core.rs::good_till_date_zone_rule
 error,346,"Not an institutional account, or an away clearing order",no test
