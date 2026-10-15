@@ -2274,9 +2274,9 @@ impl ClientCore {
         // Observed 12/10/2026 (ibx#501): the request is not served when
         // lines are set free later, and a cancel of it gets 300.
         if !snapshot && self.md_over_limit(shared) {
-            if self.md_limit_now(req_id) {
-                shared.orders.push_order_error(req_id, MD_MAX_TICKERS.0, MD_MAX_TICKERS.1.to_string());
-            }
+            // Its pass is decided when the answer comes out of the request
+            // queue (`md_limit_held`).
+            shared.orders.push_order_error(req_id, MD_MAX_TICKERS.0, MD_MAX_TICKERS.1.to_string());
             return Ok(None);
         }
 
@@ -2345,6 +2345,13 @@ impl ClientCore {
                 true
             }
         }
+    }
+
+    /// True when this answer is a 101 that waits for the end of its pass
+    /// (ibx#649): the answers of the request queue are given in its turn,
+    /// as the reference's line manager sees the requests one by one.
+    pub fn md_limit_held(&self, req_id: i64, code: i64) -> bool {
+        code == MD_MAX_TICKERS.0 && !self.md_limit_now(req_id)
     }
 
     /// The held 101s whose pass ended (ibx#649).
