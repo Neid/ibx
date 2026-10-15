@@ -3268,6 +3268,11 @@ impl CcpState {
                 }
             };
             if super::order_builder::rth_definition_reply(context, rid, msg) {
+                // The contract an openOrder shows for an order given by
+                // its conId (ibx#666).
+                for def in crate::control::contracts::parse_secdef_records(msg).unwrap_or_default().iter().take(1) {
+                    self.cache_definition(def, shared);
+                }
                 keep_zone(shared);
                 if let Some(con_id) = self.ask_order_schedule(msg, shared, ccp_conn, hb) {
                     context.zone_pending.insert(con_id);
@@ -3606,15 +3611,28 @@ impl CcpState {
         if def.con_id == 0 {
             return;
         }
+        let sec_type = def.api_type_name();
+        // A derivative's terms, as the reference shows the contract of an
+        // order given by its conId (ibx#666; paper 15/10/2026, a SAP
+        // warrant: its date, strike, right and multiplier "0.1").
+        let derivative = !matches!(sec_type.as_str(), "STK" | "CASH" | "IND" | "BAG");
         shared.reference.cache_contract(def.con_id, api::Contract {
             con_id: def.con_id,
             symbol: def.symbol.clone(),
-            sec_type: def.api_type_name(),
             exchange: def.exchange.clone(),
             currency: def.currency.clone(),
             local_symbol: def.local_symbol.clone(),
             primary_exchange: def.primary_exchange.clone(),
             trading_class: def.trading_class.clone(),
+            last_trade_date_or_contract_month: if derivative { def.last_trade_date.clone() } else { String::new() },
+            strike: if derivative { def.strike } else { 0.0 },
+            right: match def.right.filter(|_| derivative) {
+                Some(crate::control::contracts::OptionRight::Call) => "C".into(),
+                Some(crate::control::contracts::OptionRight::Put) => "P".into(),
+                None => String::new(),
+            },
+            multiplier: if derivative && def.multiplier > 0.0 { format!("{}", def.multiplier) } else { String::new() },
+            sec_type,
             ..Default::default()
         });
         // The suffix of the primary exchange, which the 399 text names
@@ -6247,6 +6265,21 @@ mod tests {
         assert_eq!(context.market.con_id(slot), Some(265598), "the order is on the stock");
         assert!(context.order_lookups.is_empty());
         assert!(shared.orders.drain_order_errors().is_empty());
+    }
+
+    // ibx#666 (the reference 10.51, paper, pre-market 15/10/2026, a SAP
+    // warrant by conId): the openOrder of an order given by its conId shows
+    // the contract of its definition, a derivative's terms included.
+    #[test]
+    fn a_definition_gives_a_derivative_contract_its_terms() {
+        let (mut ccp, _context, shared) = u186_test_state();
+        let msg = pipe_msg("35=d|43=N|320=SecDefReqMsgReqByConid7|322=*|323=4|55=SAP|167=WAR|207=FWB|6008=566386640|15=EUR|58=SAP|6035=HE0DGD|6058=SAP|541=20261215|200=202612|201=1|202=85|231=0.1|146=1|6344=1|6008=566386640");
+        let defs = crate::control::contracts::parse_secdef_records(&msg).unwrap();
+        ccp.cache_definition(&defs[0], &shared);
+        let c = shared.reference.get_contract(566386640).unwrap();
+        assert_eq!((c.symbol.as_str(), c.sec_type.as_str(), c.last_trade_date_or_contract_month.as_str(), c.strike, c.right.as_str(),
+            c.multiplier.as_str(), c.local_symbol.as_str(), c.currency.as_str()),
+            ("SAP", "WAR", "20261215", 85.0, "C", "0.1", "HE0DGD", "EUR"));
     }
 
     #[test]

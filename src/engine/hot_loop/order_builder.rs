@@ -283,6 +283,14 @@ fn send_orders(
             }
             let (sec_type, _) = context.market.order_routing(instrument);
             let sec_type = if matches!(sec_type.as_str(), "" | "CS") { "STK".to_string() } else { sec_type };
+            // A type known from the definition (a contract given by its
+            // conId) whose order is refused or not written yet (ibx#666).
+            if let Some((code, text)) = unwritten_type_refusal(&order_req, &sec_type) {
+                let oid = order_req.order_id();
+                log::warn!("Order {} refused: {} order ({})", oid, sec_type, code);
+                shared.orders.push_order_error(oid, code, text);
+                continue;
+            }
             if !preset_tif(context, conn, hb, shared, &mut order_req, &sec_type) {
                 context.rth_parked.push(rewrap(order_req));
                 continue;
@@ -326,8 +334,8 @@ fn send_orders(
         if not_held_refusal(&order_req, context, shared) {
             continue;
         }
-        // An option order without the trading permission of its class
-        // (ibx#666).
+        // An option, futures option or warrant order without the trading
+        // permission of its class (ibx#666).
         match permission_refusal(&order_req, context, conn, hb, shared) {
             Some(false) => { context.rth_parked.push(rewrap(order_req)); continue; }
             Some(true) => continue,
@@ -2263,24 +2271,20 @@ fn send_new_order(
         .map(|id| id.to_string());
     let client_id = context.api_client_id.to_string();
     let stock = fields.iter().any(|&(t, v)| t == 167 && v == "STK");
-    // A future, a CFD or a forex pair: its contract month (futures), local
-    // symbol and multiplier from its definition, and a forex quantity with
-    // two decimals (the reference 10.51, paper, 13/10/2026: MES, AAPL CFD,
-    // EUR.USD; ibx#666).
+    // A future, a CFD, a forex pair, an option, a futures option or a
+    // warrant: its contract month, right and strike, local symbol and
+    // multiplier from its definition, and a forex quantity with two
+    // decimals (the reference 10.51, paper: MES, AAPL CFD, EUR.USD on
+    // 13/10/2026, a SAP warrant on 15/10/2026; ibx#666). An option's and a
+    // futures option's message is written as the warrant's: not observed,
+    // the paper account has no permission for them.
     let sec_type = field(fields, 167).unwrap_or("");
-    let terms = matches!(sec_type, "FUT" | "CFD" | "CASH").then(|| {
+    let option_like = matches!(sec_type, "OPT" | "FOP" | "WAR");
+    let terms = (matches!(sec_type, "FUT" | "CFD" | "CASH") || option_like).then(|| {
         let (_, destination) = context.market.order_routing(instrument);
         context.rth_types.get(&(con_id, destination))
     }).flatten();
     let cash_qty = (sec_type == "CASH").then(|| field(fields, 38).map(|q| format!("{q}.00"))).flatten();
-    // An option's terms after its symbol, and its multiplier, where the
-    // reference writes them.
-    let option = context.market.option_terms(instrument).map(|t| (
-        t.maturity.clone(),
-        if t.call { "1" } else { "0" },
-        super::format_price((t.strike * crate::types::PRICE_SCALE as f64).round() as crate::types::Price).to_string(),
-        format_price_ref((t.multiplier * crate::types::PRICE_SCALE as f64).round() as crate::types::Price).to_string(),
-    ));
     // An order for an algo provider's destination goes through SMART with
     // the provider as its second destination, as the reference (ibx#505;
     // observed 07/10 and 13/10/2026, AAPL for FOXRIVER).
@@ -2325,14 +2329,12 @@ fn send_new_order(
     // A stock's multiplier, as the reference writes it; an option's terms.
     if stock { out.push((231, "1.00")); }
     if let Some(t) = terms {
-        if sec_type == "FUT" && !t.contract_month.is_empty() { out.push((200, t.contract_month.as_str())); }
+        if (sec_type == "FUT" || option_like) && !t.contract_month.is_empty() { out.push((200, t.contract_month.as_str())); }
+        if option_like && !t.right.is_empty() { out.extend([(201, t.right.as_str()), (202, t.strike.as_str())]); }
         if !t.local_symbol.is_empty() { out.extend([(48, t.local_symbol.as_str()), (22, "101")]); }
     }
     if let Some(t) = terms {
         out.push((231, if t.multiplier.is_empty() { "1.00" } else { t.multiplier.as_str() }));
-    }
-    if let Some((maturity, right, strike, multiplier)) = &option {
-        out.extend([(200, maturity.as_str()), (201, *right), (202, strike.as_str()), (231, multiplier.as_str())]);
     }
     out.push((6088, "Socket"));
     out.push((6211, ""));
@@ -3143,15 +3145,19 @@ fn not_held_refusal(req: &OrderRequest, context: &mut Context, shared: &Arc<Shar
     true
 }
 
-/// A new option order on a contract whose permission class the account
-/// does not trade: refused with 460 and nothing sent; the order is kept
-/// for its cancel (Cancelled, 202 "Order was discarded" and 161). The
-/// reference asks the server about the class named in the contract's
-/// definition once per session, and refuses when the answer has no
-/// permission (paper, regular hours 14/10/2026: an AAPL call by
-/// description, then by conId). Futures and CFDs without the permission
-/// go out and the server refuses them (paper 13/10/2026), so the check is
-/// on options only. `Some(false)` while the answer is on its way.
+/// A new option, futures option or warrant order on a contract whose
+/// permission class the account does not trade: refused with 460 and
+/// nothing sent; the order is kept for its cancel (Cancelled, 202 "Order
+/// was discarded" and 161). The reference asks the server about the class
+/// named in the contract's definition once per session, and refuses when
+/// the answer has no permission (paper: an AAPL call by description, then
+/// by conId, regular hours 14/10/2026; an ES futures option by conId and
+/// by description, pre-market 15/10/2026). An option or a futures option
+/// waits for the answer; a warrant does not: the first one went out with
+/// the question on its way, the next one of the class was refused (a SAP
+/// warrant on FWB, pre-market 15/10/2026). Futures and CFDs without the
+/// permission go out and the server refuses them (paper 13/10/2026).
+/// `Some(false)` while an answer the order waits for is on its way.
 fn permission_refusal(
     req: &OrderRequest,
     context: &mut Context,
@@ -3162,7 +3168,9 @@ fn permission_refusal(
     let (_, attrs) = req.new_order_side()?;
     if req.combo().is_some() { return None; }
     let instrument = req.instrument()?;
-    if context.market.order_routing(instrument).0 != "OPT" { return None; }
+    let sec_type = context.market.order_routing(instrument).0;
+    if !matches!(sec_type.as_str(), "OPT" | "FOP" | "WAR") { return None; }
+    let waits = sec_type != "WAR";
     let key = match definition(context, conn, hb, instrument) {
         Definition::NoContract => return None,
         Definition::Waiting => return Some(false),
@@ -3190,9 +3198,29 @@ fn permission_refusal(
                 log::info!("Trading permission of {} asked ({})", key, seq);
                 context.permissions_asked.insert(key, Instant::now() + RTH_LOOKUP_TIMEOUT);
             }
-            Some(false)
+            waits.then_some(false)
         }
     }
+}
+
+/// An order on a type the definition named (a contract given by its
+/// conId) that is refused before anything is sent (ibx#666):
+/// - a fund bought without a cash quantity, or with a quantity: 10203, at
+///   once after the lookup, the order not kept (its cancel: 10147), as the
+///   reference 10.51 (paper, pre-market 15/10/2026, VFIAX by conId);
+/// - a type whose order message ibx does not write yet (the other fund
+///   orders, bonds and the rest): refused with this text of ibx's own
+///   rather than sent without the fields it needs.
+fn unwritten_type_refusal(req: &OrderRequest, sec_type: &str) -> Option<(i64, String)> {
+    const WRITTEN: [&str; 8] = ["STK", "BAG", "FUT", "CFD", "CASH", "OPT", "FOP", "WAR"];
+    if WRITTEN.contains(&sec_type) { return None; }
+    if sec_type == "FUND"
+        && let Some((crate::types::Side::Buy, attrs)) = req.new_order_side()
+        && (attrs.is_none_or(|a| a.cash_qty == 0) || req.new_order_qty().is_some_and(|q| q != 0))
+    {
+        return Some((10203, "A buy order for FUND must contain non-zero cashQty, and may not contain non-zero totalQuantity.".to_string()));
+    }
+    Some((321, format!("Error validating request.-'PlaceOrder(3)' : cause - {} orders are not written by ibx yet (ibx#666)", sec_type)))
 }
 
 /// The answer of a trading permission request (ibx#666): whether the
@@ -3325,7 +3353,7 @@ fn store_rth_types(context: &mut Context, key: (i64, String), msg: &[u8]) {
     let mut types = crate::engine::outside_rth::RthTypes::from_definition(
         &tokens,
         tags.get(&6523).map(String::as_str).unwrap_or(""),
-        def.as_ref().map(|d| d.sec_type.to_api_str()).unwrap_or(""),
+        &def.as_ref().map(|d| d.api_type_name()).unwrap_or_default(),
         def.as_ref().map(|d| d.currency.as_str()).unwrap_or(""),
     );
     types.smart = tags.get(&6046).is_some_and(|v| v.split(',').any(|e| e == "BEST" || e == "SMART"));
@@ -3335,16 +3363,23 @@ fn store_rth_types(context: &mut Context, key: (i64, String), msg: &[u8]) {
         // A contract given by its conId alone takes its symbol, security
         // type and currency from its definition, as the reference resolves
         // it (ibx#666; paper 13/10/2026: an MES future by conId and
-        // exchange went out as a stock with no symbol).
+        // exchange went out as a stock with no symbol). The type is the
+        // definition's own name: a futures option, a fund or a CFD has no
+        // type of its own in the parsed definition and went out as a stock
+        // (paper 15/10/2026).
         if let Some(id) = context.market.instrument_by_con_id(key.0).filter(|&id| context.market.blank_symbol(id)) {
             let exchange = context.market.exchange(id).to_string();
             context.market.set_symbol(id, d.symbol.clone());
-            context.market.set_routing(id, d.sec_type.to_api_str(), if exchange.is_empty() { "SMART" } else { &exchange });
+            context.market.set_routing(id, &d.api_type_name(), if exchange.is_empty() { "SMART" } else { &exchange });
             context.market.set_currency(id, &d.currency);
         }
         types.local_symbol = d.local_symbol.clone();
         types.contract_month = d.contract_month.clone();
         types.multiplier = format!("{:.2}", if d.multiplier > 0.0 { d.multiplier } else { 1.0 });
+        if let Some(right) = d.right {
+            types.right = if matches!(right, crate::control::contracts::OptionRight::Call) { "1" } else { "0" }.to_string();
+            types.strike = format!("{}", d.strike);
+        }
     }
     types.valid_exchanges = tags.get(&6046).map(|v| v.split(',')
         .map(|e| if e == "BEST" { "SMART".to_string() } else { e.to_string() }).collect());
@@ -7255,6 +7290,105 @@ mod tests {
         assert!(shared.orders.drain_order_errors().is_empty());
     }
 
+    /// A new order on a contract given by its conId (slot 0), its
+    /// definition answered with `def`; the frames sent after the answer.
+    fn order_by_con_id(con_id: &str, exchange: &str, order: OrderRequest, def: &[(u32, &str)])
+        -> (Vec<Vec<(u32, String)>>, Arc<SharedState>, Context, Option<Connection>, crate::protocol::connection::MemTransport)
+    {
+        let (client, mut server) = crate::protocol::connection::mem_pair();
+        let mut conn = Some(Connection::new_mem(client));
+        let shared = Arc::new(SharedState::new());
+        let mut context = Context::new();
+        context.market.register(con_id.parse().unwrap());
+        context.market.set_symbol(0, String::new());
+        context.market.set_routing(0, "", exchange);
+        context.pending_orders.push(order);
+        let frames = drain_frames(&mut context, &shared, &mut conn, &mut server);
+        assert_eq!(tag(&frames[0], 35), Some("c"), "the definition is asked: {frames:?}");
+        let id = tag(&frames[0], 320).unwrap().to_string();
+        let mut fields = vec![(35, "d"), (320, id.as_str()), (6008, con_id)];
+        fields.extend_from_slice(def);
+        assert!(rth_definition_reply(&mut context, &id, &fix::fix_build(&fields, 1)));
+        let frames = drain_frames(&mut context, &shared, &mut conn, &mut server);
+        (frames, shared, context, conn, server)
+    }
+
+    fn permission_answer(key: &str, allowed: &str) -> std::collections::HashMap<u32, String> {
+        [(6040, "66"), (6410, "0"), (6411, key), (6412, "1"), (6414, allowed)].into_iter().map(|(t, v)| (t, v.to_string())).collect()
+    }
+
+    const ES_PUT: [(u32, &str); 12] = [(55, "ES"), (167, "FOP"), (15, "USD"), (207, "CME"), (200, "202612"), (541, "20261218"),
+        (201, "0"), (202, "5000"), (231, "50"), (6035, "ESZ6 P5000"), (6411, "CME/FOP/GLOBEX"), (6431, "DAY/3,LMT/3,MKT/1")];
+    const SAP_WARRANT: [(u32, &str); 12] = [(55, "SAP"), (167, "WAR"), (15, "EUR"), (207, "FWB"), (200, "202612"), (541, "20261215"),
+        (201, "1"), (202, "85"), (231, "0.1"), (6035, "HE0DGD"), (6411, "FWB/WAR/STK"), (6431, "DAY/3,LMT/3,MKT/1")];
+
+    // ibx#666 (the reference 10.51, paper, pre-market 15/10/2026, `.tmp/666`
+    // case F): a futures option order asks the permission of its class and
+    // waits for the answer, as an option order; without it, 460 and
+    // nothing sent. With it, the order carries the option's terms as a
+    // warrant's message does.
+    #[test]
+    fn a_futures_option_order_waits_for_the_class_permission() {
+        let order = || OrderRequest::SubmitLimit { order_id: 82, instrument: 0, side: Side::Buy, qty: 1, price: px(0.25) };
+        let run = |allowed: &str| {
+            let (frames, shared, mut context, mut conn, mut server) = order_by_con_id("515974959", "CME", order(), &ES_PUT);
+            assert_eq!(frames.len(), 1, "the permission is asked and the order waits: {frames:?}");
+            assert_eq!(tag(&frames[0], 6411), Some("CME/FOP/GLOBEX"));
+            permission_reply(&mut context, &permission_answer("CME/FOP/GLOBEX", allowed));
+            (drain_frames(&mut context, &shared, &mut conn, &mut server), shared)
+        };
+        let (frames, shared) = run("0");
+        assert!(frames.is_empty(), "nothing sent: {frames:?}");
+        assert_eq!(shared.orders.drain_order_errors(), [(82, 460, "No trading permissions.".to_string())]);
+        let (frames, _) = run("1");
+        let sent = frames.iter().find(|f| tag(f, 35) == Some("D")).expect("sent");
+        let terms: Vec<String> = sent.iter().filter(|(t, _)| matches!(t, 55 | 200 | 201 | 202 | 167 | 48 | 22 | 231 | 100 | 15))
+            .map(|(t, v)| format!("{t}={v}")).collect();
+        assert_eq!(terms.join("|"), "55=ES|200=202612|201=0|202=5000|167=FOP|48=ESZ6 P5000|22=101|231=50.00|100=CME|15=USD");
+    }
+
+    // ibx#666 (the reference 10.51, paper, pre-market 15/10/2026, `.tmp/666`
+    // cases W then V): a warrant order goes out with the permission of its
+    // class asked at the same time, not waited for; the message is the
+    // reference's. Once the answer says no permission, the next warrant
+    // order of the class is refused with 460 and nothing sent.
+    #[test]
+    fn a_warrant_order_goes_out_while_its_permission_is_asked() {
+        let order = |id| OrderRequest::SubmitLimit { order_id: id, instrument: 0, side: Side::Buy, qty: 1, price: px(0.01) };
+        let (frames, shared, mut context, mut conn, mut server) = order_by_con_id("566386640", "FWB", order(83), &SAP_WARRANT);
+        assert_eq!(frames.iter().map(|f| tag(f, 35).unwrap_or("")).collect::<Vec<_>>(), ["U", "D"], "{frames:?}");
+        assert_eq!(tag(&frames[0], 6411), Some("FWB/WAR/STK"));
+        let message: Vec<String> = frames[1].iter().filter(|(t, _)| ![8, 9, 10, 34, 52, 11, 1, 6121, 6119].contains(t))
+            .map(|(t, v)| format!("{t}={v}")).collect();
+        assert_eq!(message.join("|"), concat!("35=D|44=0.01|6122=c|38=1|40=2|55=SAP|200=202612|201=1|202=85|167=WAR|48=HE0DGD|22=101|",
+            "231=0.10|54=1|59=0|100=FWB|6210=FWB|6008=566386640|6088=Socket|15=EUR|6211=|6238="));
+        permission_reply(&mut context, &permission_answer("FWB/WAR/STK", "0"));
+        context.pending_orders.push(order(84));
+        assert!(drain_frames(&mut context, &shared, &mut conn, &mut server).is_empty(), "nothing sent");
+        assert_eq!(shared.orders.drain_order_errors(), [(84, 460, "No trading permissions.".to_string())]);
+    }
+
+    // ibx#666 (the reference 10.51, paper, pre-market 15/10/2026, `.tmp/666`
+    // case U): a fund bought with a quantity and no cash quantity is
+    // refused with 10203 once its definition is known, nothing sent. A type
+    // whose message ibx does not write is refused before sending.
+    #[test]
+    fn a_fund_and_an_unwritten_type_given_by_con_id_are_refused() {
+        let fund = [(55, "VFIAX"), (167, "FUND"), (15, "USD"), (207, "FUNDSERV"), (6035, "922908710"),
+            (6411, "FUNDSERV/FUND/NONE"), (6431, "DAY/3,MKT/1")];
+        let (frames, shared, ..) = order_by_con_id("48013549", "FUNDSERV",
+            OrderRequest::SubmitMarket { order_id: 85, instrument: 0, side: Side::Buy, qty: 1 }, &fund);
+        assert!(frames.is_empty(), "nothing sent: {frames:?}");
+        assert_eq!(shared.orders.drain_order_errors(), [(85, 10203,
+            "A buy order for FUND must contain non-zero cashQty, and may not contain non-zero totalQuantity.".to_string())]);
+        let bond = [(55, "IBM"), (167, "BOND"), (15, "USD"), (207, "SMART"), (6431, "DAY/3,LMT/3")];
+        let (frames, shared, ..) = order_by_con_id("123456", "SMART",
+            OrderRequest::SubmitLimit { order_id: 86, instrument: 0, side: Side::Buy, qty: 1, price: px(90.0) }, &bond);
+        assert!(frames.is_empty(), "nothing sent: {frames:?}");
+        let errors = shared.orders.drain_order_errors();
+        assert_eq!((errors.len(), errors[0].0, errors[0].1), (1, 86, 321), "{errors:?}");
+    }
+
     // ibx#542, paper 09/10/2026 (the reference and ibx on the same case):
     // an order refused with 387 is kept, unlisted; its cancel gives
     // orderStatus Cancelled, 202 "Order was discarded" and 161; a second
@@ -8838,16 +8972,16 @@ mod tests {
             "38=20000.00|40=2|55=EUR|167=CASH|48=EUR.USD|22=101|231=1.00|54=1|59=0|100=IDEALPRO|6210=IDEALPRO");
     }
 
+    // The option's terms from its definition, written as the reference
+    // writes a warrant's (ibx#666).
     #[test]
     fn option_orders_carry_the_option_terms() {
         let tags = wire_tags_with(|c| {
             c.market.set_symbol(0, "SPY".into());
             c.market.set_routing(0, "OPT", "SMART");
-            c.market.set_option_terms(0, crate::engine::market_state::OptionTerms {
-                maturity: "202610".into(), call: true, strike: 768.0, multiplier: 100.0,
-            });
             c.rth_types.insert((265598, "BEST".to_string()), crate::engine::outside_rth::RthTypes {
-                rth: true, sec_type: "OPT".into(), ..Default::default()
+                rth: true, sec_type: "OPT".into(), contract_month: "202610".into(), right: "1".into(), strike: "768".into(),
+                multiplier: "100.00".into(), ..Default::default()
             });
         }, OrderRequest::SubmitLimitGtc { order_id: 9, instrument: 0, side: Side::Buy, qty: 1, price: P / 100, outside_rth: false });
         let order: Vec<(u32, &str)> = tags.iter().map(|(t, v)| (*t, v.as_str()))

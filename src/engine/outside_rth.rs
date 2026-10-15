@@ -73,6 +73,11 @@ pub(crate) struct RthTypes {
     pub local_symbol: String,
     pub contract_month: String,
     pub multiplier: String,
+    /// An option's, a futures option's or a warrant's right ("1" a call,
+    /// "0" a put) and strike as its order message writes them, empty for
+    /// other contracts (ibx#666).
+    pub right: String,
+    pub strike: String,
     /// The key of the contract's trading permission class (an option's
     /// "2/OPT/R"), empty for a stock (ibx#666).
     pub permission_key: String,

@@ -3082,6 +3082,18 @@ impl ClientCore {
                 if l.local_symbol.is_empty() { l.local_symbol = s.local_symbol; }
                 if l.trading_class.is_empty() { l.trading_class = s.trading_class; }
                 if l.primary_exchange.is_empty() { l.primary_exchange = s.primary_exchange; }
+                // A contract given by its conId alone takes the rest from
+                // its definition, as the reference's openOrder shows it
+                // (ibx#666; paper 15/10/2026, a SAP warrant by conId).
+                if l.symbol.is_empty() && l.sec_type.is_empty() {
+                    l.symbol = s.symbol;
+                    l.sec_type = s.sec_type;
+                    if l.currency.is_empty() { l.currency = s.currency; }
+                    if l.last_trade_date_or_contract_month.is_empty() { l.last_trade_date_or_contract_month = s.last_trade_date_or_contract_month; }
+                    if l.strike == 0.0 { l.strike = s.strike; }
+                    if l.right.is_empty() { l.right = s.right; }
+                    if l.multiplier.is_empty() { l.multiplier = s.multiplier; }
+                }
                 Some(l)
             }
             (Some(l), None) => Some(l),
@@ -5599,17 +5611,18 @@ impl ClientCore {
     /// Refuse orders on the security types whose order message ibx does not
     /// write yet. Written: stocks (an empty type is a stock), combos
     /// (ibx#470), futures, CFDs and forex pairs (ibx#666, the reference's
-    /// messages of 13/10/2026), options (ibx#666: their terms as an
-    /// option's order of ibx#486; checked against the account's trading
-    /// permission first). The others would otherwise go out without the
-    /// fields their message needs (ibx#202).
+    /// messages of 13/10/2026), warrants (the reference's message of
+    /// 15/10/2026), options and futures options (written as a warrant's;
+    /// checked against the account's trading permission first). A fund
+    /// goes to the engine for its rule (10203). The others would otherwise
+    /// go out without the fields their message needs (ibx#202).
     pub fn validate_order_contract(sec_type: &str) -> Result<(), String> {
-        const WRITTEN: [&str; 6] = ["STK", "BAG", "FUT", "CFD", "CASH", "OPT"];
+        const WRITTEN: [&str; 9] = ["STK", "BAG", "FUT", "CFD", "CASH", "OPT", "FOP", "WAR", "FUND"];
         if sec_type.is_empty() || WRITTEN.iter().any(|t| sec_type.eq_ignore_ascii_case(t)) {
             return Ok(());
         }
         Err(format!(
-            "Unsupported contract sec_type '{}': orders are written for STK, BAG, FUT, CFD, CASH and OPT only.              See https://github.com/deepentropy/ibx/issues/666",
+            "Unsupported contract sec_type '{}': orders are written for STK, BAG, FUT, CFD, CASH, OPT, FOP and WAR only.              See https://github.com/deepentropy/ibx/issues/666",
             sec_type
         ))
     }
@@ -7985,6 +7998,25 @@ mod tests {
         });
         let c = core.position_contract(272093, &shared);
         assert_eq!((c.exchange.as_str(), c.primary_exchange.as_str(), c.currency.as_str()), ("NASDAQ", "", "USD"));
+    }
+
+    // ibx#666 (the reference 10.51, paper, pre-market 15/10/2026): the
+    // openOrder of an order given by its conId and exchange shows the
+    // contract of its definition, on the exchange it was given.
+    #[test]
+    fn a_contract_given_by_its_con_id_is_completed_from_its_definition() {
+        let core = ClientCore::new();
+        let shared = SharedState::new();
+        core.cache_contract(566386640, ApiContract { con_id: 566386640, exchange: "FWB".into(), ..Default::default() });
+        shared.reference.cache_contract(566386640, ApiContract {
+            con_id: 566386640, symbol: "SAP".into(), sec_type: "WAR".into(), exchange: "FWB".into(), currency: "EUR".into(),
+            local_symbol: "HE0DGD".into(), trading_class: "SAP".into(), last_trade_date_or_contract_month: "20261215".into(),
+            strike: 85.0, right: "C".into(), multiplier: "0.1".into(), ..Default::default()
+        });
+        let c = core.get_contract(566386640, &shared).unwrap();
+        assert_eq!((c.symbol.as_str(), c.sec_type.as_str(), c.last_trade_date_or_contract_month.as_str(), c.strike, c.right.as_str(),
+            c.multiplier.as_str(), c.local_symbol.as_str(), c.trading_class.as_str(), c.exchange.as_str(), c.currency.as_str()),
+            ("SAP", "WAR", "20261215", 85.0, "C", "0.1", "HE0DGD", "SAP", "FWB", "EUR"));
     }
 
     // ibx#607: the checks of postOnly, allowPreOpen and ignoreOpenAuction as
