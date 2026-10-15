@@ -713,10 +713,18 @@ impl OptMd {
             // tick.
             let order = [3usize, 0, 1, 2];
             let (mut sent, mut kept) = (Vec::new(), Vec::new());
+            // A snapshot's pass from kept values leaves the last's to the
+            // next pass, which ends the snapshot (ibx#646; the reference
+            // 10.51, paper, regular hours, 14/10 and 15/10/2026: tick 12 0.6
+            // and 1.0 s after 13, 10 and 11, then the end).
+            let last_later = m.seeded && snapshot && m.passes == 0;
             for (k, c) in comps.into_iter().enumerate() {
                 let slot = order[k];
                 // Tick 13 with the server's greeks only.
                 if c.tick_type == market::MODEL && st.greeks.is_none() {
+                    continue;
+                }
+                if last_later && c.tick_type == market::LAST {
                     continue;
                 }
                 if m.sent[slot] == Some(c) {

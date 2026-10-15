@@ -236,6 +236,22 @@ fn an_option_stream_as_the_reference() {
     // Then the usual pace: a second later.
     engine.service_option_models(now + Duration::from_millis(900));
     assert!(computations(&shared).is_empty());
+
+    // A snapshot of it then: 13, 10 and 11 from the kept values, 12 at the
+    // next pass (the reference 10.51, 14/10 and 15/10/2026: 0.6 and 1.0 s
+    // later, then the end).
+    engine.route_md_cancel(id);
+    let mut snap = sub.clone();
+    snap.snapshot = true;
+    engine.route_md_subscribe(&snap);
+    let _ = sent(&mut farm_side);
+    let _ = computations(&shared);
+    let now = Instant::now();
+    engine.service_option_models(now);
+    engine.service_option_models(now + Duration::from_millis(160));
+    assert_eq!(computations(&shared).iter().map(|c| c.tick_type).collect::<Vec<_>>(), [13, 10, 11]);
+    engine.service_option_models(now + Duration::from_millis(1200));
+    assert_eq!(computations(&shared).iter().map(|c| c.tick_type).collect::<Vec<_>>(), [12]);
 }
 
 #[test]
