@@ -1,4 +1,4 @@
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::time::{Duration, Instant};
 
 use crate::bridge::{Event, RichOrderInfo, SharedState};
@@ -520,6 +520,9 @@ pub(crate) struct PendingFanout {
     pub api_req_id: ReqId,
     /// Requests not answered yet: (request id, conId, exchange).
     pub outstanding: Vec<(String, i64, String)>,
+    /// The place of each request id in `outstanding`: a chain asks tens of
+    /// thousands (ibx#689).
+    index: HashMap<String, usize>,
     /// Number of requests sent.
     pub total: usize,
     /// The records of the lookup, in reply order.
@@ -528,6 +531,30 @@ pub(crate) struct PendingFanout {
     /// per-exchange reply; a caller's lookup waits for every reply, as in
     /// the reference (ibx#485).
     pub deadline: Instant,
+}
+
+impl PendingFanout {
+    pub(crate) fn new(
+        api_req_id: ReqId, outstanding: Vec<(String, i64, String)>,
+        records: Vec<crate::control::contracts::ContractDefinition>, deadline: Instant,
+    ) -> Self {
+        let index = outstanding.iter().enumerate().map(|(i, (id, _, _))| (id.clone(), i)).collect();
+        Self { api_req_id, total: outstanding.len(), outstanding, index, records, deadline }
+    }
+
+    fn waits_for(&self, id: &str) -> bool {
+        self.index.contains_key(id)
+    }
+
+    /// The answered request, taken out: its conId and exchange.
+    fn answered(&mut self, id: &str) -> Option<(i64, String)> {
+        let pos = self.index.remove(id)?;
+        let (_, con_id, exchange) = self.outstanding.swap_remove(pos);
+        if let Some((moved, _, _)) = self.outstanding.get(pos) {
+            self.index.insert(moved.clone(), pos);
+        }
+        Some((con_id, exchange))
+    }
 }
 
 /// A by-symbol lookup in flight, kept for its answer (ibx#410, ibx#435).
@@ -3105,12 +3132,10 @@ impl CcpState {
         let connected = !self.disconnected;
         if self.optparams.leg_reply(&rid, ccp_conn, connected, hb, shared) { return; }
 
-        let fanout_idx = self.pending_fanout.iter()
-            .position(|p| p.outstanding.iter().any(|(id, _, _)| *id == rid));
+        let fanout_idx = self.pending_fanout.iter().position(|p| p.waits_for(&rid));
         if let Some(idx) = fanout_idx {
             let fanout = &mut self.pending_fanout[idx];
-            let pos = fanout.outstanding.iter().position(|(id, _, _)| *id == rid).unwrap_or(0);
-            let (_, con_id, exchange) = fanout.outstanding.swap_remove(pos);
+            let Some((con_id, exchange)) = fanout.answered(&rid) else { return };
             fanout.deadline = Instant::now() + SECDEF_TIMEOUT;
             let done = fanout.outstanding.is_empty();
             if let Some(rule) = records.iter().find(|d| d.con_id == con_id).and_then(|d| d.market_rule_id) {
@@ -3229,11 +3254,14 @@ impl CcpState {
         let by_symbol = !single_shot && !contracts::secdef_response_is_last(msg);
         let mut outstanding: Vec<(String, i64, String)> = Vec::new();
         if by_symbol {
+            // Asked once per conId and exchange (ibx#689: a chain has tens
+            // of thousands of pairs).
+            let mut asked: HashSet<(i64, &str)> = HashSet::new();
             for def in records.iter().filter(|d| d.con_id != 0) {
                 for exch in &def.valid_exchanges {
                     if matches!(exch.as_str(), "" | "SMART" | "BEST")
                         || self.market_rule_by_exchange.contains_key(&(def.con_id, exch.clone()))
-                        || outstanding.iter().any(|(_, c, e)| *c == def.con_id && e == exch)
+                        || !asked.insert((def.con_id, exch.as_str()))
                     {
                         continue;
                     }
@@ -3251,13 +3279,7 @@ impl CcpState {
                 "Secdef by-symbol fan-out: api_req_id={} records={} requests={}",
                 req_id, records.len(), outstanding.len(),
             );
-            self.pending_fanout.push(PendingFanout {
-                api_req_id: req_id,
-                total: outstanding.len(),
-                outstanding,
-                records,
-                deadline: Instant::now() + SECDEF_TIMEOUT,
-            });
+            self.pending_fanout.push(PendingFanout::new(req_id, outstanding, records, Instant::now() + SECDEF_TIMEOUT));
         }
     }
 
@@ -5427,11 +5449,9 @@ mod tests {
         let mut ccp = CcpState::new();
         let shared = SharedState::new();
         let fanout = |api_req_id| PendingFanout {
-            api_req_id,
-            outstanding: vec![("ibxfan-9-26".to_string(), 1, "IEX".to_string())],
             total: 27,
-            records: Vec::new(),
-            deadline: Instant::now() - std::time::Duration::from_secs(1),
+            ..PendingFanout::new(api_req_id, vec![("ibxfan-9-26".to_string(), 1, "IEX".to_string())], Vec::new(),
+                Instant::now() - std::time::Duration::from_secs(1))
         };
         ccp.pending_fanout.push(fanout(9));
         ccp.pending_fanout.push(fanout(0xF000_0003));
@@ -6684,13 +6704,7 @@ mod tests {
         let shared = SharedState::new();
         let future = Instant::now() + SECDEF_TIMEOUT;
         ccp.pending_secdef.push((7, true, future));
-        ccp.pending_fanout.push(PendingFanout {
-            api_req_id: 9,
-            outstanding: vec![("ibxfan-9-0".to_string(), 1, "IEX".to_string())],
-            total: 1,
-            records: Vec::new(),
-            deadline: future,
-        });
+        ccp.pending_fanout.push(PendingFanout::new(9, vec![("ibxfan-9-0".to_string(), 1, "IEX".to_string())], Vec::new(), future));
 
         ccp.sweep_contract_details(&shared, &None, &mut None, &mut HeartbeatState::new());
 

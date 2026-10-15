@@ -43,9 +43,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut w = Log { t0: Instant::now(), rows: 0, ended: false };
     std::thread::sleep(Duration::from_secs(3));
     for k in 0..2 {
+        // CHAIN_ALL: the whole AAPL chain, the underlying only (ibx#689's request).
+        let all = env::var_os("CHAIN_ALL").is_some();
         let chain = Contract {
-            symbol: "MSFT".into(), sec_type: "OPT".into(), exchange: "SMART".into(), currency: "USD".into(),
-            last_trade_date_or_contract_month: "20261218".into(), right: "C".into(),
+            symbol: if all { "AAPL" } else { "MSFT" }.into(), sec_type: "OPT".into(), exchange: "SMART".into(), currency: "USD".into(),
+            last_trade_date_or_contract_month: if all { "" } else { "20261218" }.into(), right: if all { "" } else { "C" }.into(),
             // The official client's unset strike, as a Python program gives it.
             strike: if env::var_os("STRIKE_MAX").is_some() { f64::MAX } else { 0.0 },
             ..Default::default()
