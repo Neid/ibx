@@ -91,6 +91,54 @@ def test_the_plain_objects_start_as_the_official_ones():
         assert vars(ours()) == vars(theirs()), ours.__name__
 
 
+# ibx#697 (decision of 15/10/2026): a callback object lists the official names
+# only; the second spelling stays usable. Known differences: ibx#712.
+CALLBACK_OBJECTS = {
+    "Contract": "ibapi.contract", "ContractDetails": "ibapi.contract", "ComboLeg": "ibapi.contract",
+    "ContractDescription": "ibapi.contract", "Order": "ibapi.order", "OrderComboLeg": "ibapi.order",
+    "OrderState": "ibapi.order_state", "Execution": "ibapi.execution", "TagValue": "ibapi.tag_value",
+    "BarData": "ibapi.common", "TickAttrib": "ibapi.common", "TickAttribLast": "ibapi.common",
+    "TickAttribBidAsk": "ibapi.common", "HistoricalTick": "ibapi.common", "HistoricalTickLast": "ibapi.common",
+    "HistoricalTickBidAsk": "ibapi.common", "HistogramData": "ibapi.common",
+    "CommissionAndFeesReport": "ibapi.commission_and_fees_report", "SoftDollarTier": "ibapi.softdollartier",
+    "NewsProvider": "ibapi.common", "SmartComponent": "ibapi.common", "DepthMktDataDescription": "ibapi.common",
+    "IneligibilityReason": "ibapi.ineligibility_reason", "WshEventData": "ibapi.common",
+    "OrderAllocation": "ibapi.order_state", "PriceCondition": "ibapi.order_condition",
+    "TimeCondition": "ibapi.order_condition", "MarginCondition": "ibapi.order_condition",
+    "ExecutionCondition": "ibapi.order_condition", "VolumeCondition": "ibapi.order_condition",
+    "PercentChangeCondition": "ibapi.order_condition",
+}
+CONDITION_TYPES = {"Price", "Time", "Margin", "Execution", "Volume", "PercentChange"}
+KNOWN_ATTRIBUTE_DIFFERENCES = {
+    "Execution": ({"optExerciseOrLapseType"}, set()),
+    "BarData": (set(), {"timezone"}),
+    "PriceCondition": (CONDITION_TYPES | {"TriggerMethodEnum"}, set()),
+    **{c: (CONDITION_TYPES, set()) for c in ["TimeCondition", "MarginCondition", "ExecutionCondition",
+                                             "VolumeCondition", "PercentChangeCondition"]},
+}
+
+
+def test_callback_objects_list_the_official_names():
+    pytest.importorskip("ibapi")
+    import importlib
+
+    import ibx
+
+    def listed(obj):
+        return {n for n in dir(obj) if not n.startswith("_") and not callable(getattr(obj, n))}
+
+    for name, module in CALLBACK_OBJECTS.items():
+        theirs = listed(getattr(importlib.import_module(module), name)())
+        obj = getattr(ibx, name)()
+        ours = listed(obj)
+        missing, extra = KNOWN_ATTRIBUTE_DIFFERENCES.get(name, (set(), set()))
+        assert (theirs - ours, ours - theirs) == (missing, extra), name
+    # The second spelling is still there.
+    attrib = ibx.TickAttrib()
+    attrib.can_auto_execute = True
+    assert attrib.canAutoExecute and "can_auto_execute" not in dir(attrib)
+
+
 class App(on.EWrapper, on.EClient):
     """A client in the form of the scripts written for the official library."""
 

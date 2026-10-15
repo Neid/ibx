@@ -3887,3 +3887,9 @@ mod tests {
         }
     }
 }
+
+// Their attribute lists give the official names only (ibx#697).
+super::hide_second_spelling!(
+    Contract, Order ["rule80a", "soft_dollar_tier_name", "soft_dollar_tier_val", "soft_dollar_tier_display_name"], ComboLeg, OrderComboLeg, TagValue, OrderAllocation, OrderState, PriceCondition, TimeCondition, MarginCondition, ExecutionCondition, VolumeCondition, PercentChangeCondition, BarData, IneligibilityReasonPy, ContractDetails, Execution, SmartComponentPy, NewsProviderPy, WshEventDataPy, SoftDollarTierPy, CommissionAndFeesReport ["yield_amount"],
+    ContractDescription ["con_id", "currency", "description", "issuer_id", "primary_exchange", "sec_type", "symbol"], DepthMktDataDescriptionPy,
+);

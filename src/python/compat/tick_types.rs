@@ -399,3 +399,8 @@ mod tests {
         assert!(!ta.ask_past_high);
     }
 }
+
+// Their attribute lists give the official names only (ibx#697).
+super::hide_second_spelling!(
+    TickAttrib, TickAttribLast, TickAttribBidAsk, HistoricalTick, HistoricalTickLast, HistoricalTickBidAsk, HistogramData,
+);
