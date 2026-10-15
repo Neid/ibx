@@ -142,7 +142,7 @@ fn every_portfolio_row_is_applied() {
         let position = row.get(&6064).and_then(|v| v.parse::<f64>().ok())
             .map(|v| (v * QTY_SCALE as f64).round() as i64).unwrap_or(0);
         let ok = held.as_ref().is_some_and(|p| p.market_price == scaled(row, 6065)
-            && p.avg_cost == scaled(row, 6101)
+            && p.avg_cost == row.get(&6101).and_then(|v| v.parse::<f64>().ok()).unwrap_or(0.0)
             && p.unrealized_pnl == scaled(row, 6100)
             && p.position_fixed == position);
         if !ok {

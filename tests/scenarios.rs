@@ -524,10 +524,10 @@ fn account_req_positions_reflects_fills() {
 
     // Set position info (as engine would after fills)
     shared.portfolio.set_position_info(PositionInfo {
-        con_id: 756733, position_fixed: (100) as i64 * ibx::types::QTY_SCALE, avg_cost: 450 * PRICE_SCALE, ..Default::default()
+        con_id: 756733, position_fixed: (100) as i64 * ibx::types::QTY_SCALE, avg_cost: 450.0, ..Default::default()
     });
     shared.portfolio.set_position_info(PositionInfo {
-        con_id: 265598, position_fixed: (-50) as i64 * ibx::types::QTY_SCALE, avg_cost: 150 * PRICE_SCALE, ..Default::default()
+        con_id: 265598, position_fixed: (-50) as i64 * ibx::types::QTY_SCALE, avg_cost: 150.0, ..Default::default()
     });
 
     // The rows wait for the position store, as the reference: nothing
@@ -995,7 +995,7 @@ fn req_completed_orders_empty_still_fires_end() {
 fn set_aapl_position_marked(shared: &SharedState, mark: i64) {
     shared.portfolio.set_position_info(PositionInfo {
         con_id: 265598, position_fixed: (100) as i64 * ibx::types::QTY_SCALE,
-        avg_cost: 150 * PRICE_SCALE, ..Default::default()
+        avg_cost: 150.0, ..Default::default()
     });
     shared.portfolio.set_position_marks(265598, mark * PRICE_SCALE, 0, 0, 0);
 }
@@ -1058,7 +1058,7 @@ fn pnl_single_dispatches_position_info() {
     shared.portfolio.set_position_info(PositionInfo {
         con_id: 265598,
         position_fixed: (100) as i64 * ibx::types::QTY_SCALE,
-        avg_cost: 150 * PRICE_SCALE,
+        avg_cost: 150.0,
         market_price: 155 * PRICE_SCALE,
         ..Default::default()
     });

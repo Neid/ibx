@@ -1,6 +1,6 @@
 //! Account-related methods: positions, PnL, account summary/updates.
 
-use crate::api::types::{PRICE_SCALE_F, QTY_SCALE_F};
+use crate::api::types::QTY_SCALE_F;
 use crate::api::wrapper::Wrapper;
 use crate::types::*;
 
@@ -46,7 +46,7 @@ impl EClient {
                 trading_class: ac.trading_class, multiplier: ac.multiplier,
                 ..Default::default()
             };
-            wrapper.position(&self.account_id, &c, pi.position_fixed as f64 / QTY_SCALE_F, pi.avg_cost as f64 / PRICE_SCALE_F);
+            wrapper.position(&self.account_id, &c, pi.position_fixed as f64 / QTY_SCALE_F, pi.avg_cost);
         }
     }
 
@@ -62,7 +62,7 @@ impl EClient {
     }
 
     /// The req_positions_multi rows of an execution's event (ibx#707).
-    pub(crate) fn position_multi_event(&self, wrapper: &mut (impl Wrapper + ?Sized), con_id: i64, at: Option<(crate::types::Qty, crate::types::Price)>) {
+    pub(crate) fn position_multi_event(&self, wrapper: &mut (impl Wrapper + ?Sized), con_id: i64, at: Option<(crate::types::Qty, f64)>) {
         for (req_id, account, model_code, pi) in self.core.position_multi_event_rows(&self.shared, con_id, at) {
             let account = if account.is_empty() { self.account_id.clone() } else { account };
             let ac = self.core.position_contract(pi.con_id, &self.shared);
@@ -74,7 +74,7 @@ impl EClient {
                 ..Default::default()
             };
             wrapper.position_multi(req_id, &account, &model_code, &c,
-                pi.position_fixed as f64 / QTY_SCALE_F, pi.avg_cost as f64 / PRICE_SCALE_F);
+                pi.position_fixed as f64 / QTY_SCALE_F, pi.avg_cost);
         }
     }
 
@@ -295,7 +295,7 @@ impl EClient {
                     ..Default::default()
                 };
                 wrapper.position_multi(req_id, &account, &model_code, &c,
-                    pi.position_fixed as f64 / QTY_SCALE_F, pi.avg_cost as f64 / PRICE_SCALE_F);
+                    pi.position_fixed as f64 / QTY_SCALE_F, pi.avg_cost);
             }
             if batch.end {
                 wrapper.position_multi_end(req_id);

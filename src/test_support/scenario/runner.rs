@@ -743,7 +743,7 @@ pub fn run(sc: &Scenario, opts: &Options, links: &mut Links, driver: &mut dyn Dr
                 links.shared.portfolio.set_position_info(crate::types::PositionInfo {
                     con_id: contract["conId"].as_i64().unwrap_or(0),
                     position_fixed: (num(pos) * crate::types::QTY_SCALE as f64).round() as i64,
-                    avg_cost: (num(avg) * crate::types::PRICE_SCALE as f64).round() as i64,
+                    avg_cost: num(avg),
                     symbol: contract["symbol"].as_str().unwrap_or("").to_string(),
                     sec_type: contract["secType"].as_str().unwrap_or("").to_string(),
                     currency: contract["currency"].as_str().unwrap_or("").to_string(),

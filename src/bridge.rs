@@ -72,7 +72,7 @@ pub struct FillExec {
     pub replayed: bool,
     /// The position right after this fill, for the reqPositions row given
     /// with it (ibx#707).
-    pub position_after: Option<(i64, Qty, Price)>,
+    pub position_after: Option<(i64, Qty, f64)>,
 }
 
 /// The execution of a combo report (ibx#470): the reference shows the
@@ -561,7 +561,7 @@ pub enum Event {
     OptionComputation(crate::control::optcalc::OptionComputation),
     /// Position update.
     /// `position` is fixed-point (QTY_SCALE).
-    PositionUpdate { instrument: InstrumentId, con_id: i64, position_fixed: Qty, avg_cost: Price },
+    PositionUpdate { instrument: InstrumentId, con_id: i64, position_fixed: Qty, avg_cost: f64 },
     /// Connection lost.
     Disconnected,
     /// Gateway logon completed. `ccp_session_id` matches the `x-ccp-session-id` header
@@ -2641,9 +2641,9 @@ impl PortfolioState {
     /// fill price for a position the fill opens or turns over (captured
     /// 25/09/2026 too: avgCost 336.25, then 336.260003); the weighted
     /// average when it adds to the position (MSFT -9 at 397.54161, sold 1 at
-    /// 539.59: -10 at 411.746449); unchanged when it reduces it; 0 when it
+    /// 539.59: -10 at 411.746449, a double, ibx#708); unchanged when it reduces it; 0 when it
     /// closes it. The position after the fill.
-    #[doc(hidden)] pub fn apply_fill_to_position(&self, con_id: i64, delta: Qty, price: Price) -> Option<PositionInfo> {
+    #[doc(hidden)] pub fn apply_fill_to_position(&self, con_id: i64, delta: Qty, price: f64) -> Option<PositionInfo> {
         if delta == 0 {
             return None;
         }
@@ -2651,14 +2651,17 @@ impl PortfolioState {
         let entry = map.entry(con_id).or_insert_with(|| PositionInfo { con_id, ..Default::default() });
         let old = entry.position_fixed;
         let new = old + delta;
+        let qty = |q: Qty| q.unsigned_abs() as f64 / QTY_SCALE as f64;
         entry.avg_cost = if new == 0 {
-            0
+            0.0
         } else if old == 0 || (old > 0) != (new > 0) {
             price
         } else if (old > 0) == (delta > 0) {
-            let total = entry.avg_cost as i128 * old.unsigned_abs() as i128 + price as i128 * delta.unsigned_abs() as i128;
-            let n = new.unsigned_abs() as i128;
-            ((total + n / 2) / n) as Price
+            // As a step from the cost, in this order of operations: the
+            // reference's double (SPY 79 at 775.5527304, bought 1 at 769.67:
+            // 775.47919627; MSFT -9 at 397.54161, sold 1 at 539.59:
+            // 411.746449), which the weighted sum misses in the last digit.
+            entry.avg_cost + (price - entry.avg_cost) * qty(delta) / qty(new)
         } else {
             entry.avg_cost
         };
@@ -2676,7 +2679,7 @@ impl PortfolioState {
         let mut map = self.position_infos.lock().unwrap();
         let Some(entry) = map.get_mut(&con_id).filter(|e| e.position_fixed != 0) else { return };
         let per_share = commission / (entry.position_fixed as f64 / QTY_SCALE as f64);
-        entry.avg_cost += (per_share * PRICE_SCALE as f64).round() as Price;
+        entry.avg_cost += per_share;
         self.position_generation.fetch_add(1, Ordering::AcqRel);
     }
 

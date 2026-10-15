@@ -191,7 +191,7 @@ pub(super) fn phase_position_tracking(conns: Conns) -> Conns {
             }
             Ok(Event::PositionUpdate { instrument, con_id, position_fixed: position, avg_cost }) => {
                 println!("  PositionUpdate: inst={} conId={} pos={} avgCost={:.4}",
-                    instrument, con_id, position as f64 / ibx::types::QTY_SCALE as f64, avg_cost as f64 / ibx::types::PRICE_SCALE as f64);
+                    instrument, con_id, position as f64 / ibx::types::QTY_SCALE as f64, avg_cost);
                 got_position_update = true;
             }
             Ok(Event::OrderUpdate(update)) => {
@@ -466,7 +466,7 @@ pub(super) fn phase_enriched_order_cache(conns: Conns) -> Conns {
     for pi in shared.portfolio.position_infos() {
         let c = shared.reference.get_contract(pi.con_id)
             .unwrap_or_else(|| api::Contract { con_id: pi.con_id, ..Default::default() });
-        let avg_cost = pi.avg_cost as f64 / PRICE_SCALE as f64;
+        let avg_cost = pi.avg_cost;
         wrapper.position(&account_id, &c, pi.position_fixed as f64 / ibx::types::QTY_SCALE as f64, avg_cost);
     }
 
@@ -707,7 +707,7 @@ pub(super) fn phase_enriched_positions(conns: Conns) -> Conns {
     for pi in shared.portfolio.position_infos() {
         let c = shared.reference.get_contract(pi.con_id)
             .unwrap_or_else(|| api::Contract { con_id: pi.con_id, ..Default::default() });
-        let avg_cost = pi.avg_cost as f64 / PRICE_SCALE as f64;
+        let avg_cost = pi.avg_cost;
         wrapper.position(&account_id, &c, pi.position_fixed as f64 / ibx::types::QTY_SCALE as f64, avg_cost);
     }
 

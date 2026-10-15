@@ -174,11 +174,11 @@ fn auto_execution_from_farm(sec_type: &str, exchange: &str) -> bool {
 /// value: +770 for 1 SPY bought, seen on paper 25/09/2026). With no seed row:
 /// the cash of this session's fills when there are some, else the opening
 /// trade's cash synthesized from the average cost (-qty * avgCost).
-fn money_traded_today(seed: Option<&MidnightSeed>, since_seed: Option<f64>, qty_now: f64, avg_cost: Price) -> f64 {
+fn money_traded_today(seed: Option<&MidnightSeed>, since_seed: Option<f64>, qty_now: f64, avg_cost: f64) -> f64 {
     match (seed, since_seed) {
         (Some(s), since) => s.money_traded + since.unwrap_or(0.0),
         (None, Some(since)) => since,
-        (None, None) => -(qty_now * avg_cost as f64 / PRICE_SCALE_F),
+        (None, None) => -(qty_now * avg_cost),
     }
 }
 
@@ -690,7 +690,7 @@ pub struct PositionsSubscription {
     requested_at: std::time::Instant,
     snapshot_sent: bool,
     /// Position and average cost last sent, by conId.
-    sent: HashMap<i64, (Qty, Price)>,
+    sent: HashMap<i64, (Qty, f64)>,
     generation: u64,
     /// The rows of reqPositions (ibx#707): after the snapshot, one at each
     /// fill and commission report of the session (`ClientCore::
@@ -3384,7 +3384,7 @@ impl ClientCore {
     /// the fill, before its execDetails, the position right after it
     /// (`at`); after its commission report, the position then, twice when
     /// the report has a realized P&L. None before the snapshot was given.
-    pub fn position_event_rows(&self, shared: &SharedState, con_id: i64, at: Option<(Qty, Price)>, times: usize) -> Vec<PositionInfo> {
+    pub fn position_event_rows(&self, shared: &SharedState, con_id: i64, at: Option<(Qty, f64)>, times: usize) -> Vec<PositionInfo> {
         let mut guard = self.positions_sub.lock().unwrap();
         let Some(sub) = guard.as_mut().filter(|s| s.events && s.snapshot_sent && con_id != 0) else { return Vec::new() };
         let Some(mut row) = shared.portfolio.position_info(con_id) else { return Vec::new() };
@@ -3417,7 +3417,7 @@ impl ClientCore {
     /// (the reference 10.51, paper, 15/10/2026, regular hours: a row at
     /// each fill and after the commission of a fill that opened or added to
     /// the position; none after the commission of a fill that reduced it).
-    pub fn position_multi_event_rows(&self, shared: &SharedState, con_id: i64, at: Option<(Qty, Price)>) -> Vec<(i64, String, String, PositionInfo)> {
+    pub fn position_multi_event_rows(&self, shared: &SharedState, con_id: i64, at: Option<(Qty, f64)>) -> Vec<(i64, String, String, PositionInfo)> {
         if con_id == 0 {
             return Vec::new();
         }
@@ -4834,7 +4834,7 @@ impl ClientCore {
             let pi = shared.portfolio.position_info(con_id);
             // Positions are fixed-point; the P&L works in shares.
             let qty_now = pi.as_ref().map(|p| p.position_fixed).unwrap_or(0) as f64 / QTY_SCALE_F;
-            let avg_cost = pi.as_ref().map(|p| p.avg_cost).unwrap_or(0);
+            let avg_cost = pi.as_ref().map(|p| p.avg_cost).unwrap_or(0.0);
             let qty_midnight = seed.map(|s| s.qty_midnight_fixed).unwrap_or(0) as f64 / QTY_SCALE_F;
 
             // The seed's realized P&L, plus this session's fills (ibx#478).
@@ -4873,8 +4873,8 @@ impl ClientCore {
             }
 
             if qty_now != 0.0 {
-                if avg_cost != 0 {
-                    total_unrealized += qty_now * (price_now - avg_cost) as f64 / PRICE_SCALE_F;
+                if avg_cost != 0.0 {
+                    total_unrealized += qty_now * (price_now as f64 / PRICE_SCALE_F - avg_cost);
                 } else {
                     unrealized_known = false;
                 }
@@ -4984,8 +4984,8 @@ impl ClientCore {
             // A value that cannot be computed is unset (f64::MAX), as the
             // reference (ibx#478): no average cost, or no realized P&L on
             // this position today (captured 25/09/2026).
-            let unrealized = if avg_cost != 0 {
-                qty_now * (price_now - avg_cost) as f64 / PRICE_SCALE_F
+            let unrealized = if avg_cost != 0.0 {
+                qty_now * (price_now as f64 / PRICE_SCALE_F - avg_cost)
             } else { f64::MAX };
             let realized_fills = realized_since.get(&con_id).copied();
             let realized = match (seed.map(|s| s.realized_pnl), realized_fills) {
@@ -5083,7 +5083,7 @@ impl ClientCore {
         let to_entry = |pi: &PositionInfo| PortfolioUpdateEntry {
             con_id: pi.con_id,
             position: pi.position_fixed as f64 / QTY_SCALE_F,
-            avg_cost: pi.avg_cost as f64 / PRICE_SCALE_F,
+            avg_cost: pi.avg_cost,
             market_price: pi.market_price as f64 / PRICE_SCALE_F,
             market_value: pi.market_value as f64 / PRICE_SCALE_F,
             unrealized_pnl: pi.unrealized_pnl as f64 / PRICE_SCALE_F,
@@ -7396,7 +7396,7 @@ mod tests {
         shared.portfolio.set_position_info(PositionInfo {
             con_id,
             position_fixed: position as i64 * crate::types::QTY_SCALE,
-            avg_cost: (avg_cost_dollars * PRICE_SCALE_F) as i64,
+            avg_cost: avg_cost_dollars,
             symbol: format!("SYM{con_id}"),
             sec_type: "STK".into(),
             currency: "USD".into(),
@@ -7507,7 +7507,7 @@ mod tests {
         core.subscribe_pnl(21);
         shared.portfolio.set_position_info(PositionInfo {
             con_id: 756733, position_fixed: 31 * crate::types::QTY_SCALE,
-            avg_cost: (764.59 * PRICE_SCALE_F) as i64, ..Default::default()
+            avg_cost: 764.59, ..Default::default()
         });
         shared.portfolio.set_position_marks(756733, (770.0 * PRICE_SCALE_F) as i64, 0, 0, 0);
         shared.portfolio.set_midnight_seeds(vec![MidnightSeed {
@@ -7529,7 +7529,7 @@ mod tests {
         for con_id in 1..40 {
             shared.portfolio.set_position_info(PositionInfo {
                 con_id, position_fixed: crate::types::QTY_SCALE / 3,
-                avg_cost: (100.1 * PRICE_SCALE_F) as i64, ..Default::default()
+                avg_cost: 100.1, ..Default::default()
             });
             shared.portfolio.set_position_marks(con_id, (100.7 * PRICE_SCALE_F) as i64, 0, 0, 0);
             shared.portfolio.add_realized_since_seed(con_id, 0.1);
@@ -7548,7 +7548,7 @@ mod tests {
         let shared = SharedState::new();
         shared.portfolio.set_position_info(PositionInfo {
             con_id: 756733, position_fixed: 31 * crate::types::QTY_SCALE,
-            avg_cost: (764.59 * PRICE_SCALE_F) as i64, ..Default::default()
+            avg_cost: 764.59, ..Default::default()
         });
         shared.portfolio.set_position_marks(756733, (770.0 * PRICE_SCALE_F) as i64, 0, 0, 0);
         shared.portfolio.set_midnight_seeds(vec![MidnightSeed {
@@ -7576,7 +7576,7 @@ mod tests {
         shared.portfolio.set_position_info(PositionInfo {
             con_id: 756733,
             position_fixed: (10) as i64 * crate::types::QTY_SCALE,
-            avg_cost: (700.00 * PRICE_SCALE_F) as i64,
+            avg_cost: 700.00,
             symbol: "SPY".into(),
             sec_type: "STK".into(),
             currency: "USD".into(),

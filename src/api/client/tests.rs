@@ -2586,8 +2586,8 @@ fn process_msgs_symbol_samples_carry_the_row_fields() {
 fn req_positions_delivers_via_wrapper() {
     let (client, _rx, shared) = test_client();
     shared.portfolio.set_account_download_complete();
-    shared.portfolio.set_position_info(PositionInfo { con_id: 265598, position_fixed: (100) as i64 * crate::types::QTY_SCALE, avg_cost: 150 * PRICE_SCALE, ..Default::default() });
-    shared.portfolio.set_position_info(PositionInfo { con_id: 756733, position_fixed: (-50) as i64 * crate::types::QTY_SCALE, avg_cost: 400 * PRICE_SCALE, ..Default::default() });
+    shared.portfolio.set_position_info(PositionInfo { con_id: 265598, position_fixed: (100) as i64 * crate::types::QTY_SCALE, avg_cost: 150.0, ..Default::default() });
+    shared.portfolio.set_position_info(PositionInfo { con_id: 756733, position_fixed: (-50) as i64 * crate::types::QTY_SCALE, avg_cost: 400.0, ..Default::default() });
     let mut w = RecordingWrapper::default();
     client.req_positions(&mut w);
     client.process_msgs(&mut w);
@@ -3060,7 +3060,7 @@ fn process_msgs_delivers_update_portfolio() {
     let (client, _rx, shared) = test_client();
     client.req_account_updates(true, "");
     shared.portfolio.set_position_info(crate::types::PositionInfo {
-        con_id: 756733, position_fixed: (18) as i64 * crate::types::QTY_SCALE, avg_cost: 723 * PRICE_SCALE, symbol: "SPY".into(),
+        con_id: 756733, position_fixed: (18) as i64 * crate::types::QTY_SCALE, avg_cost: 723.0, symbol: "SPY".into(),
         sec_type: "STK".into(), currency: "USD".into(),
         ..Default::default()
     });
@@ -5528,7 +5528,7 @@ fn account_summary_refusals_and_limit() {
 //  req_positions is a subscription (ibx#477)
 // ═══════════════════════════════════════════════════════════════════
 
-fn aapl_position(qty: i64, avg: i64) -> PositionInfo {
+fn aapl_position(qty: i64, avg: f64) -> PositionInfo {
     PositionInfo {
         con_id: 265598, position_fixed: qty * crate::types::QTY_SCALE, avg_cost: avg,
         symbol: "AAPL".into(), sec_type: "STK".into(), currency: "USD".into(), ..Default::default()
@@ -5548,20 +5548,20 @@ fn req_positions_sends_a_row_when_the_feed_moves_a_quantity() {
     client.process_msgs(&mut w);
     assert_eq!(w.events, vec!["position_end"]);
 
-    shared.portfolio.set_position_info(aapl_position(100, 33625 * PRICE_SCALE / 100));
+    shared.portfolio.set_position_info(aapl_position(100, 336.25));
     let mut w = RecordingWrapper::default();
     client.process_msgs(&mut w);
     assert_eq!(w.events, ["position:DU123:265598:100:336.25"]);
 
     // The average cost alone moves: no row. Same values again: nothing.
-    shared.portfolio.set_position_info(aapl_position(100, 336_260_003 * PRICE_SCALE / 1_000_000));
+    shared.portfolio.set_position_info(aapl_position(100, 336.260003));
     let mut w = RecordingWrapper::default();
     client.process_msgs(&mut w);
     assert!(w.events.is_empty(), "{:?}", w.events);
 
     // After cancel_positions: no row.
     client.cancel_positions();
-    shared.portfolio.set_position_info(aapl_position(200, 336 * PRICE_SCALE));
+    shared.portfolio.set_position_info(aapl_position(200, 336.0));
     let mut w = RecordingWrapper::default();
     client.process_msgs(&mut w);
     assert!(w.events.is_empty(), "{:?}", w.events);
@@ -5576,9 +5576,9 @@ fn req_positions_sends_a_row_when_the_feed_moves_a_quantity() {
 #[test]
 fn the_average_cost_moves_as_the_reference_s() {
     let shared = SharedState::new();
-    let px = |v: f64| (v * PRICE_SCALE as f64).round() as i64;
+    let px = |v: f64| v;
     let q = |n: i64| n * crate::types::QTY_SCALE;
-    let cost = |con_id: i64| shared.portfolio.position_info(con_id).unwrap().avg_cost as f64 / PRICE_SCALE as f64;
+    let cost = |con_id: i64| shared.portfolio.position_info(con_id).unwrap().avg_cost;
     shared.portfolio.set_position_info(PositionInfo { con_id: 272093, position_fixed: q(-10), avg_cost: px(397.54161), ..Default::default() });
     shared.portfolio.apply_fill_to_position(272093, q(1), px(539.87));
     assert_eq!(cost(272093), 397.54161);
@@ -5603,8 +5603,8 @@ fn a_fill_gives_its_position_row_before_its_execution() {
     let mut w = RecordingWrapper::default();
     client.req_positions(&mut w);
     client.process_msgs(&mut w);
-    let at = (265598, 100 * crate::types::QTY_SCALE, 336 * PRICE_SCALE);
-    shared.portfolio.apply_fill_to_position(265598, 100 * crate::types::QTY_SCALE, 336 * PRICE_SCALE);
+    let at = (265598, 100 * crate::types::QTY_SCALE, 336.0);
+    shared.portfolio.apply_fill_to_position(265598, 100 * crate::types::QTY_SCALE, 336.0);
     shared.orders.push_fill_with_exec(aapl_fill(7), crate::bridge::FillExec {
         exec_id: "0000e0d5.6ab5f36f.01.01".into(), position_after: Some(at), ..Default::default()
     });
@@ -5646,14 +5646,14 @@ fn req_positions_multi_gets_the_rows_that_changed_at_a_fill() {
     client.process_msgs(&mut w);
     assert_eq!(w.0, ["end:7"]);
     let contract = Contract { con_id: 265598, symbol: "AAPL".into(), ..Default::default() };
-    let fill = |id: &str, side: &str, after: (i64, i64)| -> (crate::api::types::Execution, crate::bridge::FillExec) {
+    let fill = |id: &str, side: &str, after: (i64, f64)| -> (crate::api::types::Execution, crate::bridge::FillExec) {
         (crate::api::types::Execution { exec_id: id.into(), side: side.into(), shares: 1.0, order_id: 15, ..Default::default() },
          crate::bridge::FillExec { exec_id: id.into(), position_after: Some((265598, after.0, after.1)), ..Default::default() })
     };
     // A buy that opens the position: a row at the fill; its commission
     // moves the cost: a row.
-    shared.portfolio.apply_fill_to_position(265598, crate::types::QTY_SCALE, 336 * PRICE_SCALE);
-    let (e, fe) = fill("0000e0d5.6ab5f36f.01.01", "BOT", (crate::types::QTY_SCALE, 336 * PRICE_SCALE));
+    shared.portfolio.apply_fill_to_position(265598, crate::types::QTY_SCALE, 336.0);
+    let (e, fe) = fill("0000e0d5.6ab5f36f.01.01", "BOT", (crate::types::QTY_SCALE, 336.0));
     shared.orders.push_untracked_execution(contract.clone(), e, fe);
     shared.portfolio.apply_commission_to_position(265598, 1.0);
     shared.orders.push_commission_report(crate::api::types::CommissionAndFeesReport {
@@ -5665,8 +5665,8 @@ fn req_positions_multi_gets_the_rows_that_changed_at_a_fill() {
     assert_eq!(w.0, ["multi:7:265598:1:336", "commission", "multi:7:265598:1:337"]);
     // A sale that closes it: a row at the fill; its commission, with a
     // realized P&L, changes nothing: no row.
-    shared.portfolio.apply_fill_to_position(265598, -crate::types::QTY_SCALE, 338 * PRICE_SCALE);
-    let (e, fe) = fill("0000e0d5.6ab5f370.01.01", "SLD", (0, 0));
+    shared.portfolio.apply_fill_to_position(265598, -crate::types::QTY_SCALE, 338.0);
+    let (e, fe) = fill("0000e0d5.6ab5f370.01.01", "SLD", (0, 0.0));
     shared.orders.push_untracked_execution(contract, e, fe);
     shared.orders.push_commission_report(crate::api::types::CommissionAndFeesReport {
         exec_id: "0000e0d5.6ab5f370.01.01".into(), commission_and_fees: 1.0, currency: "USD".into(),
@@ -5691,10 +5691,10 @@ fn another_clients_fill_gives_rows_at_the_fill_and_the_commission() {
     let exec = crate::api::types::Execution {
         exec_id: "0000e0d5.6ab5f36f.01.01".into(), side: "BOT".into(), shares: 100.0, order_id: 15, ..Default::default()
     };
-    shared.portfolio.apply_fill_to_position(265598, 100 * crate::types::QTY_SCALE, 33625 * PRICE_SCALE / 100);
+    shared.portfolio.apply_fill_to_position(265598, 100 * crate::types::QTY_SCALE, 336.25);
     let fe = crate::bridge::FillExec {
         exec_id: "0000e0d5.6ab5f36f.01.01".into(), client_id: 261, other_client: true,
-        position_after: Some((265598, 100 * crate::types::QTY_SCALE, 33625 * PRICE_SCALE / 100)), ..Default::default()
+        position_after: Some((265598, 100 * crate::types::QTY_SCALE, 336.25)), ..Default::default()
     };
     shared.orders.push_untracked_execution(contract.clone(), exec, fe);
     let mut w = RecordingWrapper::default();
@@ -5711,10 +5711,10 @@ fn another_clients_fill_gives_rows_at_the_fill_and_the_commission() {
     let exec = crate::api::types::Execution {
         exec_id: "0000e0d5.6ab5f370.01.01".into(), side: "SLD".into(), shares: 100.0, order_id: 16, ..Default::default()
     };
-    shared.portfolio.apply_fill_to_position(265598, -100 * crate::types::QTY_SCALE, 337 * PRICE_SCALE);
+    shared.portfolio.apply_fill_to_position(265598, -100 * crate::types::QTY_SCALE, 337.0);
     let fe = crate::bridge::FillExec {
         exec_id: "0000e0d5.6ab5f370.01.01".into(), client_id: 261, other_client: true,
-        position_after: Some((265598, 0, 0)), ..Default::default()
+        position_after: Some((265598, 0, 0.0)), ..Default::default()
     };
     shared.orders.push_untracked_execution(contract, exec, fe);
     shared.orders.push_commission_report(crate::api::types::CommissionAndFeesReport {
@@ -5731,7 +5731,7 @@ fn another_clients_fill_gives_rows_at_the_fill_and_the_commission() {
 #[test]
 fn req_positions_does_not_wait_in_the_caller() {
     let (client, _rx, shared) = test_client();
-    shared.portfolio.set_position_info(aapl_position(100, 336 * PRICE_SCALE));
+    shared.portfolio.set_position_info(aapl_position(100, 336.0));
     let started = std::time::Instant::now();
     let mut w = RecordingWrapper::default();
     client.req_positions(&mut w);
@@ -5858,19 +5858,19 @@ fn account_updates_multi_carries_its_request_id_and_model_code() {
 fn positions_multi_carries_its_request_id_and_updates() {
     let (client, _rx, shared) = test_client();
     shared.portfolio.set_account_download_complete();
-    shared.portfolio.set_position_info(aapl_position(100, 336 * PRICE_SCALE));
+    shared.portfolio.set_position_info(aapl_position(100, 336.0));
     let mut w = MultiRec::default();
     client.req_positions_multi(9003, "", "Core", &mut w);
     client.process_msgs(&mut w);
     assert_eq!(w.events, ["pos:9003:Core:265598:100", "pos_end:9003"]);
 
-    shared.portfolio.set_position_info(aapl_position(101, 336 * PRICE_SCALE));
+    shared.portfolio.set_position_info(aapl_position(101, 336.0));
     let mut w = MultiRec::default();
     client.process_msgs(&mut w);
     assert_eq!(w.events, ["pos:9003:Core:265598:101"]);
 
     client.cancel_positions_multi(9003);
-    shared.portfolio.set_position_info(aapl_position(102, 336 * PRICE_SCALE));
+    shared.portfolio.set_position_info(aapl_position(102, 336.0));
     let mut w = MultiRec::default();
     client.process_msgs(&mut w);
     assert!(w.events.is_empty(), "{:?}", w.events);
@@ -5901,7 +5901,7 @@ fn answer_pnl_quotes(rx: &crossbeam_channel::Receiver<ControlCommand>, iid: Inst
 fn a_pnl_request_subscribes_the_quotes_it_needs_and_cancels_them_after() {
     let (client, rx, shared) = test_client();
     client.core.con_id_to_instrument.lock().unwrap().clear();
-    shared.portfolio.set_position_info(aapl_position(100, 336 * PRICE_SCALE));
+    shared.portfolio.set_position_info(aapl_position(100, 336.0));
     client.req_pnl(1, "DU123", "");
     client.process_msgs(&mut RecordingWrapper::default());
     let (subs, _) = answer_pnl_quotes(&rx, 7);
@@ -5925,7 +5925,7 @@ fn a_pnl_request_subscribes_the_quotes_it_needs_and_cancels_them_after() {
 fn a_pnl_quote_becomes_the_callers_subscription() {
     let (client, rx, shared) = test_client();
     client.core.con_id_to_instrument.lock().unwrap().clear();
-    shared.portfolio.set_position_info(aapl_position(100, 336 * PRICE_SCALE));
+    shared.portfolio.set_position_info(aapl_position(100, 336.0));
     client.req_pnl(1, "DU123", "");
     client.process_msgs(&mut RecordingWrapper::default());
     answer_pnl_quotes(&rx, 7);
@@ -5948,7 +5948,7 @@ fn a_pnl_quote_becomes_the_callers_subscription() {
 #[test]
 fn no_internal_quote_when_the_caller_has_one() {
     let (client, rx, shared) = test_client();
-    shared.portfolio.set_position_info(aapl_position(100, 336 * PRICE_SCALE));
+    shared.portfolio.set_position_info(aapl_position(100, 336.0));
     client.core.con_id_to_instrument.lock().unwrap().insert(265598, 3);
     client.core.instrument_to_req.lock().unwrap().insert(3, vec![9]);
     client.req_pnl(1, "DU123", "");

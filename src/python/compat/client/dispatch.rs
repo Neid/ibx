@@ -83,7 +83,7 @@ impl EClient {
                 let c_py = Py::new(py, Contract::from_api(py, &ac)?)?.into_any();
                 call_wrapper!(self.wrapper, py, "position_multi",
                     (req_id, account.as_str(), model_code.as_str(), &c_py,
-                     qty_fixed(py, pi.position_fixed)?, pi.avg_cost as f64 / PRICE_SCALE_F));
+                     qty_fixed(py, pi.position_fixed)?, pi.avg_cost));
             }
             if batch.end {
                 call_wrapper!(self.wrapper, py, "position_multi_end", (req_id,));
@@ -102,7 +102,7 @@ impl EClient {
             let ac = self.core.position_contract(pi.con_id, shared);
             let c_py = Py::new(py, Contract::from_api(py, &ac)?)?.into_any();
             call_wrapper!(self.wrapper, py, "position",
-                (account.as_str(), &c_py, qty_fixed(py, pi.position_fixed)?, pi.avg_cost as f64 / PRICE_SCALE_F));
+                (account.as_str(), &c_py, qty_fixed(py, pi.position_fixed)?, pi.avg_cost));
         }
         Ok(())
     }
@@ -119,13 +119,13 @@ impl EClient {
     }
 
     /// The req_positions_multi rows of an execution's event (ibx#707).
-    fn position_multi_event(&self, py: Python<'_>, shared: &Arc<SharedState>, con_id: i64, at: Option<(crate::types::Qty, crate::types::Price)>) -> PyResult<()> {
+    fn position_multi_event(&self, py: Python<'_>, shared: &Arc<SharedState>, con_id: i64, at: Option<(crate::types::Qty, f64)>) -> PyResult<()> {
         for (req_id, account, model_code, pi) in self.core.position_multi_event_rows(shared, con_id, at) {
             let account = if account.is_empty() { self.account() } else { account };
             let ac = self.core.position_contract(pi.con_id, shared);
             let c_py = Py::new(py, Contract::from_api(py, &ac)?)?.into_any();
             call_wrapper!(self.wrapper, py, "position_multi",
-                (req_id, account.as_str(), model_code.as_str(), &c_py, qty_fixed(py, pi.position_fixed)?, pi.avg_cost as f64 / PRICE_SCALE_F));
+                (req_id, account.as_str(), model_code.as_str(), &c_py, qty_fixed(py, pi.position_fixed)?, pi.avg_cost));
         }
         Ok(())
     }

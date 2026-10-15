@@ -2441,7 +2441,9 @@ pub struct PositionInfo {
     pub con_id: i64,
     /// Fixed-point (QTY_SCALE).
     pub position_fixed: Qty,
-    pub avg_cost: Price,      // per-share avg cost * PRICE_SCALE
+    /// Per-share average cost, a double with all its digits as the
+    /// reference keeps it (ibx#708: 775.4916963075 after a commission).
+    pub avg_cost: f64,
     pub symbol: String,
     pub sec_type: String,
     pub currency: String,

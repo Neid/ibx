@@ -2161,7 +2161,7 @@ impl CcpState {
                         // The position moves with the fill, as the reference's
                         // position store does; the fill carries it for its
                         // reqPositions row (ibx#707).
-                        exec.position_after = shared.portfolio.apply_fill_to_position(con_id, delta, fill.price)
+                        exec.position_after = shared.portfolio.apply_fill_to_position(con_id, delta, last_px)
                             .map(|p| (con_id, p.position_fixed, p.avg_cost));
                     }
                 }
@@ -2576,7 +2576,7 @@ impl CcpState {
             }
             self.record_exec_con_id(exec_id, con_id);
             shared.portfolio.add_money_since_seed(con_id, if buy { -shares * price } else { shares * price });
-            shared.portfolio.apply_fill_to_position(con_id, delta, (price * PRICE_SCALE as f64) as i64);
+            shared.portfolio.apply_fill_to_position(con_id, delta, price);
         }
         let leg = combo.combo.legs.iter().find(|l| l.con_id == con_id);
         let mut exec = fill_exec_of(parsed, exec_id);
@@ -2719,7 +2719,7 @@ impl CcpState {
             Side::Sell | Side::ShortSell => shares * last_px,
         };
         shared.portfolio.add_money_since_seed(con_id, cash);
-        let position_after = shared.portfolio.apply_fill_to_position(con_id, delta, (last_px * PRICE_SCALE as f64) as i64)
+        let position_after = shared.portfolio.apply_fill_to_position(con_id, delta, last_px)
             .map(|p| (con_id, p.position_fixed, p.avg_cost));
 
         // The placing client's order id when the report carries it.
@@ -4539,7 +4539,7 @@ impl CcpState {
         if let Some(v) = part.strip_prefix("6008=") {
             // Flush previous position if any
             if count > 0 && con_id != 0 {
-                let avg_cost = (avg_cost_raw * PRICE_SCALE as f64) as Price;
+                let avg_cost = avg_cost_raw;
                 shared.portfolio.set_position_info(PositionInfo {
                     con_id, position_fixed: qty, avg_cost, ..Default::default()
                 });
@@ -4561,7 +4561,7 @@ impl CcpState {
     }
     // Flush last position
     if count > 0 && con_id != 0 {
-        let avg_cost = (avg_cost_raw * PRICE_SCALE as f64) as Price;
+        let avg_cost = avg_cost_raw;
         shared.portfolio.set_position_info(PositionInfo {
             con_id, position_fixed: qty, avg_cost, ..Default::default()
         });
@@ -4735,7 +4735,7 @@ pub(crate) fn handle_position_update(
         // Rounded: 335.1000061 must not become 335.10000609 (ibx#487).
         .map(|v| (v * PRICE_SCALE as f64).round() as Price)
         .unwrap_or(0);
-    let avg_cost: Price = price_tag(6101);
+    let avg_cost: f64 = parsed.get(&6101).and_then(|s| s.parse().ok()).unwrap_or(0.0);
     let market_price: Price = price_tag(6065);
     let market_value: Price = price_tag(6067);
     let unrealized_pnl: Price = price_tag(6100);
@@ -4753,6 +4753,13 @@ pub(crate) fn handle_position_update(
         })
         .unwrap_or_default();
 
+    // The server's cost is rounded (775.4916963): a position whose own cost
+    // it rounds keeps its digits, as the reference's position store keeps
+    // 775.4916963075 after a commission (ibx#708).
+    let avg_cost = match (shared.portfolio.position_info(con_id), parsed.get(&6101)) {
+        (Some(p), Some(text)) if p.position_fixed == position && rounds_to(p.avg_cost, text) => p.avg_cost,
+        _ => avg_cost,
+    };
     // Always store position info for reqPositions/pnlSingle, regardless of instrument registry.
     shared.portfolio.set_position_info(PositionInfo {
         con_id, position_fixed: position, avg_cost,
@@ -4770,6 +4777,13 @@ pub(crate) fn handle_position_update(
         shared.portfolio.set_position_fixed(instrument, position);
         emit(event_tx, Event::PositionUpdate { instrument, con_id, position_fixed: position, avg_cost });
     }
+}
+
+/// Whether `value` written with the decimals of `text` is `text`.
+fn rounds_to(value: f64, text: &str) -> bool {
+    let Ok(server) = text.parse::<f64>() else { return false };
+    let decimals = text.split_once('.').map_or(0, |(_, d)| d.len()) as i32;
+    (value - server).abs() <= 0.5 * 10f64.powi(-decimals) + 1e-12
 }
 
 #[cfg(test)]
@@ -5721,7 +5735,7 @@ mod tests {
 
         let row = |con_id: i64| shared.portfolio.position_info(con_id).expect("row applied");
         assert_eq!((row(4726868).position_fixed / crate::types::QTY_SCALE, row(4726868).symbol.as_str()), (1, "AXTI"));
-        assert_eq!(row(4726868).avg_cost, (117.79 * PRICE_SCALE as f64) as Price);
+        assert_eq!(row(4726868).avg_cost, 117.79);
         assert_eq!((row(272093).position_fixed / crate::types::QTY_SCALE, row(272093).symbol.as_str()), (-10, "MSFT"));
         assert_eq!(row(272093).unrealized_pnl, (270.91 * PRICE_SCALE as f64) as Price);
         assert_eq!((row(756733).position_fixed / crate::types::QTY_SCALE, row(756733).symbol.as_str()), (18, "SPY"));
@@ -5749,7 +5763,7 @@ mod tests {
 
         let pi = shared.portfolio.position_info(756733).expect("position stored");
         assert_eq!(pi.position_fixed / crate::types::QTY_SCALE, 10);
-        assert_eq!(pi.avg_cost, (100.50 * PRICE_SCALE as f64) as Price);
+        assert_eq!(pi.avg_cost, 100.50);
         assert_eq!(pi.market_price, (110.25 * PRICE_SCALE as f64) as Price);
         assert_eq!(pi.market_value, (1102.50 * PRICE_SCALE as f64) as Price);
         assert_eq!(pi.unrealized_pnl, (97.50 * PRICE_SCALE as f64) as Price);
@@ -5762,16 +5776,16 @@ mod tests {
     fn lean_position_feed_does_not_clobber_marks() {
         let shared = SharedState::new();
         shared.portfolio.set_position_info(PositionInfo {
-            con_id: 1, position_fixed: (10) as i64 * crate::types::QTY_SCALE, avg_cost: 100 * PRICE_SCALE, ..Default::default()
+            con_id: 1, position_fixed: (10) as i64 * crate::types::QTY_SCALE, avg_cost: 100.0, ..Default::default()
         });
         shared.portfolio.set_position_marks(1, 110 * PRICE_SCALE, 1100 * PRICE_SCALE, 100 * PRICE_SCALE, 5 * PRICE_SCALE);
         // Lean feed updates position + avg_cost only.
         shared.portfolio.set_position_info(PositionInfo {
-            con_id: 1, position_fixed: (12) as i64 * crate::types::QTY_SCALE, avg_cost: 101 * PRICE_SCALE, ..Default::default()
+            con_id: 1, position_fixed: (12) as i64 * crate::types::QTY_SCALE, avg_cost: 101.0, ..Default::default()
         });
         let pi = shared.portfolio.position_info(1).unwrap();
         assert_eq!(pi.position_fixed / crate::types::QTY_SCALE, 12);
-        assert_eq!(pi.avg_cost, 101 * PRICE_SCALE);
+        assert_eq!(pi.avg_cost, 101.0);
         assert_eq!(pi.market_price, 110 * PRICE_SCALE, "marks survive the lean feed");
         assert_eq!(pi.market_value, 1100 * PRICE_SCALE);
         assert_eq!(pi.unrealized_pnl, 100 * PRICE_SCALE);
@@ -7858,7 +7872,7 @@ mod tests {
         // price as average cost.
         let pi = shared.portfolio.position_info(756733).unwrap();
         assert_eq!(pi.position_fixed, QTY_SCALE);
-        assert_eq!(pi.avg_cost, 77056 * PRICE_SCALE / 100);
+        assert_eq!(pi.avg_cost, 770.56);
         ccp.handle_commission_report(&commission_frame(&[(17, "00025b49.6ab659f3.01.01"), (6099, "5.645252")]), &shared);
         assert_eq!(shared.portfolio.realized_since_seed().get(&756733).copied(), Some(5.645252));
 
