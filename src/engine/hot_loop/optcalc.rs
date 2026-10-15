@@ -15,8 +15,9 @@ use crate::types::ReqId;
 use super::HeartbeatState;
 
 /// Request numbers of the definition lookups of option calculations: a
-/// range of their own, below the other internal lookups.
-pub(crate) const OPTCALC_LOOKUP_FIRST_ID: u32 = 0xC000_0000;
+/// range of their own, below the other internal lookups. It shared the
+/// orders' range once, so an order could take an option's answer (ibx#699).
+pub(crate) const OPTCALC_LOOKUP_FIRST_ID: u32 = 0xA000_0000;
 pub(crate) const OPTCALC_LOOKUP_IDS: u32 = 0x1000_0000;
 /// A definition lookup with no answer in this time ends its calculations.
 const LOOKUP_TIMEOUT: Duration = Duration::from_secs(10);
@@ -64,6 +65,14 @@ pub(crate) struct OptCalc {
     next_xml: u32,
     /// A model clock that does not move (tests).
     fixed_clock: Option<i64>,
+}
+
+#[cfg(test)]
+impl OptCalc {
+    /// Whether the option's terms came with its lookup's answer.
+    pub(crate) fn knows_option(&self, con_id: i64) -> bool {
+        matches!(self.terms.get(&con_id), Some(Known::Ready(_)))
+    }
 }
 
 impl Default for OptCalc {

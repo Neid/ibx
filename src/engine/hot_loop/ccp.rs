@@ -6191,6 +6191,64 @@ mod tests {
         assert!(shared.orders.drain_order_errors().iter().all(|e| e.1 != 200), "the option is known: no error 200");
     }
 
+    // ibx#699: each kind of lookup ibx sends on its own has a range of
+    // request numbers no other kind uses, above the caller's ids and below
+    // ibx's internal lookups; an answer is matched on its number alone.
+    #[test]
+    fn the_lookup_ranges_do_not_overlap() {
+        use crate::engine::hot_loop::{farm, optcalc, optparams, order_builder};
+        let mut ranges = [
+            ("option calculation", optcalc::OPTCALC_LOOKUP_FIRST_ID, optcalc::OPTCALC_LOOKUP_IDS),
+            ("option parameters", optparams::OPTPARAMS_LOOKUP_FIRST_ID, optparams::OPTPARAMS_LOOKUP_IDS),
+            ("order", order_builder::ORDER_LOOKUP_FIRST_ID, order_builder::ORDER_LOOKUP_IDS),
+            ("historical data", HIST_LOOKUP_FIRST_ID, HIST_LOOKUP_IDS),
+            ("market data", farm::MD_LOOKUP_FIRST_ID, farm::MD_LOOKUP_IDS),
+        ];
+        ranges.sort_by_key(|r| r.1);
+        // A caller's request id is a positive i32.
+        assert!(ranges[0].1 > i32::MAX as u32, "{} meets the caller's ids", ranges[0].0);
+        for pair in ranges.windows(2) {
+            assert!(u64::from(pair[0].1) + u64::from(pair[0].2) <= u64::from(pair[1].1), "{} meets {}", pair[0].0, pair[1].0);
+        }
+        let last = ranges[ranges.len() - 1];
+        assert!(u64::from(last.1) + u64::from(last.2) <= 0xF000_0000, "{} meets the internal lookups", last.0);
+        assert!(!internal_lookup(ReqId::from(last.1 + last.2 - 1)));
+    }
+
+    // ibx#699: an order placed by symbol and an option calculation, both
+    // lookups waiting at once: each answer reaches its own request, in
+    // either order (the order's matcher is asked first).
+    #[test]
+    fn an_order_lookup_and_an_option_calculation_lookup_get_their_own_answers() {
+        use crate::engine::hot_loop::order_builder::ORDER_LOOKUP_FIRST_ID;
+        use crate::types::{OrderRequest, Side, PRICE_SCALE};
+        let (mut ccp, mut context, shared) = u186_test_state();
+        let mut hb = HeartbeatState::new();
+        // The order: a slot without a conId, its lookup the first of its range.
+        let slot = context.market.try_register_unresolved().unwrap();
+        context.market.set_symbol(slot, "AAPL".into());
+        context.rth_parked.push(OrderRequest::SubmitLimit { order_id: 7, instrument: slot, side: Side::Buy, qty: 1, price: 100 * PRICE_SCALE });
+        context.order_lookups.push((ORDER_LOOKUP_FIRST_ID, slot));
+        // The calculation: its lookup the first of its own range.
+        let kind = crate::control::optcalc::CalcKind::Price { volatility: 0.3 };
+        ccp.optcalc.start(9100, 692807782, "SMART", kind, 250.0, &mut None, &mut hb, &shared);
+        let first = super::super::optcalc::OPTCALC_LOOKUP_FIRST_ID;
+        // The option's answer first: the order does not take it.
+        let option = pipe_msg(&format!(
+            "35=d|43=N|320=SecDefReqMsgReqByConid{first}|322=*|323=4|55=AAPL|167=OPT|207=BEST|6008=692807782|15=USD|58=AAPL|6035=AAPL  261218C00250000|6058=AAPL|541=20261218|200=202612|201=1|202=250|231=100|146=1|6038=Y|6019=1|6031=32|6026=1|6023=0|6027=0.01|6030=1|6344=1|6008=692807782|6346=265598|310=STK"));
+        ccp.process_ccp_message(&option, &mut None, &mut context, &shared, &None, &mut hb, "DU1");
+        assert!(ccp.optcalc.knows_option(692807782), "the calculation has its option");
+        assert_eq!(context.market.con_id(slot), Some(0), "the order's slot has no conId yet");
+        assert_eq!(context.order_lookups.len(), 1, "the order still waits");
+        // Then the order's answer: the stock.
+        let stock = pipe_msg(&format!(
+            "35=d|43=N|320=FixSecDefReqBySymbol{ORDER_LOOKUP_FIRST_ID}|322=*|323=4|55=AAPL|167=STK|207=BEST|6008=265598|15=USD|146=1|6344=1|6008=265598"));
+        ccp.process_ccp_message(&stock, &mut None, &mut context, &shared, &None, &mut hb, "DU1");
+        assert_eq!(context.market.con_id(slot), Some(265598), "the order is on the stock");
+        assert!(context.order_lookups.is_empty());
+        assert!(shared.orders.drain_order_errors().is_empty());
+    }
+
     #[test]
     fn a_quantity_of_an_order_message_is_grouped_by_thousands() {
         for (given, shown) in [("1", "1"), ("100", "100"), ("999", "999"), ("1000", "1,000"), ("12345", "12,345"),

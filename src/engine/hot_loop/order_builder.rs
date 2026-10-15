@@ -3472,7 +3472,7 @@ pub(crate) fn hold_order(
 /// Request numbers of the contract lookups of orders (ibx#486): a range
 /// of their own, below the historical-data lookups (0xD000_0000).
 pub(crate) const ORDER_LOOKUP_FIRST_ID: u32 = 0xC000_0000;
-const ORDER_LOOKUP_IDS: u32 = 0x1000_0000;
+pub(crate) const ORDER_LOOKUP_IDS: u32 = 0x1000_0000;
 
 /// Ask the contract of an order's slot by symbol, once per slot, as the
 /// reference asks it before each API order (ibx#486; captured: the
