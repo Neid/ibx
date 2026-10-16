@@ -655,3 +655,126 @@ fn selling_beta_hedge_without_a_max_size() {
     assert_refused(&mut engine, REFUSED, "10364-1");
     assert!(engine.orders(0).iter().all(|f| field(f, 6121) != Some("6")), "the parent stays held");
 }
+
+// ── The rules of the 10.51 table taken over from 10.40 (ibx#688) ──
+
+// (ibx#688) A short sale on an institutional session without its short
+// sale slot.
+#[test]
+fn short_sale_without_a_slot() {
+    short_sale("347-1", 0, "", -1);
+}
+
+/// The text the reference 10.51 gives for an order whose contract has no
+/// exchange: the table's, with a final period (paper 15/10/2026, cases AA
+/// and Q).
+const NO_EXCHANGE_SEEN: &str = "Error validating request.-'PlaceOrder(3)' : cause - Missing order exchange.";
+
+// (ibx#688) An order whose contract has no exchange, the official API's
+// default.
+#[test]
+fn order_without_an_exchange() {
+    let no_exchange = Contract { exchange: String::new(), ..aapl() };
+    refused_seen("452-1", &no_exchange, &order("LMT"), NO_EXCHANGE_SEEN);
+}
+
+// (ibx#688) A volatility order whose volatility type is not 1 or 2, unset
+// or out of range (ibx#673; observed 16/10/2026, regular hours, paper, an
+// option without a volatility type).
+#[test]
+fn volatility_order_without_its_type() {
+    refused("367-1", &aapl(), &Order { volatility: 30.0, ..order("VOL") });
+    refused("367-1", &aapl(), &Order { volatility: 30.0, volatility_type: 3, ..order("VOL") });
+}
+
+// (ibx#688) An active time of the broker's own accumulate/distribute algo
+// that is not in the hh:mm:ss form (ibx#623, paper 15/10/2026).
+#[test]
+fn own_algo_active_time_not_a_time() {
+    refused("10315-2", &aapl(), &Order {
+        algo_strategy: "AD".into(),
+        algo_params: vec![TagValue { tag: "activeTimeStart".into(), value: "25:00:00".into() }],
+        ..order("LMT")
+    });
+}
+
+/// A hedge child of `parent_id`: its kind and parameter, with no size and
+/// no price of its own (the gateway sizes it).
+fn hedge(parent_id: i64, kind: &str, param: &str) -> Order {
+    Order {
+        action: "SELL".into(), parent_id, hedge_type: kind.into(), hedge_param: param.into(), lmt_price: f64::MAX,
+        total_quantity: 0.0, ..order("MKT")
+    }
+}
+
+/// `child` on `contract` under an AAPL parent 6 held with transmit off:
+/// refused with `rule` (the text `seen` where given), nothing sent, the
+/// parent stays held.
+fn hedge_refused(rule: &str, contract: &Contract, child: &Order, seen: Option<&str>) {
+    let mut engine = Engine::start();
+    engine.client.place_order(6, &aapl(), &Order { transmit: false, ..order("LMT") }).unwrap();
+    engine.client.place_order(REFUSED, contract, child).unwrap();
+    assert_refused_text(&mut engine, REFUSED, rule, seen);
+    assert!(engine.orders(0).iter().all(|f| field(f, 6121) != Some("6")), "the parent stays held");
+}
+
+// The reading refusals of a hedge are given as the reference 10.51 gives
+// them (ibx#614; paper 16/10/2026): "Error reading request." then a space
+// before the cause, where the table has a colon.
+
+// (ibx#688) A hedge kind that is not one of the known letters (observed
+// 16/10/2026).
+#[test]
+fn hedge_of_an_unknown_kind() {
+    hedge_refused("10007-1", &aapl(), &hedge(6, "X", ""), Some(&read_seen("10007-1")));
+}
+
+// (ibx#688) A hedge whose parent was not placed before it: the text names
+// the client id (0 on the reference), the order, the parent and the kind
+// (observed 16/10/2026).
+#[test]
+fn hedge_without_its_parent() {
+    refused_seen("10006-1", &aapl(), &hedge(60, "B", "1"),
+        "Error reading request. Missing parent order: server: 0 order: 7 parent: 60 hedge:[B]");
+}
+
+// (ibx#688) A delta hedge under a parent that is no option: the text
+// ends with the client id (0), an order id of 0, the parent and the kind
+// (observed 16/10/2026).
+#[test]
+fn delta_hedge_not_on_an_option() {
+    hedge_refused("10010-1", &aapl(), &hedge(6, "D", ""), Some("Error reading request. Invalid delta hedge order. The parent order has to be option order and hedge order can only be Stock, CFD or (in case of option on Index) Futures order. server: 0 order: 0 parent: 6 hedge:[D]"));
+}
+
+// (ibx#688) A pair hedge without its ratio (observed 16/10/2026).
+#[test]
+fn pair_hedge_without_a_ratio() {
+    hedge_refused("10009-1", &aapl(), &hedge(6, "P", ""), Some(&read_seen("10009-1")));
+}
+
+// (ibx#688) A beta hedge on a contract that is no stock; not observed
+// yet, the text in the form of the other hedge rules.
+#[test]
+fn beta_hedge_not_on_a_stock() {
+    let cfd = Contract { sec_type: "CFD".into(), ..aapl() };
+    hedge_refused("10033-1", &cfd, &hedge(6, "B", "1"), Some(&read_seen("10033-1")));
+}
+
+// (ibx#688) A beta hedge whose beta is not a number (observed
+// 16/10/2026).
+#[test]
+fn beta_hedge_with_a_beta_not_a_number() {
+    hedge_refused("10008-1", &aapl(), &hedge(6, "B", "abc"), Some(&read_seen("10008-1")));
+}
+
+// (ibx#688) A hedge with a limit price of its own; not observed yet.
+#[test]
+fn hedge_with_a_limit_price() {
+    hedge_refused("10031-1", &aapl(), &Order { lmt_price: 100.0, ..hedge(6, "P", "2") }, None);
+}
+
+// (ibx#688) A hedge with a size of its own (ibx#614, observed 16/10/2026).
+#[test]
+fn hedge_with_a_size() {
+    hedge_refused("10032-1", &aapl(), &Order { total_quantity: 5.0, ..hedge(6, "P", "2") }, None);
+}

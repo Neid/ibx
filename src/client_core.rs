@@ -6274,8 +6274,9 @@ impl ClientCore {
         let param = order.hedge_param.trim();
         let stock = |t: &str| t.is_empty() || t.eq_ignore_ascii_case("STK");
         match hedge.kind {
-            2 if !parent_contract.sec_type.eq_ignore_ascii_case("OPT") => read("Invalid delta hedge order. The parent order has to be \
-                option order and hedge order can only be Stock, CFD or (in case of option on Index) Futures order.".into()),
+            // With the client id (0), an order id of 0, the parent and the
+            // kind after it (ibx#688; paper 16/10/2026).
+            2 if !parent_contract.sec_type.eq_ignore_ascii_case("OPT") => read(format!("Invalid delta hedge order. The parent order has to be option order and hedge order can only be Stock, CFD or (in case of option on Index) Futures order. server: 0 order: 0 parent: {} hedge:[{}]", order.parent_id, order.hedge_type)),
             2 if !param.is_empty() => read("Invalid hedge ratio".into()),
             4 if !stock(&parent_contract.sec_type) || !stock(sec_type) => read("Invalid beta hedge order. Both parent and hedge can only be Stock orders.".into()),
             4 if !param.is_empty() && hedge.beta.is_none() => read("Invalid beta value.".into()),
