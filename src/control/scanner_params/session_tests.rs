@@ -1,9 +1,12 @@
 //! The scanner parameters of a client against texts the reference
 //! produced (ibx#571): the document of a real session with what that
 //! session had, variations of both, and small documents made for one
-//! rule each.
+//! rule each. The inputs of `gw1040/` were recorded with the reference
+//! 10.40; the expected texts are those the reference 10.51 gives for the
+//! same inputs (ibx#716). `gw1051/` holds a session of the reference
+//! 10.51.
 
-use super::tests::{assert_same, fixture};
+use super::tests::{assert_same, fixture, fixture_of};
 use super::*;
 
 /// What the session of the real document had.
@@ -44,8 +47,26 @@ fn session_switch_is_a_feature_of_the_list() {
 fn real_document_for_a_client_is_the_text_of_the_reference() {
     let got = for_client(&fixture("server.xml"), &session(OBSERVED)).expect("refused");
     let want = fixture("client.xml");
-    assert_eq!(want.len(), 1_723_217);
+    assert_eq!(want.len(), 1_722_471);
     assert_same(&got, &want, "real document");
+}
+
+#[test]
+fn real_document_of_a_session_of_the_reference_10_51_is_its_text() {
+    // Server text and the text the reference 10.51 gave the client, same
+    // session (16/10/2026): it has a filter of investment themes, whose
+    // values are never written.
+    let server = fixture_of("gw1051", "server.xml");
+    let got = for_client_in(&server, &session(OBSERVED), 2026).expect("refused");
+    let want = fixture_of("gw1051", "client.xml");
+    assert_eq!(want.len(), 1_800_870);
+    assert_same(&got, &want, "real document 10.51");
+    assert_eq!(want.matches("<ThemeFilter>").count(), 2);
+    assert!(!want.contains("ThemeValues"));
+    // A theme without a name stops the reading in the filter list: the
+    // reference gives no text then.
+    let broken = sub1(&server, "<Theme id=\"490\" name=\"Tokenized Finance\"/>", "<Theme id=\"490\"/>");
+    assert!(for_client_in(&broken, &session(OBSERVED), 2026).is_none());
 }
 
 fn sub1(text: &str, old: &str, new: &str) -> String {
@@ -611,8 +632,8 @@ fn hash_walk_grows_the_table_by_full_buckets() {
 }
 
 /// A case of the reference's own code (#582 and #599): the server text
-/// and the text written for a client (`None`: none), each kept as line
-/// hunks over the real document.
+/// and the text the reference 10.51 writes for a client (`None`: none),
+/// each kept as line hunks over the real document.
 fn oracle_cases() -> Vec<(String, String, Option<String>)> {
     let packed = std::fs::read(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/gw1040/scanner_params/oracle_599.json.gz")).unwrap();
     let mut json = String::new();

@@ -1,0 +1,3 @@
+# Compared byte for byte by the tests: no line ending conversion.
+*.xml -text
+*.gz binary

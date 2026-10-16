@@ -174,8 +174,20 @@ impl Reader<'_> {
                     .collect();
                 Ok(())
             }
-            // Never written, so what it holds is not read either.
-            Kind::Silent => Ok(()),
+            // Never written, so what it holds is not kept. Its reader
+            // still takes the `name` attribute of every element of the
+            // first three levels below it, and throws where there is none
+            // (ibx#716).
+            Kind::Silent => {
+                fn named(el: El, depth: u8) -> bool {
+                    el.children().filter(|c| c.is_element()).all(|c| attr(c, "name").is_some() && (depth == 3 || named(c, depth + 1)))
+                }
+                if named(el, 1) {
+                    Ok(())
+                } else {
+                    Err(Failure::Thrown)
+                }
+            }
             Kind::Plain => {
                 // Superclass members first. A level that stops early
                 // does not stop the others.

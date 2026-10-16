@@ -1,6 +1,8 @@
 //! The rebuilt scanner parameters against texts the reference produced
 //! (ibx#571): the document of a real session, variations of it, and
-//! small documents made for one rule each.
+//! small documents made for one rule each. The inputs of `gw1040/` were
+//! recorded with the reference 10.40; the expected texts are those the
+//! reference 10.51 writes for the same inputs (ibx#716).
 
 use std::io::Read;
 use std::path::PathBuf;
@@ -10,7 +12,12 @@ use super::*;
 
 /// A fixture by name; the large ones are stored compressed.
 pub(super) fn fixture(name: &str) -> String {
-    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/gw1040/scanner_params");
+    fixture_of("gw1040", name)
+}
+
+/// A fixture of the recordings of one version of the reference.
+pub(super) fn fixture_of(version: &str, name: &str) -> String {
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures").join(version).join("scanner_params");
     if let Ok(text) = std::fs::read_to_string(dir.join(name)) {
         return text;
     }
@@ -107,7 +114,7 @@ fn tables_are_consistent() {
 fn real_document_is_rebuilt_as_the_reference_does() {
     let got = rebuild(&fixture("server.xml")).expect("refused");
     let want = fixture("rebuilt.xml");
-    assert_eq!(want.len(), 2_083_111);
+    assert_eq!(want.len(), 2_082_365);
     assert_same(&got, &want, "real document");
 }
 
@@ -380,13 +387,35 @@ fn entry_without_text_cuts_the_writing_of_its_holder() {
     assert_eq!(body, written_entries("\t\t\t\t<AdvancedFilter varName=\"filter\">\n\t\t\t\t\t<a>1</a>\n", ""));
 }
 
+/// A filter whose field holds an object that is never written.
+fn with_unwritten(inner: &str) -> String {
+    doc(&format!(
+        "<FilterList varName=\"filterList\"><TripleComboFilter><TripleComboField><TripleValues varName=\"tripleMap\">{inner}</TripleValues></TripleComboField></TripleComboFilter></FilterList>"
+    ))
+}
+
 #[test]
 fn object_that_is_never_written_still_closes_the_start_tag() {
-    let body = body_of(&doc(
-        "<FilterList varName=\"filterList\"><TripleComboFilter><TripleComboField><TripleValues varName=\"tripleMap\"><x/></TripleValues></TripleComboField></TripleComboFilter></FilterList>",
-    ));
-    assert!(body.contains("\t\t\t<TripleComboField varName=\"triField\">\n\t\t\t\t<dontAllowClearAll>false</dontAllowClearAll>\n\t\t\t</TripleComboField>\n"), "{body}");
-    assert!(!body.contains("TripleValues"));
+    // The text of the reference 10.51 (and 10.40) for this document.
+    let body = body_of(&with_unwritten("<x name=\"n\">t<y name=\"m\"><z name=\"\"/></y></x><!-- c -->"));
+    assert_eq!(
+        body,
+        concat!(
+            "<ScanParameterResponse>\n\t<FilterList varName=\"filterList\">\n\t\t<TripleComboFilter>\n",
+            "\t\t\t<category>General</category>\n\t\t\t<TripleComboField varName=\"triField\">\n",
+            "\t\t\t\t<dontAllowClearAll>false</dontAllowClearAll>\n\t\t\t</TripleComboField>\n",
+            "\t\t</TripleComboFilter>\n\t</FilterList>\n</ScanParameterResponse>\n",
+        )
+    );
+}
+
+#[test]
+fn object_that_is_never_written_stops_the_reading_without_a_name_on_its_first_three_levels() {
+    for inner in ["<x/>", "<x name=\"n\"><y/></x>", "<x name=\"n\"><y name=\"m\"><z/></y></x>"] {
+        assert!(rebuild(&with_unwritten(inner)).is_none(), "{inner}");
+    }
+    // Below the third level, nothing is asked for.
+    assert!(rebuild(&with_unwritten("<x name=\"n\"><y name=\"m\"><z name=\"o\"><w/></z></y></x>")).is_some());
 }
 
 #[test]
@@ -490,12 +519,15 @@ fn model_can_be_edited_before_it_is_written() {
 }
 
 #[test]
-fn member_declared_at_two_class_levels_is_read_and_written_at_both() {
+fn virtual_filter_has_its_display_name_once() {
+    // The reference 10.40 declared it at two class levels and wrote it
+    // twice; the reference 10.51 only at the level of every filter
+    // (ibx#716).
     let xml = doc("<FilterList varName=\"filterList\"><VirtualFilter><displayName>D</displayName></VirtualFilter></FilterList>");
     let model = parse(&xml).unwrap();
     let filter = item(&model, "filterList", 0);
     let slots: Vec<usize> = filter.slots("displayName").collect();
-    assert_eq!(slots.len(), 2);
-    assert!(slots.iter().all(|&s| filter.members[s] == Value::Text("D".into())));
-    assert_eq!(body_of(&xml).matches("<displayName>D</displayName>").count(), 2);
+    assert_eq!(slots.len(), 1);
+    assert_eq!(filter.members[slots[0]], Value::Text("D".into()));
+    assert_eq!(body_of(&xml).matches("<displayName>D</displayName>").count(), 1);
 }
