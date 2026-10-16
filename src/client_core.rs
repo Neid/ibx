@@ -1266,6 +1266,14 @@ pub const MD_DELAYED_NOT_ENABLED: (i64, &str) =
 pub const MD_TOP_REJECTED: (i64, &str) = (2117,
     "Requested top market data is not subscribed. Subscription-independent ticks are still active.292; ");
 
+/// A generic tick (request code) that goes on when one side of the top of
+/// book is refused (ibx#650): the ticks that do not depend on the top of
+/// book; 587 only when the bid/ask side is the one refused. Observed for
+/// 233 (kept) and 236 (cancelled); the others not observed yet.
+fn generic_without_top(code: i32, side: &str) -> bool {
+    matches!(code, 101 | 106 | 221 | 232 | 233 | 258 | 375 | 456 | 619) || (code == 587 && side == "BID_ASK")
+}
+
 /// Headlines kept per instrument for the requests that join it, and how
 /// many of the latest a joining request gets, as the reference replays
 /// them (ibx#444).
@@ -2969,6 +2977,34 @@ impl ClientCore {
                 } = &reject {
                     let (code, text) = Self::md_part_refusal(*needs_api_subscription, *delayed_available, description, side);
                     notices.push(MdNotice::Error { req_id, code, text });
+                }
+                // A stream with generic ticks that work without the side
+                // refused goes on with them and the confirmed side: 2117
+                // lists them, the others are cancelled (ibx#650; the
+                // reference 10.51, paper, 16/10/2026, BMW on IBIS with
+                // "233,236": "...still active.233; Error&IBIS/STK/Top",
+                // then the last side's ticks).
+                if let crate::bridge::MdReject::NotSubscribed { instrument, part: Some(side), delayed_available: false, farm_text, .. } = &reject
+                    && !self.snapshot_reqs.lock().unwrap().contains_key(&req_id)
+                {
+                    let codes = self.md_generic.lock().unwrap().get(&req_id).map(|g| g.codes.clone()).unwrap_or_default();
+                    let (kept, dropped): (Vec<i32>, Vec<i32>) = codes.iter().partition(|&&c| generic_without_top(c, side));
+                    if !kept.is_empty() {
+                        let list: Vec<String> = kept.iter().map(|c| c.to_string()).collect();
+                        notices.push(MdNotice::Error { req_id, code: MD_TOP_REJECTED.0, text: format!(
+                            "Requested top market data is not subscribed. Subscription-independent ticks are still active.{}; {farm_text}",
+                            list.join(","),
+                        ) });
+                        // No marketDataType follows on this path.
+                        self.mdt_sent.lock().unwrap().insert(req_id);
+                        if !dropped.is_empty() {
+                            if let Some(g) = self.md_generic.lock().unwrap().get_mut(&req_id) {
+                                g.codes = kept.clone();
+                            }
+                            commands.push(ControlCommand::UnsubscribeGeneric { instrument: *instrument, codes: dropped });
+                        }
+                        continue;
+                    }
                 }
                 if !gone {
                     self.set_delayed(req_id);

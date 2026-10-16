@@ -1198,6 +1198,35 @@ fn one_side_refused_gives_10090_then_354() {
     assert!(!client.core.req_to_instrument.lock().unwrap().contains_key(&9801));
 }
 
+// ibx#650 (the reference 10.51, paper, 16/10/2026, BMW on IBIS with
+// "233,236"): one side refused, a generic tick that works without it: 10090,
+// then 2117 listing it with the farm's text; the request goes on, its other
+// generic tick is cancelled, and no marketDataType follows.
+#[test]
+fn one_side_refused_with_a_kept_generic_tick_gives_2117() {
+    let (client, rx, shared) = test_client();
+    client.core.req_to_instrument.lock().unwrap().insert(813, 1);
+    client.core.instrument_to_req.lock().unwrap().insert(1, vec![813]);
+    client.core.md_generic.lock().unwrap().insert(813, crate::client_core::MdGeneric {
+        codes: vec![233, 236], exchange: "IBIS".into(), sec_type: "STK".into() });
+    shared.market.push_md_reject(crate::bridge::MdReject::NotSubscribed {
+        instrument: 1, delayed_available: false, needs_api_subscription: false,
+        description: "BMW IBIS".into(), kept_params: Some((f64::MAX, "250001".into(), 4)), part: Some("BID_ASK"),
+        farm_text: "Error&IBIS/STK/Top".into() });
+    let mut w = RecordingWrapper::default();
+    client.process_msgs(&mut w);
+    let errors: Vec<&String> = w.events.iter().filter(|e| e.starts_with("error:")).collect();
+    assert_eq!(errors, [
+        "error:813:10090:Part of requested market data is not subscribed. Subscription-independent ticks are still active.BMW IBIS/TOP/BID_ASK",
+        "error:813:2117:Requested top market data is not subscribed. Subscription-independent ticks are still active.233; Error&IBIS/STK/Top",
+    ]);
+    assert!(w.events.iter().any(|e| e.starts_with("tick_req_params:813:")), "{:?}", w.events);
+    assert!(client.core.req_to_instrument.lock().unwrap().contains_key(&813), "the request goes on");
+    assert_eq!(client.core.md_generic.lock().unwrap()[&813].codes, [233]);
+    assert!(rx.try_iter().any(|c| matches!(c, ControlCommand::UnsubscribeGeneric { instrument: 1, ref codes } if *codes == [236])));
+    assert_eq!(client.core.check_mdt_needed(813, true), None, "no marketDataType");
+}
+
 // ibx#449: tickReqParams reaches the client once per request id, also
 // when a later ack of the request (a delayed fallback) gives it again.
 #[test]
