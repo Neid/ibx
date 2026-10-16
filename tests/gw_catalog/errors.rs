@@ -21,6 +21,7 @@ const CLIENT_CODES: &[(i64, &str)] = &[
     (503, "the API client's refusal of a request the session's version does not have (ibx#516)"),
     (544, "the API client's refusal of a verify request made without the intent to verify (ibx#516)"),
     (551, "the API client's refusal of a verify and auth request made without the intent to verify (ibx#516)"),
+    (588, "the API client's failure to encode an order whose margin condition has a float percent (ibx#722)"),
 ];
 
 /// Texts seen on the reference under a code whose text in the table is
