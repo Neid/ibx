@@ -2963,6 +2963,13 @@ impl ClientCore {
                 {
                     notices.push(MdNotice::TickReqParams { req_id, min_tick, bbo_exchange, permissions });
                 }
+                // The side refused, named first (ibx#650).
+                if let crate::bridge::MdReject::NotSubscribed {
+                    part: Some(side), needs_api_subscription, delayed_available, description, ..
+                } = &reject {
+                    let (code, text) = Self::md_part_refusal(*needs_api_subscription, *delayed_available, description, side);
+                    notices.push(MdNotice::Error { req_id, code, text });
+                }
                 if !gone {
                     self.set_delayed(req_id);
                     notices.push(MdNotice::MarketDataType { req_id, market_data_type: 3 });
@@ -3845,6 +3852,23 @@ impl ClientCore {
             .then(|| (322, "Error processing request.-'bQ' : cause - Duplicate ticker id".to_string()))
     }
 
+    /// The error naming the side of a top of book that was refused when
+    /// the other was confirmed (ibx#650; the reference 10.51, paper,
+    /// 13/10/2026 and 16/10/2026: "...still active.BMW IBIS/TOP/BID_ASK",
+    /// "...still active.Delayed market data is available.VOD
+    /// LSE/TOP/BID_ASK", "...still active.BTC Crypto (BTC) (BTC.USD)
+    /// /TOP/BID_ASK"): 10090, or 10091 when the side needs a subscription
+    /// for the API.
+    fn md_part_refusal(needs_api_subscription: bool, delayed_available: bool, description: &str, side: &str) -> (i64, String) {
+        let (code, base) = if needs_api_subscription {
+            (10091, "Part of requested market data requires additional subscription for API. See link in 'Market Data Connections' dialog for more details.")
+        } else {
+            (10090, "Part of requested market data is not subscribed. Subscription-independent ticks are still active.")
+        };
+        let delayed = if delayed_available { "Delayed market data is available." } else { "" };
+        (code, format!("{base}{delayed}{description}/TOP/{side}"))
+    }
+
     /// The error and text a client reports for a rejected subscription, and
     /// whether the subscription is gone (ibx#444, ibx#447). The texts are the
     /// reference's; for 354 and 10089 on this path any contract suffix the
@@ -3860,14 +3884,22 @@ impl ClientCore {
             // contract and "/TOP/ALL" (the market data type and the quote;
             // captured 05/10/2026: "...availability of delayed data.Delayed
             // market data is available.7203 TSEJ (7203.T) /TOP/ALL").
-            MdReject::NotSubscribed { needs_api_subscription, delayed_available, description, .. } => {
+            // With one side refused and the other confirmed, 354 (10089)
+            // ends with the farm's own text instead, after 10090 (10091)
+            // naming the side (ibx#650; the reference 10.51, paper:
+            // "...delayed data.Error&IBIS/STK/Top", 13/10/2026).
+            MdReject::NotSubscribed { needs_api_subscription, delayed_available, description, part, farm_text, .. } => {
                 let (code, base) = if *needs_api_subscription {
                     (10089, "Requested market data requires additional subscription for API. See link in 'Market Data Connections' dialog for more details.")
                 } else {
                     (354, MD_NOT_SUBSCRIBED)
                 };
                 let delayed = if *delayed_available { "Delayed market data is available." } else { "" };
-                let suffix = if description.is_empty() { String::new() } else { format!("{description}/TOP/ALL") };
+                let suffix = match part {
+                    Some(_) => farm_text.clone(),
+                    None if description.is_empty() => String::new(),
+                    None => format!("{description}/TOP/ALL"),
+                };
                 (code, format!("{base}{delayed}{suffix}"), true)
             }
             // Its three answers are given by `take_md_rejects`; this is the

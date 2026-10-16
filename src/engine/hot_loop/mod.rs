@@ -6044,11 +6044,47 @@ mod tests {
             } else {
                 assert!(farm_messages_sent(&mut s1).is_empty());
                 assert_eq!(rejects, [crate::bridge::MdReject::NotSubscribed {
-                    instrument: jp, delayed_available: true, needs_api_subscription: false, description: String::new(), kept_params: None }]);
+                    instrument: jp, delayed_available: true, needs_api_subscription: false, description: String::new(), kept_params: None,
+                    part: None, farm_text: "Error&BEST/STK/Top&BEST/STK/Top".into() }]);
                 // The rejected entries stay until the request ends, whose
                 // cancel covers them (captured 05/10/2026).
                 assert_eq!(engine.farm.instrument_md_reqs[0].1.len(), 2);
             }
+        }
+    }
+
+    // ibx#650 (the reference 10.51, paper, 16/10/2026, BTC on PAXOS with no
+    // crypto data): the last entry is confirmed, then the bid/ask entry is
+    // refused; the reference names the side refused (10090) before 354,
+    // which ends with the farm's text. Both refused at once: no side.
+    #[test]
+    fn one_side_refused_after_the_other_was_confirmed() {
+        for confirm_first in [true, false] {
+            let shared = Arc::new(SharedState::new());
+            let mut engine = HotLoop::new(shared.clone(), None, None);
+            let (c1, mut s1) = socket_pair();
+            engine.farm_conn = Some(Connection::new_mem(c1));
+            let btc = engine.context.market.register(479624278);
+            engine.farm.send_mktdata_subscribe(479624278, "BTC", "PAXOS", "CRYPTO", "", 0.0, "", "", btc, 0,
+                &mut engine.farm_conn, &mut engine.hb);
+            farm_messages_sent(&mut s1);
+            let ids: Vec<u32> = engine.farm.md_req_to_instrument.iter().map(|(r, _)| *r).collect();
+            let (bid_ask, last) = (ids[0], ids[1]);
+            let refused = if confirm_first {
+                engine.inject_farm_message(format!("8=O35=Q1,{last},0.25,0,1,ffffffff,,1,1e-08").as_bytes());
+                bid_ask.to_string()
+            } else {
+                format!("{bid_ask};{last}")
+            };
+            let n = if confirm_first { "0" } else { "0;0" };
+            let reject = crate::protocol::fix::fix_build(&[(35, "3"), (45, "0"), (58, "Error&PAXOS/CRYPTO/Top"),
+                (262, &refused), (9887, n), (9888, if confirm_first { "1" } else { "1;1" })], 1);
+            engine.farm.process_farm_message(&reject, &mut engine.farm_conn, &mut engine.context,
+                &shared, &None, &mut engine.hb);
+            let rejects = shared.market.drain_md_rejects();
+            assert_eq!(rejects, [crate::bridge::MdReject::NotSubscribed {
+                instrument: btc, delayed_available: false, needs_api_subscription: false, description: String::new(),
+                kept_params: None, part: confirm_first.then_some("BID_ASK"), farm_text: "Error&PAXOS/CRYPTO/Top".into() }]);
         }
     }
 }

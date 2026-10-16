@@ -1151,7 +1151,7 @@ fn market_data_rejects_are_reported() {
     }
     shared.market.push_md_reject(crate::bridge::MdReject::Delayed { instrument: 0 });
     shared.market.push_md_reject(crate::bridge::MdReject::NotSubscribed {
-        instrument: 1, delayed_available: false, needs_api_subscription: false, description: String::new(), kept_params: None });
+        instrument: 1, delayed_available: false, needs_api_subscription: false, description: String::new(), kept_params: None, part: None, farm_text: String::new() });
     let (tx, events) = crossbeam_channel::unbounded();
     shared.attach_event_channel(&tx);
     let mut w = RecordingWrapper::default();
@@ -1174,6 +1174,28 @@ fn market_data_rejects_are_reported() {
     assert_eq!(crate::client_core::delayed_tick_type(45), 88);
     assert!(!client.core.req_to_instrument.lock().unwrap().contains_key(&6));
     assert!(rx.try_iter().any(|c| matches!(c, ControlCommand::Unsubscribe { instrument: 1 })));
+}
+
+// ibx#650 (the reference 10.51, paper, 16/10/2026, BTC on PAXOS): one side
+// refused after the other was confirmed gives 10090 naming the side, then
+// 354 ending with the farm's text, and the request is gone.
+#[test]
+fn one_side_refused_gives_10090_then_354() {
+    let (client, _rx, shared) = test_client();
+    client.core.req_to_instrument.lock().unwrap().insert(9801, 1);
+    client.core.instrument_to_req.lock().unwrap().insert(1, vec![9801]);
+    shared.market.push_md_reject(crate::bridge::MdReject::NotSubscribed {
+        instrument: 1, delayed_available: false, needs_api_subscription: false,
+        description: "BTC Crypto (BTC) (BTC.USD) ".into(), kept_params: None, part: Some("BID_ASK"),
+        farm_text: "Error&PAXOS/CRYPTO/Top".into() });
+    let mut w = RecordingWrapper::default();
+    client.process_msgs(&mut w);
+    let errors: Vec<&String> = w.events.iter().filter(|e| e.starts_with("error:")).collect();
+    assert_eq!(errors, [
+        "error:9801:10090:Part of requested market data is not subscribed. Subscription-independent ticks are still active.BTC Crypto (BTC) (BTC.USD) /TOP/BID_ASK",
+        &format!("error:9801:354:{}Error&PAXOS/CRYPTO/Top", crate::client_core::MD_NOT_SUBSCRIBED),
+    ]);
+    assert!(!client.core.req_to_instrument.lock().unwrap().contains_key(&9801));
 }
 
 // ibx#449: tickReqParams reaches the client once per request id, also
@@ -7571,7 +7593,7 @@ fn a_top_reject_keeps_the_news_of_a_request() {
     client.req_mkt_data(1, &aapl_stk(), "mdoff,292", false, false).unwrap();
     client.req_mkt_data(2, &aapl_stk(), "", false, false).unwrap();
     shared.market.push_md_reject(crate::bridge::MdReject::NotSubscribed {
-        instrument: 5, delayed_available: true, needs_api_subscription: false, description: String::new(), kept_params: None,
+        instrument: 5, delayed_available: true, needs_api_subscription: false, description: String::new(), kept_params: None, part: None, farm_text: String::new(),
     });
     let mut w = RecordingWrapper::default();
     client.process_msgs(&mut w);
@@ -7681,7 +7703,7 @@ fn a_contract_known_delayed_available_gives_10168_or_goes_delayed() {
     let engine = line_engine(rx);
     client.req_mkt_data(1, &aapl_stk(), "", false, false).unwrap();
     shared.market.push_md_reject(crate::bridge::MdReject::NotSubscribed {
-        instrument: 10, delayed_available: true, needs_api_subscription: false, description: String::new(), kept_params: None,
+        instrument: 10, delayed_available: true, needs_api_subscription: false, description: String::new(), kept_params: None, part: None, farm_text: String::new(),
     });
     let mut w = RecordingWrapper::default();
     client.process_msgs(&mut w);

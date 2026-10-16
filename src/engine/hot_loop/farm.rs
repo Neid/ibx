@@ -651,6 +651,10 @@ pub(crate) struct FarmState {
     /// BBO exchange, permissions. The reference's record of the contract
     /// keeps them after its requests ended (ibx#444).
     pub(crate) con_params: std::collections::HashMap<i64, (f64, String, i64)>,
+    /// The request parameters of a contract's last entry, from its
+    /// acknowledgement, with no minimum tick: given when its bid/ask entry
+    /// is then refused (ibx#650).
+    last_side_params: std::collections::HashMap<InstrumentId, crate::bridge::TickReqParams>,
     /// The option models of the options' market data (ibx#502).
     pub(crate) optmd: super::optmd::OptMd,
     /// The logon features that change the entries (ibx#648), shared with
@@ -706,6 +710,7 @@ impl FarmState {
             generic_records: std::collections::HashMap::new(),
             top_confirmed: Vec::new(),
             con_params: std::collections::HashMap::new(),
+            last_side_params: std::collections::HashMap::new(),
             optmd: super::optmd::OptMd::default(),
             entry_marks: Default::default(),
         }
@@ -1158,6 +1163,17 @@ impl FarmState {
                 shared.market.push_tick_req_params(params);
             }
             self.give_kept_quote(instrument, context, shared);
+        } else if self.md_entries.iter().any(|e| e.req_id == req_id && e.req_type == "443") {
+            // The reference gives them, with no minimum tick, when the
+            // bid/ask entry is refused (ibx#650; paper, 16/10/2026, BMW on
+            // IBIS: tickReqParams of an unset tick, 250001 and 4, then
+            // 10090; none when the acknowledgement has no BBO exchange).
+            let sec_type = context.market.order_routing(instrument).0;
+            if let Some(params) = tick_req_params(instrument, f64::MAX, &parts, &sec_type)
+                .filter(|p| !p.bbo_exchange.is_empty() || p.snapshot_permissions != 0)
+            {
+                self.last_side_params.insert(instrument, params);
+            }
         }
     }
 
@@ -2241,8 +2257,10 @@ impl FarmState {
         let access = list(6763);
         log::warn!("Farm market data reject: ids={:?} 9887={:?} 6763={:?} 58={:?}",
             ids, delayed_flags, access, parsed.get(&58));
-        // (instrument, delayed available, API subscription needed), in order.
-        let mut hit: Vec<(InstrumentId, bool, bool, bool)> = Vec::new();
+        // (instrument, delayed available, API subscription needed, delayed
+        // on the bid/ask entry, sides refused: 1 bid/ask, 2 last), in
+        // order.
+        let mut hit: Vec<(InstrumentId, bool, bool, bool, u8)> = Vec::new();
         for (i, id) in ids.iter().enumerate() {
             if let Some(a) = access.get(i).filter(|a| api_subscription_needed(a)) {
                 self.note_refused_api_subscription(a);
@@ -2260,14 +2278,16 @@ impl FarmState {
             // (ibx#674; the reference 10.51, 14/10/2026: RY on TSE, 0 there
             // and 1 on the last entry's BEST, no sentence in 10089).
             let bid_ask = self.md_entries.iter().any(|e| e.req_id == id && e.req_type == "442");
+            let last = self.md_entries.iter().any(|e| e.req_id == id && e.req_type == "443");
+            let side = if bid_ask { 1 } else if last { 2 } else { 0 };
             match hit.iter_mut().find(|(inst, ..)| *inst == instrument) {
-                Some(h) => { h.1 |= delayed; h.2 |= needs_sub; h.3 |= bid_ask && delayed; }
-                None => hit.push((instrument, delayed, needs_sub, bid_ask && delayed)),
+                Some(h) => { h.1 |= delayed; h.2 |= needs_sub; h.3 |= bid_ask && delayed; h.4 |= side; }
+                None => hit.push((instrument, delayed, needs_sub, bid_ask && delayed, side)),
             }
         }
         let delayed_enabled = self.md_modes.delayed;
         let farm_text = parsed.get(&58).cloned().unwrap_or_default();
-        for (instrument, delayed_available, needs_api_subscription, delayed_on_top) in hit {
+        for (instrument, delayed_available, needs_api_subscription, delayed_on_top, sides) in hit {
             if delayed_enabled && delayed_available && needs_api_subscription {
                 // A contract that needs a subscription for the API, delayed
                 // data available, the client in delayed mode: the reference
@@ -2310,9 +2330,26 @@ impl FarmState {
                 let con_id = context.market.con_id(instrument);
                 let description = con_id.and_then(|c| context.depth_descriptions.get(&c).cloned()).unwrap_or_default();
                 let kept_params = con_id.and_then(|c| self.con_params.get(&c).cloned());
-
+                // One side refused when the other was confirmed (its entry
+                // no longer waits for its acknowledgement): the reference
+                // names the side refused first (ibx#650; paper, 16/10/2026,
+                // a crypto pair: the last confirmed, then the bid/ask
+                // refused).
+                let confirmed = |req_type: &str| self.md_entries.iter().any(|e| e.instrument == instrument
+                    && e.req_type == req_type && self.md_req_to_instrument.iter().all(|(r, _)| *r != e.req_id));
+                let part = match sides {
+                    1 if confirmed("443") => Some("BID_ASK"),
+                    2 if confirmed("442") => Some("LAST"),
+                    _ => None,
+                };
+                let kept_params = match (part, self.last_side_params.remove(&instrument)) {
+                    (Some("BID_ASK"), Some(p)) if kept_params.is_none() =>
+                        Some((p.min_tick, p.bbo_exchange, p.snapshot_permissions as i64)),
+                    _ => kept_params,
+                };
                 shared.market.push_md_reject(crate::bridge::MdReject::NotSubscribed {
                     instrument, delayed_available: delayed_on_top, needs_api_subscription, description, kept_params,
+                    part, farm_text: farm_text.clone(),
                 });
             }
         }
@@ -3353,10 +3390,23 @@ pub(crate) fn depth_refusal(api_subscription: bool, suffix: &str) -> (i64, Strin
 /// symbol, then its primary exchange with the market after a dot (`AAPL
 /// NASDAQ.NMS`), then its local symbol in parentheses and a space when it
 /// differs from the symbol (`7203 TSEJ (7203.T) `, captured 05/10/2026).
-/// None for the other security types, whose descriptions are not read
-/// yet.
+/// A crypto pair is its symbol, "Crypto" and its trading class in
+/// parentheses, then its local symbol the same way (`BTC Crypto (BTC)
+/// (BTC.USD) `, the reference 10.51, paper, 16/10/2026; ibx#650). None for
+/// the other security types, whose descriptions are not read yet.
 pub(crate) fn depth_description(def: &crate::control::contracts::ContractDefinition) -> Option<String> {
     use crate::control::contracts::SecurityType;
+    if def.wire_sec_type == "CRYPTO" {
+        let mut text = if def.trading_class.is_empty() {
+            format!("{} Crypto", def.symbol)
+        } else {
+            format!("{} Crypto ({})", def.symbol, def.trading_class)
+        };
+        if !def.local_symbol.is_empty() && def.local_symbol != def.symbol {
+            text.push_str(&format!(" ({}) ", def.local_symbol));
+        }
+        return Some(text);
+    }
     if def.sec_type != SecurityType::Stock {
         return None;
     }

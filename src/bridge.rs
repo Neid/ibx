@@ -777,9 +777,12 @@ pub enum MdReject {
     /// `kept_params`: the request parameters (minimum tick, BBO exchange,
     /// permissions) the contract's record kept from an earlier subscription,
     /// which the requests get before the error (captured 05/10/2026).
+    /// `part`: the side refused (BID_ASK or LAST) when the other side was
+    /// confirmed: 10090 (10091) names it before 354 (10089), which then
+    /// ends with `farm_text`, the farm's own text (ibx#650).
     NotSubscribed {
         instrument: InstrumentId, delayed_available: bool, needs_api_subscription: bool, description: String,
-        kept_params: Option<(f64, String, i64)>,
+        kept_params: Option<(f64, String, i64)>, part: Option<&'static str>, farm_text: String,
     },
     /// Refused for a contract that needs a subscription for the API, with
     /// delayed data available and the client in delayed mode (ibx#674):
@@ -3242,7 +3245,7 @@ mod tests {
     fn a_refused_market_data_subscription_goes_to_the_event_channel() {
         let shared = SharedState::new();
         let not_subscribed = |instrument| MdReject::NotSubscribed {
-            instrument, delayed_available: false, needs_api_subscription: false, description: String::new(), kept_params: None,
+            instrument, delayed_available: false, needs_api_subscription: false, description: String::new(), kept_params: None, part: None, farm_text: String::new(),
         };
         shared.market.push_md_reject(not_subscribed(1));
         let (tx, rx) = crossbeam_channel::unbounded();
