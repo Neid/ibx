@@ -1319,6 +1319,14 @@ impl CcpState {
         hb: &mut HeartbeatState,
         account_id: &str,
     ) {
+        // The kinds read from their bytes are given before any map of the
+        // message's fields is built: a whole option chain is tens of
+        // thousands of definition replies (ibx#701).
+        if let Some(kind) = super::fast_extract_msg_type(msg)
+            && self.dispatch_unparsed(kind, msg, ccp_conn, context, shared, event_tx, hb)
+        {
+            return;
+        }
         let parsed = fix::fix_parse(msg);
         let msg_type = match parsed.get(&fix::TAG_MSG_TYPE) {
             Some(t) => t.as_str(),
@@ -1346,7 +1354,6 @@ impl CcpState {
             }
             fix::MSG_CANCEL_REJECT => self.handle_cancel_reject(&parsed, ccp_conn, context, shared, event_tx, hb, account_id),
             fix::MSG_NEWS => self.handle_news_bulletin(&parsed, shared),
-            fix::MSG_HEARTBEAT => {}
             fix::MSG_TEST_REQUEST => {
                 let test_id = parsed.get(&fix::TAG_TEST_REQ_ID).cloned().unwrap_or_default();
                 if let Some(conn) = ccp_conn.as_mut() {
@@ -1473,17 +1480,40 @@ impl CcpState {
             // The answers of the P&L partition's account request feed the
             // partition's cash (ibx#511), not the account stream.
             "UT" | "UM" | "RL" | "EB" | "UP" if self.is_partition_frame(msg) => {}
-            "UT" | "UM" | "RL" => handle_account_update(msg, context, shared),
-            "EB" => handle_account_end(msg, shared),
-            "UP" => {
+            other => {
+                if !self.dispatch_unparsed(other.as_bytes(), msg, ccp_conn, context, shared, event_tx, hb) {
+                    log::debug!("CCP unhandled 35={}: {} bytes", other, msg.len());
+                }
+            }
+        }
+    }
+
+    /// The message kinds read from their bytes, with no map of their fields:
+    /// heartbeats, definition replies, and the account and portfolio
+    /// updates. None of them moves the clock offset. False for the others.
+    #[allow(clippy::too_many_arguments)]
+    fn dispatch_unparsed(
+        &mut self,
+        kind: &[u8],
+        msg: &[u8],
+        ccp_conn: &mut Option<Connection>,
+        context: &mut Context,
+        shared: &SharedState,
+        event_tx: &Option<Sender<Event>>,
+        hb: &mut HeartbeatState,
+    ) -> bool {
+        match kind {
+            b"0" => {}
+            b"d" => self.handle_secdef_reply(msg, ccp_conn, context, shared, event_tx, hb),
+            b"UT" | b"UM" | b"RL" => handle_account_update(msg, context, shared),
+            b"EB" => handle_account_end(msg, shared),
+            b"UP" => {
                 handle_portfolio_message(msg, context, shared, event_tx);
                 self.look_up_portfolio_contracts(msg, ccp_conn, shared, hb);
             }
-            "d" => self.handle_secdef_reply(msg, ccp_conn, context, shared, event_tx, hb),
-            other => {
-                log::debug!("CCP unhandled 35={}: {} bytes", other, msg.len());
-            }
+            _ => return false,
         }
+        true
     }
 
     /// A logon message on the logged-on auth connection (ibx#421). With a
@@ -3049,8 +3079,8 @@ impl CcpState {
     /// The order does not wait for them; their zone is kept for the
     /// contract, and the order's start time is shown in it (#598).
     /// The conId whose zone is then waited for, when it is not known.
-    fn ask_order_schedule(&mut self, msg: &[u8], shared: &SharedState, ccp_conn: &mut Option<Connection>, hb: &mut HeartbeatState) -> Option<i64> {
-        let Some(def) = crate::control::contracts::parse_secdef_records(msg).unwrap_or_default().into_iter().next() else { return None };
+    fn ask_order_schedule(&mut self, def: Option<&crate::control::contracts::ContractDefinition>, shared: &SharedState, ccp_conn: &mut Option<Connection>, hb: &mut HeartbeatState) -> Option<i64> {
+        let def = def?;
         if def.join_key.is_empty() || def.con_id == 0 {
             return None;
         }
@@ -3416,7 +3446,9 @@ impl CcpState {
         if !rules.is_empty() {
             shared.reference.push_market_rules(rules);
         }
-        note_contract_rules(&contracts::parse_secdef_records(msg).unwrap_or_default(), shared);
+        // The reply's records, read once for every use below (ibx#701).
+        let records = contracts::parse_secdef_records(msg).unwrap_or_default();
+        note_contract_rules(&records, shared);
         // Asked for an order's outside RTH (ibx#465): not a user reply.
         if let Some(rid) = response_req_id.as_deref() {
             // Asked to build a combo (ibx#470): not a user reply.
@@ -3427,18 +3459,20 @@ impl CcpState {
             // The zone of the contract's trading hours, from the order
             // lookups too: an order's start time is shown in it (ibx#598).
             let keep_zone = |shared: &SharedState| {
-                for def in crate::control::contracts::parse_secdef_records(msg).unwrap_or_default().iter().take(1) {
-                    if let Some(zone) = &def.time_zone_id { shared.reference.cache_time_zone_id(def.con_id, zone); }
+                if let Some(def) = records.first()
+                    && let Some(zone) = &def.time_zone_id
+                {
+                    shared.reference.cache_time_zone_id(def.con_id, zone);
                 }
             };
             if super::order_builder::rth_definition_reply(context, rid, msg) {
                 // The contract an openOrder shows for an order given by
                 // its conId (ibx#666).
-                for def in crate::control::contracts::parse_secdef_records(msg).unwrap_or_default().iter().take(1) {
+                if let Some(def) = records.first() {
                     self.cache_definition(def, shared);
                 }
                 keep_zone(shared);
-                if let Some(con_id) = self.ask_order_schedule(msg, shared, ccp_conn, hb) {
+                if let Some(con_id) = self.ask_order_schedule(records.first(), shared, ccp_conn, hb) {
                     context.zone_pending.insert(con_id);
                 }
                 return;
@@ -3446,7 +3480,7 @@ impl CcpState {
             // The record of a contract an order needs (ibx#706), and the
             // clearing rule it may ask then (ibx#709).
             if super::order_builder::order_record_reply(context, rid, msg) {
-                for def in crate::control::contracts::parse_secdef_records(msg).unwrap_or_default().iter().take(1) {
+                if let Some(def) = records.first() {
                     self.cache_definition(def, shared);
                 }
                 if let Some(conn) = ccp_conn.as_mut() {
@@ -3460,11 +3494,11 @@ impl CcpState {
             // Asked for the contract of an order given without a conId
             // (ibx#486): its definition is cached, not a user reply.
             if super::order_builder::order_contract_reply(context, shared, rid, msg) {
-                for def in crate::control::contracts::parse_secdef_records(msg).unwrap_or_default().iter().take(1) {
+                if let Some(def) = records.first() {
                     self.cache_definition(def, shared);
                 }
                 keep_zone(shared);
-                if let Some(con_id) = self.ask_order_schedule(msg, shared, ccp_conn, hb) {
+                if let Some(con_id) = self.ask_order_schedule(records.first(), shared, ccp_conn, hb) {
                     context.zone_pending.insert(con_id);
                 }
                 return;
@@ -3476,11 +3510,10 @@ impl CcpState {
             // Asked for the conId of a market data request (ibx#278).
             if super::farm::md_contract_reply(context, shared, rid, msg) { return; }
             // Asked for the conId of a historical-data request (ibx#427).
-            if self.contract_resolve_reply(rid, msg, shared) { return; }
+            if self.contract_resolve_reply(rid, &records, shared) { return; }
             // Asked for the option of an option calculation (ibx#442).
             if self.optcalc.secdef_reply(rid, msg, ccp_conn, hb, shared) { return; }
         }
-        let records = contracts::parse_secdef_records(msg).unwrap_or_default();
         // The company lookup of an underlying (ibx#436): its industry is
         // kept for the later rows of its derivatives; not a user reply.
         if let Some(i) = response_req_id.as_deref().and_then(|rid| self.pending_company.iter().position(|(id, _)| id == rid)) {
@@ -3611,7 +3644,7 @@ impl CcpState {
             // hours are asked next, as the reference (07/10/2026: IBM's
             // right after its definition; ibx#695).
             if self.completed.lookups.remove(&req_id) {
-                self.ask_order_schedule(msg, shared, ccp_conn, hb);
+                self.ask_order_schedule(records.first(), shared, ccp_conn, hb);
             }
             return;
         }
@@ -3753,18 +3786,13 @@ impl CcpState {
     /// The answer to a contract lookup of a historical-data request
     /// (ibx#427): exactly one contract releases the request with its
     /// conId; none or several give error 200 and no query, as the
-    /// reference. False when the reply is not for such a lookup.
-    fn contract_resolve_reply(&mut self, lookup_id: &str, msg: &[u8], shared: &SharedState) -> bool {
+    /// reference. False when the reply is not for such a lookup. The reply's
+    /// market rules are kept by the caller.
+    fn contract_resolve_reply(&mut self, lookup_id: &str, records: &[crate::control::contracts::ContractDefinition], shared: &SharedState) -> bool {
         // The reply names the lookup as it was asked; its number is the key.
         let Some(number) = crate::control::contracts::secdef_request_number(lookup_id) else { return false };
         let Some(idx) = self.pending_resolves.iter().position(|p| ReqId::from(p.lookup_id) == number) else { return false };
         let pending = self.pending_resolves.swap_remove(idx);
-        let records = crate::control::contracts::parse_secdef_records(msg).unwrap_or_default();
-        let rules = crate::control::contracts::parse_market_rules(msg);
-        if !rules.is_empty() {
-            shared.reference.push_market_rules(rules);
-        }
-        note_contract_rules(&records, shared);
         if matches!(pending.request, crate::types::ControlCommand::DisplayGroupLookup { .. }) {
             // A display group update (ibx#424): a contract is kept and gives
             // no answer, none gives the reference's error.
@@ -3791,7 +3819,7 @@ impl CcpState {
             return true;
         }
         let mut con_ids: Vec<i64> = Vec::new();
-        for def in &records {
+        for def in records {
             if def.con_id != 0 && !con_ids.contains(&def.con_id) {
                 con_ids.push(def.con_id);
             }
@@ -6775,8 +6803,9 @@ mod tests {
         let key = "1/STK/NASDAQ#LITE";
         let def = pipe_msg(&format!("35=d|43=N|320=ord1|322=*|323=4|{}6008=265598|6046=BEST,NASDAQ,",
             listing("AAPL", "265598", "BEST", key, "26")));
-        ccp.ask_order_schedule(&def, &shared, &mut conn, &mut hb);
-        ccp.ask_order_schedule(&def, &shared, &mut conn, &mut hb);
+        let defs = crate::control::contracts::parse_secdef_records(&def).unwrap();
+        ccp.ask_order_schedule(defs.first(), &shared, &mut conn, &mut hb);
+        ccp.ask_order_schedule(defs.first(), &shared, &mut conn, &mut hb);
         let sent: Vec<String> = ccp_messages_sent(&mut server).into_iter().filter(|m| m.contains("6040=106")).collect();
         assert_eq!(sent.len(), 1, "one request for the key: {sent:?}");
         assert!(sent[0].contains(&format!("6256={key}")), "{}", sent[0]);
@@ -6790,7 +6819,7 @@ mod tests {
         assert_eq!(shared.reference.time_zone_id(265598).as_deref(), Some("US/Eastern"));
         assert!(ccp.order_zone_waits.is_empty());
         // Known for the session: the next order asks nothing.
-        ccp.ask_order_schedule(&def, &shared, &mut conn, &mut hb);
+        ccp.ask_order_schedule(defs.first(), &shared, &mut conn, &mut hb);
         assert!(ccp_messages_sent(&mut server).iter().all(|m| !m.contains("6040=106")));
     }
 
@@ -8658,7 +8687,7 @@ mod reconnect_tests {
             // caller lookup number: none of them is this lookup's reply.
             let reply = |id: &str| pipe_msg(&format!("35=d|43=N|320={}|322=*|323=4|55=AAPL|167=STK|207=BEST|6008=265598|15=USD", id));
             for other in ["FixSecDefReqBySymbol3758096384", "FixSecDefReqBySymbol4026531840", "FixSecDefReqBySymbol0", "ibxlot0"] {
-                assert!(!ccp.contract_resolve_reply(other, &reply(other), &shared), "{}", other);
+                assert!(!ccp.contract_resolve_reply(other, &crate::control::contracts::parse_secdef_records(&reply(other)).unwrap(), &shared), "{}", other);
             }
             assert_eq!(ccp.pending_resolves.len(), 1);
             assert!(HIST_LOOKUP_FIRST_ID + HIST_LOOKUP_IDS <= crate::engine::hot_loop::farm::MD_LOOKUP_FIRST_ID);
@@ -8679,7 +8708,7 @@ mod reconnect_tests {
             let id = format!("FixSecDefReqBySymbol{}", ccp.pending_resolves[0].lookup_id);
             let reply = pipe_msg(&format!("35=d|43=N|320={id}|322=*|323=4|55=AAPL|167=STK|207=BEST|6008=265598|15=USD|\
 55=AAPL|167=STK|207=NASDAQ|6008=265598|15=USD|55=AAPL|167=STK|207=ARCA|6008=265598|15=USD"));
-            assert!(ccp.contract_resolve_reply(&id, &reply, &shared));
+            assert!(ccp.contract_resolve_reply(&id, &crate::control::contracts::parse_secdef_records(&reply).unwrap(), &shared));
             assert!(ccp.resolved_requests.is_empty(), "nothing subscribed");
             let errors = shared.reference.drain_historical_errors();
             assert_eq!(errors.iter().map(|e| (e.0, e.1, e.2.as_str())).collect::<Vec<_>>(),
@@ -8698,7 +8727,7 @@ mod reconnect_tests {
                 ccp.start_contract_resolve(req, lookup(), bars(req), &mut None, &mut HeartbeatState::new());
                 let id = format!("FixSecDefReqBySymbol{}", ccp.pending_resolves.last().unwrap().lookup_id);
                 let reply = pipe_msg(&format!("35=d|43=N|320={id}|322=*|323=4|55={symbol}|167=STK|207=BEST|6008={con_id}|6256={key}|15=USD"));
-                assert!(ccp.contract_resolve_reply(&id, &reply, &shared));
+                assert!(ccp.contract_resolve_reply(&id, &crate::control::contracts::parse_secdef_records(&reply).unwrap(), &shared));
             }
             assert_eq!(shared.reference.time_zone_id(265598).as_deref(), Some("US/Eastern"));
             assert_eq!(shared.reference.time_zone_id(14204), None);
