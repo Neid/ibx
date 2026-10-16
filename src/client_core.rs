@@ -2782,7 +2782,9 @@ impl ClientCore {
 
         let infos: HashMap<i64, PositionInfo> = shared.portfolio.position_infos()
             .into_iter().map(|p| (p.con_id, p)).collect();
-        let is_stock = |con_id: i64| infos.get(&con_id).is_none_or(|p| p.sec_type.is_empty() || p.sec_type == "STK");
+        // Stocks and currency pairs (ibx#715; the other types are not
+        // observed yet).
+        let is_stock = |con_id: i64| infos.get(&con_id).is_none_or(|p| p.sec_type.is_empty() || p.sec_type == "STK" || p.sec_type == "CASH");
         let mut con_ids: Vec<i64> = infos.keys().copied().chain(seeds.iter().map(|s| s.con_id))
             .filter(|&c| c != 0 && is_stock(c))
             .collect();

@@ -2557,7 +2557,23 @@ impl HotLoop {
                 }
                 ControlCommand::PnlQuotes { con_ids, second_price } => {
                     self.ccp.start_pnl_partition(Instant::now());
-                    let msgs = self.farm.pnl_quotes(&con_ids, second_price);
+                    // A currency pair's quotes go to the farm of its own
+                    // route (ibx#715).
+                    // Its type from the position's row, else from its
+                    // definition (the portfolio's batch lookup, ibx#705).
+                    let (pairs, stocks): (Vec<i64>, Vec<i64>) = con_ids.into_iter().partition(|&c|
+                        self.shared.portfolio.position_info(c).is_some_and(|p| p.sec_type == "CASH")
+                            || self.shared.reference.get_contract(c).is_some_and(|k| k.sec_type == "CASH"));
+                    let pairs: Vec<(i64, pool::FarmId)> = pairs.into_iter().filter_map(|con_id| {
+                        let symbol = self.shared.portfolio.position_info(con_id).map(|p| p.symbol).unwrap_or_default();
+                        let sub = farm::MdSubscribe {
+                            con_id, symbol, exchange: "IDEALPRO".into(), sec_type: "CASH".into(),
+                            last_trade_date: String::new(), strike: 0.0, right: String::new(), multiplier: String::new(),
+                            instrument: 0, mode_9887: 0, snapshot: false,
+                        };
+                        self.md_route(&sub).map(|f| (con_id, f))
+                    }).collect();
+                    let msgs = self.farm.pnl_quotes(&stocks, &pairs, second_price);
                     self.send_farm_messages(msgs);
                 }
                 ControlCommand::SetInstrumentCurrency { con_id, currency } => {
