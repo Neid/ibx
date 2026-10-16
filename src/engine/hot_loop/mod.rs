@@ -3351,7 +3351,7 @@ impl HotLoop {
     /// (ibx#553).
     pub(crate) fn sweep_scanner_params(&mut self) {
         let now = self.pace_now();
-        self.hmds.sweep_scanner_params(now, &mut self.hmds_conn, &mut self.hb);
+        self.hmds.sweep_scanner_params(now, &mut self.hmds_conn, &mut self.hb, &self.shared);
     }
 
     /// The time of the pacing, of the market data passes and of the
@@ -3382,7 +3382,7 @@ impl HotLoop {
     pub fn next_pace_time(&self) -> Option<Instant> {
         let held = self.cmd_queue.iter().any(|q| crate::engine::pacer::is_request(&q.cmd));
         let step = self.pacer.as_ref().filter(|_| held).and_then(|p| p.next_step());
-        [step, self.md_pass.due(), self.hmds.scanner_params_due].into_iter().flatten().min()
+        [step, self.md_pass.due(), self.hmds.next_scanner_due()].into_iter().flatten().min()
     }
 
     /// Mutably access heartbeat state for testing (e.g., setting timestamps).
@@ -5250,17 +5250,34 @@ mod tests {
         engine.sweep_scanner_params();
         assert!(plain_messages_sent(&mut server).is_empty());
 
+        // ibx#572: the requests that waited are taken 300 ms after the
+        // answer, then 60 ms apart, in the reference's walk (here the
+        // parameters request before the subscription).
         load_scanner_params_keep(&mut engine, "<ScanParameterResponse/>");
-        assert_eq!(shared.reference.drain_scanner_params().len(), 1);
-        assert_eq!(plain_messages_sent(&mut server).len(), 1, "the waiting subscription goes out");
-        // Known now: answered and sent at once.
+        assert!(shared.reference.drain_scanner_params().is_empty() && plain_messages_sent(&mut server).is_empty(), "not at once");
+        engine.set_pace_clock(start + ms(1999));
+        engine.sweep_scanner_params();
+        assert!(shared.reference.drain_scanner_params().is_empty());
+        engine.set_pace_clock(start + ms(2000));
+        engine.sweep_scanner_params();
+        assert_eq!(shared.reference.drain_scanner_params().len(), 1, "the first one");
+        assert!(plain_messages_sent(&mut server).is_empty());
+        engine.set_pace_clock(start + ms(2060));
+        engine.sweep_scanner_params();
+        assert_eq!(plain_messages_sent(&mut server).len(), 1, "the waiting subscription goes out 60 ms later");
+        // Known now: a parameters request is answered 285 ms later; a
+        // subscription is sent at once.
         tx.send(ControlCommand::FetchScannerParams).unwrap();
         engine.poll_once();
-        engine.set_pace_clock(start + ms(1900));
+        engine.set_pace_clock(start + ms(2200));
         tx.send(scanner_cmd(2, 0, "MOST_ACTIVE")).unwrap();
         engine.poll_once();
-        assert_eq!(shared.reference.drain_scanner_params().len(), 1);
         assert_eq!(plain_messages_sent(&mut server).len(), 1);
+        engine.sweep_scanner_params();
+        assert!(shared.reference.drain_scanner_params().is_empty());
+        engine.set_pace_clock(start + ms(2345));
+        engine.sweep_scanner_params();
+        assert_eq!(shared.reference.drain_scanner_params().len(), 1);
     }
 
     // ibx#456: the row count follows the scan type's limit in the
@@ -5289,9 +5306,12 @@ mod tests {
             <FilterList><RangeFilter><id>MOODY</id><AbstractField><code>moodyRatingAbove</code></AbstractField></RangeFilter>\
             </FilterList></ScanParameterResponse>");
         assert_eq!(plain_messages_sent(&mut server).len(), 1, "only the subscription with known codes goes out");
+        // Each refused at its turn in the walk of the waiting requests
+        // (ibx#513, ibx#572), as the reference takes them one by one; two
+        // refusals of one walk not observed yet (#657's were seconds apart).
         assert_eq!(errors(&shared), [
-            "1:162:Historical Market Data Service error message:Scanner type with code NOT_A_SCAN_CODE is disabled.",
             "2:162:Historical Market Data Service error message:Scanner filter notAFilter is disabled.",
+            "1:162:Historical Market Data Service error message:Scanner type with code NOT_A_SCAN_CODE is disabled.",
         ]);
     }
 
