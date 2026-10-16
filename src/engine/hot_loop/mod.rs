@@ -1809,13 +1809,6 @@ impl HotLoop {
             self.shared.orders.set_open_orders_held(true);
             self.shared.push_connection_notice(1100, LINK_LOST.to_string());
         }
-        // The scanner follows the historical data connection itself.
-        if before.hmds && !now.hmds {
-            self.hmds.scanner_link_lost(&self.shared);
-        }
-        if !before.hmds && now.hmds {
-            self.hmds.scanner_link_restored(&mut self.hmds_conn, &mut self.hb, &self.shared);
-        }
         let hmds_name = self.hmds_farm_name().to_string();
         let secdef = !self.secdef_farm_name.is_empty();
         if told.farm && !ok.farm {
@@ -1829,6 +1822,15 @@ impl HotLoop {
         }
         if !told.hmds && ok.hmds {
             self.shared.push_connection_notice(2106, format!("HMDS data farm connection is OK:{}", hmds_name));
+        }
+        // The scanner follows the historical data connection itself, its
+        // notices after the farm's (ibx#554: the reference gives the farm
+        // notice to every client before it tells the subscriptions).
+        if before.hmds && !now.hmds {
+            self.hmds.scanner_link_lost(&self.shared);
+        }
+        if !before.hmds && now.hmds {
+            self.hmds.scanner_link_restored(Instant::now(), &mut self.hmds_conn, &mut self.hb, &self.shared);
         }
         if secdef && !told.secdef && ok.secdef {
             self.shared.push_connection_notice(2158, format!("Sec-def data farm connection is OK:{}", self.secdef_farm_name));
@@ -5106,7 +5108,11 @@ mod tests {
 
     // ibx#457: the scanner parameters are asked once per connection; the
     // requests waiting for them all get the answer, later ones are served
-    // from the cache; a lost link clears it.
+    // from the cache. The answer ended the parameters' place in the
+    // scanner table, so they no longer follow the link (ibx#554, as read
+    // on the reference): a subscription served from them and a loss of
+    // the link leave them; the subscriptions of the next test are the
+    // case where the loss drops them.
     #[test]
     fn scanner_parameters_are_cached() {
         let shared = Arc::new(SharedState::new());
@@ -5123,11 +5129,15 @@ mod tests {
         engine.poll_once();
         assert_eq!(shared.reference.drain_scanner_params(), ["<ScanParameterResponse/>"]);
         assert!(plain_messages_sent(&mut server).is_empty(), "answered from the cache");
+        tx.send(scanner_cmd(4, 1, "TOP_PERC_GAIN")).unwrap();
+        engine.poll_once();
+        let _ = plain_messages_sent(&mut server);
         engine.hmds.scanner_link_lost(&shared);
+        let _ = errors(&shared);
         tx.send(ControlCommand::FetchScannerParams).unwrap();
         engine.poll_once();
-        assert!(shared.reference.drain_scanner_params().is_empty());
-        assert_eq!(plain_messages_sent(&mut server).len(), 1, "asked again");
+        assert_eq!(shared.reference.drain_scanner_params().len(), 1, "kept");
+        assert!(plain_messages_sent(&mut server).is_empty());
     }
 
     // ibx#496: a login the server refuses during a reconnect ends the
@@ -5331,27 +5341,80 @@ mod tests {
         assert_eq!(result.entries.len(), 3);
     }
 
-    // ibx#457: a lost and restored link is told to every live scanner
-    // with 165, and the subscription is sent again.
+    // ibx#457, ibx#554: at a loss of the historical data link each live
+    // scanner gets 165, the same at a failed attempt and at the return;
+    // then each one that was on the wire is cancelled and subscribed again
+    // under its id, and the parameters that followed the link are asked
+    // again. The reference tells them in the walk of its listeners, which
+    // changes from one process to the next: ibx keeps the request order.
+    // As read on the reference, not observed yet (#635).
     #[test]
     fn scanner_link_notices_and_resubscribe() {
         let shared = Arc::new(SharedState::new());
         let (mut engine, mut server, tx) = scanner_engine(&shared);
+        let ids = [4, 5, 6, 7];
+        for (id, code) in ids.iter().zip(["TOP_PERC_GAIN", "HOT_BY_VOLUME", "MOST_ACTIVE", "TOP_PERC_LOSE"]) {
+            tx.send(scanner_cmd(*id, 1, code)).unwrap();
+        }
+        engine.poll_once();
+        let sent = plain_messages_sent(&mut server);
+        assert_eq!(sent.len(), 1, "the parameters first: {sent:?}");
+        assert!(sent[0].contains("|6040=10001|"));
         load_scanner_params(&mut engine, &mut server, "<ScanParameterResponse/>");
-        tx.send(scanner_cmd(4, 1, "TOP_PERC_GAIN")).unwrap();
+        engine.hmds.scanner_link_lost(&shared);
+        engine.hmds.scanner_connect_failed(&shared);
+        engine.hmds.scanner_link_restored(Instant::now(), &mut engine.hmds_conn, &mut engine.hb, &shared);
+        let text = |t: &str| format!("Historical Market Data Service query message:{t}");
+        let mut want = Vec::new();
+        for t in ["HMDS server disconnect occurred.  Attempting reconnection...",
+                  "HMDS connection attempt failed.  Connection will be re-attempted...",
+                  "HMDS server connection was successful."] {
+            want.extend(ids.iter().map(|id| format!("{id}:165:{}", text(t))));
+        }
+        assert_eq!(errors(&shared), want);
+        // Each live subscription cancelled and subscribed again under its
+        // id, then the parameters asked again: they followed the link.
+        let sent = plain_messages_sent(&mut server);
+        let kinds: Vec<String> = sent.iter().map(|m| {
+            let id = m.split("<id>").nth(1).and_then(|r| r.split("</id>").next()).unwrap_or("");
+            let kind = ["10004", "10003", "10001"].into_iter().find(|k| m.contains(&format!("|6040={k}|"))).unwrap_or("?");
+            format!("{kind}:{id}")
+        }).collect();
+        assert_eq!(kinds, ["10004:APISCAN1:4", "10003:APISCAN1:4", "10004:APISCAN1:5", "10003:APISCAN1:5",
+            "10004:APISCAN1:6", "10003:APISCAN1:6", "10004:APISCAN1:7", "10003:APISCAN1:7", "10001:"]);
+    }
+
+    // ibx#554 (as read on the reference, not observed yet): a parameters
+    // request sent and not answered is told of the loss and of the return
+    // under the largest int, and answered after the return; parameters
+    // known with no scanner session left are kept across a loss.
+    #[test]
+    fn scanner_parameters_across_a_loss_of_the_link() {
+        let shared = Arc::new(SharedState::new());
+        let (mut engine, mut server, tx) = scanner_engine(&shared);
+        tx.send(ControlCommand::FetchScannerParams).unwrap();
         engine.poll_once();
         assert_eq!(plain_messages_sent(&mut server).len(), 1);
         engine.hmds.scanner_link_lost(&shared);
-        engine.hmds.scanner_connect_failed(&shared);
-        engine.hmds.scanner_link_restored(&mut engine.hmds_conn, &mut engine.hb, &shared);
+        engine.hmds.scanner_link_restored(Instant::now(), &mut engine.hmds_conn, &mut engine.hb, &shared);
+        let max = i32::MAX;
         assert_eq!(errors(&shared), [
-            "4:165:Historical Market Data Service query message:HMDS server disconnect occurred.  Attempting reconnection...",
-            "4:165:Historical Market Data Service query message:HMDS connection attempt failed.  Connection will be re-attempted...",
-            "4:165:Historical Market Data Service query message:HMDS server connection was successful.",
+            format!("{max}:165:Historical Market Data Service query message:HMDS server disconnect occurred.  Attempting reconnection..."),
+            format!("{max}:165:Historical Market Data Service query message:HMDS server connection was successful."),
         ]);
         let sent = plain_messages_sent(&mut server);
-        assert_eq!(sent.len(), 1);
-        assert!(sent[0].contains("<id>APISCAN1:4</id>"));
+        assert_eq!(sent.len(), 1, "asked again: {sent:?}");
+        load_scanner_params(&mut engine, &mut server, "<ScanParameterResponse/>");
+        assert_eq!(shared.reference.drain_scanner_params().len(), 1, "answered");
+        // No scanner session left: the parameters stay across a loss and a
+        // new request is answered from them, nothing sent.
+        engine.hmds.scanner_link_lost(&shared);
+        engine.hmds.scanner_link_restored(Instant::now(), &mut engine.hmds_conn, &mut engine.hb, &shared);
+        assert!(errors(&shared).is_empty());
+        tx.send(ControlCommand::FetchScannerParams).unwrap();
+        engine.poll_once();
+        assert!(plain_messages_sent(&mut server).is_empty());
+        assert_eq!(shared.reference.drain_scanner_params().len(), 1);
     }
 
     // ibx#461: a bulletin keeps the server's message id and gets the

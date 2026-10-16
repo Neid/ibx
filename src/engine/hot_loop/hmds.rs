@@ -69,6 +69,13 @@ pub(crate) struct HmdsState {
     pub(crate) scanner_params: Option<String>,
     /// Client parameters requests waiting for the answer (ibx#457).
     pub(crate) scanner_params_waiting: u32,
+    /// The parameters follow the link (ibx#554): a request for them was
+    /// sent and a scanner session is left; dropped at a loss and asked
+    /// again after the return.
+    pub(crate) scanner_params_followed: bool,
+    /// A parameters request sent and not answered was told of the loss:
+    /// told of the return too (ibx#554).
+    scanner_params_told: bool,
     /// Row limit of each scan type, from the scanner parameters (ibx#456).
     pub(crate) scan_size_limits: std::collections::HashMap<String, u32>,
     /// The scan codes and filter codes of the parameters (ibx#657).
@@ -419,6 +426,9 @@ pub(crate) const SCANNER_PARAMS_DELAY: std::time::Duration = std::time::Duration
 const SCANNER_LINK_LOST: &str =
     "Historical Market Data Service query message:HMDS server disconnect occurred.  Attempting reconnection...";
 const SCANNER_LINK_RESTORED: &str = "Historical Market Data Service query message:HMDS server connection was successful.";
+/// The request id of a client's scanner parameters request in the
+/// reference's notices of the link (ibx#554): the largest int.
+const SCANNER_PARAMS_REQ_ID: ReqId = i32::MAX as ReqId;
 const SCANNER_CONNECT_FAILED: &str =
     "Historical Market Data Service query message:HMDS connection attempt failed.  Connection will be re-attempted...";
 
@@ -501,6 +511,8 @@ impl HmdsState {
             scanner_params_delayed: false,
             scanner_params: None,
             scanner_params_waiting: 0,
+            scanner_params_followed: false,
+            scanner_params_told: false,
             scan_size_limits: std::collections::HashMap::new(),
             scan_codes: std::collections::HashSet::new(),
             filter_codes: std::collections::HashSet::new(),
@@ -1860,6 +1872,7 @@ impl HmdsState {
                 (crate::control::scanner::TAG_SUB_PROTOCOL, "10001"),
             ]);
             self.pending_scanner_params = true;
+            self.scanner_params_followed = true;
             hb.last_hmds_sent = Instant::now();
             log::info!("Sent scanner params request");
         }
@@ -1917,6 +1930,16 @@ impl HmdsState {
         self.scanner_params = Some(xml.to_string());
         self.send_waiting_scanners(hmds_conn, hb, shared);
         self.scanner_table.remove(crate::control::scanner::ScannerTable::PARAMS_REQUEST);
+        self.unfollow_scanner_params_when_idle();
+    }
+
+    /// The parameters stop following the link when no scanner session is
+    /// left (ibx#554): kept across a loss from then on, until a request
+    /// for them is sent again.
+    fn unfollow_scanner_params_when_idle(&mut self) {
+        if self.scanner_table.ids().next().is_none() {
+            self.scanner_params_followed = false;
+        }
     }
 
     /// Send the subscriptions that are not on the wire yet. A subscription
@@ -2044,6 +2067,7 @@ impl HmdsState {
     fn drop_scanner(&mut self, pos: usize) -> ScannerSub {
         let sub = self.pending_scanner.remove(pos);
         self.scanner_table.remove(&sub.scan_id);
+        self.unfollow_scanner_params_when_idle();
         sub
     }
 
@@ -2084,14 +2108,26 @@ impl HmdsState {
     }
 
     /// The historical data link is down (ibx#457): every live scanner is
-    /// told, and the parameters are asked again on the next connection.
+    /// told. The parameters are dropped when they follow the link (a
+    /// request for them was sent and a scanner session is left, ibx#554):
+    /// they are asked again after the return. A parameters request sent
+    /// and not answered is told too, under the reference's id of such a
+    /// request. The order of the notices is the reference's walk of its
+    /// listeners, which changes from one process to the next: ibx keeps
+    /// the order of the requests.
     pub(crate) fn scanner_link_lost(&mut self, shared: &SharedState) {
-        self.scanner_params = None;
+        self.scanner_params_told = self.scanner_params_waiting > 0 && self.pending_scanner_params;
+        if self.scanner_params_followed {
+            self.scanner_params = None;
+        }
         self.pending_scanner_params = false;
         self.scanner_params_due = None;
         for sub in &mut self.pending_scanner {
             sub.sent = false;
             shared.reference.push_historical_error(sub.req_id, 165, SCANNER_LINK_LOST.to_string());
+        }
+        if self.scanner_params_told {
+            shared.reference.push_historical_error(SCANNER_PARAMS_REQ_ID, 165, SCANNER_LINK_LOST.to_string());
         }
     }
 
@@ -2100,22 +2136,37 @@ impl HmdsState {
         for sub in &self.pending_scanner {
             shared.reference.push_historical_error(sub.req_id, 165, SCANNER_CONNECT_FAILED.to_string());
         }
+        if self.scanner_params_told {
+            shared.reference.push_historical_error(SCANNER_PARAMS_REQ_ID, 165, SCANNER_CONNECT_FAILED.to_string());
+        }
     }
 
-    /// The historical data link is back (ibx#457): every live scanner is
-    /// told and subscribed again; waiting parameters requests go out.
-    pub(crate) fn scanner_link_restored(&mut self, hmds_conn: &mut Option<Connection>, hb: &mut HeartbeatState, shared: &SharedState) {
+    /// The historical data link is back (ibx#457, ibx#554): every live
+    /// scanner is told, and one that was on the wire is cancelled and
+    /// subscribed again at once, under its id; one that waited for the
+    /// parameters waits for them again. The parameters that follow the link
+    /// are asked again after the delay of a first need (ibx#553); when they
+    /// do not, a scanner that waits asks them as usual.
+    pub(crate) fn scanner_link_restored(&mut self, now: Instant, hmds_conn: &mut Option<Connection>, hb: &mut HeartbeatState, shared: &SharedState) {
         for i in 0..self.pending_scanner.len() {
             let req_id = self.pending_scanner[i].req_id;
             shared.reference.push_historical_error(req_id, 165, SCANNER_LINK_RESTORED.to_string());
-            if let Some(xml) = &self.pending_scanner[i].xml {
-                let sent = Self::send_scanner_xml(xml, hmds_conn, hb);
-                self.pending_scanner[i].sent = sent;
+            if let Some(xml) = self.pending_scanner[i].xml.clone() {
+                let scan_id = self.pending_scanner[i].scan_id.clone();
+                self.send_scanner_cancel(&scan_id, hmds_conn, hb);
+                self.pending_scanner[i].sent = Self::send_scanner_xml(&xml, hmds_conn, hb);
             }
         }
+        if std::mem::take(&mut self.scanner_params_told) {
+            shared.reference.push_historical_error(SCANNER_PARAMS_REQ_ID, 165, SCANNER_LINK_RESTORED.to_string());
+        }
+        if self.scanner_params.is_some() || self.pending_scanner_params {
+            return;
+        }
         let waiting = self.scanner_params_waiting > 0 || self.pending_scanner.iter().any(|s| !s.sent);
-        if waiting && self.scanner_params.is_none() && !self.pending_scanner_params {
-            self.send_scanner_params_request(hmds_conn, hb);
+        if self.scanner_params_followed || waiting {
+            self.scanner_params_due = None;
+            self.need_scanner_params(now, hmds_conn, hb);
         }
     }
 
