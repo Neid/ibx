@@ -4401,7 +4401,7 @@ fn send_order_ex(
         (55, symbol),
         (54, fix_side(side).to_string()),
         // A hedge's quantity with two decimals, as the reference writes it
-        // (ibx#614: 38=1.00; a bracket child's is 38=1).
+        // (ibx#614: "1.00"; a bracket child's is "1").
         (38, if attrs.hedge.is_some() { format!("{}.00", qty) } else { format_uint(qty as u64).to_string() }),
     ];
     // The hedge of a hedge order (ibx#614; the reference 10.51, paper,
