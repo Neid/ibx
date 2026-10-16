@@ -3642,6 +3642,8 @@ pub(crate) mod tests {
         use crate::control::historical::BarSize;
         let mut hmds = HmdsState::new();
         let shared = SharedState::new();
+        let (tx, events) = crossbeam_channel::unbounded();
+        shared.attach_event_channel(&tx);
         let mut hb = HeartbeatState::new();
         let mut conn: Option<Connection> = None;
         recorded_live(&mut hmds, 9530, "cf60", "Trades", BarSize::Hour1, true);
@@ -3699,6 +3701,20 @@ pub(crate) mod tests {
             }
         }
         assert!(shared.reference.drain_historical_updates().is_empty());
+        // The event channel (ibx#576): each request's updates come before
+        // its 162, none after it. An update written between a client's
+        // cancel call and the engine's handling of it is on the channel
+        // before the 162, as the reference's socket gives what it wrote
+        // before it took the cancel.
+        let mut cancelled_at = std::collections::HashMap::new();
+        for (i, e) in events.try_iter().enumerate() {
+            match e {
+                Event::Error { req_id, code: 162, .. } => { cancelled_at.insert(req_id, i); }
+                Event::HistoricalUpdate { req_id, .. } => assert!(!cancelled_at.contains_key(&req_id), "update of {req_id} after its 162"),
+                _ => {}
+            }
+        }
+        assert_eq!(cancelled_at.len(), 4);
     }
 
     // ibx#432 (scenario b1_432_hist_ticks): every reply frame of a tick

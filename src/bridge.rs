@@ -528,7 +528,11 @@ pub enum Event {
     HistoricalSchedule { req_id: ReqId, data: HistoricalScheduleResponse },
     /// Histogram of a request.
     HistogramData { req_id: ReqId, entries: Vec<HistogramEntry> },
-    /// A bar of a historical request kept up to date.
+    /// A bar of a historical request kept up to date. None comes after
+    /// the request's cancel answer (its `Error` 162); one written between
+    /// the cancel call and that answer is on the channel before it, as the
+    /// reference's socket gives what it wrote before it took the cancel
+    /// (ibx#576). The `historicalDataUpdate` callback drops those.
     HistoricalUpdate { req_id: ReqId, bar: HistoricalBar },
     /// Commission report of an execution, given after the `Fill` of that
     /// execution only (ibx#644): the reports of executions of earlier
@@ -545,7 +549,10 @@ pub enum Event {
     /// can come after events written in the meantime. A text the rebuild
     /// refuses gives no event, as no callback.
     ScannerParameters(String),
-    /// Rows of a scanner subscription.
+    /// Rows of a scanner subscription. None come after the cancel answer
+    /// (its `Error` 162); rows written between the cancel call and that
+    /// answer are on the channel before it (ibx#576). The `scannerData`
+    /// callback drops those.
     ScannerData { req_id: ReqId, result: ScannerResult },
     /// Fundamental data of a request.
     FundamentalData { req_id: ReqId, data: String },

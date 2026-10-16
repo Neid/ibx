@@ -5024,6 +5024,8 @@ mod tests {
     fn two_scanners_get_their_own_results() {
         let shared = Arc::new(SharedState::new());
         let (mut engine, mut server, tx) = scanner_engine(&shared);
+        let (events_tx, events) = crossbeam_channel::unbounded();
+        shared.attach_event_channel(&events_tx);
         tx.send(scanner_cmd(9005, 198, "TOP_PERC_GAIN")).unwrap();
         tx.send(scanner_cmd(9006, 198, "MOST_ACTIVE")).unwrap();
         engine.poll_once();
@@ -5059,6 +5061,14 @@ mod tests {
         assert!(sent[1].contains("<id>APISCAN198:9006</id>"));
         assert!(engine.hmds.cold_scanner_results.is_empty());
         assert!(engine.hmds.pending_scanner.is_empty());
+        // The event channel (ibx#576): rows the server sends after the
+        // cancel give no event; the rows parked for their contracts at the
+        // cancel never gave one.
+        for msg in fixture_hmds_messages("20260926b/scanner_two.jsonl") {
+            engine.inject_hmds_message(&msg);
+        }
+        engine.look_up_scanner_rows();
+        assert!(!events.try_iter().any(|e| matches!(e, crate::bridge::Event::ScannerData { .. })));
     }
 
     // ibx#457: a result whose id is not live is dropped; a refusal text
