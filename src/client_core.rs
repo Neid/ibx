@@ -6247,6 +6247,13 @@ impl ClientCore {
         };
         let parent = self.hedge_parent(OrderId::from(order.parent_id));
         let Some((parent_contract, _)) = parent else {
+            // A parent that filled or was cancelled is still known: a
+            // modify of its filled hedge gets 104 further on (ibx#614; the
+            // reference 10.51, paper, 16/10/2026, regular hours: "Cannot
+            // modify a filled order.").
+            if self.finished_orders.lock().unwrap().contains(&OrderId::from(order.parent_id)) {
+                return None;
+            }
             return read(format!("Missing parent order: server: 0 order: {} parent: {} hedge:[{}]", order_id, order.parent_id, order.hedge_type));
         };
         let param = order.hedge_param.trim();
@@ -8226,6 +8233,12 @@ mod tests {
         for ok in [hedge("B", "1"), hedge("B", "0.5"), hedge("S", ""), hedge("P", "2"), hedge("F", "")] {
             assert_eq!(read(&ok), None, "{ok:?}");
         }
+        // A modify of a filled hedge whose parent filled (regular hours,
+        // 16/10/2026): the parent is still known, the modify gets 104.
+        core.finished_orders.lock().unwrap().extend([OrderId::from(70), OrderId::from(71)]);
+        let filled_hedge = ApiOrder { parent_id: 70, hedge_max_size: 2, ..hedge("B", "1") };
+        assert_eq!(read(&filled_hedge), None);
+        assert_eq!(core.refusal_for_order_id(71, &filled_hedge, &shared).map(|r| r.0), Some(104));
 
         let later = |o: &ApiOrder| core.hedge_later_refusal(o).map(|r| r.0);
         assert_eq!(later(&hedge("B", "1")), None, "case A: refused by the engine, not here");
