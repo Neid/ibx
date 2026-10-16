@@ -2004,15 +2004,17 @@ fn place_order_unsupported_type_returns_error() {
 fn place_order_non_stk_contract_rejected() {
     // A contract whose order message is not written must be rejected, not
     // silently sent as a stock order on the underlying (ibx#202). Options,
-    // futures options and warrants are written since ibx#666; bonds are not.
+    // futures options, warrants, metals and funds are written since ibx#666
+    // (bonds go to the engine for their permission); structured products
+    // are not.
     let (client, rx, shared) = test_client();
     shared.market.set_instrument_count(1);
-    let bond = Contract { con_id: 999001, symbol: "IBM".into(), sec_type: "BOND".into(), ..Default::default() };
+    let iopt = Contract { con_id: 999001, symbol: "DAX".into(), sec_type: "IOPT".into(), ..Default::default() };
     let order = Order { action: "BUY".into(), total_quantity: 1.0, order_type: "MKT".into(), ..Default::default() };
-    let result = client.place_order(1, &bond, &order);
+    let result = client.place_order(1, &iopt, &order);
     assert!(result.is_err());
     let err = result.unwrap_err();
-    assert!(err.contains("BOND"));
+    assert!(err.contains("IOPT"));
     assert!(err.contains("STK"));
     // No order must have been queued to the engine.
     assert!(rx.try_recv().is_err());

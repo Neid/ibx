@@ -346,6 +346,11 @@ pub struct Context {
     /// `permissions_asked`, with the time the order stops waiting.
     pub(crate) trading_permissions: HashMap<String, bool>,
     pub(crate) permissions_asked: HashMap<String, std::time::Instant>,
+    /// The cash amount of a fund order bought by cash, in quantity units:
+    /// the reference reports it as the order's remaining quantity (ibx#666;
+    /// paper, 16/10/2026: Cancelled with 100 remaining for a VFIAX buy of
+    /// 100.00).
+    pub(crate) cash_orders: HashMap<crate::types::OrderId, i64>,
     pub(crate) next_permission_request: u32,
     /// Contracts whose trading hours were asked for an order and have not
     /// come: an order with a zone to check waits for them (ibx#668).
@@ -480,6 +485,7 @@ impl Context {
             next_preset_request: 3,
             trading_permissions: HashMap::new(),
             permissions_asked: HashMap::new(),
+            cash_orders: HashMap::new(),
             next_permission_request: 0,
             zone_pending: std::collections::HashSet::new(),
             depth_unsupported: std::collections::HashSet::new(),

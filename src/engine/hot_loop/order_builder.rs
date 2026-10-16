@@ -305,7 +305,18 @@ fn send_orders(
             let sec_type = if matches!(sec_type.as_str(), "" | "CS") { "STK".to_string() } else { sec_type };
             // A type known from the definition (a contract given by its
             // conId) whose order is refused or not written yet (ibx#666).
-            if let Some((code, text)) = unwritten_type_refusal(&order_req, &sec_type) {
+            // A bond's permission comes first (460); its own refusal once
+            // the permission is there (ibx#666).
+            // A fund bought by cash: its amount stands for its quantity in
+            // its reports (ibx#666).
+            if sec_type == "FUND"
+                && let Some((_, Some(attrs))) = order_req.new_order_side()
+                && attrs.cash_qty > 0 && order_req.new_order_qty() == Some(0)
+            {
+                let qty = (attrs.cash_qty as f64 / crate::types::PRICE_SCALE as f64 * crate::types::QTY_SCALE as f64).round() as i64;
+                context.cash_orders.insert(order_req.order_id(), qty);
+            }
+            if let Some((code, text)) = unwritten_type_refusal(&order_req, &sec_type).filter(|_| sec_type != "BOND") {
                 let oid = order_req.order_id();
                 log::warn!("Order {} refused: {} order ({})", oid, sec_type, code);
                 shared.orders.push_order_error(oid, code, text);
@@ -2304,7 +2315,7 @@ fn send_new_order(
     // the paper account has no permission for them.
     let sec_type = field(fields, 167).unwrap_or("");
     let option_like = matches!(sec_type, "OPT" | "FOP" | "WAR");
-    let terms = (matches!(sec_type, "FUT" | "CFD" | "CASH") || option_like).then(|| {
+    let terms = (matches!(sec_type, "FUT" | "CFD" | "CASH" | "CMDTY" | "FUND") || option_like).then(|| {
         let (_, destination) = context.market.order_routing(instrument);
         context.rth_types.get(&(con_id, destination))
     }).flatten();
@@ -2319,6 +2330,10 @@ fn send_new_order(
         match (tag, what_if) {
             (100, _) if algo_destination => out.push((100, "BEST")),
             (38, _) if cash_qty.is_some() => out.push((38, cash_qty.as_deref().unwrap_or(value))),
+            // A fund order goes with a quantity of 1, its amount in the cash
+            // quantity (the reference 10.51, paper, 16/10/2026: a VFIAX buy
+            // of 100.00 with a quantity of 0 given; ibx#666).
+            (38, _) if sec_type == "FUND" => out.push((38, "1")),
             (11, Some(clord)) => out.push((11, clord)),
             (583 | 6209, Some(_)) => {}
             _ => out.push((tag, value)),
@@ -3227,21 +3242,42 @@ fn permission_refusal(
     if req.combo().is_some() { return None; }
     let instrument = req.instrument()?;
     let sec_type = context.market.order_routing(instrument).0;
-    if !matches!(sec_type.as_str(), "OPT" | "FOP" | "WAR") { return None; }
-    let waits = sec_type != "WAR";
+    if !matches!(sec_type.as_str(), "OPT" | "FOP" | "WAR" | "CMDTY" | "FUND" | "BOND") { return None; }
+    // A warrant, a metal and a fund go out with the question on its way
+    // (paper, 16/10/2026: XAUUSD and a VFIAX buy by cash sent at once, the
+    // server refusing them; the next fund order then refused with 460).
+    let waits = !matches!(sec_type.as_str(), "WAR" | "CMDTY" | "FUND");
+    // A bond not refused for its permission is refused for its message,
+    // which ibx does not write yet.
+    let bond_unwritten = |shared: &Arc<SharedState>| {
+        let oid = req.order_id();
+        let (code, text) = unwritten_type_refusal(req, "BOND").unwrap_or_default();
+        log::warn!("Order {} refused: BOND order ({})", oid, code);
+        shared.orders.push_order_error(oid, code, text);
+        Some(true)
+    };
     let key = match definition(context, conn, hb, instrument) {
+        Definition::NoContract if sec_type == "BOND" => return bond_unwritten(shared),
         Definition::NoContract => return None,
         Definition::Waiting => return Some(false),
         Definition::Known(types, _) => types.permission_key.clone(),
     };
-    if key.is_empty() { return None; }
+    if key.is_empty() {
+        return if sec_type == "BOND" { bond_unwritten(shared) } else { None };
+    }
     match context.trading_permissions.get(&key) {
+        // A bond with the permission: its message is not written yet.
+        Some(true) if sec_type == "BOND" => bond_unwritten(shared),
         Some(true) => None,
         Some(false) => {
             let oid = req.order_id();
             log::warn!("Order {} refused: no trading permission for {} (460)", oid, key);
             shared.orders.push_order_error(oid, 460, NO_TRADING_PERMISSIONS.to_string());
-            context.unsent.insert(oid, (instrument, req.new_order_qty().unwrap_or(0), attrs.map_or(0, |a| a.parent_id)));
+            let qty = match req.new_order_qty().unwrap_or(0) {
+                0 => context.cash_orders.get(&oid).copied().unwrap_or(0),
+                q => q,
+            };
+            context.unsent.insert(oid, (instrument, qty, attrs.map_or(0, |a| a.parent_id)));
             Some(true)
         }
         None => {
@@ -3270,7 +3306,7 @@ fn permission_refusal(
 ///   orders, bonds and the rest): refused with this text of ibx's own
 ///   rather than sent without the fields it needs.
 fn unwritten_type_refusal(req: &OrderRequest, sec_type: &str) -> Option<(i64, String)> {
-    const WRITTEN: [&str; 8] = ["STK", "BAG", "FUT", "CFD", "CASH", "OPT", "FOP", "WAR"];
+    const WRITTEN: [&str; 9] = ["STK", "BAG", "FUT", "CFD", "CASH", "OPT", "FOP", "WAR", "CMDTY"];
     if WRITTEN.contains(&sec_type) { return None; }
     if sec_type == "FUND"
         && let Some((crate::types::Side::Buy, attrs)) = req.new_order_side()
@@ -3278,6 +3314,7 @@ fn unwritten_type_refusal(req: &OrderRequest, sec_type: &str) -> Option<(i64, St
     {
         return Some((10203, "A buy order for FUND must contain non-zero cashQty, and may not contain non-zero totalQuantity.".to_string()));
     }
+    if sec_type == "FUND" { return None; }
     Some((321, format!("Error validating request.-'PlaceOrder(3)' : cause - {} orders are not written by ibx yet (ibx#666)", sec_type)))
 }
 
@@ -7755,6 +7792,62 @@ mod tests {
         assert!(frames.is_empty(), "nothing sent: {frames:?}");
         let errors = shared.orders.drain_order_errors();
         assert_eq!((errors.len(), errors[0].0, errors[0].1), (1, 86, 321), "{errors:?}");
+    }
+
+    const XAUUSD: [(u32, &str); 7] = [(55, "XAUUSD"), (167, "CMDTY"), (15, "USD"), (207, "BEST"), (6035, "XAUUSD"),
+        (6411, "14/CMDTY/NONE"), (6431, "DAY/3,LMT/3,MKT/1")];
+    const VFIAX: [(u32, &str); 7] = [(55, "VFIAX"), (167, "FUND"), (15, "USD"), (207, "FUNDSERV"), (6035, "922908710"),
+        (6411, "FUNDSERV/FUND/NONE"), (6431, "DAY/3,MKT/1")];
+    const IBM_BOND: [(u32, &str); 6] = [(55, "IBM"), (167, "BOND"), (15, "USD"), (207, "BEST"),
+        (6411, "7/BOND/USA_DEBT"), (6431, "DAY/3,LMT/3")];
+
+    /// The message of a new order, without the session's values.
+    fn message_of(frame: &[(u32, String)]) -> String {
+        frame.iter().filter(|(t, _)| ![8, 9, 10, 34, 52, 11, 1, 6121, 6119].contains(t))
+            .map(|(t, v)| format!("{t}={v}")).collect::<Vec<_>>().join("|")
+    }
+
+    // ibx#666 (the reference 10.51, paper, regular hours 16/10/2026,
+    // `.tmp/666/case3.py` cases M, Q and S): a metal order and a fund
+    // bought by cash go out with the permission asked at the same time, in
+    // the reference's message (the fund with a quantity of 1); the next fund
+    // order of the class, once the answer says no permission, gets 460 and
+    // its cancel reports the cash amount as its remaining quantity.
+    #[test]
+    fn metal_and_fund_orders_as_the_reference() {
+        let (frames, ..) = order_by_con_id("69067924", "SMART",
+            OrderRequest::SubmitLimit { order_id: 87, instrument: 0, side: Side::Buy, qty: 1, price: px(1000.0) }, &XAUUSD);
+        assert_eq!(frames.iter().map(|f| tag(f, 35).unwrap_or("")).collect::<Vec<_>>(), ["U", "D"], "{frames:?}");
+        assert_eq!(message_of(&frames[1]), concat!("35=D|44=1000.00|6122=c|38=1|40=2|55=XAUUSD|167=CMDTY|48=XAUUSD|22=101|",
+            "231=1.00|54=1|59=0|100=BEST|6210=BEST|6008=69067924|6088=Socket|15=USD|6211=|6238="));
+        let cash = |id| OrderRequest::SubmitEx { order_id: id, instrument: 0, side: Side::Buy, qty: 0,
+            kind: crate::types::OrderKind::Market, tif: b'0', attrs: crate::types::OrderAttrs { cash_qty: px(100.0), ..Default::default() } };
+        let (frames, shared, mut context, mut conn, mut server) = order_by_con_id("48013549", "FUNDSERV", cash(88), &VFIAX);
+        assert_eq!(frames.iter().map(|f| tag(f, 35).unwrap_or("")).collect::<Vec<_>>(), ["U", "D"], "{frames:?}");
+        assert_eq!(message_of(&frames[1]), concat!("35=D|6122=c|152=100.00|38=1|40=1|55=VFIAX|167=FUND|48=922908710|22=101|",
+            "231=1.00|54=1|59=0|100=FUNDSERV|6210=FUNDSERV|6008=48013549|6088=Socket|15=USD|6211=|6238="));
+        permission_reply(&mut context, &permission_answer("FUNDSERV/FUND/NONE", "0"));
+        context.pending_orders.push(cash(89));
+        assert!(drain_frames(&mut context, &shared, &mut conn, &mut server).is_empty(), "nothing sent");
+        assert_eq!(shared.orders.drain_order_errors(), [(89, 460, "No trading permissions.".to_string())]);
+        assert_eq!(context.unsent.get(&89).map(|u| u.1), Some(100 * crate::types::QTY_SCALE), "the cash amount");
+    }
+
+    // ibx#666 (the reference 10.51, paper, regular hours 16/10/2026,
+    // `.tmp/666/case3.py` case B): a bond order waits for the permission of
+    // its class; without it, 460 and nothing sent. With it, ibx refuses it:
+    // its message is not written yet.
+    #[test]
+    fn a_bond_order_waits_for_its_permission() {
+        let order = || OrderRequest::SubmitLimit { order_id: 90, instrument: 0, side: Side::Buy, qty: 1, price: px(10.0) };
+        for (allowed, code) in [("0", 460), ("1", 321)] {
+            let (frames, shared, mut context, mut conn, mut server) = order_by_con_id("29105555", "SMART", order(), &IBM_BOND);
+            assert_eq!(frames.iter().map(|f| tag(f, 35).unwrap_or("")).collect::<Vec<_>>(), ["U"], "it waits: {frames:?}");
+            permission_reply(&mut context, &permission_answer("7/BOND/USA_DEBT", allowed));
+            assert!(drain_frames(&mut context, &shared, &mut conn, &mut server).is_empty(), "nothing sent");
+            let errors = shared.orders.drain_order_errors();
+            assert_eq!(errors.iter().map(|e| (e.0, e.1)).collect::<Vec<_>>(), [(90, code)], "{errors:?}");
+        }
     }
 
     // ibx#542, paper 09/10/2026 (the reference and ibx on the same case):

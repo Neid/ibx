@@ -2220,9 +2220,14 @@ impl CcpState {
                 // remaining stays what was not filled (every four-leg
                 // recording of 26/09 to 02/10/2026: Cancelled and Inactive
                 // with 1 remaining of 1, ibx#486).
+                // A fund bought by cash: its amount (ibx#666).
+                let ordered = match order.qty_fixed {
+                    0 => context.cash_orders.get(&clord_id).copied().unwrap_or(0),
+                    q => q,
+                };
                 let remaining = match order.status {
                     crate::types::OrderStatus::Cancelled | crate::types::OrderStatus::Rejected =>
-                        (order.qty_fixed - filled).max(0),
+                        (ordered - filled).max(0),
                     _ => leaves_qty,
                 };
                 let update = crate::types::OrderUpdate {
@@ -3778,7 +3783,9 @@ impl CcpState {
         // A derivative's terms, as the reference shows the contract of an
         // order given by its conId (ibx#666; paper 15/10/2026, a SAP
         // warrant: its date, strike, right and multiplier "0.1").
-        let derivative = !matches!(sec_type.as_str(), "STK" | "CASH" | "IND" | "BAG");
+        // A metal and a fund have none either (the reference 10.51, paper,
+        // 16/10/2026: openOrder of XAUUSD and VFIAX with no multiplier).
+        let derivative = !matches!(sec_type.as_str(), "STK" | "CASH" | "IND" | "BAG" | "CMDTY" | "FUND");
         shared.reference.cache_contract(def.con_id, api::Contract {
             con_id: def.con_id,
             symbol: def.symbol.clone(),

@@ -5767,12 +5767,14 @@ impl ClientCore {
     /// goes to the engine for its rule (10203). The others would otherwise
     /// go out without the fields their message needs (ibx#202).
     pub fn validate_order_contract(sec_type: &str) -> Result<(), String> {
-        const WRITTEN: [&str; 9] = ["STK", "BAG", "FUT", "CFD", "CASH", "OPT", "FOP", "WAR", "FUND"];
+        // A metal (ibx#666, 16/10/2026) is written; a bond goes to the
+        // engine for its permission (460) and is refused there after it.
+        const WRITTEN: [&str; 11] = ["STK", "BAG", "FUT", "CFD", "CASH", "OPT", "FOP", "WAR", "FUND", "CMDTY", "BOND"];
         if sec_type.is_empty() || WRITTEN.iter().any(|t| sec_type.eq_ignore_ascii_case(t)) {
             return Ok(());
         }
         Err(format!(
-            "Unsupported contract sec_type '{}': orders are written for STK, BAG, FUT, CFD, CASH, OPT, FOP and WAR only.              See https://github.com/deepentropy/ibx/issues/666",
+            "Unsupported contract sec_type '{}': orders are written for STK, BAG, FUT, CFD, CASH, OPT, FOP, WAR, FUND and CMDTY only.              See https://github.com/deepentropy/ibx/issues/666",
             sec_type
         ))
     }
