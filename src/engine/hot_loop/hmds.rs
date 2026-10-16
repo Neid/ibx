@@ -39,6 +39,9 @@ pub(crate) struct HmdsState {
     /// before the start, 3 days long, as the reference (ibx#404).
     pub(crate) tbt_guess_window: (i64, i64),
     pub(crate) next_hmds_query_id: u32,
+    /// The session series of the bar and historical tick queries' names,
+    /// as the reference's: cf4, cf8, cf12 ... (ibx#721; paper, 16/10/2026).
+    pub(crate) next_chart_query: u32,
     /// The counter of the real-time bar query ids (`realTime{n}`, the
     /// reference's counter), from 1.
     pub(crate) next_rtbar_id: u32,
@@ -492,6 +495,14 @@ pub(crate) struct BarLeg {
     pub(crate) state: LegState,
 }
 
+/// Whether a reply's whole query id is this leg's: its window and its chart
+/// name's data label (ibx#721: the legs of one request share the window).
+fn leg_of(leg: &BarLeg, query_id: &str) -> bool {
+    let mut parts = query_id.split(";;");
+    parts.next() == Some(leg.query_id.as_str())
+        && parts.next().is_some_and(|chart| chart.ends_with(&format!(" {}", leg.data_type.label())))
+}
+
 /// A bar request answered from several server queries (BID_ASK, ibx#408).
 #[derive(Debug)]
 pub(crate) struct MultiLegBars {
@@ -543,6 +554,7 @@ impl HmdsState {
                 (now - 5, now - 5 + 259_200)
             },
             next_hmds_query_id: 1000,
+            next_chart_query: 4,
             next_rtbar_id: 0,
             disconnected: false,
             pending_historical: Vec::new(),
@@ -762,7 +774,8 @@ impl HmdsState {
                                 if is_complete {
                                     self.pending_historical.remove(pos);
                                 }
-                                self.on_leg_bars(req_id, &leg_qid, &resp, xml_tag, shared, event_tx);
+                                let _ = leg_qid;
+                                self.on_leg_bars(req_id, &resp.query_id, &resp, xml_tag, shared, event_tx);
                                 return;
                             }
                             // Bar completion rides <eoq>true> in the final segmented
@@ -983,7 +996,8 @@ impl HmdsState {
                                 self.keep_up_to_date_reqs.remove(&req_id);
                                 self.live_bars.retain(|l| l.req_id != req_id);
                                 self.bar_requests.retain(|b| b.req_id != req_id);
-                                self.on_leg_failed(req_id, &leg_qid);
+                                let _ = leg_qid;
+                                self.on_leg_failed(req_id, qid);
                                 released = Some((req_id, 162, historical_service_error(&error_msg)));
                             } else if let Some(pos) = self.pending_head_ts.iter().position(|(q, _, _)| q == wid) {
                                 let (_, req_id, _) = self.pending_head_ts.remove(pos);
@@ -1640,22 +1654,18 @@ impl HmdsState {
             reply_zone: String::new(), held: Vec::new(),
         });
         let end_date_time = crate::control::historical::server_time(end);
-        let qid = self.next_hmds_query_id;
-        self.next_hmds_query_id += 1;
+        // The query's name in the session series; the legs of one request
+        // share it, told apart by their chart names (the reference 10.51:
+        // "cf8;;EUR.USD@IDEALPRO Bid" and "cf8;;EUR.USD@IDEALPRO Ask").
+        let window = format!("cf{}", self.next_chart_query);
+        self.next_chart_query += 4;
 
         // One server query per leg: BID_ASK is a Bid query plus an Ask
         // query answered as one request (ibx#408).
         let legs = data_type.legs();
         let mut leg_states = Vec::with_capacity(legs.len());
-        for (i, &leg_type) in legs.iter().enumerate() {
-            let qid = if i == 0 {
-                qid
-            } else {
-                let q = self.next_hmds_query_id;
-                self.next_hmds_query_id += 1;
-                q
-            };
-            let query_id = format!("hist_{}", qid);
+        for &leg_type in legs.iter() {
+            let query_id = window.clone();
             let req = crate::control::historical::HistoricalRequest {
                 query_id: query_id.clone(),
                 con_id,
@@ -1757,7 +1767,7 @@ impl HmdsState {
     ) {
         let Some(pos) = self.multi_leg.iter().position(|m| m.req_id == req_id) else { return };
         let m = &mut self.multi_leg[pos];
-        if let Some(leg) = m.legs.iter_mut().find(|l| l.query_id == leg_qid) {
+        if let Some(leg) = m.legs.iter_mut().find(|l| leg_of(l, leg_qid)) {
             let bars = crate::control::historical::parse_leg_bars(xml);
             if !bars.is_empty() {
                 m.frames.push((leg.data_type, bars));
@@ -1777,7 +1787,7 @@ impl HmdsState {
     fn on_leg_failed(&mut self, req_id: ReqId, leg_qid: &str) {
         let Some(pos) = self.multi_leg.iter().position(|m| m.req_id == req_id) else { return };
         let m = &mut self.multi_leg[pos];
-        if let Some(leg) = m.legs.iter_mut().find(|l| l.query_id == leg_qid) {
+        if let Some(leg) = m.legs.iter_mut().find(|l| leg_of(l, leg_qid)) {
             leg.state = LegState::Failed;
         }
         if m.legs.iter().all(|l| l.state != LegState::Pending) {
@@ -1850,7 +1860,10 @@ impl HmdsState {
         let mut waiting = Vec::new();
         self.pending_historical.retain(|(qid, rid)| {
             if *rid == req_id {
-                waiting.push(qid.clone());
+                // The legs of a request share their window: one cancel.
+                if !waiting.contains(qid) {
+                    waiting.push(qid.clone());
+                }
                 false
             } else {
                 true
@@ -2606,10 +2619,11 @@ impl HmdsState {
             shared.reference.push_historical_error(req_id, 10314, h::INVALID_END_DATE.to_string());
             return;
         }
-        let qid = self.next_hmds_query_id;
-        self.next_hmds_query_id += 1;
+        // In the session series of the bar queries (ibx#721).
+        let window = format!("cf{}", self.next_chart_query);
+        self.next_chart_query += 4;
         let query = h::TickQuery {
-            window_id: format!("tk_{}", qid),
+            window_id: window,
             symbol: symbol.to_string(),
             con_id,
             sec_type: sec_type.to_string(),
@@ -2896,7 +2910,11 @@ pub(crate) mod tests {
         let legs: Vec<&(String, ReqId)> =
             hmds.pending_historical.iter().filter(|(_, r)| *r == req_id).collect();
         assert_eq!(legs.len(), 2, "BID_ASK must go out as two queries");
-        (legs[0].0.clone(), legs[1].0.clone())
+        // One window for both legs, told apart by their chart names
+        // (ibx#721); the replies' whole ids.
+        assert_eq!(legs[0].0, legs[1].0);
+        let w = &legs[0].0;
+        (format!("{w};;SPX@CBOE Bid;;1;;true;;0;;I"), format!("{w};;SPX@CBOE Ask;;1;;true;;0;;I"))
     }
 
     #[test]
@@ -2905,6 +2923,7 @@ pub(crate) mod tests {
         let shared = SharedState::new();
         let (bid, ask) = send_bid_ask(&mut hmds, &shared, 5);
         assert_ne!(bid, ask);
+        assert!(bid.starts_with("cf4;;"), "{bid}");
         assert_eq!(hmds.multi_leg.len(), 1);
         let m = &hmds.multi_leg[0];
         assert_eq!(m.req_id, 5);
@@ -3046,8 +3065,8 @@ pub(crate) mod tests {
         let mut conn: Option<Connection> = None;
         send_bid_ask(&mut hmds, &shared, 9);
         let cancels = hmds.cancel_bar_request(9, &shared);
-        assert_eq!(cancels.len(), 2, "each waiting leg is cancelled by its id: {cancels:?}");
-        assert!(cancels[0].1.contains("<CancelQuery><id>hist_1000</id></CancelQuery>"), "{:?}", cancels);
+        assert_eq!(cancels.len(), 1, "the legs' window is cancelled once: {cancels:?}");
+        assert!(cancels[0].1.contains("<CancelQuery><id>cf4</id></CancelQuery>"), "{:?}", cancels);
         assert!(hmds.pending_historical.is_empty());
         assert!(hmds.multi_leg.is_empty());
         let _ = (&mut hb, &mut conn);
@@ -3967,7 +3986,7 @@ pub(crate) mod tests {
             true, false, "AAPL", &mut conn, &mut hb, &shared, false, 1, None, super::super::pool::PRIMARY_HMDS);
         let cancels = hmds.cancel_bar_request(5, &shared);
         assert_eq!(cancels.len(), 1);
-        assert!(cancels[0].1.ends_with("<ListOfCancelQueries><CancelQuery><id>hist_1000</id></CancelQuery></ListOfCancelQueries>"), "{:?}", cancels);
+        assert!(cancels[0].1.ends_with("<ListOfCancelQueries><CancelQuery><id>cf4</id></CancelQuery></ListOfCancelQueries>"), "{:?}", cancels);
         assert_eq!(shared.reference.drain_historical_errors(), vec![(5, 162,
             "Historical Market Data Service error message:API historical data query cancelled: 5".to_string())]);
     }
