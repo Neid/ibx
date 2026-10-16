@@ -214,21 +214,38 @@ fn push_u32_padded<const N: usize>(buf: &mut Vec<u8>, val: u32) {
     buf.extend_from_slice(&digits);
 }
 
-/// Parse a SOH-delimited wire message into {tag: value}.
+/// Parse a SOH-delimited wire message into {tag: value}. A repeated field
+/// keeps its last value. The map is sized once from the field count and
+/// only the values are copied (ibx#701).
 pub fn fix_parse(data: &[u8]) -> HashMap<u32, String> {
-    let mut result = HashMap::new();
+    let mut result = HashMap::with_capacity(data.iter().filter(|&&b| b == SOH).count() + 1);
     for part in data.split(|&b| b == SOH) {
-        if part.is_empty() {
-            continue;
-        }
-        let text = String::from_utf8_lossy(part);
-        if let Some((tag_str, val)) = text.split_once('=') {
-            if let Ok(tag) = tag_str.parse::<u32>() {
-                result.insert(tag, val.to_string());
-            }
-        }
+        let Some(eq) = part.iter().position(|&b| b == b'=') else { continue };
+        let Some(tag) = parse_tag(&part[..eq]) else { continue };
+        let raw = &part[eq + 1..];
+        let val = match std::str::from_utf8(raw) {
+            Ok(v) => v.to_owned(),
+            Err(_) => String::from_utf8_lossy(raw).into_owned(),
+        };
+        result.insert(tag, val);
     }
     result
+}
+
+/// A field number: ASCII digits only, within `u32`.
+#[inline]
+fn parse_tag(digits: &[u8]) -> Option<u32> {
+    if digits.is_empty() {
+        return None;
+    }
+    let mut tag: u32 = 0;
+    for &d in digits {
+        if !d.is_ascii_digit() {
+            return None;
+        }
+        tag = tag.checked_mul(10)?.checked_add(u32::from(d - b'0'))?;
+    }
+    Some(tag)
 }
 
 /// Fold 20-byte HMAC digest to 4 bytes → 8-char uppercase hex.
@@ -735,6 +752,20 @@ mod tests {
         let parsed = fix_parse(data);
         assert_eq!(parsed.get(&55), Some(&"AAPL".to_string()));
         assert_eq!(parsed.get(&54), Some(&"1".to_string()));
+    }
+
+    // ibx#701: the field number is read from the bytes. What is not a
+    // number is skipped, a repeated field keeps its last value, a value
+    // keeps its '=' and a value that is not UTF-8 is kept with replacements.
+    #[test]
+    fn fix_parse_reads_field_numbers_from_the_bytes() {
+        let data = b"8=X\x01x5=1\x01=2\x0199999999999=3\x0158=a=b\x0158=c\x01 7=4\x01207=\xFFQ\x01";
+        let parsed = fix_parse(data);
+        assert_eq!(parsed.len(), 3, "{parsed:?}");
+        assert_eq!(parsed.get(&8).map(String::as_str), Some("X"));
+        assert_eq!(parsed.get(&58).map(String::as_str), Some("c"));
+        assert_eq!(parsed.get(&207).map(String::as_str), Some("\u{FFFD}Q"));
+        assert_eq!(fix_parse(b"58=a=b").get(&58).map(String::as_str), Some("a=b"));
     }
 
     #[test]
