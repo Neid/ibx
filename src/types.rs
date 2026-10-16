@@ -887,6 +887,10 @@ pub enum OrderKind {
     /// offset (the API auxPrice, 0 when unset) in both offset fields. Not
     /// observed yet: no contract of the test account lists the type.
     PassvRel { price: Price, offset: Price },
+    /// Volatility order (VOL, ibx#673): the volatility in percent and its
+    /// type (1 daily, 2 annual). Checked for the option's permission; its
+    /// message is not written yet.
+    Volatility { volatility: Price, vol_type: u8 },
     /// Adjustable stop, same fields as `OrderRequest::SubmitAdjustableStop`.
     /// On this path it also carries parent, OCA and tif, so it can be a
     /// bracket child (ibx#240).
@@ -932,6 +936,7 @@ impl OrderKind {
             OrderKind::TrailLit { price, trail, percent, .. } => [price, if percent { 0 } else { trail }],
             OrderKind::PegBest { price } => [price, 0],
             OrderKind::Rpi { price, offset } | OrderKind::PassvRel { price, offset } => [price, offset],
+            OrderKind::Volatility { .. } => [0, 0],
         }
     }
 }

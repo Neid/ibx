@@ -149,7 +149,8 @@ impl RthKind {
             OrderKind::Moc | OrderKind::Loc { .. } => (false, false, true),
             OrderKind::Limit { .. } | OrderKind::MktPrt | OrderKind::SnapMkt { .. } | OrderKind::SnapMid { .. }
             | OrderKind::SnapPri { .. } | OrderKind::Rel { .. } | OrderKind::PegBench { .. }
-            | OrderKind::PegBest { .. } | OrderKind::Rpi { .. } | OrderKind::PassvRel { .. } => (false, false, false),
+            | OrderKind::PegBest { .. } | OrderKind::Rpi { .. } | OrderKind::PassvRel { .. }
+            | OrderKind::Volatility { .. } => (false, false, false),
         };
         RthKind { market_like, stop_or_touched, moc_loc }
     }

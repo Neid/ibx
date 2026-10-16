@@ -316,6 +316,17 @@ fn send_orders(
                 let qty = (attrs.cash_qty as f64 / crate::types::PRICE_SCALE as f64 * crate::types::QTY_SCALE as f64).round() as i64;
                 context.cash_orders.insert(order_req.order_id(), qty);
             }
+            // A volatility order on a contract that is no option: the
+            // reference prices it from the market (an AAPL stock order went
+            // out as a limit order at the ask, paper 16/10/2026); not
+            // modelled yet (ibx#673).
+            if is_volatility(&order_req) && !matches!(sec_type.as_str(), "OPT" | "FOP") {
+                let oid = order_req.order_id();
+                log::warn!("Order {} refused: VOL order on {}", oid, sec_type);
+                shared.orders.push_order_error(oid, 321, format!(
+                    "Error validating request.-'PlaceOrder(3)' : cause - VOL orders on {sec_type} are not written by ibx yet (ibx#673)"));
+                continue;
+            }
             if let Some((code, text)) = unwritten_type_refusal(&order_req, &sec_type).filter(|_| sec_type != "BOND") {
                 let oid = order_req.order_id();
                 log::warn!("Order {} refused: {} order ({})", oid, sec_type, code);
@@ -2856,6 +2867,8 @@ fn modify_fields(
             after_type.push((211, p(offset)));
             "RPI"
         }
+        // Refused before anything is sent (ibx#673): never written.
+        K::Volatility { .. } => "VOL",
         K::PassvRel { price, offset } => {
             if price > 0 { before_account.push((44, p(price))); }
             before_account.push((99, p(offset)));
@@ -3268,6 +3281,15 @@ fn permission_refusal(
     match context.trading_permissions.get(&key) {
         // A bond with the permission: its message is not written yet.
         Some(true) if sec_type == "BOND" => bond_unwritten(shared),
+        // A volatility order with the permission: its message is not
+        // written yet (ibx#673).
+        Some(true) if is_volatility(req) => {
+            let oid = req.order_id();
+            log::warn!("Order {} refused: VOL order", oid);
+            shared.orders.push_order_error(oid, 321,
+                "Error validating request.-'PlaceOrder(3)' : cause - VOL orders are not written by ibx yet (ibx#673)".to_string());
+            Some(true)
+        }
         Some(true) => None,
         Some(false) => {
             let oid = req.order_id();
@@ -3316,6 +3338,11 @@ fn unwritten_type_refusal(req: &OrderRequest, sec_type: &str) -> Option<(i64, St
     }
     if sec_type == "FUND" { return None; }
     Some((321, format!("Error validating request.-'PlaceOrder(3)' : cause - {} orders are not written by ibx yet (ibx#666)", sec_type)))
+}
+
+/// A new volatility order (ibx#673).
+fn is_volatility(req: &OrderRequest) -> bool {
+    matches!(req, OrderRequest::SubmitEx { kind: crate::types::OrderKind::Volatility { .. }, .. })
 }
 
 /// The answer of a trading permission request (ibx#666): whether the
@@ -4415,6 +4442,7 @@ fn send_order_ex(
         K::PegBest { price } => (crate::types::ORD_PEG_BEST, price, 0),
         K::Rpi { price, offset } => (crate::types::ORD_RPI, price, offset),
         K::PassvRel { price, offset } => (crate::types::ORD_PASSV_REL, price, offset),
+        K::Volatility { .. } => (b'V', 0, 0),
     };
     context.insert_order(crate::types::Order::new(
         order_id, instrument, side, qty, track_price, ord_type_byte, tif, track_stop,
@@ -4614,6 +4642,8 @@ fn send_order_ex(
         // Passive relative (not observed yet): its own order type, the limit
         // price when set, the offset in both fields like the retail price
         // improvement type, no instruction.
+        // Refused before anything is sent (ibx#673): never written.
+        K::Volatility { .. } => fields.push((40, "VOL".to_string())),
         K::PassvRel { price, offset } => {
             let o = format_price_ref(offset).to_string();
             fields.push((40, "PSVR".to_string()));
@@ -7831,6 +7861,31 @@ mod tests {
         assert!(drain_frames(&mut context, &shared, &mut conn, &mut server).is_empty(), "nothing sent");
         assert_eq!(shared.orders.drain_order_errors(), [(89, 460, "No trading permissions.".to_string())]);
         assert_eq!(context.unsent.get(&89).map(|u| u.1), Some(100 * crate::types::QTY_SCALE), "the cash amount");
+    }
+
+    // ibx#673 (the reference 10.51, paper, regular hours 16/10/2026,
+    // `.tmp/673/case.py`): a volatility order on an option waits for the
+    // permission of the option's class: without it 460, nothing sent; with
+    // it ibx refuses it (its message is not written). On a stock ibx
+    // refuses it (the reference prices it from the market).
+    #[test]
+    fn volatility_orders_as_far_as_written() {
+        let vol = |id| OrderRequest::SubmitEx { order_id: id, instrument: 0, side: Side::Buy, qty: 1,
+            kind: crate::types::OrderKind::Volatility { volatility: px(30.0), vol_type: 2 }, tif: b'0',
+            attrs: crate::types::OrderAttrs::default() };
+        for (allowed, code) in [("0", 460), ("1", 321)] {
+            let (frames, shared, mut context, mut conn, mut server) = order_by_con_id("515974959", "CME", vol(91), &ES_PUT);
+            assert_eq!(frames.iter().map(|f| tag(f, 35).unwrap_or("")).collect::<Vec<_>>(), ["U"], "it waits: {frames:?}");
+            permission_reply(&mut context, &permission_answer("CME/FOP/GLOBEX", allowed));
+            assert!(drain_frames(&mut context, &shared, &mut conn, &mut server).is_empty(), "nothing sent");
+            let errors = shared.orders.drain_order_errors();
+            assert_eq!(errors.iter().map(|e| (e.0, e.1)).collect::<Vec<_>>(), [(91, code)], "{errors:?}");
+        }
+        let stock = [(55, "AAPL"), (167, "STK"), (15, "USD"), (207, "SMART"), (6431, "DAY/3,LMT/3")];
+        let (frames, shared, ..) = order_by_con_id("265598", "SMART", vol(92), &stock);
+        assert!(frames.iter().all(|f| tag(f, 35) != Some("D")), "nothing sent: {frames:?}");
+        let errors = shared.orders.drain_order_errors();
+        assert_eq!(errors.iter().map(|e| (e.0, e.1)).collect::<Vec<_>>(), [(92, 321)], "{errors:?}");
     }
 
     // ibx#666 (the reference 10.51, paper, regular hours 16/10/2026,

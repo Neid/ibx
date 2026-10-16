@@ -5382,7 +5382,7 @@ impl ClientCore {
             | "REL" | "PEG MKT" | "PEG MID" | "PEG MIDPT" | "MIDPX" | "MIDPRICE"
             | "SNAP MKT" | "SNAP MID" | "SNAP MIDPT" | "SNAP PRI" | "SNAP PRIM"
             | "BOX TOP" | "PEG BENCH"
-            | "TRAIL MIT" | "TRAIL LIT" | "PEG BEST" | "RPI" | "PASSV REL" => {}
+            | "TRAIL MIT" | "TRAIL LIT" | "PEG BEST" | "RPI" | "PASSV REL" | "VOL" => {}
             _ => return Err(format!("Unsupported order type: '{}'", order.order_type)),
         }
 
@@ -6231,6 +6231,15 @@ impl ClientCore {
         self.held_orders.lock().unwrap().iter().find(|(id, ..)| *id == parent_id).map(|(_, c, o)| (c.clone(), o.clone()))
     }
 
+    /// A volatility order whose volatility type is not 1 or 2: refused at
+    /// once with 321, nothing sent, the id not kept (ibx#673; the reference
+    /// 10.51, paper, regular hours 16/10/2026: an AAPL call without a
+    /// volatility type, 321 within 2 ms, its cancel 10147).
+    fn volatility_type_refusal(order: &ApiOrder) -> Option<(i64, String)> {
+        (order.order_type.eq_ignore_ascii_case("VOL") && !matches!(order.volatility_type, 1 | 2)).then(|| (321,
+            "Error validating request.-'PlaceOrder(3)' : cause - Volatility Type must be 1 or 2 for VOL orders.  Do not set it for other order types.".to_string()))
+    }
+
     /// The reading of a hedge order (ibx#614; the reference 10.51, paper,
     /// 16/10/2026, a client at level 225), each refused at once as 320
     /// "Error reading request." with its text, nothing sent, the id not
@@ -6686,6 +6695,7 @@ impl ClientCore {
     ) -> Option<(i64, String)> {
         let no_single = shared.reference.logon_features().split(',').any(|f| f == ATTACHED_NOT_IN_ONE_REQUEST_FEATURE);
         Self::attached_orders_read_refusal(order, no_single)
+            .or_else(|| Self::volatility_type_refusal(order))
             .or_else(|| self.hedge_read_refusal(order_id, sec_type, order))
             .or_else(|| Self::refusal_before_sending_for(order, exchange, account_pending, shared.reference.form_10_40()))
             .or_else(|| Self::account_config_refusal(order, shared.reference.account_features().as_deref(), account))
@@ -6991,8 +7001,16 @@ impl ClientCore {
             "SNAP PRI" | "SNAP PRIM" => OrderKind::SnapPri { offset: scale(aux_or_zero(order.aux_price)) },
             "PEG BENCH" => Self::peg_bench_kind(order),
             "TRAIL MIT" | "TRAIL LIT" | "PEG BEST" | "RPI" | "PASSV REL" => Self::new_type_kind(order),
+            "VOL" => Self::volatility_kind(order),
             _ => return Err(format!("Unsupported order type: '{}'", order.order_type)),
         })
+    }
+
+    /// A volatility order (ibx#673): its volatility and type (1 or 2, the
+    /// other values refused at reading).
+    fn volatility_kind(order: &ApiOrder) -> OrderKind {
+        let volatility = if order.volatility == f64::MAX { 0 } else { price_or_zero(order.volatility) };
+        OrderKind::Volatility { volatility, vol_type: u8::try_from(order.volatility_type).unwrap_or(0) }
     }
 
     /// A TRAIL MIT, TRAIL LIT, PEG BEST, RPI or PASSV REL order from the
@@ -7372,6 +7390,7 @@ impl ClientCore {
             "PEG BENCH" => ex(Self::peg_bench_kind(order)),
             // One encoder for each of these types too (ibx#469).
             "TRAIL MIT" | "TRAIL LIT" | "PEG BEST" | "RPI" | "PASSV REL" => ex(Self::new_type_kind(order)),
+            "VOL" => ex(Self::volatility_kind(order)),
             // The offset is the API auxPrice, 0.00 when unset (ibx#413).
             "SNAP MKT" => {
                 let offset = price_or_zero(order.aux_price);
@@ -8206,6 +8225,21 @@ mod tests {
             Ok(ControlCommand::PnlQuotes { con_ids, second_price }) => assert_eq!((con_ids, second_price), (vec![8314], false)),
             other => panic!("{other:?}"),
         }
+    }
+
+    // ibx#673 (the reference 10.51, paper, regular hours 16/10/2026): a VOL
+    // order without a volatility type of 1 or 2 is refused at reading with
+    // the reference's text; with one it reads as a volatility order.
+    #[test]
+    fn volatility_order_reading() {
+        let vol = |vol_type: i32| ApiOrder { order_type: "VOL".into(), volatility: 30.0, volatility_type: vol_type, ..lmt(0.0) };
+        let text = "Error validating request.-'PlaceOrder(3)' : cause - Volatility Type must be 1 or 2 for VOL orders.  Do not set it for other order types.";
+        for bad in [0, 3, i32::MAX] {
+            assert_eq!(ClientCore::volatility_type_refusal(&vol(bad)), Some((321, text.to_string())), "{bad}");
+        }
+        assert_eq!(ClientCore::volatility_type_refusal(&vol(2)), None);
+        assert_eq!(ClientCore::volatility_type_refusal(&lmt(1.0)), None, "another type");
+        assert!(matches!(ClientCore::order_kind(&vol(1)), Ok(OrderKind::Volatility { vol_type: 1, .. })));
     }
 
     // ibx#614 (the reference 10.51, paper, 16/10/2026): the reading of a
