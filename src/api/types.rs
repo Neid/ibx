@@ -435,7 +435,7 @@ impl Order {
         }
     }
 
-    /// Parse the TIF string to FIX byte.
+    /// Parse the TIF string to the wire byte.
     pub fn tif_byte(&self) -> u8 {
         match self.tif.as_str() {
             "GTC" => b'1',

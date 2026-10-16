@@ -1,8 +1,8 @@
 //! Option chain parameters on the auth connection (ibx#440), as the
 //! reference runs them (`feature.derivatives`): per underlying, the
-//! derivative query (6040=5, kept per symbol until the auth link drops),
+//! derivative query (kept per symbol until the auth link drops),
 //! then its legs one at a time: a definition lookup per stock, future,
-//! currency or index leg, a chain query (6040=138) per option leg. The
+//! currency or index leg, a chain query per option leg. The
 //! chain answers stay with the underlying, so a later request is answered
 //! without the legs again. No timeout, as in the reference.
 
@@ -79,7 +79,7 @@ enum LegStatus {
 struct Leg {
     kind: &'static str,
     status: LegStatus,
-    /// Futures option exchanges of this run (6589).
+    /// Futures option exchanges of this run.
     exchanges: Vec<String>,
 }
 
@@ -209,7 +209,7 @@ impl OptParams {
         }
     }
 
-    /// A derivative answer (6040=5): kept by symbol; the underlyings that
+    /// A derivative answer: kept by symbol; the underlyings that
     /// wait for it go on.
     pub(crate) fn underlying_reply(
         &mut self, msg: &[u8], conn: &mut Option<Connection>, connected: bool, hb: &mut HeartbeatState, shared: &SharedState,
@@ -352,7 +352,7 @@ impl OptParams {
         true
     }
 
-    /// A chain answer (6040=139), matched to its query by key: kept with
+    /// A chain answer, matched to its query by key: kept with
     /// each underlying that waits for it; its leg is filled with the first
     /// answer (the rows are built from every answer kept).
     pub(crate) fn chain_reply(

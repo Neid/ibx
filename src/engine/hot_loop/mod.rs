@@ -305,7 +305,7 @@ impl HotLoop {
         self.depth_limit = limit;
     }
 
-    /// The logon turns the user book on (`6247=demo`, as on paper): depth
+    /// The logon turns the user book on (the demo value, as on paper): depth
     /// books are given as an index diff of the book shown (#451).
     pub fn set_user_book(&mut self, on: bool) {
         self.farm.user_book = on;
@@ -1261,8 +1261,8 @@ impl HotLoop {
     /// order types hold NOT2D; the others nothing. The LAST entry of a top
     /// of book goes to BEST when SMART is a valid exchange (else to the
     /// listing exchange), except on an overnight venue, which keeps its own
-    /// (captured 28/09/2026: `207=ISE|264=442` with `207=BEST|264=443`,
-    /// `207=IBEOS|264=442` with `207=IBEOS|264=443`).
+    /// (captured 28/09/2026: the bid/ask entry on ISE with the last entry on
+    /// BEST; the bid/ask entry on IBEOS with the last entry on IBEOS).
     fn start_smart_depth(&mut self, g: farm::DepthGather) {
         let st = g.sec_type.as_str();
         let has_smart = g.components.iter().any(|c| c.exchange == "SMART");
@@ -3737,7 +3737,7 @@ pub(crate) fn push_hmds_error(shared: &SharedState, req_id: ReqId, message: Stri
     }
 }
 
-/// Format a fixed-point Price as a decimal string for FIX tags. Zero alloc.
+/// Format a fixed-point Price as a decimal string for wire fields. Zero alloc.
 pub(crate) fn format_price(price: Price) -> StackStr {
     let whole = price / PRICE_SCALE;
     let frac = (price % PRICE_SCALE).unsigned_abs();
@@ -3788,7 +3788,7 @@ pub(crate) fn format_price_ref(price: Price) -> StackStr {
     s
 }
 
-/// Parse a FIX tag value as a Price (fixed-point). Returns 0 if absent,
+/// Parse a wire field value as a Price (fixed-point). Returns 0 if absent,
 /// unparseable, or non-finite. Rust's f64 parser accepts "nan"/"inf", but on
 /// the wire those are not-available sentinels, not values: the gateway's own
 /// field parser maps nan/unparseable to unset (ibx#214). Without the finite
@@ -3813,9 +3813,9 @@ pub(crate) fn decode_tif(tif: u8) -> &'static str {
 }
 
 /// The time-in-force code of an order report, as the reference reads it
-/// (ibx#307): DAY when 59 is absent; else the first character of 59, DTC
-/// for 59=1 with the DTC flag (6436=1), OVERNIGHT + DAY with 8534=1, else
-/// OVERNIGHT when the exchange (6004) is OVERNIGHT.
+/// (ibx#307): DAY when the time in force is absent; else its first character,
+/// DTC for good-till-cancel with the DTC flag set, OVERNIGHT + DAY with the
+/// include-overnight flag set, else OVERNIGHT when the exchange is OVERNIGHT.
 pub(crate) fn report_tif(parsed: &std::collections::HashMap<u32, String>) -> u8 {
     let Some(mut code) = parsed.get(&59).and_then(|s| s.bytes().next()) else { return b'0' };
     let flag = |tag: u32| parsed.get(&tag).map(|s| s.as_str()) == Some("1");
@@ -3860,7 +3860,7 @@ pub(crate) fn format_qty(qty: Qty) -> StackStr {
     s
 }
 
-/// Fast extraction of FIX tag 35 (MsgType) value via byte scan.
+/// Fast extraction of the message type value via byte scan.
 pub(crate) fn fast_extract_msg_type(msg: &[u8]) -> Option<&[u8]> {
     let limit = msg.len().min(48);
     let mut i = 0;
@@ -3888,7 +3888,7 @@ pub(crate) fn find_body_after_tag<'a>(msg: &'a [u8], tag_marker: &[u8]) -> Optio
         .map(|pos| &msg[pos + tag_marker.len()..])
 }
 
-/// Extract the raw bytes of a binary FIX tag value using a length tag.
+/// Extract the raw bytes of a binary field value using its length field.
 pub(crate) fn extract_raw_tag(msg: &[u8], tag: u32) -> Option<Vec<u8>> {
     let len_tag = tag - 1;
     if let Some(len_val) = extract_text_tag(msg, len_tag) {
@@ -3926,7 +3926,7 @@ pub(crate) fn extract_raw_tag(msg: &[u8], tag: u32) -> Option<Vec<u8>> {
     None
 }
 
-/// Extract a text FIX tag value (SOH-delimited) from raw message bytes.
+/// Extract a text field value (SOH-delimited) from raw message bytes.
 fn extract_text_tag(msg: &[u8], tag: u32) -> Option<String> {
     let needle = format!("{}=", tag);
     let needle_bytes = needle.as_bytes();
@@ -6027,8 +6027,8 @@ mod tests {
     }
 
     // ibx#447 (captured 28/09/2026): the subscribe is the 442 / 443 pair
-    // with no 9839; with delayed data enabled, a reject with delayed data
-    // available asks again on new ids with 9887=1 on each entry, and the
+    // with no entry mark; with delayed data enabled, a reject with delayed data
+    // available asks again on new ids with the delayed mode on each entry, and the
     // client learns it (marketDataType 3, 10167). Without it, the
     // subscription stops (354 with the "delayed available" text).
     #[test]
@@ -6492,7 +6492,9 @@ mod news_tests {
         let out = sent(&mut farm_side);
         assert_eq!(out.len(), 2, "{out:?}");
         assert!(out[0].contains("|264=442|") && out[0].contains("|262=1|") && out[0].contains("|262=2|"), "{}", out[0]);
-        // Captured: 35=V|263=1|146=1|262=35|6008=265598|207=NEWS|167=CS|264=292|6472=...|6088=Socket|9830=1
+        // Captured: a market data request subscribing one entry: its request id, the
+        // contract id 265598 on the NEWS exchange, security type CS, the news entry, the
+        // provider keys, the source Socket and the API flag.
         assert_eq!(out[1], format!("35=V|263=1|146=1|262=3|6008=265598|207=NEWS|167=CS|264=292|6472={ALL}|6088=Socket|9830=1|"));
 
         tx.send(ControlCommand::Unsubscribe { instrument: id }).unwrap();
@@ -6500,13 +6502,15 @@ mod news_tests {
         let out = sent(&mut farm_side);
         assert_eq!(out.len(), 2, "{out:?}");
         assert!(out[0].starts_with("35=V|263=2|146=2|"), "{}", out[0]);
-        // Captured: 35=V|263=2|146=2|262=38|...|9830=1|262=35|6008=265598|207=NEWS|167=CS|264=292|6472=...|9830=1
+        // Captured: a market data request cancelling two entries: the request's other
+        // entry (with the API flag), then the news entry (its request id, the contract id
+        // 265598 on NEWS, security type CS, the news entry, the provider keys, the API flag).
         assert_eq!(out[1], format!("35=V|263=2|146=1|262=3|6008=265598|207=NEWS|167=CS|264=292|6472={ALL}|9830=1|"));
         assert!(engine.farm.news.is_empty());
         assert_eq!(engine.context.market.con_id(id), None, "the slot is freed");
     }
 
-    // ibx#458: no provider key (no news source), no 6472.
+    // ibx#458: no provider key (no news source), no provider key field.
     #[test]
     fn empty_provider_key_is_not_written() {
         let (mut engine, _shared, mut farm_side, tx) = engine();
@@ -8008,7 +8012,7 @@ mod depth_tests {
 
     // #451: a book with market makers (the Deep2 service of the routing
     // table) is written with updateMktDepthL2 and its market makers; a
-    // 35=P message gives no depth row.
+    // tick data message gives no depth row.
     #[test]
     fn market_maker_book_is_level_two() {
         let (mut engine, shared, mut side, tx) = engine();
@@ -8071,7 +8075,7 @@ mod depth_tests {
 
     /// #451: replay a recorded reference scenario through the engine: the
     /// depth requests with the entries the reference sent, the farm's
-    /// acknowledgements, refusals, 35=Y and 35=P frames as recorded (the
+    /// acknowledgements, refusals, depth and tick data messages as recorded (the
     /// farm ids mapped to the engine's), and the callbacks the engine gives,
     /// next to the callbacks the reference gave the API client.
     fn replay_depth(path: &str) -> (Vec<Callback>, Vec<Callback>) {
@@ -8082,7 +8086,7 @@ mod depth_tests {
         let farm_of = |conn: &str| -> pool::FarmId { if conn == "usfarm" { pool::PRIMARY_MD } else { 1 } };
         let shared = Arc::new(SharedState::new());
         let mut engine = HotLoop::new(shared.clone(), None, None);
-        // A paper session: the user book is on (6247=demo).
+        // A paper session: the user book is on (the logon's demo value).
         engine.set_user_book(true);
         let mut lots: std::collections::HashMap<i64, i64> = std::collections::HashMap::new();
         let mut ours: Vec<Callback> = Vec::new();

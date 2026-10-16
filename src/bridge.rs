@@ -43,19 +43,20 @@ pub struct RichOrderInfo {
 /// the same batch keep their own values.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct FillExec {
-    /// Server execution id (tag 17).
+    /// Server execution id.
     pub exec_id: String,
-    /// Execution time, Unix seconds: tag 6699, else 60, else 52.
+    /// Execution time, Unix seconds: the execution time field, else the
+    /// transaction time, else the sending time.
     pub time_secs: Option<i64>,
-    /// Tag 100, else 207.
+    /// The routing exchange, else the security exchange.
     pub exchange: String,
-    /// Placing client (tag 6119); 0 when absent.
+    /// Placing client id; 0 when absent.
     pub client_id: i64,
-    /// Tag 6700.
+    /// The model code field.
     pub model_code: String,
-    /// Tag 6010.
+    /// The order reference field.
     pub order_ref: String,
-    /// Tag 851 (lastLiquidity); 0 when absent.
+    /// The last liquidity indicator (lastLiquidity); 0 when absent.
     pub last_liquidity: i32,
     /// A report of a combo order (ibx#470): the contract its execution
     /// shows, and for a leg report the leg's own execution values.
@@ -64,7 +65,7 @@ pub struct FillExec {
     /// `req_executions`, with no live callback and no commission report
     /// (the reference gives the reports to the order's client only).
     pub other_client: bool,
-    /// An execution the server gave again (97=Y: the replay of the day at
+    /// An execution the server gave again (replay flag set: the replay of the day at
     /// the logon, the fill-up after a reconnect): kept for
     /// `req_executions`, with no live callback and no commission report,
     /// as the reference's API clients get none for them (ibx#487, captured
@@ -465,7 +466,7 @@ impl Notifier {
     }
 }
 
-/// Events emitted by the IB engine.
+/// Events emitted by the engine.
 ///
 /// New variants may be added: match with a wildcard arm.
 #[derive(Debug, Clone)]
@@ -1185,8 +1186,8 @@ pub struct OrderState {
     /// listings.
     book_seqs: Mutex<HashMap<OrderId, u64>>,
     book_peak: std::sync::atomic::AtomicUsize,
-    /// The highest API order id (6121) the server's reports gave for each
-    /// API client (6119): the ids a client used in earlier sessions, as far
+    /// The highest API order id the server's reports gave for each
+    /// API client: the ids a client used in earlier sessions, as far
     /// as the server's replays show them.
     reported_order_ids: Mutex<HashMap<i64, OrderId>>,
 }
@@ -1376,7 +1377,7 @@ impl OrderState {
         self.completed_orders.lock().unwrap().drain(..).collect()
     }
 
-    /// Snapshot enriched entries whose latest status is an open IB state.
+    /// Snapshot enriched entries whose latest status is an open broker order state.
     /// Terminal entries (Filled / Cancelled / Inactive / etc.) are filtered out
     /// so `req_open_orders` does not leak historical orders that are still cached
     /// for `req_completed_orders` lookups.
@@ -1591,13 +1592,13 @@ pub struct ReferenceState {
     soft_dollar_tiers: Mutex<Vec<crate::types::SoftDollarTier>>,
     family_codes: Mutex<Vec<crate::types::FamilyCode>>,
     white_branding_id: Mutex<String>,
-    /// The account ids of the logon's account list (6095), in logon order
+    /// The account ids of the logon's account list, in logon order
     /// (ibx#420).
     managed_accounts: Mutex<Vec<String>>,
-    /// The accounts whose application is not approved (8092 of the last
-    /// logon reply or logon update, ibx#421).
+    /// The accounts whose application is not approved (the pending accounts
+    /// field of the last logon reply or logon update, ibx#421).
     pending_accounts: Mutex<Vec<String>>,
-    /// FA session, from CCP logon tag 6108 (ibx#481).
+    /// FA session, from the FA flag of the server's logon (ibx#481).
     fa_session: std::sync::atomic::AtomicBool,
     /// A paper session, from the logon (ibx#444).
     paper_session: std::sync::atomic::AtomicBool,
@@ -1605,8 +1606,8 @@ pub struct ReferenceState {
     /// a short-side order pass the side check.
     super_user: AtomicBool,
     omnibus: AtomicBool,
-    /// The smart combo conId of each currency, from logon tag 6611
-    /// (ibx#470).
+    /// The smart combo conId of each currency, from the logon's smart
+    /// combo field (ibx#470).
     smart_combo_con_ids: Mutex<HashMap<String, i64>>,
     /// The algo providers of the logon (ibx#505).
     algo_providers: Mutex<Vec<String>>,
@@ -1628,7 +1629,7 @@ pub struct ReferenceState {
     /// Most snapshot requests per second, the API ticker limit of the
     /// logon as the reference sets it; 100 until known (ibx#446).
     snapshot_rate_limit: AtomicU32,
-    /// Account config (6040=210): feature list and MiFID config id; None
+    /// Account config (the account config message): feature list and MiFID config id; None
     /// until known (ibx#425).
     account_config: Mutex<Option<(Vec<String>, String)>>,
     /// Session ID surfaced to webapp REST clients as `x-ccp-session-id`.
@@ -1641,7 +1642,7 @@ pub struct ReferenceState {
     /// The logon feature list allows matching symbols requests
     /// (SECDEFTA, ibx#421); true until a logon says otherwise.
     matching_symbols_allowed: AtomicBool,
-    /// Most years of a historical data request, from the logon (6774);
+    /// Most years of a historical data request, from the logon's backfill limit;
     /// 0 until known (ibx#421).
     max_backfill_years: AtomicU32,
     /// The logon feature list has NIGHTLY: no years limit (ibx#421).
@@ -2128,8 +2129,8 @@ impl ReferenceState {
         }
     }
 
-    /// Whether `account`'s application is not approved yet (8092,
-    /// ibx#421).
+    /// Whether `account`'s application is not approved yet (the pending
+    /// accounts of the logon, ibx#421).
     pub fn account_pending(&self, account: &str) -> bool {
         self.pending_accounts.lock().unwrap().iter().any(|a| a == account)
     }
@@ -2141,7 +2142,7 @@ impl ReferenceState {
         self.managed_accounts.lock().unwrap().iter().filter(|a| pending.contains(a)).cloned().collect()
     }
 
-    /// True when the logon says this is an FA session (tag 6108, ibx#481).
+    /// True when the logon says this is an FA session (its FA flag, ibx#481).
     pub fn fa_session(&self) -> bool {
         self.fa_session.load(std::sync::atomic::Ordering::Relaxed)
     }
@@ -2263,7 +2264,7 @@ impl ReferenceState {
         *self.pending_accounts.lock().unwrap() = accounts;
     }
 
-    /// The account's feature list from the account config (6542), None
+    /// The account's feature list from the account config, None
     /// until the config is known (ibx#425).
     pub fn account_features(&self) -> Option<Vec<String>> {
         self.account_config.lock().unwrap().as_ref().map(|(f, _)| f.clone())
@@ -2445,13 +2446,13 @@ impl ReferenceState {
         self.form_10_40.load(Ordering::Relaxed)
     }
 
-    /// The smart combo conId of a currency, from logon tag 6611 (ibx#470);
+    /// The smart combo conId of a currency, from the logon's smart combo field (ibx#470);
     /// None when the logon has none for it.
     pub fn smart_combo_con_id(&self, currency: &str) -> Option<i64> {
         self.smart_combo_con_ids.lock().unwrap().get(currency).copied()
     }
 
-    /// Keep logon tag 6611, `CUR:conId,...` (ibx#470).
+    /// Keep the logon's smart combo field, `CUR:conId,...` (ibx#470).
     /// The logon's algo providers (ibx#505).
     #[doc(hidden)] pub fn set_algo_providers(&self, raw: &str) {
         *self.algo_providers.lock().unwrap() = algo_provider_names(raw);
@@ -2554,11 +2555,10 @@ pub struct AccountSummaryEvent {
     pub ledgers: Vec<LedgerRow>,
 }
 
-/// One row of a ledger frame (`35=RL`, a `LedgerList` row) as the
-/// reference reads it into its ledger record (`jfix.aL`, ibx#486): the
-/// account of the frame, the row currency (8002), the currency of tag 15,
-/// and each numeric tag with its value. A value that is not a number
-/// (`8174=nan`) is not set.
+/// One row of a ledger frame (a ledger list message, a `LedgerList` row) as
+/// the reference keeps it in its ledger record (ibx#486): the account of the
+/// frame, the row currency, the currency field, and each numeric field with
+/// its value. A value that is not a number (`nan`) is not set.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct LedgerRow {
     pub account: String,
@@ -2594,7 +2594,7 @@ pub struct PortfolioState {
     /// report of it moves nothing.
     feed_moves: Mutex<Vec<(u64, i64)>>,
     positions: [AtomicU64; MAX_INSTRUMENTS],
-    /// Midnight seeds from 6040=143 for client-side daily P&L computation.
+    /// Midnight seeds from the P&L seed answer for client-side daily P&L computation.
     midnight_seeds: Mutex<HashMap<i64, MidnightSeed>>,
     /// Realized P&L of this session's fills since the last seed, by conId,
     /// from the commission frames (ibx#478). A new seed includes them.
@@ -2819,7 +2819,7 @@ impl PortfolioState {
         self.positions[id as usize].store(pos as u64, Ordering::Relaxed);
     }
 
-    /// Store midnight seeds from 6040=143 P&L response.
+    /// Store midnight seeds from the P&L seed response.
     #[doc(hidden)] pub fn set_midnight_seeds(&self, seeds: Vec<MidnightSeed>) {
         // The seed's realized P&L includes the fills so far (ibx#478).
         self.realized_since_seed.lock().unwrap().clear();

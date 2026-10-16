@@ -1,4 +1,4 @@
-//! Top of book (35=Q acknowledgements, 35=L definitions, 35=P ticks):
+//! Top of book (acknowledgements, definitions and tick messages):
 //! decode against the reference's callbacks.
 
 use super::load;
@@ -11,7 +11,7 @@ const MD_CALLBACKS: &[&str] = &[
 
 // AAPL then SPY before the open (02/10/2026, b1_441_smart_components, up
 // to the EUR.USD request, which goes to another farm): the acknowledgements
-// give the market data type and the request parameters; the first 35=P
+// give the market data type and the request parameters; the first tick message
 // gives the last time, the last with its size, the volume, close, open,
 // bid and ask with their sizes; no bid or ask exchange before the exchange
 // map came (an empty text is not sent); the next frames give the volume,
@@ -68,11 +68,11 @@ fn aapl_with_delayed_data_asked_before_the_open() {
 
 // A new AAPL request 20 s after the first was cancelled (same scenario):
 // the reference sends the bid and the ask with their sizes on the
-// acknowledgement, before any 35=P: the values the contract's record kept
+// acknowledgement, before any tick message: the values the contract's record kept
 // from the cancelled request (bid 340.45 x 320, ask 340.52 x 40, the last
-// ones of request 9001); the first 35=P then gives the trade and daily
+// ones of request 9001); the first tick message then gives the trade and daily
 // fields only. ibx frees the contract's quote at the cancel and sends
-// everything at the first 35=P. Found by this test (ibx#508); the record
+// everything at the first tick message. Found by this test (ibx#508); the record
 // keeps its values 45 s at least (capture of 07/10/2026), how long is not
 // read yet.
 #[test]
@@ -122,7 +122,8 @@ fn with_entry_marks(msg: &str) -> String {
 }
 
 /// The market data messages and contract lookups ibx wrote, against the
-/// reference's: (ours, theirs) for 35=V, then for 35=c.
+/// reference's: (ours, theirs) for the market data requests, then for the
+/// security definition requests.
 fn requests_of(name: &str, until: Option<u64>, skip: &[u64]) -> [(Vec<String>, Vec<String>); 2] {
     let fx = load(name);
     let r = super::replay::replay_market_data_without(&fx, "usfarm", MD_CALLBACKS, until, skip);
@@ -139,9 +140,10 @@ fn requests_of(name: &str, until: Option<u64>, skip: &[u64]) -> [(Vec<String>, V
 }
 
 // The requests of the top of book replays (02/10 and 28/09/2026): the
-// subscribe of bid/ask and last (442, 443, with 6088=Socket and 9830=1),
-// the gateway's own exchange map entry (626) after the acknowledgement and
-// its cancel once the map came, the cancel of the request (no 6088), and
+// subscribe of the bid/ask and last entries (442, 443, with the source
+// Socket and the streaming-client mark), the gateway's own exchange map
+// entry (626) after the acknowledgement and its cancel once the map came,
+// the cancel of the request (no source field), and
 // the symbol lookups: each message as the reference's, the farm ids and
 // lookup ids masked. EUR.USD, BMW and 7203 go to other farms: left out.
 #[test]

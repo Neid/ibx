@@ -231,7 +231,7 @@ fn pnl_rows(shared: &SharedState) -> Vec<PnlRow> {
 }
 
 /// Net cash traded today on a position, for the daily P&L.
-/// moneyTradedSinceMidnight (wire 6822) is signed net cash: SELL positive,
+/// moneyTradedSinceMidnight (its wire field) is signed net cash: SELL positive,
 /// BUY negative (ib-agent#163). The seed's value, plus the cash of this
 /// session's fills after it (a fill moved the daily P&L by the whole trade
 /// value: +770 for 1 SPY bought, seen on paper 25/09/2026). With no seed row:
@@ -998,9 +998,9 @@ pub struct PortfolioUpdateEntry {
     pub realized_pnl: f64,
 }
 
-/// True when `status` names an IB order state that is still working on the broker.
+/// True when `status` names a broker order state that is still working on the broker.
 /// Whitelist (rather than blacklist) so non-canonical or empty strings — and
-/// any future terminal states added by IB — are treated as "not open".
+/// any future terminal states added by the broker — are treated as "not open".
 /// The status kept for an order refused before it was sent (ibx#542). Not
 /// a status of the API: it is never given to the caller, and it is not an
 /// open status.
@@ -1039,7 +1039,7 @@ pub fn order_status_str(status: OrderStatus) -> &'static str {
         OrderStatus::PreSubmitted => "PreSubmitted",
         OrderStatus::Submitted => "Submitted",
         OrderStatus::PendingCancel => "PendingCancel",
-        OrderStatus::PendingReplace => "PendingCancel", // IB API has no PendingReplace string
+        OrderStatus::PendingReplace => "PendingCancel", // the API has no PendingReplace string
         OrderStatus::Filled => "Filled",
         // The reference has no partially-filled status: an order with part
         // of it filled is still working (ib-agent#192 C8).
@@ -1866,8 +1866,8 @@ fn is_given(v: f64) -> bool {
 }
 
 /// A TRAIL LIMIT's limit price, offset and stop price are what the server
-/// reports (44, 6370, 6117), as the reference's openOrder (ib-agent#194,
-/// ibx#491).
+/// reports in its limit price, trailing offset and trail stop price fields,
+/// as the reference's openOrder (ib-agent#194, ibx#491).
 /// The refusal of fundamentals to an API client whose logon does not allow
 /// them (ibx#674; the reference 10.51, paper 13/10/2026, with its final
 /// period).
@@ -1931,8 +1931,9 @@ fn reported_price_mgmt(order: &mut ApiOrder, reported: Option<&ApiOrder>) {
 ///
 /// And the values it fills by itself, the same on all 198 openOrder and
 /// completedOrder of the recordings (ibx#519): ocaType 3 unless the order
-/// has one of its own (1 to 4), clearingIntent IB, the shareholder text,
-/// and `None` for an adjusted or delta neutral order type that is not set.
+/// has one of its own (1 to 4), clearingIntent the broker's own clearing,
+/// the shareholder text, and `None` for an adjusted or delta neutral order
+/// type that is not set.
 pub fn reported_unset_values(order: &mut ApiOrder) {
     if !(1..=4).contains(&order.oca_type) { order.oca_type = 3; }
     if order.clearing_intent.is_empty() { order.clearing_intent = "IB".into(); }
@@ -2009,7 +2010,7 @@ pub fn preview_view(contract: &mut ApiContract, order: &mut ApiOrder, placed_exc
 
 fn reported_trail_limit(order: &mut ApiOrder, reported: &ApiOrder) {
     // A plain TRAIL shows the stop price the server reports too (captured
-    // 05/10/2026: 6117 775.06, 775.05, ... as the market moved).
+    // 05/10/2026: trail stop price 775.06, 775.05, ... as the market moved).
     if order.order_type.eq_ignore_ascii_case("TRAIL") && reported.trail_stop_price != f64::MAX {
         order.trail_stop_price = reported.trail_stop_price;
     }
@@ -2197,8 +2198,8 @@ impl ClientCore {
     /// contract given without a conId gets a slot of its own for each new
     /// order, and the engine looks it up before the order goes out, as the
     /// reference does for each API order (every four-leg recording of 26/09
-    /// to 02/10/2026: `FixSecDefReqBySymbol` before each 35=D). A modify
-    /// keeps the slot of its order.
+    /// to 02/10/2026: `FixSecDefReqBySymbol` before each new order message).
+    /// A modify keeps the slot of its order.
     #[allow(clippy::too_many_arguments)]
     pub fn order_instrument(
         &self, control_tx: &ControlSender, order_id: OrderId, what_if: bool,
@@ -2222,7 +2223,7 @@ impl ClientCore {
     /// Find instrument ID for a contract, registering if needed.
     /// Returns `Err` if the control channel is closed.
     /// Tell the engine the currency of a contract before an order on it,
-    /// when it does not have it yet (tag 15, ibx#466).
+    /// when it does not have it yet (the currency field, ibx#466).
     pub fn note_currency(&self, control_tx: &ControlSender, con_id: i64, currency: &str) {
         if currency.is_empty() || con_id == 0 {
             return;
@@ -4126,10 +4127,11 @@ impl ClientCore {
     }
 
     /// Set what the fill report says about this execution (ibx#474): the
-    /// server's execution id, the time as the reference writes it, tag 100 /
-    /// 207 as exchange, the placing client (this client when the report has
-    /// none), modelCode, lastLiquidity, and the orderRef of the report or of
-    /// the tracked order. Fields the report did not carry keep their value.
+    /// server's execution id, the time as the reference writes it, the routing
+    /// destination / security exchange field as exchange, the placing client
+    /// (this client when the report has none), modelCode, lastLiquidity, and
+    /// the orderRef of the report or of the tracked order. Fields the report
+    /// did not carry keep their value.
     pub fn apply_fill_exec(&self, ex: &mut ApiExecution, fe: &crate::bridge::FillExec, order_id: OrderId) {
         if !fe.exec_id.is_empty() {
             ex.exec_id = fe.exec_id.clone();
@@ -4146,7 +4148,7 @@ impl ClientCore {
         }
         // The report's own: a combo leg's report says how the leg filled,
         // not the combo's report (captured 30/09/2026, i105_combo_fill:
-        // 851=1 on the combo, 851=2 on each leg, execDetails 2 for the legs).
+        // last liquidity 1 on the combo, 2 on each leg, execDetails 2 for the legs).
         if fe.last_liquidity != 0 {
             ex.last_liquidity = fe.last_liquidity;
         }
@@ -4278,8 +4280,8 @@ impl ClientCore {
     /// placed it, else the order the server reports; the order state of the
     /// latest report (ibx#473). `None` for an order known to neither.
     /// The view of a filled order no longer tracked shows the placing
-    /// client of the fill's report (6119), as the reference (captured
-    /// 30/09/2026, i105_combo_fill: the leg fills after the combo's Filled
+    /// client of the fill's report (its client id field), as the reference
+    /// (captured 30/09/2026, i105_combo_fill: the leg fills after the combo's Filled
     /// report, openOrder and orderStatus with clientId 198).
     pub fn report_client(view: &mut Option<OrderView>, fe: &crate::bridge::FillExec) {
         if let Some(v) = view.as_mut()
@@ -4514,7 +4516,7 @@ impl ClientCore {
     /// LMT, STP PRT, TRAIL, TRAIL LIMIT). Captured 26/09/2026 (bracket: "child", "child,trigger") and
     /// 28/09/2026 (premarket_order_types: "trigger" for STP and TRAIL).
     /// The third reason, "locate" (a short sale with the server's allowed
-    /// quantity 6365), is not given: no recorded report carries 6365.
+    /// quantity field), is not given: no recorded report carries that field.
     pub fn why_held(&self, status: &str, order_type: &str, parent_id: i64) -> String {
         if status != "PreSubmitted" {
             return String::new();
@@ -7225,7 +7227,7 @@ impl ClientCore {
         // its trigger is reached. Signalled by a non-empty adjustedOrderType,
         // which is empty on every ordinary order, so this affects nothing else.
         // A Trail/TrailLimit conversion carries the trailing amount + unit
-        // (tags 6260/6269, ib-agent#167). (ibx#225)
+        // (the trailing amount and trailing unit fields, ib-agent#167). (ibx#225)
         // With extended attributes or a non-DAY tif it takes the extended path,
         // so a bracket child keeps its parent, OCA group and tif (ibx#240).
         if !order.adjusted_order_type.is_empty() {
@@ -7295,7 +7297,8 @@ impl ClientCore {
                 else { OrderRequest::SubmitStopLimit { order_id, instrument, side, qty, price, stop_price: stop } }
             }
             "TRAIL" => {
-                // Optional initial stop trigger (tag 6117); default f64::MAX = unset.
+                // Optional initial stop trigger (the trail stop price field);
+                // default f64::MAX = unset.
                 let trail_stop = price_or_zero(order.trail_stop_price);
                 if is_given(order.trailing_percent) && order.trailing_percent > 0.0 {
                     let pct = price_or_zero(order.trailing_percent);

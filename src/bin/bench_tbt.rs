@@ -1,4 +1,4 @@
-//! Benchmark: tick-by-tick (35=E) latency.
+//! Benchmark: tick-by-tick latency.
 //!
 //! Subscribes to tick-by-tick Last trades and BidAsk quotes via the historical data connection,
 //! measures inter-event latency for each stream.

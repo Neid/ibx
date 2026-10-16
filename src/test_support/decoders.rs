@@ -56,7 +56,7 @@ pub fn xyz(b: &[u8]) {
     }
 }
 
-/// FIX text frames: tag parsing, signature check, checksum framing.
+/// Wire-format text frames: field parsing, signature check, checksum framing.
 pub fn fix(b: &[u8]) {
     let _ = fix::fix_parse(b);
     let _ = fix::is_signed(b);
@@ -87,7 +87,7 @@ pub fn connection(b: &[u8]) {
     }
 }
 
-/// 35=P ticks, and their values in the price arithmetic (ibx#272).
+/// Tick messages, and their values in the price arithmetic (ibx#272).
 pub fn ticks(b: &[u8]) {
     let body = crate::engine::hot_loop::find_body_after_tag(b, b"35=P\x01").unwrap_or(b);
     let mut ticks = Vec::new();
@@ -100,7 +100,7 @@ pub fn ticks(b: &[u8]) {
     }
 }
 
-/// 35=Y / 35=Z depth.
+/// Plain and extended depth messages.
 pub fn depth(b: &[u8]) {
     if let Some((body, extended)) = depth_decoder::depth_body(b) {
         let _ = depth_decoder::decode_depth(body, extended);
@@ -109,7 +109,7 @@ pub fn depth(b: &[u8]) {
     let _ = depth_decoder::decode_depth(b, false);
 }
 
-/// 35=G: news headlines, exchange maps, real-time bars.
+/// The farm's generic messages: news headlines, exchange maps, real-time bars.
 pub fn generic(b: &[u8]) {
     use crate::engine::hot_loop::farm;
     let body = crate::engine::hot_loop::find_body_after_tag(b, b"35=G\x01").unwrap_or(b);
@@ -127,7 +127,7 @@ pub fn generic(b: &[u8]) {
     }
 }
 
-/// 35=E tick-by-tick, each entry kind taken from its stream id.
+/// Tick-by-tick messages, each entry kind taken from its stream id.
 pub fn tick_by_tick(b: &[u8]) {
     use tick_decoder::{TbtEntryKind as K, TbtLayout as L};
     let kind = |id: u64| match id % 9 {
@@ -150,8 +150,8 @@ pub fn tick_by_tick(b: &[u8]) {
     }
 }
 
-/// 35=Q acknowledgements, 35=L trade setups, 35=T routing tables, 35=3
-/// rejects: comma-separated and tag text.
+/// Acknowledgements, trade setups, routing tables and rejects of the farm:
+/// comma-separated and field text.
 pub fn farm_text(b: &[u8]) {
     use crate::engine::routing::{table_text, RoutingTable, TableKind};
     if let Some(text) = table_text(b) {
@@ -223,7 +223,8 @@ pub fn hmds_binary(b: &[u8]) {
     }
 }
 
-/// 35=d contract replies, 6040=107 schedules and the rows built from them.
+/// Security definition answers (contract replies), trading schedule answers
+/// and the rows built from them.
 pub fn contracts(b: &[u8]) {
     use crate::control::contracts;
     let _ = contracts::parse_secdef_response(b);
@@ -270,8 +271,8 @@ pub fn logon(b: &[u8]) {
     }
 }
 
-/// Text tags of auth messages: matching symbols (6040=186), option chain
-/// answers (6040=5, 6040=139).
+/// Text fields of auth messages: matching symbols, option chain answers
+/// (both of their message sub-types).
 pub fn auth(b: &[u8]) {
     use crate::control::{contracts, optparams};
     let _ = contracts::parse_matching_symbols_response(b);

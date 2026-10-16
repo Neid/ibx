@@ -28,7 +28,7 @@ pub struct AuthResult {
     /// canonical big-endian wire form.
     pub session_token: BigUint,
     /// Token type discriminator: `"st"`, `"tst"`, or `"zenith"`. Matches the `stoken_type`
-    /// field expected by the SSO `Authenticate-TWS` body.
+    /// field expected by the SSO authentication body.
     pub token_type: String,
     pub session_id: String,
     pub features: Vec<String>,
@@ -40,7 +40,7 @@ impl AuthResult {
     /// stripped (single `0x00` retained when the value is zero).
     ///
     /// This is the exact representation used as the second SHA-1 input for soft-token
-    /// challenge/response and SSO `Authenticate-TWS` bodies. Round-trips through
+    /// challenge/response and SSO authentication bodies. Round-trips through
     /// `BigUint::from_bytes_be`.
     pub fn session_token_bytes(&self) -> Vec<u8> {
         let raw = self.session_token.to_bytes_be();
@@ -94,11 +94,11 @@ pub fn get_session_id() -> String {
     format!("{:x}.{:04x}", secs, ms)
 }
 
-/// Path of the persistent 8-hex machine_id file used in tag 6351.
+/// Path of the persistent 8-hex machine_id file used in the hardware info field.
 ///
-/// Per ib-agent#132: the Java client reads/creates `%USERPROFILE%\hwid`
+/// Per ib-agent#132: the reference reads/creates `%USERPROFILE%\hwid`
 /// on Windows or `$HOME/.hwid` elsewhere, persists 8 hex chars there, and
-/// reuses it across logons. IB binds that prefix to the IBKey enrollment
+/// reuses it across logons. The broker binds that prefix to the 2FA key enrollment
 /// at first-login time; live farms silent-drop logons whose prefix isn't
 /// in the registered set.
 ///
@@ -185,8 +185,8 @@ fn read_hwid(path: &std::path::Path) -> Option<String> {
 
 /// Generate hardware info string: `{machine_id}|{MAC}`.
 ///
-/// Live data farms validate the MAC field; an all-zero MAC causes the FIX
-/// 35=A logon to be silently rejected (paper farms don't validate).
+/// Live data farms validate the MAC field; an all-zero MAC causes the
+/// logon message to be silently rejected (paper farms don't validate).
 /// `machine_id` is the persistent 8-hex value from `~/hwid` (see #132).
 pub fn get_hw_info() -> String {
     let machine_id = read_or_create_hwid();
@@ -977,7 +977,7 @@ fn wrap_xyz_fix(xyz_payload: &[u8]) -> Vec<u8> {
 /// Maximum size for a farm auth message (prevents unbounded allocation).
 const MAX_FARM_MSG_SIZE: usize = 65536;
 
-/// Read one framed `8=1` message from a farm stream.
+/// Read one auth-framed message from a farm stream.
 ///
 /// `carry` holds bytes across calls: a read can return more than one message's
 /// worth of data, and a high-latency regional gateway can coalesce the last
@@ -1024,13 +1024,13 @@ fn recv_8eq1<S: Read>(stream: &mut S, carry: &mut Vec<u8>) -> io::Result<Vec<u8>
     }
 }
 
-/// Locate one complete `8=1`-framed message at the front of `buf`.
+/// Locate one complete auth-framed message at the front of `buf`.
 ///
 /// Returns the message's total byte length when a full message is present,
 /// `None` when more bytes are needed, or an error when the advertised body
 /// length is implausibly large.
 fn try_frame_8eq1(buf: &[u8]) -> io::Result<Option<usize>> {
-    // Needs "8=1\x01" and a body length "9=NNNN\x01".
+    // Needs the auth frame's begin string and a 4-digit body length field.
     if !buf.starts_with(b"8=1\x01") {
         return Ok(None);
     }
@@ -1083,7 +1083,7 @@ pub enum IbKeyOutcome {
         session_id: String,
         /// SOFT session token issued by `XYZ AUTH_FINISH(771) state=5 PASSED`,
         /// hex-encoded. This is the token that downstream farm logons must
-        /// hash for tag 8483 (NOT the SRP-derived `session_key`). Empty if the
+        /// hash for the token hash field (NOT the SRP-derived `session_key`). Empty if the
         /// AUTH_FINISH body didn't carry an extractable token.
         soft_token_hex: String,
     },
@@ -1345,7 +1345,7 @@ pub fn do_ib_key_2fa<S: Read + Write>(
                     log::info!("2FA gate: approved");
                     // Per ib-agent#125: AUTH_FINISH carries no token — body is
                     // just `["", "PASSED"]`. The SOFT token used for downstream
-                    // farm logons (tag 8483) is the SRP-derived K_soft, which
+                    // farm logons (the token hash field) is the SRP-derived K_soft, which
                     // ibx already computes correctly via `srp_compute_k`
                     // (= SHA1(strip_leading_zeros(S))). No extraction needed.
                     if approval_url.is_empty() && session_id.is_empty()
@@ -1407,11 +1407,11 @@ pub fn do_soft_token<S: Read + Write>(
 ) -> io::Result<SoftTokenOutcome> {
     use sha1::{Digest, Sha1};
 
-    // State 1: Send empty init (FIX-framed for farm)
+    // State 1: Send empty init (auth-framed for farm)
     let msg1 = xyz::xyz_build_soft_token(1, "", "", "");
     stream.write_all(&wrap_xyz_fix(&msg1))?;
 
-    // State 2: Receive challenge (FIX-framed)
+    // State 2: Receive challenge (auth-framed)
     let recv2 = recv_8eq1(stream, carry)?;
     let xyz2 = extract_xyz(&recv2);
     let (_, _, state2, fields2) = xyz::xyz_parse_response(xyz2)
@@ -1450,11 +1450,11 @@ pub fn do_soft_token<S: Read + Write>(
     let response_int = BigUint::from_bytes_be(&digest);
     let response_hex = format!("{:x}", response_int);
 
-    // State 3: Send hash response (FIX-framed)
+    // State 3: Send hash response (auth-framed)
     let msg3 = xyz::xyz_build_soft_token(3, "", &response_hex, "");
     stream.write_all(&wrap_xyz_fix(&msg3))?;
 
-    // State 4: Receive result (FIX-framed)
+    // State 4: Receive result (auth-framed)
     let recv4 = recv_8eq1(stream, carry)?;
     let xyz4 = extract_xyz(&recv4);
     let (_, _, _, fields4) = xyz::xyz_parse_response(xyz4)
@@ -1480,7 +1480,7 @@ pub fn do_soft_token<S: Read + Write>(
     }
 }
 
-/// SRP-6 authentication for farm connections using FIX framing (8=1).
+/// SRP-6 authentication for farm connections using the auth framing.
 /// Called as fallback when `do_soft_token` returns `SoftTokenOutcome::Unknown`.
 /// Same SRP math as `do_srp`, different wire framing.
 pub fn do_srp_farm<S: Read + Write>(
@@ -1492,11 +1492,11 @@ pub fn do_srp_farm<S: Read + Write>(
     let n = srp::srp_n();
     let g = BigUint::from(srp::SRP_G);
 
-    // State 1: Send AUTH_QUERY (FIX-framed)
+    // State 1: Send AUTH_QUERY (auth-framed)
     let msg1 = xyz::xyz_build_srp_v20(1, &[]);
     stream.write_all(&wrap_xyz_fix(&msg1))?;
 
-    // State 2: Receive AUTH_PARAMS (FIX-framed)
+    // State 2: Receive AUTH_PARAMS (auth-framed)
     let recv2 = recv_8eq1(stream, carry)?;
     let xyz2 = extract_xyz(&recv2);
     let (_, _, state2, fields2) = xyz::xyz_parse_response(xyz2)
@@ -1529,12 +1529,12 @@ pub fn do_srp_farm<S: Read + Write>(
     let a_priv = BigUint::from_bytes_be(&a_bytes);
     let a_pub = g.modpow(&a_priv, &n);
 
-    // State 3: Send client public key A (FIX-framed)
+    // State 3: Send client public key A (auth-framed)
     let a_hex = format!("{:x}", a_pub);
     let msg3 = xyz::xyz_build_srp_v20(3, &[("L", &a_hex)]);
     stream.write_all(&wrap_xyz_fix(&msg3))?;
 
-    // State 4: Receive salt + B (FIX-framed)
+    // State 4: Receive salt + B (auth-framed)
     let recv4 = recv_8eq1(stream, carry)?;
     let xyz4 = extract_xyz(&recv4);
     let (_, _, state4, fields4) = xyz::xyz_parse_response(xyz4)
@@ -1580,12 +1580,12 @@ pub fn do_srp_farm<S: Read + Write>(
     let salt_int = BigUint::parse_bytes(salt_hex.as_bytes(), 16).unwrap_or_default();
     let m1 = srp::srp_compute_m1(&n, &g, username, &salt_int, &a_pub, &b_pub, &k);
 
-    // State 5: Send client proof M1 (FIX-framed)
+    // State 5: Send client proof M1 (auth-framed)
     let m1_hex = format!("{:x}", m1);
     let msg5 = xyz::xyz_build_srp_v20(5, &[("N", &m1_hex)]);
     stream.write_all(&wrap_xyz_fix(&msg5))?;
 
-    // State 6: Receive AUTH_RESULT (FIX-framed)
+    // State 6: Receive AUTH_RESULT (auth-framed)
     let recv6 = recv_8eq1(stream, carry)?;
     let xyz6 = extract_xyz(&recv6);
     let (_, _, state6, fields6) = xyz::xyz_parse_response(xyz6)
@@ -1648,7 +1648,7 @@ mod tests {
 
     // ── recv_8eq1 framing / coalesced tail (ibx#237) ────────────────────────
 
-    /// Build a framed `8=1` message with the given inner payload.
+    /// Build an auth-framed message with the given inner payload.
     fn framed_8eq1(payload: &[u8]) -> Vec<u8> {
         let body = {
             let mut b = b"35=X\x01".to_vec();
@@ -1681,7 +1681,7 @@ mod tests {
 
     /// The exact ibx#237 regression: a gateway coalesces the final auth
     /// response and the farm logon ACK that follows it into one TCP read.
-    /// `recv_8eq1` must return only the framed `8=1` message and preserve the
+    /// `recv_8eq1` must return only the auth-framed message and preserve the
     /// trailing ACK bytes in the carry buffer, not discard them.
     #[test]
     fn recv_8eq1_preserves_coalesced_tail() {
@@ -1720,7 +1720,7 @@ mod tests {
         );
 
         // A second call returns the buffered ACK without touching the socket
-        // (it is not a valid 8=1 frame, so this would block on read if the tail
+        // (it is not a valid auth frame, so this would block on read if the tail
         // had been lost — proving the bytes are actually retained).
         assert_eq!(try_frame_8eq1(&carry).unwrap(), None);
 

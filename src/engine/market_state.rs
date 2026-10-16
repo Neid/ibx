@@ -155,7 +155,7 @@ pub struct MarketState {
     active_count: u32,
     /// Freed slot ids available for reuse.
     free_ids: Vec<InstrumentId>,
-    /// Maps IB conId → internal InstrumentId. O(1) lookup.
+    /// Maps the broker's conId → internal InstrumentId. O(1) lookup.
     con_id_to_instrument: HashMap<i64, InstrumentId>,
     /// Reverse map: InstrumentId → conId. Flat array lookup. `FREE_SLOT`
     /// marks a reclaimed slot.
@@ -184,7 +184,7 @@ pub struct MarketState {
     round_lots: [i64; MAX_INSTRUMENTS],
     /// Per-instrument symbol name. Flat array indexed by InstrumentId.
     symbols: [Option<String>; MAX_INSTRUMENTS],
-    /// Contract currency for the orders (tag 15, ibx#466).
+    /// Contract currency for the orders (the currency field, ibx#466).
     currencies: [Option<String>; MAX_INSTRUMENTS],
     /// Per-instrument security type (API string, e.g. "STK"/"CASH"). Empty
     /// slot = unknown, treated as stock. Registration used to DROP this
@@ -217,7 +217,7 @@ pub struct MarketState {
 /// The terms of an option contract its orders carry, as the reference
 /// writes them after the symbol: the
 /// maturity (the definition's own), the right
-/// (201: 1 call, 0 put), the strike (202) and the multiplier (231).
+/// (1 call, 0 put), the strike and the multiplier.
 #[derive(Debug, Clone, PartialEq)]
 pub struct OptionTerms {
     pub maturity: String,
@@ -345,7 +345,7 @@ impl MarketState {
         if k.ask > 0 { m.set_seen(SizeKind::Ask); }
     }
 
-    /// Register an IB contract, returns the assigned InstrumentId, or None
+    /// Register a broker contract, returns the assigned InstrumentId, or None
     /// when MAX_INSTRUMENTS distinct contracts are live concurrently
     /// (ibx#233). Freed slots are reused first, so unsubscribed contracts
     /// no longer count against the cap.
@@ -399,7 +399,7 @@ impl MarketState {
         self.con_id_to_instrument.entry(con_id).or_insert(instrument);
     }
 
-    /// Register an IB contract, returns the assigned InstrumentId.
+    /// Register a broker contract, returns the assigned InstrumentId.
     /// Panics when the table is full — use `try_register` on any path that
     /// must survive that condition (the engine's handlers do; ibx#233).
     pub fn register(&mut self, con_id: i64) -> InstrumentId {

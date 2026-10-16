@@ -427,7 +427,7 @@ fn send_orders(
             }
             drop_seek_off_smart(&mut order_req, context, shared);
         }
-        // The contract's currency (tag 15), USD when unknown (ibx#466).
+        // The contract's currency, USD when unknown (ibx#466).
         let currency: String = order_req.instrument()
             .map(|i| context.market.currency(i).to_string())
             .unwrap_or_else(|| "USD".to_string());
@@ -498,7 +498,7 @@ fn send_orders(
             context.what_if_send = Some(clord);
         }
         // A new order goes out under a server id of the reference's order
-        // id generator; its API order id is its key, sent in 6121.
+        // id generator; its API order id is its key, sent in its own field.
         if !what_if {
             // An order of an earlier session can be held under the id of
             // this new order (ibx#538). Another client's goes back under
@@ -835,9 +835,9 @@ fn send_orders(
                 let (sec_type_str, destination) = context.market.order_routing(instrument);
                 let now = chrono_free_timestamp();
                 // Per ib-agent#136 capture: amount-based trailing stop carries
-                // the trail amount in both 99 (StopPx) and 211 (PegOffset),
-                // and requires 18=a (ExecInst = TrailingStop). Without 18,
-                // the gateway rejects with "Invalid value in field # 18".
+                // the trail amount in both the stop price and the peg offset,
+                // and requires the trailing-stop execution instruction. Without it,
+                // the gateway rejects with an invalid-value error on the instruction field.
                 let mut fields: Vec<(u32, &str)> = vec![
                     (fix::TAG_MSG_TYPE, fix::MSG_NEW_ORDER),
                     (fix::TAG_SENDING_TIME, &now),
@@ -856,7 +856,7 @@ fn send_orders(
                     (6210, &destination),
                     (15, currency.as_str()),
                 ];
-                // Optional initial stop trigger (tag 6117), only when set
+                // Optional initial stop trigger, only when set
                 // (ib-agent#173).
                 if trail_stop_price > 0 { fields.push((6117, &trail_stop_str)); }
                 send_new_order(conn, context, instrument, &fields)
@@ -876,11 +876,12 @@ fn send_orders(
                 let symbol = context.market.symbol(instrument).to_string();
                 let (sec_type_str, destination) = context.market.order_routing(instrument);
                 let now = chrono_free_timestamp();
-                // Per ib-agent#136 capture: TRAIL LIMIT uses OrdType=TSL (not P),
-                // does NOT carry tag 44 (gateway derives the limit price from
-                // 6370 + the activation reference), does NOT carry tag 18, and
-                // carries the trail amount in both 99 and 211. The 6370
-                // LimitPriceOffset is the limit-vs-trail offset.
+                // Per ib-agent#136 capture: TRAIL LIMIT uses the trailing stop limit
+                // order type (not the trailing stop's), does NOT carry the limit price
+                // (the gateway derives it from the limit offset + the activation
+                // reference), does NOT carry the execution instruction, and carries
+                // the trail amount in both the stop price and the peg offset. The
+                // limit offset is the limit-vs-trail offset.
                 let mut fields: Vec<(u32, &str)> = vec![
                     (fix::TAG_MSG_TYPE, fix::MSG_NEW_ORDER),
                     (fix::TAG_SENDING_TIME, &now),
@@ -899,8 +900,8 @@ fn send_orders(
                     (15, currency.as_str()),
                 ];
                 if trail_stop_price > 0 { fields.push((6117, &trail_stop_str)); }
-                // The absolute limit price in 44 and no 6370, or the offset
-                // in 6370 (ib-agent#194).
+                // The absolute limit price in the limit price field and no limit
+                // offset, or the offset in the limit offset field (ib-agent#194).
                 match &price_str {
                     Some(price) => fields.push((44, price)),
                     None => fields.push((6370, &offset_str)),
@@ -915,11 +916,12 @@ fn send_orders(
                 let clord_str = format!("{}.{}", context.server_id(order_id), ver);
                 let side_str = fix_side(side);
                 let qty_str = format_uint(qty as u64);
-                // Per ib-agent#156 capture: percent-trail mirrors 99/211 as the
-                // percent in decimal form (1.00 for 1%) with 18=a (ExecInst=
-                // TrailingStop); without 99/211/18 the gateway rejects with
-                // "Invalid value in field # 18". 6268 is the trail unit, 100 =
-                // percent, at every percentage (ib-agent#192 B7, ibx#339); it
+                // Per ib-agent#156 capture: percent-trail mirrors the stop price and
+                // the peg offset as the percent in decimal form (1.00 for 1%) with
+                // the trailing-stop execution instruction; without these three the
+                // gateway rejects with an invalid-value error on the instruction
+                // field. The trail unit is 100 = percent, at every percentage
+                // (ib-agent#192 B7, ibx#339); it
                 // was sent as basis points, right only at exactly 1%.
                 let pct_decimal = format_price_ref(trail_percent).to_string();
                 let trail_stop_str = format_price_ref(trail_stop_price);
@@ -936,7 +938,7 @@ fn send_orders(
                     (38, &qty_str),
                     (40, "P"),              // OrdType = Trailing Stop
                     (99, &pct_decimal),     // StopPx = percent as decimal
-                    (211, &pct_decimal),    // PegOffset = percent as decimal (mirror of 99)
+                    (211, &pct_decimal),    // PegOffset = percent as decimal (= stop price)
                     (18, "a"),              // ExecInst = TrailingStop
                     (6268, "100"),          // Trail unit = percent
                     (59, "0"),              // TIF = DAY
@@ -1180,9 +1182,10 @@ fn send_orders(
                 let symbol = context.market.symbol(instrument).to_string();
                 let (sec_type_str, destination) = context.market.order_routing(instrument);
                 let now = chrono_free_timestamp();
-                // Per ib-agent#138 capture: Relative shares OrdType=P with
-                // Trail and is disambiguated by ExecInst=R. Peg offset goes
-                // on tag 211 (not 99 outbound), and there is no tag 44.
+                // Per ib-agent#138 capture: Relative shares its order type with
+                // Trail and is disambiguated by the relative execution instruction.
+                // Peg offset goes in the peg offset field (not the stop price
+                // outbound), and there is no limit price.
                 send_new_order(conn, context, instrument, &[
                     (fix::TAG_MSG_TYPE, fix::MSG_NEW_ORDER),
                     (fix::TAG_SENDING_TIME, &now),
@@ -1869,8 +1872,8 @@ fn combo_order_setup(
 }
 
 /// A cancel as the reference writes it (ibx#464; captured 25/09/2026):
-/// `11` the order's next ClOrdID version, `41` the ClOrdID the server has on
-/// record, then quantity, side, account, contract and `6944`: `SEL` for a
+/// the order's next ClOrdID version, the original ClOrdID the server has on
+/// record, then quantity, side, account, contract and the cancel scope: `SEL` for a
 /// cancel of one order, `ALL` for the global cancel. The new version and the
 /// cancel's id are recorded, so its reports are read as the cancel's.
 fn cancel_fields(context: &mut Context, account_id: &str, order_id: crate::types::OrderId, scope: &str) -> Vec<(u32, String)> {
@@ -2215,7 +2218,7 @@ fn short_sale_fields(s: &crate::types::ShortSale) -> Fields {
     fields
 }
 
-/// Convert Side to FIX tag 54 value.
+/// Convert Side to the wire side code.
 fn fix_side(side: Side) -> &'static str {
     match side {
         Side::Buy => "1",
@@ -2273,7 +2276,7 @@ fn push_bracket_key(
     fields.push((6531, key.to_string()));
 }
 
-/// Map the OCA type code (1..=4) to its tag 6209 wire label. 0/unset and
+/// Map the OCA type code (1..=4) to its wire label. 0/unset and
 /// out-of-range coerce to 3 (ReduceOnFillNonBlock), the gateway default
 /// (ibx#215).
 fn oca_type_str(oca_type: u8) -> &'static str {
@@ -2370,7 +2373,7 @@ fn send_new_order(
     // The trail unit of a trailing type, amount (0) when the order did not
     // carry percent (ibx#263).
     if !out.iter().any(|&(t, _)| t == 6268) && trailing_type(&out) { out.push((6268, "0")); }
-    // The stop price in 6117: the stop trigger of every non-trailing stop
+    // The stop price in the stop trigger field: the stop trigger of every non-trailing stop
     // type (the adjustable stop included,
     // captured ib-agent#192 B11), the touched trigger of MIT and LIT
     // (ibx#263).
@@ -2412,8 +2415,8 @@ fn send_new_order(
     result
 }
 
-/// Whether a new order of this frame's type writes the trigger method
-/// (6115), as the reference (ibx#263): it writes it on a new order whose
+/// Whether a new order of this frame's type writes the trigger method,
+/// as the reference (ibx#263): it writes it on a new order whose
 /// type is a stop or touched type: STP,
 /// STP LMT, STP PRT, TRAIL, TRAIL LIMIT, MIT,
 /// LIT, TRAIL MIT and TRAIL LIT (captured on all but STP PRT), never on a
@@ -2423,9 +2426,9 @@ fn has_trigger_method(fields: &[(u32, &str)]) -> bool {
 }
 
 /// Whether the frame's type is a trailing one, which writes the trail
-/// unit (6268) on a new order and a replace:
+/// unit on a new order and a replace:
 /// TRAIL, TRAIL LIMIT, TRAIL MIT, TRAIL LIT
-/// (ibx#263; captured with 6268 on all four, new orders and replaces).
+/// (ibx#263; captured with the trail unit on all four, new orders and replaces).
 fn trailing_type(fields: &[(u32, &str)]) -> bool {
     match field(fields, 40) {
         Some("TSL" | "TMIT" | "TLIT") => true,
@@ -2435,7 +2438,7 @@ fn trailing_type(fields: &[(u32, &str)]) -> bool {
 }
 
 /// Whether the frame's type is a touched one, whose stop price the
-/// reference keeps as the touched trigger and writes in 6117 among the
+/// reference keeps as the touched trigger and writes in the stop trigger field among the
 /// order attributes: MIT and LIT (ibx#263, captured in
 /// ib-agent#199 on new orders and replaces).
 fn touched_type(fields: &[(u32, &str)]) -> bool {
@@ -2447,7 +2450,7 @@ fn field<'a>(fields: &[(u32, &'a str)], tag: u32) -> Option<&'a str> {
 }
 
 /// Put new-order fields in the order of the reference's new-order writer
-/// (ibx#375; the writer read from the code, its order checked against the
+/// (ibx#375; its order checked against the
 /// captured frames of ib-agent#192 B8 and B9). The sort is stable: the
 /// pairs of a repeating group (algo parameters, conditions) share one
 /// place and keep their order. The order attributes are written by the
@@ -2459,9 +2462,10 @@ fn in_reference_order(fields: &mut [(u32, &str)]) {
     let touched = touched_type(fields) || matches!(field(fields, 40), Some("TMIT" | "TLIT"));
     fields.sort_by_key(|&(tag, _)| rank_in_frame(tag, touched));
     // With no other order attribute, the price management flag comes
-    // before 6122 (the reference 10.51, paper, 13/10/2026: nine orders; a
-    // plain limit order "8339=1|6122=c", with a start time, an origin or
-    // the price-cap attribute "6122=c|...|8339=1").
+    // before the origin field (the reference 10.51, paper, 13/10/2026: nine
+    // orders; a plain limit order has the flag then the origin; with a
+    // start time, an origin or the price-cap attribute, the origin comes
+    // first and the flag after the other attributes).
     let attributes = fields.iter().any(|&(tag, _)| (73..95).contains(&rank_in_frame(tag, touched)));
     if !attributes
         && let (Some(c), Some(p)) = (fields.iter().position(|&(t, _)| t == 6122), fields.iter().position(|&(t, _)| t == 8339))
@@ -2523,7 +2527,7 @@ pub(crate) fn reference_rank(tag: u32) -> u16 {
         6433 => 75,
         // Allow pre-open and ignore opening auction, where outside RTH
         // would be (ibx#607; the reference writes the attributes in no
-        // fixed order: 6524 came after the origin in its frames).
+        // fixed order: allow pre-open came after the origin in its frames).
         6524 | 6562 => 75,
         6115 => 76,
         6370 => 77,
@@ -2643,7 +2647,7 @@ fn adjustable_stop_tags(
         tags.push((6262, format_price_ref(adjusted_stop_limit_price).to_string())); // Adjusted stop limit price
     }
     // When the stop converts to a trailing type, carry the trailing
-    // amount (6260) and its unit (6269: 0=amount, 100=percent).
+    // amount and its unit (0 = amount, 100 = percent).
     // Captured in ib-agent#167 (ibx#225).
     if matches!(adjusted_order_type,
         crate::types::AdjustedOrderType::Trail
@@ -2749,7 +2753,7 @@ fn modify_fields(
     // A trailing type restates its stop price only when it differs from the
     // last one the server reported, and not before any report
     // (no reported stop, or an equal one, is not written; captured
-    // ib-agent#195 S2 with 6117, ib-agent#192 A3b without).
+    // ib-agent#195 S2 with the stop trigger, ib-agent#192 A3b without).
     let trailing_stop = |stop: crate::types::Price| (stop > 0 && reported_stop.is_some_and(|r| r != stop)).then(|| p(stop));
     let mut touched_trigger: Option<String> = None; // MIT / LIT, an attribute
     let mut trail_offset: Option<String> = None; // TRAIL LIMIT limit offset
@@ -2787,7 +2791,7 @@ fn modify_fields(
         }
         K::TrailingStopLimit { lmt_offset, lmt_price, trail_amt, trail_stop_price } => {
             stop_trigger = trailing_stop(trail_stop_price);
-            // An absolute limit price: 44 with the order's offset, as the
+            // An absolute limit price: the limit price with the order's offset, as the
             // reference restates both (ib-agent#194, ib-agent#195).
             if let Some(price) = lmt_price { before_account.push((44, p(price))); }
             before_account.push((99, p(trail_amt)));
@@ -3763,7 +3767,7 @@ pub(crate) fn order_record_reply(context: &mut Context, req_id: &str, msg: &[u8]
 
 /// Ask the contract of an order's slot by symbol, once per slot, as the
 /// reference asks it before each API order (ibx#486; captured: the
-/// `FixSecDefReqBySymbol` of contract details, `6088=Socket`, `100=BEST`).
+/// `FixSecDefReqBySymbol` of contract details, source `Socket`, exchange `BEST`).
 fn look_up_order_contract(context: &mut Context, conn: &mut Connection, hb: &mut HeartbeatState, instrument: crate::types::InstrumentId) {
     if context.order_lookups.iter().any(|(_, i)| *i == instrument) {
         return;
@@ -4347,7 +4351,7 @@ fn push_extended_attrs(
     if attrs.good_after > 0 {
         fields.push((168, unix_to_ib_utc_dash(attrs.good_after)));
     }
-    // GTD expiry: date-only -> tag 432; time-precise -> tag 126 (UTC).
+    // GTD expiry: date-only -> the expire date; time-precise -> the expire time (UTC).
     // Mutually exclusive — never both (gateway rejects both together).
     if attrs.good_till_date_ymd > 0 {
         fields.push((432, format!("{:08}", attrs.good_till_date_ymd)));
@@ -4398,13 +4402,13 @@ fn push_extended_attrs(
     // 14/10/2026, an order for the broker's ATS venue; ibx#690).
     if attrs.not_held { fields.push((6287, "1".to_string())); }
     if attrs.cash_qty > 0 {
-        // Tag 152, the cash quantity attribute of the reference, written
+        // The cash quantity attribute of the reference, written
         // with its price formatter (ibx#263; 5920 is only its column id).
         fields.push((152, format_price_ref(attrs.cash_qty).to_string()));
     }
-    // Condition tags (6136+ framework). The reference always sends both
-    // flags, 0 or 1, before the count: ignore-RTH rides 6128 and cancel-order
-    // 6151. ibx had them the other way round and sent them only when set
+    // Condition fields. The reference always sends both
+    // flags, 0 or 1, before the count: ignore-RTH and cancel-order each ride
+    // their own field. ibx had the two fields the other way round and sent them only when set
     // (ib-agent#192 B2, ibx#327).
     if !attrs.conditions.is_empty() {
         let flag = |on: bool| if on { "1" } else { "0" }.to_string();
@@ -4509,7 +4513,7 @@ fn send_order_ex(
             fields.push((40, "2".to_string()));
             // A combo with per-leg prices: the price they give, then each
             // leg's price in leg order (ibx#470, captured 26/09/2026:
-            // `44=-73.15|6879=721.35|6879=794.50`).
+            // the price -73.15, then the leg prices 721.35 and 794.50).
             let price = context.combo_send.as_ref().and_then(|c| c.price).unwrap_or(price);
             fields.push((44, format_price_ref(price).to_string()));
             if let Some(combo) = &context.combo_send {
@@ -4531,19 +4535,21 @@ fn send_order_ex(
         }
         K::TrailingStop { trail_amt, trail_stop_price } => {
             // Per ib-agent#136 capture: amount-based trailing stop carries
-            // the trail amount in both 99 and 211 and requires 18=a.
+            // the trail amount in both the stop price and the peg offset and
+            // requires the trailing-stop execution instruction.
             let t = format_price_ref(trail_amt).to_string();
             fields.push((40, "P".to_string()));
             fields.push((99, t.clone()));
             fields.push((211, t));
-            // Optional initial stop trigger (tag 6117), only when set (ib-agent#173).
+            // Optional initial stop trigger, only when set (ib-agent#173).
             if trail_stop_price > 0 { fields.push((6117, format_price_ref(trail_stop_price).to_string())); }
         }
         K::TrailingStopLimit { lmt_offset, lmt_price, trail_amt, trail_stop_price } => {
-            // Per ib-agent#136 capture: TRAIL LIMIT uses OrdType=TSL, no
-            // tag 18; trail amount in both 99 and 211; 6370 is the
-            // limit-vs-trail offset. An absolute limit price goes in 44
-            // instead, with no 6370 (ib-agent#194).
+            // Per ib-agent#136 capture: TRAIL LIMIT uses the trailing stop limit
+            // order type, no execution instruction; trail amount in both the stop
+            // price and the peg offset; the limit offset is the
+            // limit-vs-trail offset. An absolute limit price goes in the limit price
+            // instead, with no limit offset (ib-agent#194).
             let t = format_price_ref(trail_amt).to_string();
             fields.push((40, "TSL".to_string()));
             if let Some(price) = lmt_price { fields.push((44, format_price_ref(price).to_string())); }
@@ -4553,8 +4559,9 @@ fn send_order_ex(
             if trail_stop_price > 0 { fields.push((6117, format_price_ref(trail_stop_price).to_string())); }
         }
         K::TrailPct { trail_percent, trail_stop_price } => {
-            // Per ib-agent#156 capture: percent-trail mirrors 99/211 as the
-            // percent in decimal form (1.00 for 1%), with 18=a. 6268 is the
+            // Per ib-agent#156 capture: percent-trail mirrors the stop price and the
+            // peg offset as the percent in decimal form (1.00 for 1%), with the
+            // trailing-stop execution instruction. The
             // trail unit, 100 = percent (ib-agent#192 B7, ibx#339).
             let pct_decimal = format_price_ref(trail_percent).to_string();
             fields.push((40, "P".to_string()));
@@ -4607,8 +4614,9 @@ fn send_order_ex(
             fields.extend(prices);
         }
         K::Rel { price, offset } => {
-            // Per ib-agent#138 capture: Relative shares OrdType=P and is
-            // disambiguated by 18=R; peg offset on 211; the price cap in 44
+            // Per ib-agent#138 capture: Relative shares the trailing stop's order type and is
+            // disambiguated by the relative execution instruction; the peg offset in
+            // its field; the price cap in the limit price
             // when set (ib-agent#199, ibx#263).
             fields.push((40, "P".to_string()));
             if price > 0 { fields.push((44, format_price_ref(price).to_string())); }
@@ -4724,7 +4732,7 @@ fn send_order_ex(
     send_new_order(conn, context, instrument, &refs)
 }
 
-/// The instruction field (18) as the reference builds it: the letter of a
+/// The execution instruction field as the reference builds it: the letter of a
 /// pegged or trailing type (a trailing stop, R relative, P pegged to
 /// market, M pegged to midpoint), G for all-or-none, e for an algo order
 /// whatever its type (ib-agent#192 B9, ibx#405, ibx#263), R for pegged to
@@ -4746,8 +4754,8 @@ fn exec_inst(kind: &crate::types::OrderKind, all_or_none: bool, algo: bool) -> S
 }
 
 /// The algo block, as the reference writes it after the order attributes:
-/// the strategy (847, after 849 when
-/// the algo has a maximum percentage of volume), then the parameter count
+/// the strategy (after the maximum percentage of volume when
+/// the algo has one), then the parameter count
 /// and its pairs.
 fn algo_fields(algo: &crate::types::OrderAlgo) -> Fields {
     use crate::types::OrderAlgo;
@@ -4771,10 +4779,10 @@ fn algo_fields(algo: &crate::types::OrderAlgo) -> Fields {
         }
         OrderAlgo::Params(params) => {
             let (algo_name, param_strs) = build_algo_tags(params);
-            // Tag 849 (maxPctVol) for algos that use it, only when it was
+            // The maxPctVol parameter for algos that use it, only when it was
             // given: the reference writes the parameters the order has, and
-            // the server refused the 849=0 ibx sent for a Vwap without it
-            // ("Invalid value in field # 849", paper 05/10/2026). A value of
+            // the server refused the zero value ibx sent for a Vwap without it
+            // (an invalid-value error on that field, paper 05/10/2026). A value of
             // 0 is refused before (441, its minimum is 0.01), so 0 here is a
             // parameter not given.
             match params {
@@ -4788,11 +4796,11 @@ fn algo_fields(algo: &crate::types::OrderAlgo) -> Fields {
             fields.push((847, algo_name.to_string()));
             // Only parameters that have a value: the reference leaves out
             // one that was not given (an unset start/end time), and the
-            // server refuses an empty one with "Invalid value in field
-            // # 5957" (ib-agent#192 B9, ibx#405).
+            // server refuses an empty one with an invalid-value error on the
+            // parameter count (ib-agent#192 B9, ibx#405).
             let pairs: Vec<&[String]> = param_strs.chunks(2).filter(|p| !p[1].is_empty()).collect();
             fields.push((5957, pairs.len().to_string()));
-            // Emit key/value pairs: 5958=key, 5960=value (repeated)
+            // Emit the key/value pairs, the key then the value (repeated)
             for pair in pairs {
                 fields.push((5958, pair[0].clone()));
                 fields.push((5960, pair[1].clone()));
@@ -5169,7 +5177,7 @@ mod tests {
     // ibx#311 ibx#329: the bracket children carry the parent's server id
     // with its version, the parent's server id as the OCA group, and
     // cancel on fill. The bracket's own ids are versioned like every other
-    // order, each under its own server id, its API order id in 6121.
+    // order, each under its own server id, its API order id in its own field.
     #[test]
     fn bracket_children_link_to_the_parent_like_the_reference() {
         let frames = wire_frames(OrderRequest::SubmitBracket {
@@ -5196,9 +5204,9 @@ mod tests {
     // bracket of 26/09/2026, ib-agent captures/four-leg/20260926, a DAY
     // parent LMT, a LMT take-profit and a STP stop-loss on AAPL), field by
     // field and in order. The ids are masked as their role (parent, child);
-    // left out: the account, the client id (6119), the bracket colour, and
-    // what the bracket request does not carry (6010 orderRef, 8339 price
-    // management). The children of the bracket request are GTC (59=1, the
+    // left out: the account, the client id, the bracket colour, and
+    // what the bracket request does not carry (the orderRef, the price
+    // management flag). The children of the bracket request are GTC (the GTC time in force, the
     // reference's form for a GTC child, pd_bracket_keys of 01/10/2026);
     // the recorded ones were DAY (ibx#486, phase 51 of 05/10/2026).
     #[test]
@@ -5480,8 +5488,8 @@ mod tests {
 
     // ibx#486: an order on a contract given without a conId waits for the
     // contract's lookup by symbol, as the reference looks each API order's
-    // contract up (captured: `320=FixSecDefReqBySymbol200|321=2|6088=Socket|
-    // 55=AAPL|167=CS|100=BEST|15=USD` before the 35=D); the answer gives the
+    // contract up (captured: the symbol lookup `FixSecDefReqBySymbol200`, source Socket,
+    // AAPL, a stock, BEST, USD, before the new order); the answer gives the
     // order its conId. A second order of the same contract is looked up
     // again and takes the slot of that conId; no contract gives 200.
     // ibx#669: the order rules come from the order's own lookup reply when
@@ -5606,9 +5614,9 @@ mod tests {
     //
     // Each case replays one replace the reference sent (ib-agent#192 group
     // A, account id replaced) and checks ibx sends the same fields in the
-    // same order with the same values. Left out on purpose: 6205 (only when
-    // the original order carried a price cap, meaning unknown; the server
-    // accepts replaces without it) and 6531 (bracket group index, which ibx
+    // same order with the same values. Left out on purpose: a field written only when
+    // the original order carried a price cap (meaning unknown; the server
+    // accepts replaces without it) and the bracket group index (which ibx
     // does not send on submit either).
 
     fn parse_frame(s: &str) -> Vec<(u32, String)> {
@@ -6144,8 +6152,10 @@ mod tests {
     }
 
     // ibx#464: the cancel the reference sends (captured 25/09/2026, account
-    // masked): 35=F|11=258354710.2|41=258354710.1|38=1|54=2|1=DU...|6008=265598|
-    // 6088=Socket|6944=SEL. ibx sent 11=C{id}|41|60 only.
+    // masked): a cancel message with the new ClOrdID 258354710.2, the original
+    // 258354710.1, quantity 1, sell, the account, conId 265598, source Socket
+    // and scope SEL. ibx sent a `C{id}` ClOrdID, the original ClOrdID and the
+    // transaction time only.
     #[test]
     fn cancel_is_written_like_the_reference() {
         let tags = wire_tags_with(
@@ -6612,9 +6622,9 @@ mod tests {
         assert!(errors.is_empty());
     }
 
-    // ibx#466: the orderRef rides 6010 on the order and on each replace, as
-    // the reference (captured 25/09/2026: 6010=pm0925-fill-BUY, and 6010
-    // before 6122=c on the replace).
+    // ibx#466: the orderRef rides its own field on the order and on each replace, as
+    // the reference (captured 25/09/2026: the orderRef pm0925-fill-BUY, just
+    // before the origin field on the replace).
     #[test]
     fn order_ref_is_sent_on_the_order_and_the_replace() {
         let attrs = crate::types::OrderAttrs { order_ref: "pm0925-fill-BUY".into(), ..Default::default() };
@@ -6642,9 +6652,9 @@ mod tests {
         assert_eq!(tag(&eur_ex, 15), Some("EUR"));
     }
 
-    // ibx#466: the reference writes the stop trigger 6117 with the stop
+    // ibx#466: the reference writes the stop trigger with the stop
     // price on STP, STP LMT and STP PRT (captured 25/09/2026:
-    // 99=235.14 ... 6117=235.14).
+    // stop price 235.14 ... stop trigger 235.14).
     #[test]
     fn stop_orders_carry_the_stop_trigger() {
         let plain = wire_tags(OrderRequest::SubmitStop { order_id: 11, instrument: 0, side: Side::Sell, qty: 1, stop_price: 23514 * P / 100 });
@@ -6661,14 +6671,14 @@ mod tests {
         });
         assert_eq!(tag(&ex, 6117), Some("235.14"));
         let mit = wire_tags(OrderRequest::SubmitMit { order_id: 14, instrument: 0, side: Side::Sell, qty: 1, stop_price: 235 * P });
-        // MIT writes its stop price in 6117 too, as its touched trigger
+        // MIT writes its stop price in the stop trigger field too, as its touched trigger
         // among the attributes (ib-agent#199, ibx#263).
         assert_eq!(tag(&mit, 6117), Some("235.00"));
     }
 
     // ib-agent#194, captured 25/09/2026: a TRAIL LIMIT with lmtPrice only
-    // sends the price in 44 and no 6370:
-    // 35=D|44=745.66|99=20.00|...|6117=750.66|...|40=TSL|211=20.00.
+    // sends the limit price and no limit offset: a new order with the limit
+    // price 745.66, stop price 20.00, stop trigger 750.66, type TSL, peg offset 20.00.
     #[test]
     fn trail_limit_with_a_limit_price_sends_44_and_no_offset() {
         let plain = wire_tags(OrderRequest::SubmitTrailingStopLimit {
@@ -6690,7 +6700,7 @@ mod tests {
         assert_eq!(tag(&ex, 44), Some("745.66"));
         assert_eq!(tag(&ex, 6370), None);
 
-        // The offset form keeps 6370 and no 44.
+        // The offset form keeps the limit offset and no limit price.
         let offset = wire_tags(OrderRequest::SubmitTrailingStopLimit {
             order_id: 22, instrument: 0, side: Side::Sell, qty: 1, lmt_offset: P / 2,
             lmt_price: None, trail_amt: 20 * P, trail_stop_price: 75066 * P / 100,
@@ -6699,8 +6709,8 @@ mod tests {
         assert_eq!(tag(&offset, 44), None);
     }
 
-    // ib-agent#194: the replace restates 44 and the offset the server
-    // reported (35=G|...|44=745.76|99=20.00|...|6370=5.00|...).
+    // ib-agent#194: the replace restates the limit price and the offset the server
+    // reported (a replace with limit price 745.76, stop price 20.00, limit offset 5.00).
     #[test]
     fn trail_limit_replace_restates_the_price_and_the_server_offset() {
         let kind = crate::types::OrderKind::TrailingStopLimit {
@@ -6772,8 +6782,8 @@ mod tests {
 
     // ib-agent#195 (captured 25/09/2026): a replace sent before any server
     // report computes the offset from the stop price and the new limit
-    // price: 35=G|...|44=746.99|...|6370=4.90|... for a sell with
-    // 6117=751.89. For a buy it is the limit price minus the stop price.
+    // price: a replace with limit price 746.99 and limit offset 4.90 for a sell with
+    // stop trigger 751.89. For a buy it is the limit price minus the stop price.
     #[test]
     fn trail_limit_replace_before_any_report_computes_the_offset() {
         let replace = |side: Side, lmt: i64, stop: i64| {
@@ -6990,9 +7000,9 @@ mod tests {
     }
 
     // ibx#607, the reference's frames of 12/10/2026 (AAPL, SMART, DAY):
-    // allow pre-open (6524) on a LMT without outside RTH; post-only (6605)
-    // and deactivate (6521) with outside RTH; ignore opening auction never
-    // (RTHIGNOPG is not in the list), without a warning; each only as =1.
+    // allow pre-open on a LMT without outside RTH; post-only
+    // and deactivate with outside RTH; ignore opening auction never
+    // (RTHIGNOPG is not in the list), without a warning; each only as on (1).
     #[test]
     fn the_order_flags_go_out_where_they_apply() {
         use crate::types::OrderAttrs as A;
@@ -8137,7 +8147,7 @@ mod tests {
         assert_eq!(tag(&tags, 35), Some("D"));
     }
 
-    // ibx#425: customer account 6207 and professional customer 6636.
+    // ibx#425: the customer account and professional customer fields.
     #[test]
     fn customer_account_tags() {
         let tags = wire_tags(OrderRequest::SubmitLimitEx {
@@ -8418,9 +8428,9 @@ mod tests {
         }
     }
 
-    // ibx#263: 849 (maxPctVol) goes out only when the order has it; a Vwap
-    // without it got "Invalid value in field # 849" from the server for the
-    // 849=0 ibx sent (paper 05/10/2026).
+    // ibx#263: maxPctVol goes out only when the order has it; a Vwap
+    // without it got an invalid-value error on that field from the server for the
+    // zero ibx sent (paper 05/10/2026).
     #[test]
     fn max_pct_vol_only_when_given() {
         let vwap = |max_pct_vol: f64| wire_tags(OrderRequest::SubmitAlgo { order_id: 1, instrument: 0, side: Side::Buy, qty: 1,
@@ -8457,7 +8467,7 @@ mod tests {
         let (conn, mut peer) = crate::test_support::Peer::pair();
         let mut conn = Some(conn);
         drain_and_send_orders(&mut conn, &mut context, "DU1", &mut HeartbeatState::new(), false, &shared);
-        // The session fields and 35 out, the account masked on both sides.
+        // The session fields and the message type out, the account masked on both sides.
         let n = crate::test_support::Normaliser::framing().keep_ids().drop(&[35]);
         let sent = peer.messages();
         assert_eq!(sent.len(), 1);
@@ -8495,7 +8505,7 @@ mod tests {
         let (conn, mut peer) = crate::test_support::Peer::pair();
         let mut conn = Some(conn);
         drain_and_send_orders(&mut conn, &mut context, "DU1", &mut HeartbeatState::new(), false, &shared);
-        // The reference's ClOrdID is its own: 11 out with the session fields.
+        // The reference's ClOrdID is its own: left out with the session fields.
         let n = crate::test_support::Normaliser::framing().drop(&[35, 11]);
         let ours = n.msg(&peer.messages()[0]);
         let want = n.pipe(STP);
@@ -8584,7 +8594,7 @@ mod tests {
 
     // ibx#263 (captured 23/09/2026, ib-agent#192 A2a and A2b, and
     // 28/09/2026, captures/0928; paper, AAPL, account masked): a new stop
-    // order is the reference's frame, the default trigger method 6115=0
+    // order is the reference's frame, the default trigger method 0
     // included, through both encoders. The ids (ClOrdID, account, API order
     // and client ids) are left out.
     #[test]
@@ -8619,7 +8629,7 @@ mod tests {
     // ibx#263: the trigger method goes on a new order of the stop and
     // touched types only, the caller's value
     // or the default 0; never on the
-    // other types, whatever the caller set. Captured with 6115=0: STP,
+    // other types, whatever the caller set. Captured with the default 0: STP,
     // STP LMT, TRAIL, TRAIL LIMIT, MIT, LIT (and an Adaptive STP and a
     // bracket's stop child); without: LMT, MKT, REL, PEG MID, PEG BENCH,
     // MIDPX and the snap types.
@@ -8671,7 +8681,7 @@ mod tests {
     }
 
     // ibx#263: a replace writes no trigger method (the reference writes it
-    // on a new order only; no captured 35=G has it) and restates the
+    // on a new order only; no captured replace has it) and restates the
     // instruction field as the new order does (the reference's replace
     // builds it the same way): the type letter, then G for
     // all-or-none, after the trail field.
@@ -8703,9 +8713,9 @@ mod tests {
 
     // ibx#263 (captured 23/09/2026, ib-agent#192 B8d and A3b, and
     // 28/09/2026, ib-agent#199; paper, AAPL, account masked): the trail
-    // unit 6268=0 of an amount TRAIL and a TRAIL LIMIT, the touched trigger
-    // 6117 of MIT and LIT (their stop price, among the attributes), and the
-    // price cap 44 of a REL, through both encoders. The ids (ClOrdID,
+    // unit 0 (amount) of an amount TRAIL and a TRAIL LIMIT, the touched trigger
+    // of MIT and LIT (their stop price, among the attributes), and the
+    // price cap of a REL (the limit price), through both encoders. The ids (ClOrdID,
     // account, API order and client ids) are left out.
     #[test]
     fn new_trailing_touched_and_relative_orders_are_the_captured_frames() {
@@ -8749,7 +8759,7 @@ mod tests {
         let lit = wire_tags(ex(Side::Sell, K::Lit { price: px(450.0), stop_price: px(450.0) }, b'1', order_ref("x", true)));
         let at = |tag: u32| lit.iter().position(|(t, _)| *t == tag);
         assert!(at(6122) < at(6117) && at(6433) < at(6117), "{lit:?}");
-        // A REL without a price cap has no 44.
+        // A REL without a price cap has no limit price.
         let rel = wire_tags(ex(Side::Buy, K::Rel { price: 0, offset: px(0.01) }, b'0', OrderAttrs::default()));
         assert_eq!(tag(&rel, 44), None);
     }
@@ -8782,8 +8792,8 @@ mod tests {
     }
 
     // ibx#263 (captured 28/09/2026, ib-agent#199, paper, AAPL, account
-    // masked): a replace of MIT and LIT restates the touched trigger 6117
-    // among the attributes, a replace of REL its price cap 44; field for
+    // masked): a replace of MIT and LIT restates the touched trigger
+    // among the attributes, a replace of REL its price cap; field for
     // field, in the captured order.
     #[test]
     fn replace_of_touched_and_relative_orders_matches_reference() {
@@ -8803,7 +8813,7 @@ mod tests {
         }
     }
 
-    // ibx#263: a replace of an algo order restates the algo letter in 18
+    // ibx#263: a replace of an algo order restates the algo letter in the instruction field
     // and the algo block after the attributes, as the new order: the
     // reference's replace writes them the same way as its new order
     //. Not captured.
@@ -9048,7 +9058,7 @@ mod tests {
         assert_eq!(tag(&trail(K::StpPrt { stop_price: px(90.0) }, 0.0), 6117), Some("90.00"));
     }
 
-    // ibx#263: the cash quantity is the reference's attribute 152
+    // ibx#263: the cash quantity is the reference's cash quantity attribute
     // (a double attribute
     // written with the price formatter); 5920 is only its column id.
     #[test]
@@ -9089,7 +9099,7 @@ mod tests {
 
     // ibx#466: a new order goes out under a server id of the reference's
     // order id generator, as the reference's ClOrdID is its permId
-    //, with its API order id in 6121; two
+    //, with its API order id in its own field; two
     // orders get two ids. Its replace and its cancel go under the same
     // server id.
     #[test]
@@ -9421,7 +9431,7 @@ mod tests {
     // with the value unset or on carries the flag, last of the attributes,
     // on the new order and on the replace; with the value off it
     // has none, and the reference never writes it off. With no other
-    // attribute, the reference 10.51 writes it before 6122 on a new order
+    // attribute, the reference 10.51 writes it before the origin field on a new order
     // (paper, 13/10/2026, ibx#666; 10.40 wrote it after).
     #[test]
     fn a_stock_limit_carries_the_flag_unless_set_off() {
@@ -9562,9 +9572,9 @@ mod tests {
     }
 
     // An option order carries the option's terms after its symbol and its
-    // multiplier, as the reference's new-order writer
-    //: maturity 200, right 201
-    // (1 call), strike 202, 167=OPT, 231. Without them the server refused
+    // multiplier, as the reference's new-order writer: the contract month,
+    // the right (1 for a call), the strike, the security type OPT and the
+    // multiplier. Without them the server refused
     // the option's conId sent as a stock (201 "Contract does not match
     // supplied contract parameters", paper 03/10/2026).
     // ibx#666 (paper, 13/10/2026): an order on a future given by its conId

@@ -1558,7 +1558,7 @@ impl Order {
             .map_err(|e| PyRuntimeError::new_err(e))
     }
 
-    /// Parse the TIF string to FIX byte. Delegates to `api::Order::tif_byte()`.
+    /// Parse the TIF string to the wire byte. Delegates to `api::Order::tif_byte()`.
     pub fn tif_byte(&self) -> u8 {
         self.to_api().tif_byte()
     }

@@ -26,7 +26,7 @@ use crate::protocol::fix::{self, fix_build, fix_parse, fix_read_deadline, SOH};
 use crate::protocol::fixcomp;
 use crate::protocol::ns;
 
-/// Parse the `PRIV_LAB_MISC_URLS` blob (FIX tag 6321) into a `{key: value}` map.
+/// Parse the `PRIV_LAB_MISC_URLS` blob (the logon's misc URLs field) into a `{key: value}` map.
 ///
 /// Wire format: pipe-delimited `k=v|k=v|…`, with `%7C` escaping a literal `|`
 /// inside keys or values. Falls back to comma as the entry separator when the
@@ -59,8 +59,8 @@ pub fn parse_misc_urls(s: &str) -> std::collections::HashMap<String, String> {
 /// Parse a farm-route string from the auth-server's routing tags.
 ///
 /// Three accepted shapes (per ib-agent#128):
-///   "<host>/<farm>"             — tag 6145 (trading)
-///   "<host>/<farm>/<port>"      — tags 6171 (mktdata) / 8008 (secdef)
+///   "<host>/<farm>"             — the trading route field
+///   "<host>/<farm>/<port>"      — the market data / contract data route fields
 ///
 /// Port is informational only — ibx routes all farm channels to the same
 /// data-port discovered via `misc_port()`. We just need (host, farm).
@@ -74,8 +74,8 @@ pub fn parse_farm_route(route: &str) -> Option<(String, String)> {
     Some((host, farm))
 }
 
-/// Returns true if `buf` contains at least one complete `8=O` (binary) or
-/// `8=FIXCOMP` frame. Used to terminate read drains as soon as the expected
+/// Returns true if `buf` contains at least one complete binary frame or
+/// compressed frame. Used to terminate read drains as soon as the expected
 /// response is fully buffered.
 fn has_complete_response_frame(buf: &[u8]) -> bool {
     if buf.starts_with(b"8=O\x01") {
@@ -105,7 +105,7 @@ fn has_complete_response_frame(buf: &[u8]) -> bool {
     false
 }
 
-/// The short hash of the session token: in the farm logon (tag 8483), the
+/// The short hash of the session token: in the farm logon (its token hash field), the
 /// connect request of a reconnect and the port type change (ibx#423).
 ///
 /// The reference writes it as lower-case hex with **no** zero
@@ -279,17 +279,18 @@ pub fn new_comm_port(version: u32, token_hash: &str) -> String {
 
 /// Build auth server logon message.
 ///
-/// Tag 6266 (`encoded`) carries `{jdkVer}/{platform}/{locale}/{dist}`.
+/// The client info field (`encoded`) carries `{jdkVer}/{platform}/{locale}/{dist}`.
 /// The auth server requires the `{locale}` segment to be a canonical Java
 /// `Locale.toString()` value — `en_US`, `fr`, `ja_JP`, etc. Bare `en` is
-/// rejected as `invalid twsInfo`. Override via `IBX_LOCALE` (locale only)
+/// rejected by the server as an invalid client info. Override via `IBX_LOCALE` (locale only)
 /// or `IBX_ENCODED` (full string).
 ///
-/// Tag 8361 = `"(rolling)"` is load-bearing: it marks the client as a
-/// rolling-release build, which bypasses the server's IB_BUILD allow-list
-/// check. Without it the server rejects with "The TWS build you are
-/// currently running is no longer supported." Per ib-agent#141 the
-/// official client also keeps 6397/6947/8098, so we leave them in.
+/// The build mode field set to `"(rolling)"` is load-bearing: it marks the client as a
+/// rolling-release build, which bypasses the server's build allow-list
+/// check. Without it the server rejects the login: the client's build "is
+/// no longer supported". Per ib-agent#141 the official client also keeps
+/// the other client fields listed below (a flag, the time zone, a zero), so we
+/// leave them in.
 ///
 /// The time zone field carries the machine's IANA time zone name (e.g.
 /// `Europe/Paris`), as the reference client does; `IBX_TZ` overrides it and
@@ -407,13 +408,13 @@ fn logon_reply_tags(response: &[u8]) -> Option<std::collections::HashMap<u32, St
 /// logon, a reconnect included (ibx#421).
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct LogonValues {
-    /// Clock offset from the server time (52), None when not usable.
+    /// Clock offset from the server's sending time, None when not usable.
     pub clock_offset_ms: Option<i64>,
-    /// Feature list (6542), None when absent.
+    /// Feature list, None when absent.
     pub features: Option<String>,
-    /// Data permission stamp (6764), None when absent or empty.
+    /// Data permission stamp, None when absent or empty.
     pub data_permissions: Option<String>,
-    /// Pending accounts (8092), None when absent (ibx#421).
+    /// Pending accounts, None when absent (ibx#421).
     pub pending_accounts: Option<Vec<String>>,
 }
 
@@ -468,7 +469,7 @@ pub fn build_farm_encrypted_logon(
     let encrypted_raw = channel.encrypt(&inner);
     let b64_str = B64.encode(&encrypted_raw);
 
-    // Outer wrapper: 8=FIX.4.1|9=<bodylen>|90=<b64_len>|91=<b64>|10=<cksum>
+    // Outer wrapper: header | body length | encrypted data length | encrypted data | checksum
     let b64_len_str = b64_str.len().to_string();
     let body = format!("90={}\x0191={}\x01", b64_len_str, b64_str);
     let header = format!("8=FIX.4.1\x019={:04}\x01", body.len());
@@ -531,8 +532,8 @@ pub fn build_farm_logon(
 }
 
 /// A connection socket of the reference: TLS or plain TCP (ibx#423,
-/// ibx#276). The reference picks it by the endpoint's SSL flag (code
-/// read of the reference).
+/// ibx#276). The reference picks it by the endpoint's SSL flag (not
+/// observed on the wire yet).
 pub enum LinkStream {
     Tls(Box<native_tls::TlsStream<TcpStream>>),
     Plain(TcpStream),
@@ -736,7 +737,7 @@ pub fn farm_logon_exchange(
             buf.extend_from_slice(&tmp[..n]);
         };
 
-        // FIX.4.1 message
+        // A text message of the wire protocol (not a binary frame)
         if msg.starts_with(b"8=FIX.4.1\x01") {
             // A signed frame is verified; on a mismatch the logon fails and
             // the IV is not advanced, as in the reference (ibx#275).
@@ -756,7 +757,7 @@ pub fn farm_logon_exchange(
             };
             let fields = fix_parse(&parsed_msg);
 
-            // Check for encrypted content (tags 91/96). A farm session in
+            // Check for encrypted content (encrypted or raw data field). A farm session in
             // clear sends its auth start as it is (ibx#423).
             let enc_tag = fields.get(&91).or_else(|| fields.get(&96));
             let plain_auth_start = enc_tag.is_none() && fields.get(&35).map(|s| s.as_str()) == Some("S");
@@ -834,24 +835,24 @@ pub fn farm_logon_exchange(
     ))
 }
 
-/// Try to extract one complete FIX message from a buffer.
+/// Try to extract one complete wire message from a buffer.
 /// Returns (message, bytes_consumed) or None if incomplete.
 fn try_frame_farm_msg(buf: &[u8]) -> Option<(Vec<u8>, usize)> {
     if buf.len() < 10 {
         return None;
     }
-    // Look for FIX header
+    // Look for the message header
     if !buf.starts_with(b"8=") {
         // Skip garbage
         let next = buf.windows(2).position(|w| w == b"8=")?;
         return Some((Vec::new(), next)); // skip garbage, caller retries
     }
-    // Find tag 9 body length
+    // Find the body length field
     let tag9_pos = buf.windows(3).position(|w| w == b"\x019=")?;
     let val_start = tag9_pos + 3;
     let soh_pos = buf[val_start..].iter().position(|&b| b == SOH)? + val_start;
     let body_len: usize = std::str::from_utf8(&buf[val_start..soh_pos]).ok()?.parse().ok()?;
-    let total = soh_pos + 1 + body_len + 7; // +7 for "10=XXX\x01"
+    let total = soh_pos + 1 + body_len + 7; // +7 for the checksum field and its separator
     if buf.len() < total {
         return None;
     }
@@ -891,8 +892,8 @@ pub struct ReconnectAuth {
     pub ns_secure_refused: bool,
     /// The auth connection runs on TLS (ibx#423).
     pub use_ssl: bool,
-    /// The SSL farm list of the last logon reply or logon update (8449,
-    /// ibx#276).
+    /// The SSL farm list of the last logon reply or logon update
+    /// (ibx#276).
     pub ssl_farms: String,
 }
 
@@ -918,27 +919,27 @@ pub struct CcpReconnect {
 /// Full gateway connection.
 pub struct Gateway {
     pub account_id: String,
-    /// The account ids of the logon's account list (6095), in logon
+    /// The account ids of the logon's account list, in logon
     /// order: the managed accounts of the API (ibx#420). Empty when the
     /// logon has no list.
     pub managed_accounts: Vec<String>,
     pub session_token: BigUint,
     /// Session ID surfaced to webapp REST clients as `x-ccp-session-id`.
-    /// Sourced from the post-auth FIX logon ACK, falling back to the locally generated
+    /// Sourced from the post-auth logon ACK, falling back to the locally generated
     /// session ID when the gateway does not echo one back.
     pub server_session_id: String,
-    /// Logon tag 6386: in the reference, the object key of the settings
+    /// The logon's settings key: in the reference, the object key of the settings
     /// download; not used by ibx (ibx#483).
     pub settings_object_key: String,
     pub heartbeat_interval: u64,
     /// Stored for farm reconnection.
     pub hw_info: String,
     pub encoded: String,
-    /// Raw soft dollar tier data from CCP logon tag 6522 (ibx#480).
+    /// Raw soft dollar tier data from the CCP logon (ibx#480).
     pub raw_soft_dollar_tiers: String,
-    /// Raw family code data from CCP logon tag 6823.
+    /// Raw family code data from the CCP logon.
     pub raw_family_codes: String,
-    /// Raw news provider data from CCP logon tag 6830.
+    /// Raw news provider data from the CCP logon.
     pub raw_news_providers: String,
     /// Raw API news source list from the CCP logon (ibx#460).
     pub raw_news_sources: String,
@@ -948,17 +949,17 @@ pub struct Gateway {
     pub deny_news: bool,
     /// White branding ID from CCP logon (empty for standard accounts).
     pub white_branding_id: String,
-    /// FA session: CCP logon tag 6108 is "1" (ibx#481).
+    /// FA session: the CCP logon's FA flag is "1" (ibx#481).
     pub fa_session: bool,
     /// The logon's super user and omnibus flags (ibx#417).
     pub super_user: bool,
     pub omnibus: bool,
-    /// Logon tag 6611: the smart combo conId of each currency (ibx#470).
+    /// The logon's smart combo conId of each currency (ibx#470).
     pub raw_smart_combo_con_ids: String,
     /// The algo provider list of the login burst (ibx#505).
     pub raw_algo_providers: String,
-    /// Account config (6040=210): feature list (6542) and MiFID config id
-    /// (8234); None when the answer was not in the login burst (ibx#425).
+    /// The account config answer of the login burst: feature list and MiFID config
+    /// id; None when the answer was not in the login burst (ibx#425).
     pub account_config: Option<(Vec<String>, String)>,
     /// The algo definition answers of the login burst (ibx#263).
     pub algo_definitions: Vec<String>,
@@ -970,7 +971,7 @@ pub struct Gateway {
     pub tick_by_tick_limit: usize,
     /// Most contracts with API depth at once, from the logon (#452).
     pub depth_limit: usize,
-    /// The logon's 6247 is `demo` (any case), as on paper: the reference
+    /// The logon's environment field is `demo` (any case), as on paper: the reference
     /// turns its user book on, and gives depth as an index diff (#451).
     pub user_book: bool,
     /// The logon feature list turns tick-by-tick data off (ibx#455).
@@ -988,7 +989,7 @@ pub struct Gateway {
     pub misc_urls: std::collections::HashMap<String, String>,
     /// The auth connection runs on TLS (ibx#423, [`crate::config::use_ssl`]).
     pub use_ssl: bool,
-    /// The logon's SSL farm list (8449, ibx#276), empty when absent.
+    /// The logon's SSL farm list (ibx#276), empty when absent.
     pub ssl_farms: String,
     /// CCP HMAC signing key (kb[64..84]) for selective signing of XML messages.
     pub ccp_sign_key: Vec<u8>,
@@ -1022,10 +1023,10 @@ pub struct Gateway {
     /// Values of the logon reply the reference applies (ibx#421): clock
     /// offset, feature list, data permission stamp.
     pub logon: LogonValues,
-    /// Version cutoff (6243) and its date (6244) of the logon (ibx#421).
+    /// Version cutoff and its date of the logon (ibx#421).
     pub version_cutoff: Option<String>,
     pub version_cutoff_date: Option<String>,
-    /// Most years of a historical data request (6774, 1 when not above
+    /// Most years of a historical data request (1 when the logon value is not above
     /// 0, ibx#421).
     pub max_backfill_years: i32,
 }
@@ -1199,7 +1200,7 @@ fn farm_session(
         log::info!("{} sent routing request (6556={})", farm_id, request_id);
 
         // Read routing response. Frame-based termination: poll with a short
-        // timeout, break as soon as we have at least one complete FIXCOMP frame
+        // timeout, break as soon as we have at least one complete compressed frame
         // buffered. The 5-s read timeout remains as the worst-case fallback.
         stream.tcp().set_read_timeout(Some(Duration::from_millis(100)))?;
         let routing_deadline = std::time::Instant::now() + Duration::from_secs(5);
@@ -1295,7 +1296,7 @@ fn farm_session(
                 }
             }
             crate::protocol::connection::Frame::Control(raw) => {
-                // 8=1 / 8=X control state — extracted, not routed (ibx#185).
+                // Control-state frames — extracted, not routed (ibx#185).
                 log::debug!("{} ignoring control frame: {} bytes", farm_id, raw.len());
             }
         }
@@ -1494,7 +1495,7 @@ fn reconnect_ccp_attempt(auth: &ReconnectAuth, token_hash: &str, host: &str, dep
         return Err(io::Error::new(io::ErrorKind::Other, "CCP reconnect: no FIX_START after auth"));
     }
 
-    // FIX Logon: a reconnect of the same session carries its epoch (ibx#422).
+    // Logon: a reconnect of the same session carries its epoch (ibx#422).
     let logon_msg = build_ccp_reconnect_logon(&auth.hw_info, &auth.encoded, CCP_HEARTBEAT, 1, &auth.session_epoch);
     tls.write_all(&logon_msg)?;
     tls.flush()?;
@@ -1629,7 +1630,7 @@ fn do_ccp_soft_token<S: Read + Write>(stream: &mut S, session_key: &BigUint) -> 
     }
 }
 
-/// Configuration for connecting to IB.
+/// Configuration for connecting to the broker.
 pub struct GatewayConfig {
     pub username: String,
     /// Wrapped in `Zeroizing` so the plaintext is wiped from memory on drop.
@@ -1662,7 +1663,7 @@ pub struct GatewayConfig {
 }
 
 impl Gateway {
-    /// Connect to IB: auth + logon + data farm connections.
+    /// Connect to the broker: auth + logon + data farm connections.
     /// Returns Gateway + farm Connection + auth Connection + optional historical data Connection.
     ///
     /// While the server answers "site down" or "site not ready" the login is
@@ -1696,9 +1697,9 @@ impl Gateway {
         }
 
         let hw_info = session::get_hw_info();
-        // Tag 6266 carries `{jdkVer}/{platform}/{locale}/{dist}`. The locale
+        // The client info field carries `{jdkVer}/{platform}/{locale}/{dist}`. The locale
         // segment must be a canonical Java `Locale.toString()` value (e.g.
-        // `en_US`, `fr`, `ja_JP`); bare `en` is rejected as `invalid twsInfo`.
+        // `en_US`, `fr`, `ja_JP`); bare `en` is rejected as an invalid client info.
         // `IBX_LOCALE` overrides just the locale; `IBX_ENCODED` overrides
         // the whole string for full control.
         let encoded = std::env::var("IBX_ENCODED").unwrap_or_else(|_| {
@@ -1940,14 +1941,14 @@ impl Gateway {
         tls.write_all(&logon_msg)?;
         tls.flush()?;
 
-        // Read FIX messages until we get the logon ACK (35=A) with session info.
+        // Read messages until we get the logon ACK with session info.
         // Short poll timeout + overall deadline so a slow ACK segment from a
         // high-latency gateway is retried, not fatal (ibx#237).
         tls.tcp().set_read_timeout(Some(Duration::from_millis(FARM_LOGON_POLL_MS)))?;
         let ack_deadline = std::time::Instant::now() + Duration::from_secs_f64(TIMEOUT_FARM_LOGON);
         let mut account_id = String::new();
         let mut managed_accounts: Vec<String> = Vec::new();
-        // The farms that connect on TLS (8449, ibx#276); empty when absent.
+        // The farms that connect on TLS (ibx#276); empty when absent.
         let mut ssl_farms = String::new();
         let mut heartbeat_interval = CCP_HEARTBEAT;
         let mut server_session_id = String::new();
@@ -1980,10 +1981,10 @@ impl Gateway {
         // Per ib-agent#128: the auth-logon ACK tells us which farms this
         // account is routed to. Hardcoding `usfarm`/`ushmds` only works for
         // US accounts; EU accounts need eufarm/euhmds/secdefeu, etc.
-        // Format of 6145: "<host>/<farm>"; 6171/8008: "<host>/<farm>/<port>"
-        let mut trading_route = String::new();    // tag 6145
-        let mut mktdata_route = String::new();    // tag 6171
-        let mut secdef_route  = String::new();    // tag 8008
+        // Format of the trading route: "<host>/<farm>"; the others: "<host>/<farm>/<port>"
+        let mut trading_route = String::new();    // trading route
+        let mut mktdata_route = String::new();    // market data route
+        let mut secdef_route  = String::new();    // contract data route
         // Values of the logon reply the reference applies (ibx#421).
         let mut logon = LogonValues::default();
         let mut version_cutoff = None;
@@ -1993,9 +1994,9 @@ impl Gateway {
         for _ in 0..5 {
             let raw_response = fix_read_deadline(&mut tls, ack_deadline)?;
             let received_ms = crate::control::logon::local_now_ms();
-            // The auth-logon ACK arrives as `8=FIXCOMP` with a DEFLATE-
+            // The auth-logon ACK arrives as a compressed frame with a DEFLATE-
             // compressed inner body containing the per-account routing tags
-            // (6145/6171/8008) and other init data. Inflate before parsing.
+            // (trading, market data, contract data) and other init data. Inflate before parsing.
             // (See ib-agent#128 + #129.)
             let mut response = raw_response.clone();
             if raw_response.starts_with(b"8=FIXCOMP\x01") {
@@ -2062,7 +2063,7 @@ impl Gateway {
                 session_epoch = v.clone();
                 log::info!("Auth: session epoch {}", session_epoch);
             }
-            // Tag 8035: try parsed fields first, then raw byte search
+            // Server session id: try parsed fields first, then raw byte search
             if server_session_id.is_empty() {
                 if let Some(v) = fields.get(&8035) {
                     server_session_id = v.clone();
@@ -2117,12 +2118,12 @@ impl Gateway {
             if let Some(v) = fields.get(&6969) {
                 if raw_news_capabilities.is_empty() { raw_news_capabilities = v.clone(); }
             }
-            // whiteBrandingId: logon tag 6593, as the reference (ibx#483).
+            // whiteBrandingId: its own logon field, as the reference (ibx#483).
             if let Some(v) = fields.get(&6593) {
                 if white_branding_id.is_empty() { white_branding_id = v.clone(); }
             }
             // FA session: true only for the single character "1", as the
-            // reference reads FIX booleans (ibx#481).
+            // reference reads the protocol's booleans (ibx#481).
             if let Some(v) = fields.get(&6108) {
                 fa_session |= v == "1";
             }
@@ -2159,9 +2160,9 @@ impl Gateway {
                     ticker_limit_tags.entry(tag).or_insert(n);
                 }
             }
-            // Tag 6321: PRIV_LAB_MISC_URLS — try parsed fields first, then raw byte search.
-            // Mirrors the 8035 defensive scan because the value can carry `|` separators
-            // that confuse downstream parsers if a chunk is fragmented.
+            // PRIV_LAB_MISC_URLS: try parsed fields first, then raw byte search.
+            // Mirrors the server session id's defensive scan because the value can carry
+            // `|` separators that confuse downstream parsers if a chunk is fragmented.
             if raw_misc_urls.is_empty() {
                 if let Some(v) = fields.get(&6321) {
                     raw_misc_urls = v.clone();
@@ -2211,7 +2212,7 @@ impl Gateway {
         let now = chrono_free_timestamp();
         let today_start = format!("{}-00:00:00", &now[..8]);
 
-        // Helper: send_ib_msg builds 35=U with 6040=<comm_type> + extra tags
+        // Helper: send_ib_msg builds a gateway-specific message with its sub-type + extra fields
         let mut send_init = |fields: &[(u32, &str)]| -> io::Result<()> {
             ccp_seq += 1;
             let msg = fix_build(fields, ccp_seq);
@@ -2269,7 +2270,7 @@ impl Gateway {
         );
 
         // The auth-server's logon ACK arrives DEFLATE-compressed inside one or
-        // more `8=FIXCOMP` envelopes (per ib-agent#129); the routing tags are
+        // more compressed envelopes (per ib-agent#129); the routing tags are
         // in the inflated content. The scan reads a copy with that content
         // appended; `init_data` itself seeds the connection buffer below
         // unchanged (ibx#317).
@@ -2347,10 +2348,11 @@ impl Gateway {
         // Per ib-agent#134: CCP server FINs the connection ~12s after the
         // init-burst response if no application-level traffic arrives in the
         // grace window — heartbeats alone do not satisfy "client alive".
-        // Send Account-Register (35=U|6040=6, account in tag 6095) followed
-        // by a wildcard OrderStatusRequest (35=H|11=*|55=*|54=*) right after
+        // Send Account-Register (gateway message, account register sub-type, account
+        // in the account list field) followed by a wildcard OrderStatusRequest
+        // (order status request with client order id, symbol and side all `*`) right after
         // the inbound burst-end, before farm logons begin. Both are sent in
-        // plain FIX over TLS (the CCP socket has no AES/HMAC envelope at
+        // plain text over TLS (the CCP socket has no AES/HMAC envelope at
         // this stage; encryption is set up only after `Connection::new`).
         let post_burst_account = if account_id.is_empty() {
             config.username.clone()
@@ -2384,8 +2386,9 @@ impl Gateway {
         );
         tls.write_all(&osr_msg)?;
         ccp_seq += 1;
-        // PortfolioLoginRequest — third post-burst app message in the Java
-        // capture (tag34=104). Account goes in tag 1 here, not 6095.
+        // PortfolioLoginRequest — third post-burst app message in the reference
+        // capture (sequence number 104). Account goes in the account field here,
+        // not in the account list field.
         let plr_msg = fix_build(
             &[
                 (35, "U"),
@@ -2398,7 +2401,7 @@ impl Gateway {
         );
         tls.write_all(&plr_msg)?;
         ccp_seq += 1;
-        // DataRequest — Java tag34=105: `1={acc}|6712=1|6556=DR.{N}`
+        // DataRequest — reference sequence number 105: account, a flag of 1, request id `DR.{N}`
         let dr_msg = fix_build(
             &[
                 (35, "U"),
@@ -2412,7 +2415,7 @@ impl Gateway {
         );
         tls.write_all(&dr_msg)?;
         ccp_seq += 1;
-        // 6040=74 — Java tag34=106: `1={acc}|6700=Core|6544=2`
+        // The `Core` model message — reference sequence number 106: account, model `Core`, a 2
         let core_msg = fix_build(
             &[
                 (35, "U"),
@@ -2451,26 +2454,27 @@ impl Gateway {
             }
             None => (Vec::new(), Vec::new()),
         };
-        // Seed init burst into connection buffer so the hot loop processes 8=O account data
+        // Seed init burst into connection buffer so the hot loop processes the binary account data
         ccp_conn.seed_buffer(&init_data);
 
         // --- Phase 3: Data farm connections ---
         // Per ib-agent#143/#144/#145: the official Gateway opens exactly 3 authed TCP
-        // sessions per login — MARKET_DATA (tag 6145), HISTORICAL_DATA (tag 6171), and
-        // SECDEFARM (tag 8008, UI/telemetry only — not used by ibx). Per ib-agent#125/
+        // sessions per login — MARKET_DATA (trading route), HISTORICAL_DATA (market data
+        // route), and SECDEFARM (contract data route, UI/telemetry only — not used by
+        // ibx). Per ib-agent#125/
         // #131/#133: the SOFT token is `SHA1(strip(S))` where S is the SRP shared
         // secret. `do_srp` returns exactly that via `srp_compute_k`, so `session_key`
-        // IS the SOFT token — no further hashing. (Tag 8483's per-channel SHA1 is
-        // added by `token_short_hash` at the build-logon site.) Tag 6386 is an S3
+        // IS the SOFT token — no further hashing. (The token hash field's per-channel SHA1 is
+        // added by `token_short_hash` at the build-logon site.) The logon's settings key is an S3
         // object key, not a token source.
         let farm_token: BigUint = soft_token.clone().unwrap_or_else(|| session_key.clone());
         // Per ib-agent#128: read the farm names from the auth-server's
         // routing tags rather than hardcoding `usfarm`/`ushmds`. EU accounts
         // are routed to `eufarm`/`euhmds`/`secdefeu`, US to `usfarm`/`ushmds`,
         // etc. Format of the route strings:
-        //   trading (6145):  "<host>/<farm>"            (port from tag 6146, default 4000)
-        //   mktdata (6171):  "<host>/<farm>/<port>"
-        //   secdef  (8008):  "<host>/<farm>/<port>"
+        //   trading:  "<host>/<farm>"            (port from the trading port field, default 4000)
+        //   mktdata:  "<host>/<farm>/<port>"
+        //   secdef:   "<host>/<farm>/<port>"
         let (trading_host, trading_farm) = parse_farm_route(&trading_route)
             .unwrap_or_else(|| (host.to_string(), "usfarm".to_string()));
         let (mktdata_host, mktdata_farm) = parse_farm_route(&mktdata_route)
@@ -2601,11 +2605,11 @@ impl Gateway {
         );
         shared.reference.set_news_providers(news_providers);
 
-        // Soft dollar tiers: from CCP logon tag 6522, none when it is absent
+        // Soft dollar tiers: from the CCP logon, none when the field is absent
         // (ibx#480).
         shared.reference.set_soft_dollar_tiers(parse_soft_dollar_tiers(&self.raw_soft_dollar_tiers));
 
-        // Family codes: parse from CCP logon tag 6823, answered as the
+        // Family codes: parse from the CCP logon, answered as the
         // reference (ibx#441).
         let codes = if self.raw_family_codes.is_empty() {
             Vec::new()
@@ -2645,7 +2649,7 @@ impl Gateway {
             shared.reference.set_account_config(features.clone(), mifid.clone());
         }
 
-        // Webapp-REST-facing fields from the FIX logon roundtrip.
+        // Webapp-REST-facing fields from the logon roundtrip.
         shared.reference.set_ccp_session_id(self.server_session_id.clone());
         shared.reference.set_misc_urls(self.misc_urls.clone());
 
@@ -2745,7 +2749,7 @@ impl Gateway {
 
 /// Apply the values every logon reply sets (ibx#421): the clock offset of
 /// the current time request, the feature tokens that gate API requests,
-/// and the pending accounts (8092, none when absent: the reference sets
+/// and the pending accounts (none when absent: the reference sets
 /// them from every logon reply). A reply read
 /// with no feature list (every captured reply has one) leaves the tokens as
 /// they are.
@@ -2864,18 +2868,18 @@ fn parse_algo_definitions(init: &str) -> Vec<String> {
 }
 
 /// The init burst as the logon tag scan reads it: the received bytes, then
-/// the inflated content of every `8=FIXCOMP` frame in them (ib-agent#129).
+/// the inflated content of every compressed frame in them (ib-agent#129).
 /// The compressed body is ~30 kB on the wire and expands to ~48 kB plaintext
-/// holding the routing tags 6145/6171/8008.
+/// holding the routing tags (trading, market data, contract data).
 ///
 /// The received bytes also seed the connection buffer, where the hot loop
 /// inflates the compressed frames itself. The copy must stay out of it: with
 /// the inflated content appended there, every compressed message of the init
 /// burst was handled twice, executions included (ibx#317).
-/// The account config answer (35=U 6040=210) of the login burst: its
-/// feature list (6542, comma separated) and MiFID config id (8234), as the
-/// reference reads them (ibx#425). Paper answer, 15/06/2026:
-/// `6040=210|6556=AcctConfig4|1=DU...|6542=OLP,EUCOSTCALC,EUILLS`.
+/// The account config answer of the login burst: its
+/// feature list (comma separated) and MiFID config id, as the
+/// reference reads them (ibx#425). Paper answer, 15/06/2026: request id
+/// `AcctConfig4`, the account, features `OLP,EUCOSTCALC,EUILLS`.
 fn parse_account_config(init: &str) -> Option<(Vec<String>, String)> {
     init.split("8=FIX").find(|frame| frame.contains("\x016040=210\x01")).map(|frame| {
         let field = |tag: &str| frame.split('\x01').find_map(|p| p.strip_prefix(tag)).unwrap_or("");
@@ -3119,7 +3123,7 @@ mod tests {
         assert!(err.to_string().starts_with(crate::auth::dh::SECURE_CONNECTION_FAILED), "{err}");
     }
 
-    // ibx#423: the SSL and plain ports of an endpoint (`E.j()`, `E.k()`).
+    // ibx#423: the SSL and plain ports of an endpoint, as the reference pairs them.
     #[test]
     fn ssl_and_plain_ports() {
         assert_eq!((ssl_port(4000), ssl_port(4001)), (4001, 4001));
@@ -3127,9 +3131,9 @@ mod tests {
     }
 
     // ibx#276: a farm connects on TLS only when the auth connection uses
-    // TLS and the logon's SSL farm list (8449) names it or a wildcard of
+    // TLS and the logon's SSL farm list names it or a wildcard of
     // its service; otherwise a plain socket with the key exchange, none
-    // after a refused auth encryption. The captured logons have no 8449.
+    // after a refused auth encryption. The captured logons have no SSL farm list.
     #[test]
     fn farm_link_of_the_ssl_farm_list() {
         use FarmService::*;
@@ -3181,7 +3185,7 @@ mod tests {
         assert_eq!(cookbook_ipv4("gw.example"), "gw.example", "unknown host: itself");
     }
 
-    // ibx#420: the account list of a logon reply (6095), from the captured
+    // ibx#420: the account list of a logon reply, from the captured
     // paper reply of 02/10/2026 and the same reply with two accounts.
     #[test]
     fn managed_accounts_of_a_logon_reply() {
@@ -3231,7 +3235,7 @@ mod tests {
         assert_eq!(late.clock_offset_ms, None, "handled too late");
     }
 
-    // ibx#421: every logon reply sets the pending accounts (8092); a reply
+    // ibx#421: every logon reply sets the pending accounts; a reply
     // without the tag leaves none (the captured replies have none).
     #[test]
     fn logon_reply_sets_the_pending_accounts() {
@@ -3822,7 +3826,7 @@ mod tests {
 
     #[test]
     fn try_frame_farm_msg_multiple_sequential() {
-        // Two FIX messages back to back
+        // Two wire messages back to back
         let msg1 = fix_build(&[(35, "S")], 1);
         let msg2 = fix_build(&[(35, "A"), (108, "30")], 2);
         let mut buf = msg1.clone();
@@ -3971,7 +3975,7 @@ mod news_provider_tests {
     }
 }
 
-/// Soft dollar tiers as the reference reads them from logon tag 6522
+/// Soft dollar tiers as the reference reads them from the logon's tier field
 /// (ibx#480): groups `{KEY}:{tiers}` separated by `;`, tiers `{name}@{value}`
 /// separated by `,`. A later group with the same key replaces the earlier
 /// one; every tier of every key is returned. The display name is
@@ -4050,7 +4054,7 @@ mod family_code_tests {
 mod soft_dollar_tests {
     use super::parse_soft_dollar_tiers;
 
-    // ibx#480: tiers come from logon tag 6522, in the reference's format.
+    // ibx#480: tiers come from the logon's tier field, in the reference's format.
     #[test]
     fn soft_dollar_tiers_from_6522() {
         assert!(parse_soft_dollar_tiers("").is_empty());
@@ -4119,14 +4123,14 @@ mod account_config_tests {
         assert!(!super::features_scale_us_lots(""));
     }
 
-    // ibx#483: whiteBrandingId is logon tag 6593, not 6571.
+    // ibx#483: whiteBrandingId is read from its own logon field only, not from another one.
     #[test]
     fn white_branding_is_tag_6593() {
         assert_eq!(super::white_branding_part("6593=ABC"), Some("ABC"));
         assert_eq!(super::white_branding_part("6571=X"), None);
     }
 
-    // ibx#425: the paper answer (15/06/2026) has no CUSTACCT and no 8234.
+    // ibx#425: the paper answer (15/06/2026) has no CUSTACCT and no MiFID config id.
     #[test]
     fn account_config_from_the_login_burst() {
         let burst = "8=FIX.4.1\x019=10\x0135=U\x016040=75\x011=DU1\x0110=000\x01\

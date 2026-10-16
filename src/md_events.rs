@@ -104,7 +104,7 @@ fn header_word(instrument: InstrumentId, step: MdStep, fields: u16, halted: Opti
         | (first as u64) << 63
 }
 
-/// The field a wire tick of a 35=P block sets, as `MarketState::apply_tick`
+/// The field a wire tick of a binary tick message block sets, as `MarketState::apply_tick`
 /// applies it: `trade` for a trade stream tag, `stats` for a daily-stats
 /// block. None for a type that sets no quote field.
 #[inline(always)]

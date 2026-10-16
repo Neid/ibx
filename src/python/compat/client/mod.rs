@@ -132,7 +132,7 @@ impl EClient {
         }
     }
 
-    /// Connect to IB and start the engine.
+    /// Connect to the broker and start the engine.
     ///
     /// Live logins (``paper=False``) enter a second-factor approval window and
     /// **block** until the factor is approved (mobile push) or the server ends
@@ -256,7 +256,7 @@ impl EClient {
         Ok(())
     }
 
-    /// Disconnect from IB.
+    /// Disconnect from the broker.
     fn disconnect(&self, py: Python<'_>) -> PyResult<()> {
         // Requests still waiting for their turn get no answer.
         self.local_calls.lock().unwrap().clear();

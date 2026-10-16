@@ -168,7 +168,7 @@ pub(crate) struct Sample {
     pub file: String,
     /// The link: `CCP`, `usfarm`, `ushmds`, ...
     pub conn: String,
-    /// The message type (tag 35), empty for an NS or XYZ frame.
+    /// The message type, empty for an NS or XYZ frame.
     pub msg_type: String,
     pub raw: Vec<u8>,
     pub inner: bool,
@@ -224,7 +224,7 @@ pub(crate) fn server_frames() -> &'static [Sample] {
     })
 }
 
-/// The value of tag 35 of a frame.
+/// The message type of a frame.
 pub(crate) fn msg_type(raw: &[u8]) -> String {
     crate::engine::hot_loop::fast_extract_msg_type(raw)
         .map(|t| String::from_utf8_lossy(t).into_owned())

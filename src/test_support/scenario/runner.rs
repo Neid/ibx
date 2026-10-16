@@ -190,7 +190,7 @@ pub fn comparable(f: &Fields) -> Fields {
     out
 }
 
-/// A historical farm query (35=W) as compared: the framing dropped; in the
+/// A historical farm query as compared: the framing dropped; in the
 /// query, the id before its first `;;` (the reference's counter, cf76) and
 /// the end time of a request with none (the time it was made) masked.
 pub fn hmds_query(f: &Fields, mask_end: bool) -> String {
@@ -265,7 +265,8 @@ fn sorted_entries(f: &Fields) -> Fields {
     out
 }
 
-/// The entries of a market data message (`35=V`): (262, 263, 6008, 207, 264).
+/// The entries of a market data message: (request id, subscription request type,
+/// contract id, security exchange, market depth).
 fn entries(f: &Fields) -> Vec<(String, String, String, String, String)> {
     let action = tag(f, 263).unwrap_or("").to_string();
     let mut out = Vec::new();
@@ -286,7 +287,7 @@ fn entries(f: &Fields) -> Vec<(String, String, String, String, String)> {
     out
 }
 
-/// A contract lookup (35=c) and its reply (35=d) name the same contract:
+/// A contract lookup and its reply name the same contract:
 /// the same conId when both have one, else the same symbol and type.
 /// A lookup names a stock `CS`, its reply `STK`.
 fn same_contract(a: &Fields, b: &Fields) -> bool {
@@ -317,15 +318,15 @@ struct Ids {
     clord: HashMap<String, String>,
     /// Order id bases (ClOrdID, permId, OCA group).
     order: HashMap<String, String>,
-    /// Farm request ids (262).
+    /// Farm request ids (the market data request id).
     farm: HashMap<String, String>,
     farm_taken: HashSet<String>,
-    /// Lookup ids (320); ibx's lookups paired or answered.
+    /// Lookup ids (the security request id); ibx's lookups paired or answered.
     lookup: HashMap<String, String>,
     lookup_taken: HashSet<String>,
     /// The reference's lookups whose reply answered one of ibx's.
     lookup_used: HashSet<String>,
-    /// Account subscription ids (6529).
+    /// Account subscription ids.
     subscription: Vec<(String, String)>,
     /// Historical query ids.
     query: Vec<(String, String)>,
@@ -609,7 +610,7 @@ pub fn session_values(line: &str, now: &HashSet<String>) -> String {
 /// on it: just before its first effect, the order message it sent or the
 /// error it gave at once. The reference reads a request on its API thread
 /// and may act on it after reports that came in the meantime (lmt_cancel
-/// of 26/09/2026: the cancel request, two reports, then the 35=F); the
+/// of 26/09/2026: the cancel request, two reports, then the cancel message); the
 /// replay makes ibx act at that same point.
 pub fn at_their_effect(recs: &[Rec]) -> Vec<Rec> {
     let mut by_base: HashMap<String, i64> = HashMap::new();
@@ -1302,7 +1303,7 @@ impl Run<'_> {
             }
             Link::Ccp => {
                 // A binary frame: the subscription id is a text field, the
-                // last one of an end marker (35=EB|6529={id}).
+                // last one of an account end marker.
                 let body = self.ids.subscription.iter().fold(binary_body(&r.raw), |b, (gw, ours)| {
                     let b = b.replace(&format!("6529={gw}\x01"), &format!("6529={ours}\x01"));
                     match b.strip_suffix(&format!("6529={gw}")) {

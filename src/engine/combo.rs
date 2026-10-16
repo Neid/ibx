@@ -5,10 +5,12 @@
 //! 28/09/2026, 30/09/2026 and 02/10/2026, ib-agent#105).
 //!
 //! - Smart combo: the BAG definition by the currency's smart combo conId
-//!   (logon tag 6611), the ICS definition the BAG record names (6346), the
-//!   definition of each leg, one after the other, the smart combo
-//!   validation of every leg at once, the combo multiplier (35=U 6040=36)
-//!   and the leg confirmation (35=U 6040=7).
+//!   (from the logon's smart combo field), the ICS definition the BAG
+//!   record names, the definition of each leg, one after the other, the
+//!   smart combo validation of every leg at once, the combo multiplier (a
+//!   gateway-specific message of the multiplier sub-type) and the leg
+//!   confirmation (a gateway-specific message of the leg confirmation
+//!   sub-type).
 //! - Directed combo: the BAG by symbol on its exchange, the ICS and leg
 //!   definitions on that exchange, the leg confirmation.
 //!
@@ -57,7 +59,7 @@ pub(crate) struct Combo {
     pub trading_class: String,
     /// The legs in the contract's order: ascending conId.
     pub legs: Vec<Leg>,
-    /// The combo multiplier the server gave (6040=36), 1 when not asked.
+    /// The combo multiplier the server gave (multiplier answer), 1 when not asked.
     pub multiplier: f64,
 }
 
@@ -69,7 +71,8 @@ impl Combo {
         symbols.into_iter().collect::<Vec<_>>().join(",")
     }
 
-    /// The leg category of the combo, as the reference reckons it (6134).
+    /// The leg category of the combo, as the reference reckons it (the leg
+    /// category field).
     pub(crate) fn category(&self) -> i32 {
         category(self.legs.iter().map(|l| l.sec_type.as_str()))
     }
@@ -89,8 +92,9 @@ impl Combo {
     /// The combo block of a new order, after its conId, as the reference
     /// writes it: the multiplier for the leg
     /// categories that carry it, the legs, the combo type (0) and the leg
-    /// category. Captured 26/09/2026: `6079=2|6080=756733|6081=1|6082=1|
-    /// 6080=320227571|6081=1|6082=0|6175=0|6134=9`.
+    /// category. Captured 26/09/2026: a leg count of 2, then each leg as
+    /// conId, ratio and buy flag (756733 x1 buy, 320227571 x1 sell), combo
+    /// type 0, leg category 9.
     pub(crate) fn order_block(&self) -> Fields {
         let mut f = Fields::new();
         let category = self.category();
@@ -247,7 +251,8 @@ impl ComboKey {
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Bag {
     pub con_id: i64,
-    /// conId of the ICS definition the record names (6346), 0 for none.
+    /// conId of the ICS definition the record names (its underlying conId
+    /// field), 0 for none.
     pub ics_con_id: i64,
     pub trading_class: String,
     /// What the outside-RTH rule reads from the BAG record (ibx#465).
@@ -426,9 +431,10 @@ impl ComboBook {
     }
 
     /// The BAG definition request: by the smart combo conId on BEST, or
-    /// by symbol on a directed exchange (captured 26/09/2026:
-    /// `35=c|320=SecDefReqMsgReqByConid81|321=2|146=1|6008=28812380|6004=BEST`,
-    /// `35=c|320=FixSecDefReqBySymbol102|321=2|55=QQQ,SPY|167=BAG|100=ARCA`).
+    /// by symbol on a directed exchange (captured 26/09/2026: a security
+    /// definition request by conId, contract id 28812380 on BEST, and one by
+    /// symbol, `FixSecDefReqBySymbol`, symbol QQQ,SPY, security type BAG,
+    /// exchange ARCA).
     fn bag_request(&mut self, setup: &mut Setup, ts: &str) -> Fields {
         setup.step = Step::Bag;
         if is_smart(&setup.spec.exchange) {
@@ -468,8 +474,9 @@ impl ComboBook {
         }
     }
 
-    /// The combo multiplier request (captured: `35=U|6040=36|
-    /// 320=FixIMCMultReq79|207=BEST|6134=9|6079=2|...|6175=0`).
+    /// The combo multiplier request (captured: a gateway-specific message of
+    /// the multiplier sub-type, with the request id, security exchange BEST,
+    /// the leg category, the legs and combo type 0).
     fn multiplier_request(&mut self, setup: &mut Setup, ts: &str) -> Fields {
         setup.step = Step::Multiplier;
         setup.req_id = self.next_req("FixIMCMultReq");
@@ -484,9 +491,10 @@ impl ComboBook {
     }
 
     /// The leg confirmation (as the reference writes it; captured:
-    /// `35=U|6040=7|320=FixComboLegConfirmRequest80|207=BEST|6134=9|6248=1|
-    /// 6079=2|...|6175=0`), with the non-guaranteed flag when the order has
-    /// it.
+    /// a gateway-specific message of the leg confirmation sub-type, with the
+    /// request id, security exchange BEST, the leg category, the
+    /// non-guaranteed flag, the legs and combo type 0), with the
+    /// non-guaranteed flag when the order has it.
     fn confirm_request(&mut self, setup: &mut Setup, ts: &str) -> Fields {
         setup.step = Step::Confirm;
         setup.req_id = self.next_req("FixComboLegConfirmRequest");
@@ -503,7 +511,7 @@ impl ComboBook {
         f
     }
 
-    /// A definition reply (35=d) for a set-up request. None when the reply
+    /// A definition reply (security definition answer) for a set-up request. None when the reply
     /// is not for one.
     pub(crate) fn secdef_reply(&mut self, req_id: &str, msg: &[u8], ts: &str) -> Option<Progress> {
         let idx = self.setups.iter().position(|s| match &s.step {
@@ -582,8 +590,8 @@ impl ComboBook {
         Some(self.advance(setup, result))
     }
 
-    /// A 35=U answer (6040=36, 6040=7) for a set-up request. None when the
-    /// answer is not for one.
+    /// A gateway-specific answer (multiplier or leg confirmation) for a
+    /// set-up request. None when the answer is not for one.
     pub(crate) fn user_reply(&mut self, parsed: &HashMap<u32, String>, ts: &str) -> Option<Progress> {
         let req_id = parsed.get(&320)?;
         let idx = self.setups.iter().position(|s| &s.req_id == req_id
@@ -596,7 +604,7 @@ impl ComboBook {
                 Ok(vec![self.confirm_request(&mut setup, ts)])
             }
             _ => {
-                // The combo key (6085) gives the legs; the order keeps
+                // The combo key field gives the legs; the order keeps
                 // them by conId.
                 let combo = setup_combo(&setup);
                 log::info!("Combo {} built: BAG conId {}, key {:?}", combo.symbol(), combo.bag_con_id, parsed.get(&6085));

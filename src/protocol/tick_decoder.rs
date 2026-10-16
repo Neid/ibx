@@ -1,10 +1,10 @@
 //! Binary tick decoder for market data messages.
 //!
-//! Decodes bid/ask/last/size/volume fields from IB's proprietary binary format.
-//! Also includes VLQ and hi-bit string decoders for 35=E tick-by-tick data,
-//! and the RTBAR decoder for 35=G real-time bar data.
+//! Decodes bid/ask/last/size/volume fields from the server's binary format.
+//! Also includes VLQ and hi-bit string decoders for tick-by-tick messages,
+//! and the RTBAR decoder for real-time bar messages.
 
-/// MSB-first bit-level reader for 8=O 35=P binary tick data.
+/// MSB-first bit-level reader for the binary tick data of binary frames.
 pub struct BitReader<'a> {
     data: &'a [u8],
     bit_pos: usize,
@@ -86,7 +86,7 @@ impl<'a> BitReader<'a> {
     }
 }
 
-/// LSB-first bit-level reader for 35=G real-time bar data.
+/// LSB-first bit-level reader for real-time bar messages.
 /// Uses word-aligned u64 loads (1-2 ops per field instead of n iterations per bit).
 struct LsbBitReader<'a> {
     data: &'a [u8],
@@ -181,10 +181,10 @@ pub const O_TIMESTAMP_DELTA: u64 = 21;
 pub const O_OPEN_PRICE: u64 = 22;
 pub const O_LAST_EXCH: u64 = 27;
 
-/// Volume multiplier: IB encodes volume * 10000.
+/// Volume multiplier: the server encodes volume * 10000.
 pub const VOLUME_MULT: f64 = 0.0001;
 
-/// A single decoded tick from a 35=P message.
+/// A single decoded tick from a binary tick message.
 #[derive(Debug, Clone, Copy)]
 pub struct RawTick {
     pub server_tag: u32,
@@ -199,9 +199,9 @@ pub struct RawTick {
     pub scale: u8,
 }
 
-/// Decode all ticks from a 35=P binary payload.
+/// Decode all ticks from a binary tick message payload.
 ///
-/// `body` is the raw message body after stripping FIX framing and HMAC signature.
+/// `body` is the raw message body after stripping the wire framing and HMAC signature.
 /// Returns a list of raw ticks with server_tag, tick_type, and signed magnitude.
 pub fn decode_ticks_35p(body: &[u8]) -> Vec<RawTick> {
     let mut ticks = Vec::with_capacity(8);
@@ -406,7 +406,7 @@ pub fn read_hibit_str(data: &[u8], pos: usize) -> (String, usize) {
     (chars.into_iter().collect(), p - pos)
 }
 
-/// Decoded real-time bar from 35=G.
+/// Decoded real-time bar from a real-time bar message.
 #[derive(Debug, Clone, Copy)]
 pub struct RtBar {
     pub low: f64,
@@ -418,7 +418,7 @@ pub struct RtBar {
     pub count: u32,
 }
 
-/// Decode a 35=G real-time bar payload.
+/// Decode a real-time bar message payload.
 ///
 /// Uses LSB-first bit reader with 4-byte group byte reversal.
 pub fn decode_bar_payload(payload: &[u8], min_tick: f64) -> Option<RtBar> {
@@ -500,7 +500,8 @@ pub fn decode_bar_payload(payload: &[u8], min_tick: f64) -> Option<RtBar> {
 
 /// The bars of a 5-second bar frame body, read as the reference reads
 /// them (ibx#454): ticker id, bar time and payload of each. The body is
-/// what follows `35=G` (bit length, then the entries).
+/// what follows the message type of a real-time bar message (bit length,
+/// then the entries).
 pub fn rtbar_entries(body: &[u8]) -> Vec<(u32, u32, &[u8])> {
     let mut entries = Vec::new();
     if body.len() < 2 {
@@ -905,7 +906,7 @@ mod tests {
     // ── Helper: build bit-packed payloads for decode_ticks_35p ──────────
 
     /// Accumulates individual bits (MSB-first order) and produces the
-    /// complete 35=P body: 2-byte big-endian bit_count + payload bytes.
+    /// complete binary tick message body: 2-byte big-endian bit_count + payload bytes.
     struct PayloadBuilder {
         bits: Vec<u8>, // each element is 0 or 1
     }

@@ -37,7 +37,7 @@ fn input(msg_type: &str) -> impl Strategy<Value = Wire> {
     prop_oneof![bytes(1024), mutated(frames)]
 }
 
-/// The tag 6118 texts (XML replies) of the recorded messages.
+/// The XML payloads (XML replies) of the recorded messages.
 fn xml_samples() -> Vec<&'static [u8]> {
     static XML: std::sync::OnceLock<Vec<Vec<u8>>> = std::sync::OnceLock::new();
     XML.get_or_init(|| {
@@ -48,7 +48,7 @@ fn xml_samples() -> Vec<&'static [u8]> {
     }).iter().map(Vec::as_slice).collect()
 }
 
-/// A message of the auth link with a sub-protocol (6040) of `comms`.
+/// A message of the auth link with a message sub-type of `comms`.
 fn ccp_u(comms: &'static [&'static str]) -> impl Strategy<Value = Wire> {
     let frames = samples(|s| s.is("U") && fix::fix_parse(&s.raw).get(&6040).is_some_and(|c| comms.contains(&c.as_str())));
     prop_oneof![bytes(1024), mutated(frames)]
@@ -215,7 +215,7 @@ fn tbt_frame() -> impl Strategy<Value = Wire> {
         })
 }
 
-/// Matching symbols replies (6040=186): none is recorded, so they are
+/// Matching symbols replies: none is recorded, so they are
 /// built, then mutated.
 fn matching_symbols() -> impl Strategy<Value = Wire> {
     let rows = prop::collection::vec(

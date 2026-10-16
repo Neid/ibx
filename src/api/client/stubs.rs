@@ -234,7 +234,7 @@ impl EClient {
     // ── Soft Dollar Tiers ──
 
     /// Request soft dollar tiers. Matches `reqSoftDollarTiers` in C++.
-    /// Gateway-local — returns tiers parsed from CCP logon tag 6522, none
+    /// Gateway-local — returns tiers parsed from the CCP logon's soft dollar tier field, none
     /// when the logon has no tiers (ibx#480).
     pub fn req_soft_dollar_tiers(&self, req_id: i64, _wrapper: &mut impl Wrapper) {
         // One API request for the pacing, whatever it sends (ibx#565).
@@ -249,7 +249,7 @@ impl EClient {
     // ── Family Codes ──
 
     /// Request family codes. Matches `reqFamilyCodes` in C++.
-    /// Gateway-local — returns codes parsed from CCP logon tag 6823.
+    /// Gateway-local — returns codes parsed from the CCP logon's family code field.
     pub fn req_family_codes(&self, _wrapper: &mut impl Wrapper) {
         // One API request for the pacing, whatever it sends (ibx#565).
         let _request = crate::engine::park::one_request();

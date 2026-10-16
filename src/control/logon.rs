@@ -13,7 +13,7 @@ pub fn local_now_ms() -> i64 {
         .unwrap_or_default()
 }
 
-/// A server time of tag 52 (`yyyyMMdd-HH:mm:ss`, UTC) in milliseconds
+/// A server time of the sending time field (`yyyyMMdd-HH:mm:ss`, UTC) in milliseconds
 /// since the epoch.
 pub fn server_time_ms(value: &str) -> Option<i64> {
     let dt = jiff::civil::DateTime::strptime("%Y%m%d-%H:%M:%S", value.trim()).ok()?;
@@ -95,10 +95,9 @@ fn offset(server_ms: i64, received_ms: i64, now_ms: i64, logon: bool, zone: &jif
 }
 
 /// Whether a server message sets the clock offset after the logon: a test
-/// request, or a `35=U` message without an account (tag 1) whose
-/// message number `comm` (tag 6040) is not 60, 146 or 151
-///. The reference
-/// also uses a 6040=110 message in one session state ibx does not track;
+/// request, or a gateway-specific message without an account field whose
+/// message sub-type `comm` is not 60, 146 or 151. The reference
+/// also uses a message of sub-type 110 in one session state ibx does not track;
 /// such a message is not used here.
 pub fn message_sets_clock(msg_type: &str, comm: Option<&str>, has_account: bool) -> bool {
     match msg_type {
@@ -127,7 +126,7 @@ fn is_full_version(v: &str) -> bool {
     (b.len() == 5 || (b.len() == 6 && b[5].is_ascii_lowercase())) && b[..5].iter().all(u8::is_ascii_digit)
 }
 
-/// Whether the cutoff version of the logon (tag 6243) is above `own`, as
+/// Whether the cutoff version of the logon is above `own`, as
 /// the reference compares them: the five digits compare as numbers;
 /// with the same digits, a version with a letter is above one without, and
 /// two letters compare as characters. False when either is not a full
@@ -150,9 +149,8 @@ pub fn cutoff_applies(own: &str, cutoff: &str) -> bool {
 pub const VERSION_CUTOFF_CODE: i64 = 2172;
 
 /// The warning 2172 the reference sends with id -1 at every API connect
-/// when the cutoff version of the logon (tag 6243) is above the client's
-/// own, with the cutoff date (tag 6244); None otherwise
-///. The text is the reference's
+/// when the cutoff version of the logon is above the client's
+/// own, with the cutoff date of the logon; None otherwise. The text is the reference's
 /// `Version_Cutoff` text with its markup removed (`<br>` becomes a space).
 pub fn version_cutoff_warning(cutoff: Option<&str>, date: Option<&str>) -> Option<String> {
     let cutoff = cutoff?;
@@ -171,7 +169,7 @@ pub fn has_feature(features: &str, feature: &str) -> bool {
     features.split(',').any(|f| f == feature)
 }
 
-/// Feature tokens of the logon feature list (tag 6542) that gate API
+/// Feature tokens of the logon feature list that gate API
 /// requests (ibx#421).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ApiFeatures {
@@ -231,7 +229,7 @@ impl ApiFeatures {
 /// (API-SESSION 1.1).
 pub const API_NOT_ALLOWED: &str = "Disconnecting API request since regular API is not allowed.";
 
-/// The account ids of the logon's account list (tag 6095, ibx#420): a
+/// The account ids of the logon's account list (ibx#420): a
 /// comma list of `acct` or `acct/alias`, in logon order, the alias left
 /// out, empty items skipped.
 pub fn managed_accounts(tag: &str) -> Vec<String> {
@@ -253,9 +251,8 @@ pub fn managed_accounts_text(accounts: &[String]) -> String {
     accounts.join(",")
 }
 
-/// The pending accounts of a logon reply or update (tag 8092, ibx#421):
-/// the accounts whose application is not approved yet, a comma set
-///.
+/// The pending accounts of a logon reply or update (ibx#421):
+/// the accounts whose application is not approved yet, a comma set.
 pub fn pending_accounts(tag: &str) -> Vec<String> {
     tag.split(',').map(str::trim).filter(|a| !a.is_empty()).map(String::from).collect()
 }
@@ -330,7 +327,7 @@ impl PermissionChange {
     }
 }
 
-/// Most years of a historical data request: tag 6774 of the logon when
+/// Most years of a historical data request: the backfill years field of the logon when
 /// above 0, else 1.
 pub fn max_backfill_years(tag: Option<&str>) -> i32 {
     tag.and_then(|v| v.trim().parse::<i32>().ok()).filter(|n| *n > 0).unwrap_or(1)
@@ -351,7 +348,7 @@ pub fn backfill_years_refusal(duration: &str, max_years: i32) -> Option<String> 
 mod tests {
     use super::*;
 
-    // ibx#421: tag 52 of the captured logon reply of 02/10/2026.
+    // ibx#421: the sending time of the captured logon reply of 02/10/2026.
     #[test]
     fn server_time_of_tag_52_is_utc() {
         assert_eq!(server_time_ms("20261002-06:15:59"), Some(1_790_921_759_000));

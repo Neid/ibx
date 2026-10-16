@@ -1,6 +1,6 @@
-//! IB Gateway benchmark binary.
+//! Gateway benchmark binary.
 //!
-//! Measures real-world latency characteristics against a live IB gateway:
+//! Measures real-world latency characteristics against a live gateway:
 //! 1. Connection time (auth + farm logon)
 //! 2. Tick event delivery latency (inter-tick time from event channel)
 //! 3. Order round-trip (submit → fill)

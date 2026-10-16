@@ -1,6 +1,6 @@
 //! The generic ticks on the wire (ibx#450): which ticks of a valid list go
 //! to the farm and when, the entry each one is, and how the values of their
-//! `35=G` blocks become API ticks, as the reference does it.
+//! generic tick blocks become API ticks, as the reference does it.
 //!
 //! - Each generic tick is its own entry of the market data request, with
 //!   its request code.
@@ -294,7 +294,7 @@ pub struct DecodeCtx {
     pub rt_in_shares: bool,
 }
 
-/// sqrt(252): a daily volatility to an annual one (`optionmodel.O.b`).
+/// sqrt(252): a daily volatility to an annual one, as the reference.
 fn annual(daily: f64) -> f64 {
     252f64.sqrt() * daily
 }
@@ -813,7 +813,7 @@ pub fn ratios_text(text: &str) -> String {
         .collect::<Vec<_>>().join(";")
 }
 
-/// The blocks of a `35=G` body (after its 2-byte bit count): (server tag,
+/// The blocks of a generic tick message body (after its 2-byte bit count): (server tag,
 /// payload). `code_of` names the tick of a server tag (None: unknown, the
 /// reading stops, as the reference cannot know the block's length).
 pub fn blocks(body: &[u8], code_of: impl Fn(u32) -> Option<i32>) -> Vec<(u32, Option<i32>, &[u8])> {

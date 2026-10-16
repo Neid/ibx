@@ -72,15 +72,15 @@ fn split_list(value: &str) -> impl Iterator<Item = &str> {
     value.split(';').filter(|v| !v.trim().is_empty())
 }
 
-// ─── The derivative answer (6040=5) ───
+// ─── The derivative answer ───
 
 /// One underlying of a derivative answer.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct UnderlyingEntry {
     pub con_id: i64,
-    /// The derivative types listed (6070).
+    /// The derivative types listed.
     pub derivative_types: Vec<String>,
-    /// The exchanges of its futures options (6589).
+    /// The exchanges of its futures options.
     pub fop_exchanges: String,
 }
 
@@ -128,9 +128,9 @@ pub fn underlying_query(symbol: &str, sec_type: &str, con_id: i64) -> Vec<(u32, 
     out
 }
 
-/// Parse a derivative answer (6040=5): each conId (6457) starts an
-/// underlying; its derivative types (6070) and futures option exchanges
-/// (6589) follow it.
+/// Parse a derivative answer: each underlying's conId starts an
+/// underlying; its derivative types and futures option exchanges
+/// follow it.
 pub fn parse_underlying_answer(msg: &[u8]) -> Option<UnderlyingAnswer> {
     let mut answer = UnderlyingAnswer::default();
     let mut symbol = None;
@@ -151,7 +151,7 @@ pub fn parse_underlying_answer(msg: &[u8]) -> Option<UnderlyingAnswer> {
     Some(answer)
 }
 
-// ─── The chain query (6040=138) and its answer (6040=139) ───
+// ─── The chain query and its answer ───
 
 /// The key the reference matches a chain answer to its query with
 ///.
@@ -194,15 +194,15 @@ pub struct StrikeScale {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ChainClass {
     pub con_id: i64,
-    /// Exchange of its group (100).
+    /// Exchange of its group.
     pub exchange: String,
     pub trading_class: Option<String>,
     pub multiplier: Option<String>,
-    /// The extra key 6957.
+    /// The extra key of the class.
     pub extra: Option<String>,
-    /// Expirations of 6775, 6777 and 6971.
+    /// Expirations, from the answer's three date lists.
     pub expirations: Vec<String>,
-    /// Strikes (6997); None when the class has none.
+    /// Strikes; None when the class has none.
     pub strikes: Option<Vec<f64>>,
     pub rule_id: Option<String>,
 }
@@ -226,12 +226,12 @@ struct ClassKey {
     multiplier: Option<String>,
 }
 
-/// Parse a chain answer (6040=139) as the reference reads it
-///: a group exchange starts a group
-/// and clears the trading class and multiplier; the conId of a class is
-/// the last 6346; dates (6775, 6777, 6971) and strikes, currency and rule
-/// (6997, 15, 6031) are kept per class, the last value of a tag winning;
-/// 6523 lists add to one exchange list; the market rule table follows 6019.
+/// Parse a chain answer as the reference reads it: a group exchange
+/// starts a group and clears the trading class and multiplier; the conId
+/// of a class is the last chain conId field; the three date lists and the
+/// strikes, currency and market rule id are kept per class, the last value
+/// of a field winning; the exchange lists add to one exchange list; the
+/// market rule table follows the market rule count.
 pub fn parse_chain_answer(msg: &[u8]) -> Option<ChainAnswer> {
     let mut symbol: Option<String> = None;
     let mut sec_type: Option<String> = None;
@@ -341,11 +341,11 @@ pub fn parse_chain_answer(msg: &[u8]) -> Option<ChainAnswer> {
     Some(ChainAnswer { key, classes, exchanges, rules: parse_strike_scales(msg) })
 }
 
-/// The strike scales of the market rule table of a chain answer
-/// (`jsecdef.n`): each rule id (6031) starts a rule; the first tier set
-/// (6022 entries) gives the magnifier, 10 to the power of 6021, and the
-/// decimals, the 6025 of its first entry. A rule without a first tier set
-/// gives no scale.
+/// The strike scales of the market rule table of a chain answer: each
+/// market rule id starts a rule; the first tier set (its counted entries)
+/// gives the magnifier, 10 to the power of the rule's exponent field, and
+/// the decimals, the value of its first entry. A rule without a first tier
+/// set gives no scale.
 pub fn parse_strike_scales(msg: &[u8]) -> HashMap<String, StrikeScale> {
     let mut out = HashMap::new();
     let mut in_table = false;

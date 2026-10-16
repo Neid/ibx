@@ -472,32 +472,32 @@ mod tests {
 
     #[test]
     fn write_string_alignment_lengths() {
-        // len=1 → 1%4=1 → 3 padding → total = 4+4 = 8
+        // len=1 → 1 % 4 = 1 → 3 padding → total = 4+4 = 8
         let mut buf = Vec::new();
         xyz_write_string(&mut buf, "a");
         assert_eq!(buf.len(), 8);
 
-        // len=2 → 2%4=2 → 2 padding → total = 4+4 = 8
+        // len=2 → 2 % 4 = 2 → 2 padding → total = 4+4 = 8
         buf.clear();
         xyz_write_string(&mut buf, "ab");
         assert_eq!(buf.len(), 8);
 
-        // len=3 → 3%4=3 → 1 padding → total = 4+4 = 8
+        // len=3 → 3 % 4 = 3 → 1 padding → total = 4+4 = 8
         buf.clear();
         xyz_write_string(&mut buf, "abc");
         assert_eq!(buf.len(), 8);
 
-        // len=4 → 4%4=0 → 0 padding → total = 4+4 = 8
+        // len=4 → 4 % 4 = 0 → 0 padding → total = 4+4 = 8
         buf.clear();
         xyz_write_string(&mut buf, "abcd");
         assert_eq!(buf.len(), 8);
 
-        // len=5 → 5%4=1 → 3 padding → total = 4+8 = 12
+        // len=5 → 5 % 4 = 1 → 3 padding → total = 4+8 = 12
         buf.clear();
         xyz_write_string(&mut buf, "abcde");
         assert_eq!(buf.len(), 12);
 
-        // len=8 → 8%4=0 → 0 padding → total = 4+8 = 12
+        // len=8 → 8 % 4 = 0 → 0 padding → total = 4+8 = 12
         buf.clear();
         xyz_write_string(&mut buf, "abcdefgh");
         assert_eq!(buf.len(), 12);

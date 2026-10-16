@@ -643,7 +643,7 @@ impl HmdsState {
                 let frames = conn.extract_frames();
                 // ibx#183 follow-up: frame-extraction tracer. If a recv produces
                 // 0 frames AND buffered_after > 0, the bytes are stuck waiting for
-                // more (incomplete FIXCOMP frame — declared tag-9 length exceeds
+                // more (incomplete compressed frame — declared body length exceeds
                 // received bytes). If buffered_after == 0, the bytes were dropped
                 // outright (no recognized header — buf.clear() path). At trace
                 // level: it fired on every read (ibx#701).
@@ -693,7 +693,7 @@ impl HmdsState {
                             msgs.push(unsigned);
                         }
                         Frame::Control(_) => {
-                            // 8=1 / 8=X control state — not consumed on the data path (ibx#185).
+                            // Token-auth / encrypted control state — not consumed on the data path (ibx#185).
                         }
                     }
                 }
@@ -1910,7 +1910,7 @@ impl HmdsState {
     /// answers a contract, route, data and RTH flag it was given before
     /// with the stored value and sends no query (captured 02/10/2026,
     /// b1_431_hist_format: the second
-    /// TRADES head timestamp of AAPL after the contract lookup, no 35=W).
+    /// TRADES head timestamp of AAPL after the contract lookup, no historical query).
     /// False when the store has no value for it.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn head_timestamp_from_cache(&self, req_id: ReqId, con_id: i64, sec_type: &str, exchange: &str, what_to_show: &str,
@@ -2855,7 +2855,7 @@ pub(crate) mod tests {
 
     #[test]
     fn conadj_response_frame_is_skipped_without_disturbing_pending() {
-        // ibx#183 / ib-agent#169: the 6040=10022 ConAdjResponse (corporate
+        // ibx#183 / ib-agent#169: the ConAdjResponse message (corporate
         // actions) is pushed once per contract on the first historical request.
         // It must be recognized and skipped, not treated as bar or completion.
         let mut hmds = HmdsState::new();

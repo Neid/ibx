@@ -1,6 +1,6 @@
 //! ibapi-compatible EClient — Rust equivalent of C++ `EClientSocket`.
 //!
-//! Connects to IB, provides ibapi-matching method signatures, and dispatches
+//! Connects to the server, provides ibapi-matching method signatures, and dispatches
 //! events to a [`Wrapper`] via `process_msgs()`.
 //!
 //! ```no_run
@@ -65,7 +65,7 @@ pub type TagValue = ApiTagValue;
 // Re-export public items from submodules
 pub use orders::parse_algo_params;
 
-/// Configuration for connecting to IB via EClient.
+/// Configuration for connecting to the server via EClient.
 ///
 /// # Live logins block on second-factor approval
 ///
@@ -181,12 +181,12 @@ impl Drop for EClient {
 }
 
 impl EClient {
-    /// Connect to IB and start the engine.
+    /// Connect to the server and start the engine.
     pub fn connect(config: &EClientConfig) -> Result<Self, Box<dyn std::error::Error>> {
         Self::connect_inner(config, None)
     }
 
-    /// Connect to IB and start the engine with an [`Event`] channel attached.
+    /// Connect to the server and start the engine with an [`Event`] channel attached.
     ///
     /// Returns the client plus a receiver carrying every [`Event`] the engine
     /// produces. This is a second, optional delivery path that runs alongside
@@ -379,7 +379,7 @@ impl EClient {
         self.connected.load(Ordering::Relaxed)
     }
 
-    /// Disconnect from IB.  Sends `Shutdown` to the hot loop, waits for the
+    /// Disconnect from the server.  Sends `Shutdown` to the hot loop, waits for the
     /// background thread to exit, and marks the client as disconnected.
     pub fn disconnect(&self) {
         let _ = self.control_tx.send(ControlCommand::Shutdown);
@@ -406,7 +406,7 @@ impl EClient {
 
     /// Canonical big-endian session-token bytes (leading zeros stripped) captured
     /// at connect. Round-trips through `BigUint::from_bytes_be` to the SRP shared
-    /// secret K and is the second SHA-1 input for SSO `Authenticate-TWS` bodies.
+    /// secret K and is the second SHA-1 input for SSO authenticate bodies.
     pub fn session_token_bytes(&self) -> &[u8] {
         &self.session_token_bytes
     }

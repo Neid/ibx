@@ -1,5 +1,5 @@
-//! Decoder of the farm's depth messages (35=Y, 35=Z), bit for bit as the
-//! reference reads them (#451).
+//! Decoder of the farm's depth messages (the plain and the extended kind),
+//! bit for bit as the reference reads them (#451).
 //!
 //! The body starts with a 2-byte bit count, then a bit stream read MSB
 //! first: groups of `[more groups:1][server tag:31]`, each with entries
@@ -86,8 +86,9 @@ fn bit_count(body: &[u8]) -> usize {
     n
 }
 
-/// Decode a depth body (the bytes after `35=Y` / `35=Z`, up to the
-/// signature). `extended` allows extended fields (35=Z); in 35=Y an
+/// Decode a depth body (the bytes after the message type of a plain or an
+/// extended depth message, up to the signature). `extended` allows extended
+/// fields (the extended depth message); in a plain depth message an
 /// extended field drops the whole message, as the reference does. Groups
 /// read before the bits run out are kept; the group cut short is dropped.
 pub fn decode_depth(body: &[u8], extended: bool) -> Vec<DepthGroup> {
@@ -197,8 +198,9 @@ fn read_groups(r: &mut BitReader, extended: bool, groups: &mut Vec<DepthGroup>) 
     }
 }
 
-/// The depth body of a farm message: after `35=Y` / `35=Z`, up to the
-/// signature trailer or the message's last separator.
+/// The depth body of a farm message: after the message type of a plain or
+/// an extended depth message, up to the signature trailer or the message's
+/// last separator.
 pub fn depth_body(msg: &[u8]) -> Option<(&[u8], bool)> {
     let start = msg.windows(5).position(|w| w == b"35=Y\x01" || w == b"35=Z\x01")?;
     let extended = msg[start + 3] == b'Z';
@@ -249,7 +251,7 @@ mod tests {
 
     // #451: the first entry of a captured frame (AAPL on IEX, 28/09/2026),
     // with the "more" bits of its group and entry cleared: `00 00 7d 98` =
-    // server tag 32,152; `00 00` = insert at position 0 without market
+    // server tag of 32,152; `00 00` = insert at position 0 without market
     // maker; `06 00 84 c5` = bid price, 3 bytes, 33,989; `80 01` = bid
     // size 1, the last field.
     #[test]
@@ -289,7 +291,8 @@ mod tests {
         assert_eq!(groups[1].entries[0].price, Some(-1));
     }
 
-    // #451: an extended field drops a 35=Y message whole, 35=Z reads it.
+    // #451: an extended field drops a plain depth message whole, an extended
+    // depth message reads it.
     #[test]
     fn extended_field_only_in_35z() {
         let mut w = W::new();

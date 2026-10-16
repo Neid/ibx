@@ -266,7 +266,7 @@ impl EClient {
         Ok(())
     }
 
-    /// Set the smart combo conIds of the logon, tag 6611 (ibx#470,
+    /// Set the smart combo conIds the logon gives (ibx#470,
     /// test-only).
     #[doc(hidden)]
     fn _test_set_smart_combo_con_ids(&self, raw: &str) -> PyResult<()> {

@@ -51,11 +51,11 @@ const EXEC_ID_WINDOW: usize = 1024;
 /// login never get one, so the oldest are dropped.
 const HELD_COMMISSION_EVENTS: usize = 64;
 
-/// Convert a FIX OrderID hex string (e.g. "00cf16ed.000225ed.69ca0941.0001") to a stable i64 permId.
+/// Convert a server order id hex string (e.g. "00cf16ed.000225ed.69ca0941.0001") to a stable i64 permId.
 /// Uses FNV-1a hash of the first 3 dot-segments (the stable prefix) so that permId
 /// remains constant across modifications (the last segment increments on each modify).
-/// Extract the value of a single FIX tag from a raw message.
-/// `prefix` should include the tag number and `=` (e.g. `b"6256="`).
+/// Extract the value of a single field from a raw wire message.
+/// `prefix` should include the field's key and `=` (e.g. the schedule join key field).
 fn extract_tag_value(msg: &[u8], prefix: &[u8]) -> Option<String> {
     use crate::protocol::fix::SOH;
     for part in msg.split(|&b| b == SOH) {
@@ -489,8 +489,8 @@ pub(crate) struct CcpState {
     pub(crate) exec_realized_order: VecDeque<String>,
     pub(crate) disconnected: bool,
     /// (req_id, is_single_shot). Single-shot = known-conId lookup whose
-    /// first 35=d reply is also the last (server emits no 323=5/6 terminator
-    /// for these). Multi-record by-symbol/matching-symbols requests push
+    /// first security definition answer is also the last (server emits no
+    /// last-answer response type for these). Multi-record by-symbol/matching-symbols requests push
     /// `false` and rely on the response-type sentinel for is_last.
     /// In-flight secdef requests: (req_id, single_shot, deadline). Only an
     /// internal lookup is dropped at its deadline (`sweep_contract_details`);
@@ -544,7 +544,7 @@ pub(crate) struct CcpState {
     pub(crate) ccp_sign_key: Vec<u8>,
     /// HMAC signing IV — advances only for signed messages, independent of unsigned ones.
     pub(crate) ccp_sign_iv: std::sync::Mutex<Vec<u8>>,
-    /// Secdef replies awaiting paired schedule reply (joined by tag 6256).
+    /// Secdef replies awaiting paired schedule reply (joined by the schedule key field).
     pub(crate) pending_schedule_pair: Vec<PendingSchedulePair>,
     /// Trading schedules received this session, by join key (ibx#527): a
     /// row whose schedule is known does not wait and asks nothing. Each
@@ -564,7 +564,8 @@ pub(crate) struct CcpState {
     pub(crate) pending_fanout: Vec<PendingFanout>,
     /// reqCompletedOrders (ibx#695).
     pub(crate) completed: CompletedOrders,
-    /// Counter for internal fan-out req IDs (tag 320 on per-exchange `35=c`).
+    /// Counter for internal fan-out req IDs (the security request id of the
+    /// per-exchange security definition requests).
     pub(crate) next_fanout_id: u32,
     /// Counter for internal secdef req IDs (auto-fetch on cold-cache positions).
     pub(crate) next_internal_secdef_id: u32,
@@ -576,7 +577,8 @@ pub(crate) struct CcpState {
     pub(crate) auto_fetched_conids: HashSet<i64>,
     /// Scanner results awaiting per-conId contract-detail enrichment.
     /// Each entry parks a parsed `<ScanResponse>` until every cache-miss
-    /// con_id has been resolved via the same 35=d path that user-initiated
+    /// con_id has been resolved via the same security definition answer path
+    /// that user-initiated
     /// `reqContractDetails` uses. See ibx#156, ib-agent#142.
     pub(crate) pending_scanner_enrichment: Vec<PendingScannerEnrichment>,
     /// Historical-data requests waiting for the conId of their contract
@@ -779,7 +781,7 @@ pub(crate) struct ContinuousLookup {
 }
 
 /// The value of the lead-futures-only tag of a continuous future lookup,
-/// the current lead future (captured 02/10/2026: `6857=2`).
+/// the current lead future (captured 02/10/2026: the value 2).
 const CURRENT_LEAD_FUTURE: &str = "2";
 
 /// How an API security type reads for a contract lookup, as the reference
@@ -1154,7 +1156,7 @@ impl CcpState {
     /// The server's commission frame for one execution (ibx#471). The fill
     /// report carries no commission; this frame follows it (captured
     /// 25/09/2026, 25 ms after the fill). A frame with neither the
-    /// commission nor tag 8189 is dropped, like the reference.
+    /// commission nor the other field checked below is dropped, like the reference.
     fn handle_commission_report(&mut self, parsed: &std::collections::HashMap<u32, String>, shared: &SharedState) {
         let Some(exec_id) = parsed.get(&17).filter(|s| !s.is_empty()) else {
             log::debug!("Commission report without an execution id: dropped");
@@ -1286,7 +1288,7 @@ impl CcpState {
                             msgs.push(unsigned);
                         }
                         Frame::Control(_) => {
-                            // 8=1 / 8=X control state — not consumed on the order path (ibx#185).
+                            // Control-protocol frames — not consumed on the order path (ibx#185).
                         }
                     }
                 }
@@ -1322,7 +1324,7 @@ impl CcpState {
             Some(t) => t.as_str(),
             None => return,
         };
-        // The server time of a test request or of an eligible 35=U message
+        // The server time of a test request or of an eligible custom message
         // refreshes the clock offset, at most every 30 s (ibx#421).
         if crate::control::logon::message_sets_clock(msg_type, parsed.get(&6040).map(String::as_str), parsed.contains_key(&1)) {
             match parsed.get(&fix::TAG_SENDING_TIME).and_then(|v| crate::control::logon::server_time_ms(v)) {
@@ -1768,11 +1770,12 @@ impl CcpState {
         // of another session or client, put in the book so it can be
         // cancelled, by its id or by a global cancel, and its reports reach
         // it (ibx#191). The reference makes an order of any report of an
-        // unknown order, with the report's API order id (6121), client id
-        // (6119) and order id (11); the
-        // logon replay reports an order not routed yet as 39=A (captured
-        // 01/10/2026: 8 orders of earlier sessions, 150=A 20=3 39=A), which
-        // was left out when only 150=0 39=0 was taken (paper 04/10/2026:
+        // unknown order, with the report's API order id, client id
+        // and client order id; the
+        // logon replay reports an order not routed yet as pending new (captured
+        // 01/10/2026: 8 orders of earlier sessions, execution type and order
+        // status pending new in status reports), which
+        // was left out when only the New status was taken (paper 04/10/2026:
         // 10147 on their cancel, nothing sent by a global cancel).
         let replayed_status = match parsed.get(&39).map(|s| s.as_str()) {
             Some("0" | "5") => {
@@ -1986,11 +1989,11 @@ impl CcpState {
             }
         }
 
-        // 39=0 is New on the wire, but the gateway reports PreSubmitted
+        // The New order status on the wire, but the gateway reports PreSubmitted
         // until the order is actually routed to and acknowledged by an
         // exchange (for example a limit order resting pre-market). Routing
         // shows up on the same exec report as a non-empty ExDestination
-        // (tag 100) plus an exec ref (tag 198) other than "NONE"; before
+        // (the exchange field) plus an exec ref other than "NONE"; before
         // routing both are absent/"NONE". Captured in ib-agent#162 (ibx#210).
         let working = || {
             let routed = parsed.get(&100).is_some_and(|s| !s.is_empty())
@@ -2035,8 +2038,9 @@ impl CcpState {
             "1" => crate::types::OrderStatus::PartiallyFilled,
             "2" => crate::types::OrderStatus::Filled,
             "4" | "C" => crate::types::OrderStatus::Cancelled,
-            // Pending cancel: the order stays open until 39=4 or a fill
-            // (ibx#472, a server-cancelled IOC sends 39=D then 39=4).
+            // Pending cancel: the order stays open until the Cancelled status
+            // or a fill (ibx#472, a server-cancelled IOC sends this status
+            // then Cancelled).
             "D" => crate::types::OrderStatus::PendingCancel,
             // A status report in the rejected state: the reference reads it
             // as cancelled, with no reject error. It answers the status
@@ -2053,8 +2057,8 @@ impl CcpState {
         // The guard's verdict (ibx#212): a stale frame the guard rejects
         // must not surface as an order_status. A frame that restates the
         // current status does: the reference reports every report of a known
-        // order (ibx#473), except the statuses it reads as invalid (39=E,
-        // 39=I, ibx#472).
+        // order (ibx#473), except the statuses it reads as invalid (the
+        // pending replace and inactive order statuses, ibx#472).
         // The answer to a status request after a refused cancel or modify
         // sets the status, back to working too (ibx#252).
         // The replay after a reconnect answers a status request for every
@@ -2075,7 +2079,8 @@ impl CcpState {
         let status_changed = change == crate::engine::context::StatusChange::Changed;
         // A working report of an order whose cancel went out: the reference
         // reports it with the order's PendingCancel status (ibx#486,
-        // modify_cancelled of 26/09/2026: 39=A and 39=0 after the 35=F).
+        // modify_cancelled of 26/09/2026: pending new and New statuses after
+        // the cancel message).
         let pending_cancel = change == crate::engine::context::StatusChange::Stale
             && !status.is_terminal()
             && context.order(clord_id).is_some_and(|o| o.status == crate::types::OrderStatus::PendingCancel);
@@ -2239,10 +2244,10 @@ impl CcpState {
                 let parent_id = known_parent_id(parsed, context, clord_id);
                 // Average fill price rides on status reports too (ibx#315).
                 let avg_px = parsed.get(&6).and_then(|s| s.parse::<f64>().ok()).unwrap_or(0.0);
-                // Filled so far as the server counts it (tag 14): an order
+                // Filled so far as the server counts it (cumulative quantity): an order
                 // recovered at session start has no prints in this session.
                 let filled = parsed.get(&14).and_then(|s| parse_qty(s)).unwrap_or(order.filled_fixed);
-                // A cancel or a reject reports 151=0; the reference's
+                // A cancel or a reject reports no leaves quantity; the reference's
                 // remaining stays what was not filled (every four-leg
                 // recording of 26/09 to 02/10/2026: Cancelled and Inactive
                 // with 1 remaining of 1, ibx#486).
@@ -2295,7 +2300,7 @@ impl CcpState {
             // Kept once a report gave it: the reference's order shows it
             // from then on, also when later reports leave it out (ibx#486,
             // premarket_order_types of 28/09/2026: an IOC placed without
-            // it, a report with 6433=1, then openOrder outsideRth true).
+            // it, a report with the outside-RTH flag set, then openOrder outsideRth true).
             let outside_rth = parsed.get(&6433).is_some_and(|s| s == "1")
                 || shared.orders.get_order_info(clord_id).is_some_and(|i| i.order.outside_rth);
             let clearing_intent = parsed.get(&6419).cloned().unwrap_or_default();
@@ -2425,7 +2430,7 @@ impl CcpState {
                 ("", "")
             };
 
-            // Derive 3 order-dependent fields from FIX tags
+            // Derive 3 order-dependent fields from the report's fields
             let oca_type: i32 = match parsed.get(&6209).map(|s| s.as_str()) {
                 Some("CancelOnFillWBlock") => 1,
                 Some("ReduceOnFillWBlock") => 2,
@@ -2608,7 +2613,8 @@ impl CcpState {
     /// The report of one leg of a combo order's fill (ibx#470; captured
     /// 30/09/2026): an execution of the leg, under the combo order, that
     /// moves the leg's position. Its execDetails shows the leg's contract
-    /// on the execution's exchange, the leg's side (54=5 is a sale), size,
+    /// on the execution's exchange, the leg's side (a sell-short side is a
+    /// sale), size,
     /// price and totals; the orderStatus that goes with it keeps the
     /// combo's totals and last price. The order's own state does not move.
     fn handle_combo_leg_report(
@@ -2903,9 +2909,10 @@ impl CcpState {
         shared.portfolio.set_account(context.account());
     }
 
-    /// Subscribe to the schedule paired with a secdef reply, joined on tag 6256.
-    /// Internal subscription (no API-client req_id exposed); reply arrives as
-    /// 35=U|6040=107 and is matched back to the secdef via 6256.
+    /// Subscribe to the schedule paired with a secdef reply, joined on the
+    /// schedule key field. Internal subscription (no API-client req_id
+    /// exposed); reply arrives as a trading schedule custom message and is
+    /// matched back to the secdef via the schedule key.
     fn send_schedule_subscribe(
         &mut self,
         join_key: &str,
@@ -3173,10 +3180,11 @@ impl CcpState {
     }
 
     /// Account summary subscription (ibx#479), as the reference writes it:
-    /// `6040=55|6036=1|6529={sr_id}|6374={tags}|6160={group}` to subscribe,
-    /// `6036=0` with the same id and the group to cancel (`subscribe` is
-    /// `None`; ibx#486, account_summary of 26/09/2026:
-    /// `35=U|6040=55|6036=0|6529=SR.Socket.39|6160=All`).
+    /// an account summary custom message with the subscribe flag set, the
+    /// subscription id `{sr_id}`, the tags and the group to subscribe; the
+    /// flag cleared with the same id and the group to cancel (`subscribe` is
+    /// `None`; ibx#486, account_summary of 26/09/2026: a cancel with the
+    /// id `SR.Socket.39` and the group `All`).
     pub(crate) fn send_account_summary(
         &mut self,
         sr_id: &str,
@@ -3257,11 +3265,14 @@ impl CcpState {
     }
 
     /// The API lookup by conId (ibx#438), in the reference's by-conId
-    /// forms: with an exchange (`SMART` written `BEST`)
-    /// `320=socket-reqContractDetailsReqByConid{id}|321=2|6088=Socket|6320=1|146=1|6008={conId}|6004={exchange}`,
-    /// without one the preferred contract of the conId
-    /// `320=PreferredReqByConid{id}|321=2|146=1|6008={conId}|6004=ANYEXCH`
-    /// (captured 02/10/2026). The reference answers from its contract cache
+    /// forms: with an exchange (`SMART` written `BEST`) the request id
+    /// `socket-reqContractDetailsReqByConid{id}`, the security request type
+    /// the code sends, the source `Socket`, the include-expired flag set, one
+    /// related symbol, the contract id and the exchange; without one the
+    /// preferred contract of the conId: the request id
+    /// `PreferredReqByConid{id}`, the same request type, one related symbol,
+    /// the contract id and the exchange `ANYEXCH` (captured 02/10/2026).
+    /// The reference answers from its contract cache
     /// when it can; ibx always asks.
     pub(crate) fn send_contract_details_by_con_id(
         &mut self,
@@ -3341,8 +3352,8 @@ impl CcpState {
             // See send_secdef_request: sweep converts this to a visible error.
             log::warn!("secdef-by-symbol request req_id={} queued with no CCP socket", req_id);
         }
-        // By-symbol lookup: master reply carries `6046={exch_list}`. The
-        // server never emits a 323=5/6 terminator; completion is detected
+        // By-symbol lookup: master reply carries the valid exchanges list. The
+        // server never emits a last-answer response type; completion is detected
         // by counting per-exchange fan-out replies (see `pending_fanout`).
         self.pending_secdef.push((req_id, false, Instant::now() + SECDEF_TIMEOUT));
     }
@@ -4016,9 +4027,10 @@ impl CcpState {
     }
 
     /// The company lookup of an underlying (ibx#436), as the reference
-    /// sends it after a derivative record without an industry:
-    /// `35=c|320=UnderlyingECNoDupsNDReqByConid{N}|321=2|146=1|6008={conId}|6004=ANYEXCH`
-    /// (captured 28/09/2026).
+    /// sends it after a derivative record without an industry: a security
+    /// definition request with the request id `UnderlyingECNoDupsNDReqByConid{N}`,
+    /// the security request type the code sends, one related symbol, the
+    /// underlying's contract id and the exchange `ANYEXCH` (captured 28/09/2026).
     fn send_company_lookup(&mut self, under_con_id: i64, ccp_conn: &mut Option<Connection>, hb: &mut HeartbeatState) {
         let rid = format!("{}{}", crate::control::contracts::SECDEF_UNDERLYING_NAME, self.next_fanout_id);
         self.next_fanout_id = self.next_fanout_id.wrapping_add(1);
@@ -4040,7 +4052,9 @@ impl CcpState {
     }
 
     /// Send a per-exchange fan-out request after a by-symbol master reply.
-    /// Wire: `35=c|320={fanout_id}|321=2|146=1|6008={conid}|6004={exch}|`
+    /// Wire: a security definition request with the request id `{fanout_id}`,
+    /// the security request type the code sends, one related symbol, the
+    /// contract id and the exchange.
     pub(crate) fn send_fanout_secdef_request(
         &mut self,
         fanout_req_id: &str,
@@ -4314,7 +4328,7 @@ fn report_contract(parsed: &std::collections::HashMap<u32, String>, shared: &Sha
 /// or modify (ibx#252): the order's ClOrdID, any symbol and side, and the
 /// account, as the reference writes it.
 /// The API status of a what-if reply, from its order status (ibx#462):
-/// 39=A is PreSubmitted (captured 02/10/2026), New and Replaced follow the
+/// pending new is PreSubmitted (captured 02/10/2026), New and Replaced follow the
 /// routing rule of an order's reports, a reject is Inactive.
 fn what_if_status(parsed: &std::collections::HashMap<u32, String>) -> &'static str {
     let routed = parsed.get(&100).is_some_and(|s| !s.is_empty())
@@ -4482,18 +4496,18 @@ const LEDGER_KEYS: &[(&str, &str)] = &[
 ];
 
 /// Rows of an account frame as (key, currency, value text), and the latest
-/// row time (6066), as the reference reads them (ibx#475):
-/// - `35=UT` / `35=UM`: each `8001` key with its `8004` value, currency
-///   from tag 15 (UT rows have none). A row with no value is skipped. A
+/// row time, as the reference reads them (ibx#475):
+/// - `UT` / `UM` frames: each row key with its value, currency
+///   from the currency field (UT rows have none). A row with no value is skipped. A
 ///   `PNL` row ends the frame. `AddAccountCode` is skipped, and
 ///   `AccountCode` is kept only after an `AccountType` row of the same frame
 ///   (the periodic frames carry an empty one).
-/// - `35=RL`: each `LedgerList` row gives the keys of `LEDGER_KEYS` with
-///   the row's currency (8002): its currency as `Currency` and
+/// - `RL` frames: each `LedgerList` row gives the keys of `LEDGER_KEYS` with
+///   the row's currency: its currency as `Currency` and
 ///   `RealCurrency`, the frame's account as `AccountOrGroup`, and each
 ///   number the row has, written as the reference's account values (two to
 ///   seven decimals; captured 07/10/2026: exchange rate `1.00`, cash
-///   balance `896958.4231`). A tag the row has not gives no row.
+///   balance `896958.4231`). A field the row has not gives no row.
 /// `form_10_40`: the rows of the account frames without the currency of
 /// their own field, as 10.40 gave them (ibx#637).
 pub(crate) fn parse_account_rows(text: &str, form_10_40: bool) -> (Vec<(String, String, String)>, Option<i64>) {
@@ -4579,11 +4593,12 @@ pub(crate) fn parse_account_rows(text: &str, form_10_40: bool) -> (Vec<(String, 
     (rows, time)
 }
 
-/// The rows of a ledger frame (`35=RL`) of an account summary, as the
+/// The rows of a ledger frame (`RL`) of an account summary, as the
 /// reference reads them (ibx#486): the account
-/// of the frame (`8001=AccountCode` then 8004), and per `LedgerList` row its
-/// currency (8002), tag 15, and its numeric tags. A value Java does not
-/// read as a number (`nan`) stays unset.
+/// of the frame (the `AccountCode` key then its value), and per `LedgerList`
+/// row its currency (the row's and the currency field), and its numeric
+/// fields. A value the reference does not read as a number (`nan`) stays
+/// unset.
 pub(crate) fn parse_ledger_rows(text: &str) -> Vec<crate::bridge::LedgerRow> {
     let mut rows: Vec<crate::bridge::LedgerRow> = Vec::new();
     let mut account = String::new();
@@ -4799,7 +4814,7 @@ impl CcpState {
 
     /// Issue an internal secdef request for `con_id` if the reference cache is cold and we
     /// haven't already auto-fetched it this session. The reply path populates the cache via
-    /// the existing 35=d handler; we don't track the response.
+    /// the existing security definition answer handler; we don't track the response.
     fn auto_fetch_secdef_if_cold(
         &mut self,
         con_id: i64,
@@ -4864,7 +4879,7 @@ impl CcpState {
         });
     }
 
-    /// Called from the 35=d reply path after the contract cache has been
+    /// Called from the security definition answer path after the contract cache has been
     /// populated for `con_id`. Removes `con_id` from any pending scanner
     /// enrichment's awaiting set; entries whose set becomes empty are
     /// dispatched to the scanner_data queue.
@@ -5127,8 +5142,9 @@ mod tests {
     }
 
     // ibx#474: the captured fill of 25/09/2026 (clientId 250, orderRef
-    // pm0925-fill-BUY): time from tag 60 when 6699 is absent, exchange from
-    // tag 100, clientId from 6119, orderRef from 6010.
+    // pm0925-fill-BUY): time from the transaction time when the gateway's
+    // execution time is absent, exchange from the exchange field, clientId
+    // and orderRef from their own fields.
     #[test]
     fn a_fill_carries_its_execution_details() {
         let (mut ccp, mut context, shared) = ord_status_test_state();
@@ -5210,8 +5226,8 @@ mod tests {
         assert_eq!(ccp.exec_id_order.len(), EXEC_ID_WINDOW);
     }
 
-    // Build a what-if (6091=1) ExecReport map for order 42. `margin_fields`
-    // holds (tag, literal wire value) pairs exactly as the gateway puts them
+    // Build a what-if (what-if flag set) ExecReport map for order 42. `margin_fields`
+    // holds (field, literal wire value) pairs exactly as the gateway puts them
     // on the wire (ib-agent#160).
     fn what_if_frame(margin_fields: &[(u32, &str)]) -> std::collections::HashMap<u32, String> {
         let mut m = std::collections::HashMap::new();
@@ -5256,7 +5272,8 @@ mod tests {
 
     // ibx#462, captured 02/10/2026 (b1_462_whatif, a what-if of 10,000,000
     // shares): the data reply keeps every value as sent, its status from
-    // 39=A, its reason for the 201 after the open order; no commission.
+    // the pending new status, its reason for the 201 after the open order;
+    // no commission.
     #[test]
     fn what_if_reply_values_status_and_reason() {
         let (mut ccp, mut context, shared) = what_if_test_state();
@@ -5305,8 +5322,9 @@ mod tests {
     }
 
     // ibx#462: a reject report of a preview
-    // (150=8 or 39=8, not a status report) gives error 201 alone; a status
-    // report (20=3) with 39=8 is the preview's reply: the open order with
+    // (execution type or order status rejected, not a status report) gives
+    // error 201 alone; a status report with the rejected status is the
+    // preview's reply: the open order with
     // the Inactive status, then error 201 with its reason.
     #[test]
     fn what_if_reject_report_and_rejected_status_report() {
@@ -5441,10 +5459,10 @@ mod tests {
         assert!(shared.orders.drain_what_if_responses().is_empty());
     }
 
-    // ibx#210: a working order carries wire 39=0 whether it is routed or not.
+    // ibx#210: a working order carries the wire New status whether it is routed or not.
     // The gateway reports PreSubmitted while it waits (e.g. placed pre-market)
     // and Submitted only once routed to an exchange. The discriminator is the
-    // routing tags on the same exec report, not a distinct wire status
+    // routing fields on the same exec report, not a distinct wire status
     // (ib-agent#162).
     fn ord_status_test_state() -> (CcpState, Context, SharedState) {
         let mut context = Context::new();
@@ -5506,7 +5524,7 @@ mod tests {
     #[test]
     fn ord_status_new_unrouted_is_presubmitted() {
         let (mut ccp, mut context, shared) = ord_status_test_state();
-        // 39=0, no ExDestination, exec ref "NONE" — waiting, not yet routed.
+        // New status, no ExDestination, exec ref "NONE" — waiting, not yet routed.
         let frame = exec_report_frame(&[(39, "0"), (150, "0"), (198, "NONE")]);
         ccp.handle_exec_report(&frame, &mut context, &shared, &None, "");
         assert_eq!(context.order(42).unwrap().status,
@@ -5516,7 +5534,7 @@ mod tests {
     #[test]
     fn ord_status_new_routed_is_submitted() {
         let (mut ccp, mut context, shared) = ord_status_test_state();
-        // 39=0 with the order routed to ARCA — working.
+        // New status with the order routed to ARCA — working.
         let frame = exec_report_frame(&[(39, "0"), (150, "0"), (100, "ARCA"), (198, "ARCA:1")]);
         ccp.handle_exec_report(&frame, &mut context, &shared, &None, "");
         assert_eq!(context.order(42).unwrap().status,
@@ -5536,8 +5554,9 @@ mod tests {
             crate::types::OrderStatus::Submitted);
     }
 
-    // ibx#247: a limit replace is acked with a pending report (39=6 on the
-    // new version) and then Replaced (39=5). The reference reports no status
+    // ibx#247: a limit replace is acked with a pending report (pending
+    // cancel status on the new version) and then the Replaced status.
+    // The reference reports no status
     // change across it (ib-agent#192 A1a); ibx used to report PendingCancel
     // and never move back, so the order looked cancelled.
     #[test]
@@ -5580,7 +5599,7 @@ mod tests {
     }
 
     // ibx#473: a stale report is still not reported (ibx#212), and the
-    // update carries the server's filled quantity (tag 14).
+    // update carries the server's filled quantity (cumulative quantity).
     #[test]
     fn a_stale_report_is_not_reported_and_filled_is_the_server_count() {
         let (mut ccp, mut context, shared) = ord_status_test_state();
@@ -5643,8 +5662,8 @@ mod tests {
     }
 
     // ibx#472: the captured server cancel of an IOC order (25/09/2026):
-    // 39=A, 39=0, 150=D|39=D, then 150=4|39=4. The 39=D report is a pending
-    // cancel, and the order stays open, so a fill between the two reports is
+    // pending new, New, a pending cancel report, then Cancelled. The
+    // pending cancel report leaves the order open, so a fill between the two reports is
     // applied.
     #[test]
     fn pending_cancel_report_keeps_the_order_until_cancelled() {
@@ -5925,7 +5944,8 @@ mod tests {
         assert_eq!(shared.orders.drain_order_notices()[0].1, 201);
     }
 
-    // ibx#472: the reference handles 39=E and 39=I as invalid statuses: no
+    // ibx#472: the reference handles the pending replace and inactive order
+    // statuses as invalid statuses: no
     // status change and no callback.
     #[test]
     fn pending_replace_and_inactive_reports_keep_the_status() {
@@ -5993,8 +6013,9 @@ mod tests {
     }
 
     // ibx#238 / ib-agent#172: in the UP portfolio snapshot the average cost is
-    // tag 6101 and 6065 is the market price. The handler previously read 6065 as
-    // the average cost. Verify the mapping and that all marks are stored.
+    // its own field and another field is the market price. The handler
+    // previously read the market price field as the average cost. Verify the
+    // mapping and that all marks are stored.
     #[test]
     fn position_update_maps_marks_and_avg_cost_from_correct_tags() {
         let mut context = Context::new();
@@ -7069,7 +7090,8 @@ mod tests {
     }
 
     /// The pending mark that precedes the data frame (captured
-    /// 02/10/2026: `35=U|6040=186|320=41|8164=1`).
+    /// 02/10/2026: a matching symbols custom message for request 41 with the
+    /// pending mark set).
     fn matching_symbols_ack(req_id: &str) -> Vec<u8> {
         crate::protocol::fix::fix_build(&[
             (crate::protocol::fix::TAG_MSG_TYPE, "U"),
@@ -7211,7 +7233,7 @@ mod tests {
         let (mut ccp, mut context, shared) = u186_test_state();
         ccp.pending_matching_symbols.push((1, 11));
 
-        // The not-ready ack (no tag 146) arrives first — it must not pop the
+        // The not-ready ack (no count of matches) arrives first — it must not pop the
         // request; delivering it as an empty answer orphans the data frame
         // that follows (observed live, ibx#228).
         let msg = matching_symbols_ack("1");
@@ -7320,9 +7342,9 @@ mod tests {
     }
 
     // ibx#369, captured 02/10/2026 (b1_369_matching_pacing): AA, AAP, MSF
-    // and IB back to back, NVD 1.5 s later. The reference sent AA at once,
-    // IB 1 s later (AAP and MSF were replaced and got nothing), NVD 1 s
-    // after IB.
+    // and the fourth pattern of the test back to back, NVD 1.5 s later. The
+    // reference sent AA at once, the fourth pattern 1 s later (AAP and MSF
+    // were replaced and got nothing), NVD 1 s after it.
     #[test]
     fn matching_symbols_pacing_as_captured() {
         let (mut ccp, mut context, shared) = u186_test_state();
@@ -7334,7 +7356,8 @@ mod tests {
         }
         assert_eq!(sent_patterns(&mut server), ["AA"]);
         assert_eq!(ccp.matching_waiting.as_ref().map(|w| w.0), Some(9553), "only the latest waits");
-        // The pending mark gives the permit back; the pause still holds IB.
+        // The pending mark gives the permit back; the pause still holds the
+        // fourth pattern.
         ccp.process_ccp_message(&matching_symbols_ack("1"), &mut None, &mut context, &shared, &None, &mut hb, "DU1");
         ccp.pump_matching_symbols(t0 + std::time::Duration::from_millis(500), &mut conn, &mut hb, &shared);
         assert!(sent_patterns(&mut server).is_empty());
@@ -7467,7 +7490,7 @@ mod tests {
         assert!(shared.reference.drain_contract_details_end().is_empty());
     }
 
-    // A session-start recovery entry (150=0/39=0) for an order this session
+    // A session-start recovery entry (execution type and status New) for an order this session
     // does not know.
     fn recovery_frame(order_id: OrderId, con_id: i64) -> std::collections::HashMap<u32, String> {
         [
@@ -7878,11 +7901,12 @@ mod tests {
 
     /// An order of an earlier session in the logon replay, not routed yet
     /// (captured 01/10/2026, fix-agent-gw.20261001-171159 seq 1124, account
-    /// masked): 150=A 20=3 39=A, no API order id or client id.
+    /// masked): a status report with execution type and status pending new,
+    /// no API order id or client id.
     const REPLAY_NOT_ROUTED: &str = "35=8|11=1790862363895062.0|17=140781.1790867253.0|150=A|20=3|39=A|167=CS|55=SPY|6210=BEST|38=1|44=0.00|32=0|31=0.00|14=0|151=1|6=0|54=1|37=00cf16ed.000225ed.6abde767.0001|1=DUXXXXXXX|60=20261001-15:07:33|6571=20261001-13:46:05|40=5|59=0|6008=756733|15=USD|6004=BEST|6122=c|6205=1|198=NONE|6115=0|6088=Socket|6035=SPY|6419=IB";
 
     // The logon replay gives an order of an earlier session that is not
-    // routed yet as 39=A: it is in the book, PreSubmitted, of client 0
+    // routed yet as pending new: it is in the book, PreSubmitted, of client 0
     // (no 6119, read as 0 by the reference), at the server's version.
     // Paper 04/10/2026: such orders were listed and then not found by a
     // cancel (10147), and a global cancel sent nothing.
@@ -8222,7 +8246,8 @@ BUY 1 QQQ,SPY Combo
         assert_eq!(info.order.lmt_price, 747.01);
     }
 
-    // ibx#467: a report with 59=1 and the DTC flag is a DTC order.
+    // ibx#467: a report with a good-till-cancel time in force and the DTC
+    // flag is a DTC order.
     #[test]
     fn a_report_with_the_dtc_flag_is_dtc() {
         let (mut ccp, mut context, shared) = ord_status_test_state();
@@ -8783,7 +8808,7 @@ mod logon_update_tests {
     }
 
     // ibx#421: a test request refreshes the clock offset from its server
-    // time; a 35=U carrying an account does not.
+    // time; a custom message carrying an account does not.
     #[test]
     fn test_request_refreshes_the_clock_offset() {
         let (mut ccp, mut context, shared) = ord_status_test_state();

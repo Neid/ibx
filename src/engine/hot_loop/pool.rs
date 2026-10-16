@@ -58,8 +58,9 @@ pub(crate) trait FixSink {
 
 /// Send a plain message as the reference writes its requests to the
 /// historical farm: the XML in its writer's layout and the sequence
-/// number 000000 (every 35=W, 35=Z and 35=U of the four-leg recordings of
-/// 26/09 to 02/10/2026, ibx#486; the heartbeats keep their count).
+/// number 000000 (every query, cancel and gateway-specific message of the
+/// four-leg recordings of 26/09 to 02/10/2026, ibx#486; the heartbeats keep
+/// their count).
 pub(crate) fn send_plain_on(conn: &mut Connection, fields: &[(u32, &str)]) -> io::Result<()> {
     let laid_out: Vec<(u32, String)> = fields.iter().map(|(t, v)| {
         (*t, if *t == 6118 { crate::protocol::fix::xml_layout(v) } else { v.to_string() })

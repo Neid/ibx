@@ -1,4 +1,4 @@
-/// Internal instrument identifier. Mapped from IB's conId at subscription time.
+/// Internal instrument identifier. Mapped from the broker's conId at subscription time.
 /// Used as an index into pre-allocated arrays, so values are dense and small.
 pub type InstrumentId = u32;
 
@@ -15,7 +15,7 @@ pub type ReqId = i64;
 /// Example: $150.25 = 15_025_000_000
 pub type Price = i64;
 
-/// Fixed-point quantity: value * 10^4. Matches IB's 0.0001 minimum increment.
+/// Fixed-point quantity: value * 10^4. Matches the broker's 0.0001 minimum increment.
 /// Example: 100 shares = 1_000_000
 pub type Qty = i64;
 
@@ -46,7 +46,7 @@ const MAX_PENDING_ORDERS: usize = 64;
 pub enum Side {
     Buy,
     Sell,
-    /// Short sell (FIX tag 54 = "5"). Used for short-selling stocks.
+    /// Short sell (its own side code on the wire). Used for short-selling stocks.
     ShortSell,
 }
 
@@ -54,19 +54,19 @@ pub enum Side {
 pub enum OrderStatus {
     /// Locally queued, not yet acknowledged by server.
     PendingSubmit,
-    /// Received by server, not yet accepted by exchange (FIX 39=A).
+    /// Received by server, not yet accepted by exchange (order status pending new).
     PreSubmitted,
-    /// Accepted and working on exchange (FIX 39=0 or 39=5).
+    /// Accepted and working on exchange (order status new or replaced).
     Submitted,
-    /// Cancel request sent, awaiting confirmation (FIX 39=6).
+    /// Cancel request sent, awaiting confirmation (order status pending cancel).
     PendingCancel,
-    /// Modify request sent, awaiting confirmation (FIX 39=E).
+    /// Modify request sent, awaiting confirmation (order status pending replace).
     PendingReplace,
     Filled,
     PartiallyFilled,
     Cancelled,
     Rejected,
-    /// Server reports order inactive (FIX 39=I).
+    /// Server reports order inactive (the server's inactive order status).
     Inactive,
     /// An order the client placed that never left: a global cancel came
     /// while it waited (the reference's `ApiCancelled`).
@@ -290,31 +290,31 @@ pub struct OrderUpdate {
 pub struct CancelReject {
     pub order_id: OrderId,
     pub instrument: InstrumentId,
-    /// 1 = cancel rejected, 2 = modify rejected (FIX tag 434 CxlRejResponseTo).
+    /// 1 = cancel rejected, 2 = modify rejected (the reject's response-to field).
     pub reject_type: u8,
-    /// Numeric reason code (FIX tag 102 CxlRejReason). 0=TooLate, 1=UnknownOrder, etc.
+    /// Numeric reason code (the reject's reason field). 0 = too late, 1 = unknown order, etc.
     pub reason_code: i32,
     pub timestamp_ns: u64,
 }
 
-/// Multi-char OrdType discriminants (values < 32 to avoid collision with ASCII single-char types).
-/// Used in `Order.ord_type` for order types whose FIX tag 40 value is more than one character.
-pub const ORD_STP_PRT: u8 = 1;   // FIX "SP"  — Stop with Protection
-pub const ORD_MIDPX: u8 = 2;     // FIX "MIDPX" — Mid-Price
-pub const ORD_SNAP_MKT: u8 = 3;  // FIX "SMKT" — Snap to Market
-pub const ORD_SNAP_MID: u8 = 4;  // FIX "SMID" — Snap to Midpoint
-pub const ORD_SNAP_PRI: u8 = 5;  // FIX "SREL" — Snap to Primary
-pub const ORD_PEG_MKT: u8 = 6;   // FIX "P" + ExecInst "P" — Pegged to Market
-pub const ORD_PEG_MID: u8 = 7;   // FIX "P" + ExecInst "M" — Pegged to Midpoint
-pub const ORD_PEG_BENCH: u8 = 8; // FIX "PB" — Pegged to Benchmark
-pub const ORD_WHAT_IF: u8 = 9;   // Not a real OrdType — marker for what-if orders
-pub const ORD_TRAIL_MIT: u8 = 10; // FIX "TMIT" — Trailing Market if Touched
-pub const ORD_TRAIL_LIT: u8 = 11; // FIX "TLIT" — Trailing Limit if Touched
-pub const ORD_PEG_BEST: u8 = 12;  // FIX "E2M" — Pegged to Best
-pub const ORD_RPI: u8 = 13;       // FIX "RPI" — Retail Price Improvement
-pub const ORD_PASSV_REL: u8 = 14; // FIX "PSVR" — Passive Relative
+/// Multi-char order type discriminants (values < 32 to avoid collision with ASCII single-char types).
+/// Used in `Order.ord_type` for order types whose wire order type code is more than one character.
+pub const ORD_STP_PRT: u8 = 1;   // code "SP"  — Stop with Protection
+pub const ORD_MIDPX: u8 = 2;     // code "MIDPX" — Mid-Price
+pub const ORD_SNAP_MKT: u8 = 3;  // code "SMKT" — Snap to Market
+pub const ORD_SNAP_MID: u8 = 4;  // code "SMID" — Snap to Midpoint
+pub const ORD_SNAP_PRI: u8 = 5;  // code "SREL" — Snap to Primary
+pub const ORD_PEG_MKT: u8 = 6;   // code "P" + market peg instruction — Pegged to Market
+pub const ORD_PEG_MID: u8 = 7;   // code "P" + midpoint peg instruction — Pegged to Midpoint
+pub const ORD_PEG_BENCH: u8 = 8; // code "PB" — Pegged to Benchmark
+pub const ORD_WHAT_IF: u8 = 9;   // Not a real order type — marker for what-if orders
+pub const ORD_TRAIL_MIT: u8 = 10; // code "TMIT" — Trailing Market if Touched
+pub const ORD_TRAIL_LIT: u8 = 11; // code "TLIT" — Trailing Limit if Touched
+pub const ORD_PEG_BEST: u8 = 12;  // code "E2M" — Pegged to Best
+pub const ORD_RPI: u8 = 13;       // code "RPI" — Retail Price Improvement
+pub const ORD_PASSV_REL: u8 = 14; // code "PSVR" — Passive Relative
 
-/// Convert an `ord_type` discriminant to the FIX tag 40 string.
+/// Convert an `ord_type` discriminant to the wire order type code.
 /// Single-char types (ASCII >= 32) are stored as-is; multi-char types use constants above.
 pub fn ord_type_fix_str(t: u8) -> &'static str {
     match t {
@@ -337,7 +337,7 @@ pub fn ord_type_fix_str(t: u8) -> &'static str {
     }
 }
 
-/// What-If margin/commission preview response (execution report with tag 6091=1).
+/// What-If margin/commission preview response (execution report with the what-if flag set).
 /// Returned when a what-if order is submitted — the order is NOT placed.
 #[derive(Debug, Clone, Default)]
 pub struct WhatIfResponse {
@@ -361,7 +361,7 @@ pub struct WhatIfResponse {
 /// came, unset when absent or not a number.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct WhatIfState {
-    /// The API status of the reply's order status (39=A is PreSubmitted).
+    /// The API status of the reply's order status (pending new is PreSubmitted).
     pub status: String,
     pub init_margin_before: Option<f64>,
     pub maint_margin_before: Option<f64>,
@@ -379,14 +379,14 @@ pub struct WhatIfState {
     /// The server's reason when it refuses the order (error 201 after the
     /// open order).
     pub reject_reason: String,
-    /// The permId of the preview's order (37 of the reply); 0 without one.
+    /// The permId of the preview's order (the order id of the reply); 0 without one.
     pub perm_id: i64,
-    /// The conId of the reply (6008), for a preview placed without one: the
+    /// The conId of the reply (its contract id), for a preview placed without one: the
     /// reference shows the contract it looked up (ibx#486).
     pub con_id: i64,
 }
 
-/// Adjusted order type for adjustable stops (FIX tag 6261).
+/// Adjusted order type for adjustable stops (the adjusted order type field).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AdjustedOrderType {
     Stop,       // 3
@@ -422,12 +422,12 @@ pub struct Order {
     /// Filled so far, fixed-point (QTY_SCALE).
     pub filled_fixed: Qty,
     pub status: OrderStatus,
-    /// FIX tag 40 OrdType: b'1'=MKT, b'2'=LMT, b'3'=STP, b'4'=STPLMT, b'P'=TRAIL, etc.
-    /// For multi-char OrdTypes (MIDPX, SP, SMKT, etc.), uses ORD_* constants (values < 32).
+    /// Order type code: b'1'=MKT, b'2'=LMT, b'3'=STP, b'4'=STPLMT, b'P'=TRAIL, etc.
+    /// For multi-char order types (MIDPX, SP, SMKT, etc.), uses ORD_* constants (values < 32).
     pub ord_type: u8,
-    /// FIX tag 59 TimeInForce: b'0'=DAY, b'1'=GTC, b'3'=IOC, b'4'=FOK
+    /// Time in force code: b'0'=DAY, b'1'=GTC, b'3'=IOC, b'4'=FOK
     pub tif: u8,
-    /// FIX tag 99 stop price (for Stop/StopLimit/MIT/LIT orders)
+    /// Stop price (for Stop/StopLimit/MIT/LIT orders)
     pub stop_price: Price,
 }
 
@@ -439,7 +439,7 @@ impl Order {
     }
 }
 
-/// Adaptive algo priority level (IB's "adaptivePriority" parameter).
+/// Adaptive algo priority level (the API's "adaptivePriority" parameter).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AdaptivePriority {
     Patient,
@@ -465,14 +465,14 @@ pub const TIF_DTC: u8 = b'r';
 /// All fields default to "not set" (0/false).
 #[derive(Debug, Clone, Default)]
 pub struct OrderAttrs {
-    /// The caller's orderRef, sent in tag 6010 on the order and every
+    /// The caller's orderRef, sent in the order reference field on the order and every
     /// replace (ibx#466).
     pub order_ref: String,
-    /// Show on book as this many shares (tag 111). 0 = not set (show full qty).
+    /// Show on book as this many shares (display size). 0 = not set (show full qty).
     pub display_size: u32,
-    /// Minimum fill quantity (FIX tag 110). 0 = not set.
+    /// Minimum fill quantity. 0 = not set.
     pub min_qty: u32,
-    /// Hidden order — not displayed on book (IB tag 6135).
+    /// Hidden order — not displayed on book (the hidden flag).
     pub hidden: bool,
     /// Placed with no time in force: it takes the account's order preset
     /// for its security type (ibx#660).
@@ -486,51 +486,51 @@ pub struct OrderAttrs {
     /// zone not known yet (ibx#668): each refuses with its code and text
     /// when one of its zones is not the contract's.
     pub zone_checks: Vec<(Vec<String>, i64, String)>,
-    /// Customer account (tag 6207) and professional customer (tag 6636),
+    /// Customer account and professional customer (a field each),
     /// sent only on an account whose config allows them (ibx#425).
     pub customer_account: String,
     pub professional_customer: bool,
-    /// Allow trading outside regular hours (IB tag 6433).
+    /// Allow trading outside regular hours (the outside-RTH flag).
     pub outside_rth: bool,
-    /// Delay order activation until this time (FIX tag 168). 0 = not set. Unix seconds.
+    /// Delay order activation until this time (the effective time). 0 = not set. Unix seconds.
     pub good_after: i64,
-    /// Auto-expire order at this instant (FIX tag 126, time-precise GTD).
+    /// Auto-expire order at this instant (the expire time, time-precise GTD).
     /// 0 = not set. Unix seconds in UTC. Mutually exclusive with `good_till_date_ymd`.
-    /// When set, TIF should be GTD (but IB infers it from the tag).
+    /// When set, TIF should be GTD (but the broker infers it from the field).
     pub good_till: i64,
-    /// Auto-expire order on this calendar date (FIX tag 432, date-only GTD).
+    /// Auto-expire order on this calendar date (the expire date, date-only GTD).
     /// 0 = not set. Packed `YYYYMMDD`. Mutually exclusive with `good_till`.
     pub good_till_date_ymd: u32,
-    /// OCA group ID (FIX tag 583). 0 = not set. Links orders so one cancels others.
+    /// OCA group ID (the OCA group field). 0 = not set. Links orders so one cancels others.
     /// Orders sharing the same non-zero oca_group are in the same OCA group.
     pub oca_group: u64,
-    /// OCA group as a string (FIX tag 583). Used by Python compat for user-specified OCA names.
+    /// OCA group as a string (the same field). Used by Python compat for user-specified OCA names.
     /// When non-empty, takes precedence over numeric `oca_group`.
     pub oca_group_str: String,
-    /// Parent order ID (IB tag 6107). 0 = no parent. Links child orders to parent in brackets.
+    /// Parent order ID (parent id field). 0 = no parent. Links child orders to parent in brackets.
     pub parent_id: OrderId,
-    /// Discretionary amount (IB tag 9813). 0 = not set. Fixed-point Price value.
+    /// Discretionary amount (its own field). 0 = not set. Fixed-point Price value.
     /// The amount above the limit price that the order may trade at.
     pub discretionary_amt: Price,
-    /// Sweep to fill (IB tag 6102). Routes aggressively across exchanges.
+    /// Sweep to fill (its own flag). Routes aggressively across exchanges.
     pub sweep_to_fill: bool,
-    /// All or none (FIX tag 18=G ExecInst). Fill entire qty or nothing.
+    /// All or none (an execution instruction). Fill entire qty or nothing.
     pub all_or_none: bool,
-    /// Trigger method for stop/MIT/LIT orders (IB tag 6115).
+    /// Trigger method for stop/MIT/LIT orders (its own field).
     /// 0=default, 1=double-bid-ask, 2=last, 3=double-last, 4=bid-ask,
     /// 7=last-or-bid-ask, 8=mid-point.
     pub trigger_method: u8,
-    /// Cash quantity — order by dollar amount instead of shares (tag 152,
+    /// Cash quantity — order by dollar amount instead of shares (its own field,
     /// ibx#263). 0 = not set.
     /// Fixed-point Price value (e.g., $1000 = 1000 * PRICE_SCALE).
     pub cash_qty: Price,
-    /// Conditions that must be met before the order activates (IB tag 6136+).
+    /// Conditions that must be met before the order activates (the condition fields).
     pub conditions: Vec<OrderCondition>,
-    /// Cancel order if conditions are no longer met (IB tag 6128). Default false.
+    /// Cancel order if conditions are no longer met (its own flag). Default false.
     pub conditions_cancel_order: bool,
-    /// Evaluate conditions outside regular trading hours (IB tag 6151). Default false.
+    /// Evaluate conditions outside regular trading hours (its own flag). Default false.
     pub conditions_ignore_rth: bool,
-    /// OCA cancellation semantics (IB tag 6209), 1..=4. 0 = not set, which
+    /// OCA cancellation semantics (the OCA type field), 1..=4. 0 = not set, which
     /// emits the gateway default 3 (ReduceOnFillNonBlock). Only emitted when
     /// an OCA group is present. See ibx#215.
     pub oca_type: u8,
@@ -553,7 +553,7 @@ pub struct OrderAttrs {
     /// The API notHeld, sent where the reference sends it: an order for
     /// the broker's ATS venue (ibx#690).
     pub not_held: bool,
-    /// The API clearingIntent: empty, IB, Away or PTA (ibx#417). A
+    /// The API clearingIntent: empty, the broker itself, Away or PTA (ibx#417). A
     /// clearing away from the broker lets a short-side order pass the
     /// reference's side check.
     pub clearing_intent: String,
@@ -598,7 +598,7 @@ pub struct ComboSpec {
     pub currency: String,
     /// The BAG symbol as given, checked against the legs (478).
     pub symbol: String,
-    /// The conId of the smart combo of the currency (logon tag 6611), 0
+    /// The conId of the smart combo of the currency (a logon field), 0
     /// for a directed combo.
     pub smart_con_id: i64,
     /// The legs in the caller's order.
@@ -661,7 +661,7 @@ impl ShortSale {
 }
 
 /// A condition that must be met before an order activates.
-/// IB evaluates conditions server-side; order stays PreSubmitted until triggered.
+/// The broker evaluates conditions server-side; order stays PreSubmitted until triggered.
 #[derive(Debug, Clone)]
 pub enum OrderCondition {
     /// Trigger when an instrument's price crosses a threshold.
@@ -727,14 +727,14 @@ impl RiskAversion {
     }
 }
 
-/// Parameters for IB algorithmic order strategies.
-/// Each variant maps to a specific tag 847 algoStrategy with its required params.
+/// Parameters for the broker's algorithmic order strategies.
+/// Each variant maps to a specific algoStrategy with its required params.
 #[derive(Debug, Clone)]
 pub enum AlgoParams {
     /// VWAP: Volume-weighted average price.
-    /// Tag 847=Vwap, 849=max_pct_vol.
+    /// Strategy Vwap, with max_pct_vol.
     Vwap {
-        /// Maximum participation rate (0.0-1.0). Sent as tag 849.
+        /// Maximum participation rate (0.0-1.0). Sent as its own parameter field.
         max_pct_vol: f64,
         /// Don't take liquidity (0 or 1).
         no_take_liq: bool,
@@ -746,14 +746,14 @@ pub enum AlgoParams {
         end_time: String,
     },
     /// TWAP: Time-weighted average price.
-    /// Tag 847=Twap.
+    /// Strategy Twap.
     Twap {
         allow_past_end_time: bool,
         start_time: String,
         end_time: String,
     },
     /// Arrival Price: Minimize arrival price impact.
-    /// Tag 847=ArrivalPx, 849=max_pct_vol.
+    /// Strategy ArrivalPx, with max_pct_vol.
     ArrivalPx {
         max_pct_vol: f64,
         risk_aversion: RiskAversion,
@@ -763,7 +763,7 @@ pub enum AlgoParams {
         end_time: String,
     },
     /// Close Price: Target closing price.
-    /// Tag 847=ClosePx, 849=max_pct_vol.
+    /// Strategy ClosePx, with max_pct_vol.
     ClosePx {
         max_pct_vol: f64,
         risk_aversion: RiskAversion,
@@ -771,7 +771,7 @@ pub enum AlgoParams {
         start_time: String,
     },
     /// Dark Ice: Hidden iceberg algo.
-    /// Tag 847=DarkIce.
+    /// Strategy DarkIce.
     DarkIce {
         allow_past_end_time: bool,
         display_size: u32,
@@ -779,7 +779,7 @@ pub enum AlgoParams {
         end_time: String,
     },
     /// Percentage of Volume: Participate at % of volume.
-    /// Tag 847=PctVol.
+    /// Strategy PctVol.
     PctVol {
         /// Target participation rate (0.0-1.0). Sent as param pctVol.
         pct_vol: f64,
@@ -824,15 +824,15 @@ pub enum OrderKind {
     Stop { stop_price: Price },
     StopLimit { price: Price, stop_price: Price },
     /// Trailing stop by absolute amount. `trail_stop_price` is the optional
-    /// initial stop trigger (tag 6117); 0 = not set.
+    /// initial stop trigger (its own field); 0 = not set.
     TrailingStop { trail_amt: Price, trail_stop_price: Price },
-    /// Trailing stop limit; `lmt_offset` is the limit-vs-trail offset (tag 6370).
-    /// `trail_stop_price` is the optional initial stop trigger (tag 6117); 0 = not set.
-    /// `lmt_price`: the absolute limit price, sent in 44 with no 6370;
-    /// else `lmt_offset` in 6370 (ib-agent#194).
+    /// Trailing stop limit; `lmt_offset` is the limit-vs-trail offset (the limit offset field).
+    /// `trail_stop_price` is the optional initial stop trigger (its own field); 0 = not set.
+    /// `lmt_price`: the absolute limit price, sent as the limit price with no
+    /// limit offset; else `lmt_offset` in the limit offset field (ib-agent#194).
     TrailingStopLimit { lmt_offset: Price, lmt_price: Option<Price>, trail_amt: Price, trail_stop_price: Price },
     /// Trailing stop by percentage. Basis points: 100 = 1%.
-    /// `trail_stop_price` is the optional initial stop trigger (tag 6117); 0 = not set.
+    /// `trail_stop_price` is the optional initial stop trigger (its own field); 0 = not set.
     /// The percent as the API gives it, in the price fixed point (1% =
     /// PRICE_SCALE): the reference writes it with its price formatter, so
     /// 1.239 goes out as 1.239 (ibx#263; basis points kept two decimals).
@@ -1017,7 +1017,7 @@ pub enum OrderRequest {
         side: Side,
         qty: u32,
         trail_amt: Price,
-        /// Optional initial stop trigger (tag 6117); 0 = not set.
+        /// Optional initial stop trigger (its own field); 0 = not set.
         trail_stop_price: Price,
     },
     SubmitTrailingStopLimit {
@@ -1025,13 +1025,13 @@ pub enum OrderRequest {
         instrument: InstrumentId,
         side: Side,
         qty: u32,
-        /// Limit offset from the trail-stop price (wire tag 6370 LimitPriceOffset).
+        /// Limit offset from the trail-stop price (the limit offset field on the wire).
         /// The gateway derives the absolute limit price; do not pass an absolute price here.
         lmt_offset: Price,
-        /// Absolute limit price (44, no 6370) instead of the offset (ib-agent#194).
+        /// Absolute limit price (sent as limit price, no offset) instead of the offset (ib-agent#194).
         lmt_price: Option<Price>,
         trail_amt: Price,
-        /// Optional initial stop trigger (tag 6117); 0 = not set.
+        /// Optional initial stop trigger (its own field); 0 = not set.
         trail_stop_price: Price,
     },
     /// Trailing stop by percentage. `trail_percent` is the percent in the
@@ -1044,7 +1044,7 @@ pub enum OrderRequest {
         side: Side,
         qty: u32,
         trail_percent: Price, // 1% = PRICE_SCALE, 2.5% = 2.5 * PRICE_SCALE
-        /// Optional initial stop trigger (tag 6117); 0 = not set.
+        /// Optional initial stop trigger (its own field); 0 = not set.
         trail_stop_price: Price,
     },
     SubmitTrailingStopPctEx {
@@ -1055,7 +1055,7 @@ pub enum OrderRequest {
         trail_percent: Price,
         tif: u8,
         attrs: OrderAttrs,
-        /// Optional initial stop trigger (tag 6117); 0 = not set.
+        /// Optional initial stop trigger (its own field); 0 = not set.
         trail_stop_price: Price,
     },
     SubmitMoc {
@@ -1087,7 +1087,8 @@ pub enum OrderRequest {
         stop_price: Price,
     },
     /// Bracket order: parent entry + take-profit + stop-loss, linked via OCA.
-    /// Generates 3 FIX messages: parent (35=D), TP child (35=D with 6107+583), SL child (35=D with 6107+583).
+    /// Generates 3 new order messages: parent, TP child and SL child, each child with
+    /// the parent id and OCA group fields.
     SubmitBracket {
         parent_id: OrderId,
         tp_id: OrderId,
@@ -1128,7 +1129,7 @@ pub enum OrderRequest {
         instrument: InstrumentId,
         side: Side,
         qty: u32,
-        offset: Price, // peg offset in tag 99
+        offset: Price, // peg offset in the stop price field
     },
     /// Limit order for opening auction (TIF=OPG).
     SubmitLimitOpg {
@@ -1138,7 +1139,7 @@ pub enum OrderRequest {
         qty: u32,
         price: Price,
     },
-    /// Adaptive algo limit order: LMT with IB Adaptive algorithm overlay.
+    /// Adaptive algo limit order: LMT with the broker's Adaptive algorithm overlay.
     SubmitAdaptive {
         order_id: OrderId,
         instrument: InstrumentId,
@@ -1151,21 +1152,21 @@ pub enum OrderRequest {
         tif: u8,
         attrs: OrderAttrs,
     },
-    /// Market to Limit: fills at market, remainder converts to limit at fill price. OrdType K.
+    /// Market to Limit: fills at market, remainder converts to limit at fill price. Order type K.
     SubmitMtl {
         order_id: OrderId,
         instrument: InstrumentId,
         side: Side,
         qty: u32,
     },
-    /// Market with Protection: market order with price protection for futures. OrdType U.
+    /// Market with Protection: market order with price protection for futures. Order type code U.
     SubmitMktPrt {
         order_id: OrderId,
         instrument: InstrumentId,
         side: Side,
         qty: u32,
     },
-    /// Stop with Protection: stop order with price protection. OrdType SP.
+    /// Stop with Protection: stop order with price protection. Order type code SP.
     SubmitStpPrt {
         order_id: OrderId,
         instrument: InstrumentId,
@@ -1173,7 +1174,7 @@ pub enum OrderRequest {
         qty: u32,
         stop_price: Price,
     },
-    /// Mid-Price: pegs to midpoint with optional price cap. OrdType MIDPX.
+    /// Mid-Price: pegs to midpoint with optional price cap. Order type code MIDPX.
     SubmitMidPrice {
         order_id: OrderId,
         instrument: InstrumentId,
@@ -1181,7 +1182,7 @@ pub enum OrderRequest {
         qty: u32,
         price_cap: Price, // 0 = no cap
     },
-    /// Snap to Market: snaps to market price. OrdType SMKT.
+    /// Snap to Market: snaps to market price. Order type code SMKT.
     SubmitSnapMkt {
         order_id: OrderId,
         instrument: InstrumentId,
@@ -1189,7 +1190,7 @@ pub enum OrderRequest {
         qty: u32,
         offset: Price, // the API auxPrice, 0 = unset
     },
-    /// Snap to Midpoint: snaps to midpoint. OrdType SMID.
+    /// Snap to Midpoint: snaps to midpoint. Order type code SMID.
     SubmitSnapMid {
         order_id: OrderId,
         instrument: InstrumentId,
@@ -1197,7 +1198,7 @@ pub enum OrderRequest {
         qty: u32,
         offset: Price, // the API auxPrice, 0 = unset
     },
-    /// Snap to Primary: snaps to primary (NBBO). OrdType SREL.
+    /// Snap to Primary: snaps to primary (NBBO). Order type code SREL.
     SubmitSnapPri {
         order_id: OrderId,
         instrument: InstrumentId,
@@ -1224,7 +1225,7 @@ pub enum OrderRequest {
         price: Price,  // limit price, 0 = unset
         offset: Price,
     },
-    /// Algorithmic order: limit order with IB algo strategy overlay (VWAP, TWAP, etc.).
+    /// Algorithmic order: limit order with the broker's algo strategy overlay (VWAP, TWAP, etc.).
     SubmitAlgo {
         order_id: OrderId,
         instrument: InstrumentId,
@@ -1255,7 +1256,7 @@ pub enum OrderRequest {
         /// The reference contract's exchange, empty = not sent.
         ref_exchange: String,
     },
-    /// Limit order for auction (TIF=AUC, tag 59=8). Participates in exchange opening/closing auction.
+    /// Limit order for auction (TIF=AUC, auction time in force). Participates in exchange opening/closing auction.
     SubmitLimitAuc {
         order_id: OrderId,
         instrument: InstrumentId,
@@ -1263,7 +1264,7 @@ pub enum OrderRequest {
         qty: u32,
         price: Price,
     },
-    /// Market-to-Limit for auction (TIF=AUC, tag 59=8). MTL + auction participation.
+    /// Market-to-Limit for auction (TIF=AUC, auction time in force). MTL + auction participation.
     SubmitMtlAuc {
         order_id: OrderId,
         instrument: InstrumentId,
@@ -1272,13 +1273,13 @@ pub enum OrderRequest {
     },
     /// What-If preview of a new order (ibx#462): `request` is the order as
     /// it would be placed, written by its own encoder with the preview flag,
-    /// under a ClOrdID of its own. It is NOT placed and never modifies a
+    /// under a client order id of its own. It is NOT placed and never modifies a
     /// working order; the answer is an `Event::WhatIf`.
     SubmitWhatIf {
         request: Box<OrderRequest>,
     },
     /// Fractional shares limit order. Qty is fixed-point (QTY_SCALE = 10^4).
-    /// E.g., 0.5 shares = 5000. Tag 38 sent as decimal string.
+    /// E.g., 0.5 shares = 5000. Order quantity sent as decimal string.
     SubmitLimitFractional {
         order_id: OrderId,
         instrument: InstrumentId,
@@ -1287,7 +1288,8 @@ pub enum OrderRequest {
         price: Price,
     },
     /// Adjustable stop: a stop order that adjusts to a different order type when trigger_price is hit.
-    /// Tags: 6257=1, 6261=adjusted type, 6258=trigger, 6259=adjusted stop, 6262=adjusted limit.
+    /// Sent with the adjustable flag set and the adjusted type, trigger, adjusted stop and
+    /// adjusted limit fields.
     SubmitAdjustableStop {
         order_id: OrderId,
         instrument: InstrumentId,
@@ -1299,11 +1301,11 @@ pub enum OrderRequest {
         adjusted_stop_price: Price,
         /// Only used when adjusted_order_type is StopLimit or TrailLimit. 0 = not set.
         adjusted_stop_limit_price: Price,
-        /// Trailing amount for a Trail/TrailLimit conversion (tag 6260). When the
+        /// Trailing amount for a Trail/TrailLimit conversion (its own field). When the
         /// unit is amount it is a price offset (scaled); when percent it is the
         /// percent value scaled (1.00% = PRICE_SCALE). 0 = not set.
         adjusted_trailing_amount: Price,
-        /// Unit of `adjusted_trailing_amount` on the wire (tag 6269): 0 = amount,
+        /// Unit of `adjusted_trailing_amount` on the wire (its own field): 0 = amount,
         /// 100 = percent. Other values are rejected by the gateway.
         adjustable_trailing_unit: i32,
     },
@@ -1802,7 +1804,7 @@ impl TbtType {
     }
 }
 
-/// A single tick-by-tick trade (Last or AllLast) from 35=E, for one
+/// A single tick-by-tick trade (Last or AllLast) from the tick-by-tick message, for one
 /// request of the stream (ibx#455).
 #[derive(Debug, Clone)]
 pub struct TbtTrade {
@@ -1820,7 +1822,7 @@ pub struct TbtTrade {
     pub unreported: bool,
 }
 
-/// A single tick-by-tick bid/ask quote from 35=E, for one request of the
+/// A single tick-by-tick bid/ask quote from the tick-by-tick message, for one request of the
 /// stream (ibx#455).
 #[derive(Debug, Clone, Copy)]
 pub struct TbtQuote {
@@ -1836,7 +1838,7 @@ pub struct TbtQuote {
     pub ask_past_high: bool,
 }
 
-/// A single tick-by-tick midpoint from 35=E, for one request of the
+/// A single tick-by-tick midpoint from the tick-by-tick message, for one request of the
 /// stream (ibx#404).
 #[derive(Debug, Clone, Copy)]
 pub struct TbtMidPoint {
@@ -1846,7 +1848,7 @@ pub struct TbtMidPoint {
     pub timestamp: u64,
 }
 
-/// An IB news bulletin from auth server news bulletin message.
+/// A broker news bulletin from auth server news bulletin message.
 #[derive(Debug, Clone)]
 pub struct NewsBulletin {
     /// Message id given by the server (ibx#461).
@@ -2169,7 +2171,7 @@ pub enum ControlCommand {
     /// A request with generic ticks left an instrument other requests still
     /// use (ibx#450): the entries no request needs any more are cancelled.
     UnsubscribeGeneric { instrument: InstrumentId, codes: Vec<i32> },
-    /// Subscribe to whole-account P&L via CCP (6040=142).
+    /// Subscribe to whole-account P&L via CCP (its own message sub-type).
     SubscribePnl { req_id: i64, account: String },
     /// The P&L quotes of position contracts (ibx#511): asked by the P&L
     /// requests, as the reference's own P&L does; the second price kind
@@ -2179,10 +2181,10 @@ pub enum ControlCommand {
     /// Cancel P&L subscription.
     CancelPnl { req_id: i64 },
     /// The currency of a contract, for the orders on its instrument
-    /// (tag 15, ibx#466). Sent before an order when the engine does not have
+    /// (the currency field, ibx#466). Sent before an order when the engine does not have
     /// it yet.
     SetInstrumentCurrency { con_id: i64, currency: String },
-    /// Subscribe to an account summary (6040=55, ibx#479): `sr_id` is the
+    /// Subscribe to an account summary (its own message sub-type, ibx#479): `sr_id` is the
     /// subscription id the server echoes on the rows (`SR.Socket.{n}`).
     SubscribeAccountSummary { sr_id: String, tags: String, group: String },
     /// Cancel an account summary subscription.
@@ -2489,7 +2491,7 @@ pub struct PositionInfo {
     pub portfolio_seq: u64,
 }
 
-/// Per-position midnight seed from 6040=143 P&L subscription.
+/// Per-position midnight seed from the per-position P&L subscription (its own message sub-type).
 /// Used for client-side daily P&L computation.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct MidnightSeed {

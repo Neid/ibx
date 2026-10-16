@@ -2,7 +2,7 @@
 //!
 //! The engine on in-memory links (no network) with the Rust API client on
 //! top, one SPY stream acked as the farm acks it. Each iteration hands one
-//! 35=P message to the engine's farm handler (decode, quote update,
+//! tick message to the engine's farm handler (decode, quote update,
 //! publish) and runs `process_msgs` (dispatch to the wrapper); the time of
 //! both is measured, and of each part alone. A second run hands 10
 //! messages before one `process_msgs`, the client reading slower than the
@@ -47,10 +47,10 @@ impl Wrapper for Counter {
     }
 }
 
-/// A block of a 35=P message: (daily stats, server tag, [(wire type, value)]).
+/// A block of a binary tick message: (daily stats, server tag, [(wire type, value)]).
 type Block<'a> = (bool, u32, &'a [(u64, i64)]);
 
-/// A 35=P message as the farm sends it (4-byte values).
+/// A binary tick message as the farm sends it (4-byte values).
 fn tick_message(blocks: &[Block]) -> Vec<u8> {
     let mut bits: Vec<u8> = Vec::new();
     let mut push = |v: u64, n: usize| for i in (0..n).rev() { bits.push(((v >> i) & 1) as u8) };

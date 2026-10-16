@@ -2,7 +2,7 @@
 
 use std::io::Read;
 
-// FIX tags for fundamental data
+// Wire fields for fundamental data
 pub const TAG_FUNDAMENTAL_XML: u32 = 6118;
 pub const TAG_SUB_PROTOCOL: u32 = 6040;
 pub const TAG_RAW_DATA_LENGTH: u32 = 95;
@@ -142,7 +142,7 @@ pub fn parse_fundamental_response_id(xml: &str) -> Option<String> {
     extract_xml_tag(xml, "id").map(|s| s.to_string())
 }
 
-/// Decompress gzip-compressed fundamental data (FIX tag 96).
+/// Decompress gzip-compressed fundamental data (the raw data payload).
 pub fn decompress_fundamental_data(compressed: &[u8]) -> Option<String> {
     let mut decoder = flate2::read::GzDecoder::new(compressed);
     let mut result = String::new();

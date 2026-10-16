@@ -307,7 +307,7 @@ pub(crate) struct GenericEntry {
     pub(crate) farm_req: u32,
     pub(crate) instrument: InstrumentId,
     pub(crate) farm: FarmId,
-    /// Its request code (264).
+    /// Its request code (the entry's request type field).
     pub(crate) code: i32,
     pub(crate) con_id: String,
     pub(crate) exchange: String,
@@ -521,7 +521,7 @@ pub(crate) fn depth_component_reply(context: &mut Context, req_id: &str, msg: &[
 /// reference (#451).
 pub(crate) const DEPTH_RESUBSCRIBE_DELAY: std::time::Duration = std::time::Duration::from_millis(3000);
 
-/// What a block of a 35=P message is, for the market data queue (ibx#446):
+/// What a block of a tick message is, for the market data queue (ibx#446):
 /// on a trade stream tag a trade, or daily figures when the block is a
 /// daily-stats one; on a quote tag a book update (a daily-stats block on a
 /// quote tag is dropped by the reference).
@@ -602,7 +602,8 @@ pub(crate) struct FarmState {
     thawed: Vec<(InstrumentId, InstrumentId)>,
     /// Depth requests of the client and their entries (#452).
     pub(crate) depth_reqs: Vec<DepthReq>,
-    /// The session's logon turns the user book on (`6247=demo`, as on
+    /// The session's logon turns the user book on (its user book field is
+    /// `demo`, as on
     /// paper): depth books are diffed by index (#451).
     pub(crate) user_book: bool,
     /// Depth callbacks and changes being built (#451).
@@ -800,7 +801,7 @@ impl FarmState {
                         self.farm_msg_buf.push(unsigned);
                     }
                     Frame::Control(_) => {
-                        // 8=1 / 8=X control state — not consumed on the farm path (ibx#185).
+                        // Auth and control frames — not consumed on the farm path (ibx#185).
                     }
                 }
             }
@@ -891,7 +892,7 @@ impl FarmState {
             // The session goes on, as the reference's (ibx#272).
             log::warn!("Farm tick message: malformed block dropped, {} ticks of earlier blocks kept", ticks.len());
         }
-        // A 35=P message carries no depth rows: only the top of book of
+        // A tick message carries no depth rows: only the top of book of
         // SmartDepth components without a book (#451).
         if !self.depth_reqs.is_empty() {
             self.depth_tops(&ticks, shared);
@@ -1296,8 +1297,10 @@ impl FarmState {
 
     /// Subscribe ("1") or cancel ("2") an exchange map, as the reference
     /// writes it (captured 02/10/2026):
-    /// `35=V|263=1|146=1|262=3|6008=265598|207=BEST|167=CS|264=626|6088=Socket`.
-    /// 6088=Socket only while a streaming API request of the contract
+    /// a market data request (subscribe), one entry: its request id, the
+    /// contract id 265598, exchange BEST, security type CS, request type 626
+    /// and the source `Socket`.
+    /// The source only while a streaming API request of the contract
     /// runs, the rule of every entry of the contract's record (the top
     /// observer's priority is 8, MKTDATA-L1 3 row 8; ibx#487): none when
     /// the map was asked by a depth request (depth_single_iex of
@@ -1331,7 +1334,7 @@ impl FarmState {
     /// The message after a top of book acknowledgement: the generic tick
     /// entries that waited for it, then the exchange map entry (ibx#450;
     /// captured 05/10/2026, AAPL: ten generic entries then 626 in one
-    /// 35=V). Nothing when there is neither.
+    /// market data request). Nothing when there is neither.
     fn send_after_ack(&mut self, generic: &[usize], map: Option<ExchangeMapSub>, sink: &mut dyn FixSink, hb: &mut HeartbeatState) {
         if generic.is_empty() && map.is_none() {
             return;
@@ -1354,7 +1357,7 @@ impl FarmState {
         }
     }
 
-    /// A 35=G generic tick frame (ibx#450): a bit count, then blocks of a
+    /// A generic tick frame (ibx#450): a bit count, then blocks of a
     /// 32-bit server tag, a length and the payload, as the reference reads it.
     /// Each block goes to what its tag is: an exchange map subscription
     /// (ibx#441), a news entry (ibx#458) or a generic tick entry. A tag of
@@ -1569,7 +1572,7 @@ impl FarmState {
         }).collect()
     }
 
-    /// A whole 35=G frame for the exchange map tests: true when it carried
+    /// A whole generic tick frame for the exchange map tests: true when it carried
     /// the map of a subscription.
     #[cfg(test)]
     fn handle_exchange_map_frame(&mut self, msg: &[u8], sink: &mut dyn FixSink, shared: &SharedState, hb: &mut HeartbeatState) -> bool {
@@ -1806,8 +1809,9 @@ impl FarmState {
     }
 
     /// Start the news entry of a request on `farm` (ibx#458) and build its
-    /// message, as the reference writes it: `207=NEWS`, the contract's
-    /// security type, `264=292`, the provider key in `6472` when not empty,
+    /// message, as the reference writes it: the exchange `NEWS`, the contract's
+    /// security type, the request type 292, the provider key in its own field
+    /// when not empty,
     /// the streaming-client mark and the API flag. A request whose key the
     /// contract already has shares that entry: nothing is sent (ibx#444).
     pub(crate) fn start_news(&mut self, instrument: InstrumentId, con_id: i64, sec_type: &str, providers: &str, farm: FarmId)
@@ -2258,12 +2262,13 @@ impl FarmState {
         context.market.clear_farm_tags(farm);
     }
 
-    /// A market data reject (35=3) on the farm (ibx#444, ibx#447): 262 is
-    /// the `;` list of rejected request ids, 9887 the per-id "delayed data
-    /// available" flag, 6763 the per-id API access. For each top-of-book
+    /// A market data reject (a reject message) on the farm (ibx#444, ibx#447):
+    /// the request id field is the `;` list of rejected request ids, then come
+    /// the per-id "delayed data available" flag and the per-id API access.
+    /// For each top-of-book
     /// subscription hit: with delayed data enabled (reqMarketDataType 3 or
     /// 4) and available, it goes on with delayed data, asked again with
-    /// 9887=1 on new ids, as the reference (captured 28/09/2026); else it
+    /// the delayed mode set on new ids, as the reference (captured 28/09/2026); else it
     /// stops, 354 or 10089. Other ids (depth) are left to their handlers.
     fn handle_md_reject(
         &mut self,
@@ -2349,7 +2354,7 @@ impl FarmState {
             } else {
                 // The subscription stops; its entries stay with the
                 // contract's record until its request ends, which cancels
-                // them (captured 05/10/2026: 354, then 263=2 of the rejected
+                // them (captured 05/10/2026: 354, then a cancel of the rejected
                 // entries and of the generic ones).
                 self.md_resub_info.retain(|(id, ..)| *id != instrument);
                 let con_id = context.market.con_id(instrument);
@@ -2470,7 +2475,7 @@ impl FarmState {
         out
     }
 
-    /// The API subscription names of a refusal's API access value (6763)
+    /// The API subscription names of a refusal's API access value
     /// that needs one, kept until the next data permission change
     /// (ibx#421): the items of a `,` or `#` list, or the value itself,
     /// without "", "0" and "none".
@@ -2971,7 +2976,7 @@ impl FarmState {
         found
     }
 
-    /// A depth message (35=Y, or 35=Z with extended fields) (#451): each
+    /// A depth message (plain, or the one with extended fields) (#451): each
     /// group goes to the book of its tag in every request that has it, as
     /// one change; the request's callbacks follow. A group the book refuses
     /// resets it: the book is emptied, a single book gets 317, its entry is
@@ -3034,7 +3039,7 @@ impl FarmState {
         }
     }
 
-    /// The ticks of a 35=P message for the top-of-book entries of
+    /// The ticks of a tick message for the top-of-book entries of
     /// SmartDepth requests (#451): each block of such a tag sets the
     /// exchange's bid and ask, then its SmartDepth rows, in every request
     /// that has the entry.
@@ -3139,7 +3144,7 @@ impl FarmState {
     }
 }
 
-/// The head of a market data message (35=V) of `n` entries.
+/// The head of a market data request of `n` entries.
 fn md_message_head(action: &str, n: usize) -> Vec<(u32, String)> {
     vec![
         (fix::TAG_MSG_TYPE, fix::MSG_MARKET_DATA_REQ.to_string()),
@@ -3167,7 +3172,8 @@ fn pnl_quotes_message(action: &str, entries: &[PnlQuoteEntry]) -> Vec<(u32, Stri
 }
 
 /// The market data status entry as the reference writes it (ibx#447,
-/// captured 05/10/2026 and 07/10/2026): `262|6008|207|167|264=398`.
+/// captured 05/10/2026 and 07/10/2026): request id, contract id, exchange,
+/// security type and the request type 398.
 fn status_message(e: &StatusEntry, subscribe: bool) -> Vec<(u32, String)> {
     let mut msg = md_message_head(if subscribe { "1" } else { "2" }, 1);
     msg.extend([
@@ -3189,8 +3195,9 @@ fn borrow_tags(tags: &[(u32, String)]) -> Vec<(u32, &str)> {
 pub(crate) const NATIVE_TOP: &str = "403";
 
 /// A generic tick entry as the reference writes it (captured 05/10/2026):
-/// `262|6008|207|167|264={code}|6088=Socket|9830=1`, the streaming-client
-/// mark only in a subscribe.
+/// request id, contract id, exchange, security type, the request type
+/// `{code}`, the source `Socket` and the streaming-client mark, the source
+/// only in a subscribe.
 fn generic_entry(e: &GenericEntry, subscribe: bool) -> Vec<(u32, String)> {
     let mut tags = vec![
         (262, e.farm_req.to_string()),
@@ -3381,8 +3388,8 @@ fn tick_req_params(instrument: InstrumentId, min_tick: f64, parts: &[&str], sec_
     })
 }
 
-/// The reference's reading of a reject's API access value (6763), as
-/// `ApiAccess.apiRequiresSubscription`: a list (`,` or `#`) or a single
+/// The reference's reading of a reject's API access value, as
+/// observed: a list (`,` or `#`) or a single
 /// number means an API subscription is needed (10089); empty or `-` does
 /// not (354) (ibx#444).
 fn api_subscription_needed(access: &str) -> bool {
@@ -3539,8 +3546,8 @@ mod tests {
     }
 
     /// Subscribe EUR.USD, ack its two entries in the given order (bid/ask
-    /// on tag 24 with the high-precision tick, last on tag 25), then its
-    /// trade setup (tag 26), as captured 28/09/2026; then one tick message.
+    /// on server subscription 24 with the high-precision tick, last on 25),
+    /// then its trade setup (server subscription 26), as captured 28/09/2026; then one tick message.
     fn eur_usd_quotes(bid_ask_first: bool) -> (crate::types::Quote, f64, Vec<crate::bridge::TickReqParams>) {
         let shared = SharedState::new();
         let mut farm = FarmState::new();
@@ -3805,7 +3812,8 @@ mod tests {
     }
 
     /// The exchange map of BBO exchange 9c (AAPL), captured 02/10/2026
-    /// (b1_441_smart_components, usfarm 35=G on server tag 12708).
+    /// (b1_441_smart_components, usfarm generic tick frame on server
+    /// subscription 12708).
     const EXCH_MAP_9C: &str = "0/A/AMEX;15/N/NYSE;4/I/ISE;7/M/CHX;8/P/ARCA;9/Q/NASDAQ;6/K/DRCTEDGE;1/B/BEX;\
         14/Z/BATS;5/J/EDGEA;13/Y/BYX;10/V/IEX;3/D/FINRA;18/H/PEARL;2/C/NYSENAT;16/L/LTSE;17/U/MEMX;12/X/PSX;\
         11/G/T24X;19/F/TXSE";
@@ -3824,7 +3832,7 @@ mod tests {
         msg
     }
 
-    // ibx#487: the exchange map's cancel has 6088=Socket only while the
+    // ibx#487: the exchange map's cancel has the source `Socket` only while the
     // contract's streaming request runs (rth_order_types of 28/09/2026: the
     // QQQ request was cancelled before its map came).
     #[test]
@@ -3853,7 +3861,7 @@ mod tests {
 
     // ibx#441, captured 02/10/2026: the first ack with BBO exchange 9c
     // makes the gateway subscribe its own generic tick 626 for the
-    // contract; the map arrives as a 35=G on the tag of that subscription,
+    // contract; the map arrives as a generic tick frame on the tag of that subscription,
     // then the subscription is cancelled. A second ack asks nothing.
     #[test]
     fn exchange_map_asked_at_the_first_ack_then_kept() {
@@ -3889,7 +3897,7 @@ mod tests {
         assert_eq!((entry(0), entry(9), entry(19)), (Some(("AMEX", "A")), Some(("NASDAQ", "Q")), Some(("TXSE", "F"))));
         assert!(map.windows(2).all(|w| w[0].bit_number < w[1].bit_number), "sorted by bit");
         assert!(farm.exchange_map_subs.is_empty());
-        // Another tag's 35=G is not a map.
+        // Another tag's generic tick frame is not a map.
         assert!(!farm.handle_exchange_map_frame(&exchange_map_frame(12708, EXCH_MAP_9C), &mut sink, &shared, &mut hb));
         // A new subscription of the contract asks nothing more.
         farm.send_mktdata_subscribe(265598, "AAPL", "SMART", "STK", "", 0.0, "", "", id, 0, &mut None, &mut hb);
@@ -3903,7 +3911,7 @@ mod tests {
     // order; the others at the top's acknowledgement, with the exchange map
     // entry last, in one message; 104 is 512; 411 is not valid for a stock;
     // the auction goes to the primary exchange. A block of a tick gives its
-    // API ticks; the cancel is in descending code order, without 6088.
+    // API ticks; the cancel is in descending code order, without the source.
     #[test]
     fn generic_ticks_at_once_then_at_the_acknowledgement() {
         let shared = SharedState::new();
@@ -4235,7 +4243,9 @@ mod tests {
             msg.iter().filter(|(t, _)| *t != 52).map(|(t, v)| format!("{t}={v}|")).collect()
         };
         let (a, b) = (farm.next_md_req_id - 2, farm.next_md_req_id - 1);
-        // Captured: 35=V|263=3|146=2|262=5|6008=265598|207=BEST|167=CS|264=442|9830=1|262=6|...|264=443|9830=1
+        // Captured: a market data request (snapshot) of two entries, ids 5 and 6,
+        // contract id 265598, exchange BEST, security type CS, request types
+        // 442 and 443, each with the streaming-client mark
         // (10.40); 10.51 ends each entry with its mark, 1 and 1 without
         // extra price precision (ibx#648).
         assert_eq!(body(&sink.0[0]), format!(
@@ -4248,7 +4258,7 @@ mod tests {
         let params = shared.market.drain_tick_req_params();
         assert_eq!(params.len(), 1);
         assert_eq!((params[0].instrument, params[0].bbo_exchange.as_str(), params[0].snapshot_permissions), (id, "9c0001", 3));
-        // Captured cancel of a snapshot: 263=2 with the same entries.
+        // Captured cancel of a snapshot: a cancel with the same entries.
         let cancel = farm.unsubscribe_top(id);
         assert_eq!(body(&cancel[0].1), format!(
             "35=V|263=2|146=2|262={a}|6008=265598|207=BEST|167=CS|264=442|9830=1|9839=1|262={b}|6008=265598|207=BEST|167=CS|264=443|9830=1|9839=1|"));

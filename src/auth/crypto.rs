@@ -1,4 +1,4 @@
-//! Cryptographic primitives for IB protocol.
+//! Cryptographic primitives for the broker connection protocol.
 //!
 //! - TLS 1.0 PRF (RFC 2246): key derivation for DH secure channel
 //! - AES-128-CBC + HMAC-SHA1: encrypt-then-MAC for NS secure messages

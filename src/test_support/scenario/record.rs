@@ -363,7 +363,7 @@ pub fn open_order_line(id: i64, contract: &Value, order: &Value, state: &Value) 
     )
 }
 
-/// Rebuild a text frame (`8=FIX...`) with changed fields: the body length
+/// Rebuild a text frame with changed fields: the body length
 /// and the checksum computed again; the other fields kept in their order.
 pub fn rebuild_text(fields: &[(u32, String)]) -> Vec<u8> {
     let begin = fields.iter().find(|(t, _)| *t == 8).map_or("FIX.4.1", |(_, v)| v.as_str());
@@ -378,7 +378,7 @@ pub fn rebuild_text(fields: &[(u32, String)]) -> Vec<u8> {
     msg
 }
 
-/// Rebuild a farm frame with a text body (`8=O|9=|35=Q|<body>|8349=..`)
+/// Rebuild a farm binary frame with a text body (header, body, signature)
 /// with another body; the length counts the signature, as on the wire.
 pub fn rebuild_binary(raw: &[u8], new_body: &str) -> Vec<u8> {
     let text = String::from_utf8_lossy(raw);
@@ -388,7 +388,7 @@ pub fn rebuild_binary(raw: &[u8], new_body: &str) -> Vec<u8> {
     format!("8=O\x019={:04}\x01{body}", body.len()).into_bytes()
 }
 
-/// The text body of a farm frame (the part after `35=X`).
+/// The text body of a farm frame (the part after the message type field).
 pub fn binary_body(raw: &[u8]) -> String {
     let text = String::from_utf8_lossy(raw);
     let after = text.split_once("\x0135=").unwrap().1;

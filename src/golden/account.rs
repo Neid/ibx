@@ -1,4 +1,4 @@
-//! Account summary (35=U|6040=55 request, 35=UM / 35=RL / 35=EB answer):
+//! Account summary (its request; the update frames and end marker answering it):
 //! the request against the reference's, the rows against the callbacks
 //! the reference gave.
 
@@ -12,7 +12,7 @@ fn tag(f: &Fields, t: u32) -> Option<&str> {
 }
 
 /// An account summary request as compared: the framing dropped, the
-/// subscription id (6529) masked.
+/// subscription id masked.
 fn request_message(f: &Fields) -> String {
     let out: Fields = Normaliser::framing().apply(f).into_iter()
         .map(|(t, v)| if t == 6529 { (t, "{id}".to_string()) } else { (t, v) }).collect();
@@ -81,7 +81,7 @@ fn replay_account_summary(fx: &Fixture) -> AccountReplay {
 // reqAccountSummary of four tags and $LEDGER:ALL, then its cancel
 // (26/09/2026, account_summary, market closed): the subscription and its
 // cancel (with the group) as the reference's; the four tag rows of the
-// 35=UM frame.
+// account update frame.
 #[test]
 fn account_summary_request_and_tag_rows() {
     let r = replay_account_summary(&load("account_summary"));

@@ -18,15 +18,15 @@ const RECV_BUF_SIZE: usize = 32768;
 /// A framed message extracted from the connection buffer.
 #[derive(Debug)]
 pub enum Frame {
-    /// Standard FIX 4.1 message (checksum-terminated).
+    /// Standard wire message (checksum-terminated).
     Fix(Vec<u8>),
     /// Compressed message (may contain multiple inner messages).
     FixComp(Vec<u8>),
-    /// 8=O binary protocol message (length-delimited).
+    /// Binary frame (length-delimited).
     Binary(Vec<u8>),
-    /// 8=1 / 8=X control message (token-auth / encrypted control state).
-    /// Same length-prefixed framing as 8=O; not consumed downstream, but
-    /// extracted explicitly so it cannot clobber FIXCOMP frames queued behind
+    /// Control frame (token-auth / encrypted control state).
+    /// Same length-prefixed framing as a binary frame; not consumed downstream, but
+    /// extracted explicitly so it cannot clobber compressed frames queued behind
     /// it in the same recv slice (ibx#185).
     Control(Vec<u8>),
 }
@@ -160,7 +160,7 @@ impl Transport for Stream {
 pub struct Connection {
     stream: Stream,
     buf: Vec<u8>,
-    /// FIX message sequence number (6-digit zero-padded).
+    /// Wire message sequence number (6-digit zero-padded).
     pub seq: u32,
     /// HMAC key for signing outbound messages.
     pub sign_key: Vec<u8>,
@@ -322,14 +322,14 @@ impl Connection {
             }
 
             // Find earliest message start among all recognized headers.
-            // 8=1 (token-auth state) and 8=X (encrypted control) share the
-            // length-prefixed, trailer-free framing of 8=O. Recognizing them
+            // Token-auth state and encrypted control frames share the
+            // length-prefixed, trailer-free framing of binary frames. Recognizing them
             // here keeps them out of the buf.clear() arm below, which would
-            // otherwise wipe any FIXCOMP frame queued behind them in the same
+            // otherwise wipe any compressed frame queued behind them in the same
             // recv slice (ibx#185).
             // A compressed frame is recognized above only at offset 0. Search
             // for it here too: with a stray byte in front ("\x01" seen live),
-            // the "8=FIX." search does not match "8=FIXCOMP", the buffer was
+            // the plain-message header search does not match the compressed one, the buffer was
             // cleared, and the lost signed frame put the read IV chain out of
             // step, garbling every later frame on the connection.
             let fix_pos = find_subsequence(&self.buf, b"8=FIX.");
@@ -344,7 +344,7 @@ impl Connection {
                 .min();
             let earliest = match earliest {
                 Some(e) => e,
-                // A read can end inside a frame header ("8=FIXC" seen live,
+                // A read can end inside a frame header (a cut header seen live,
                 // ibx#436 paper run of 04/10/2026): those bytes start the
                 // next frame and are kept; dropping them lost a compressed
                 // frame and the reply it held.
@@ -386,7 +386,7 @@ impl Connection {
                 continue;
             }
 
-            // 8=O binary protocol: length-delimited via tag 9
+            // Binary frame: length-delimited via the body length field
             if self.buf.starts_with(b"8=O\x01") {
                 if let Some(total) = binary_msg_length(&self.buf) {
                     if self.buf.len() >= total {
@@ -398,8 +398,8 @@ impl Connection {
                 break; // incomplete
             }
 
-            // 8=1 / 8=X control protocol: same length-delimited framing as 8=O
-            // (body length in tag 9, no checksum trailer). Extracted as Control
+            // Control frames: same length-delimited framing as binary frames
+            // (body length field, no checksum trailer). Extracted as Control
             // frames and ignored downstream (ibx#185).
             if self.buf.starts_with(b"8=1\x01") || self.buf.starts_with(b"8=X\x01") {
                 if let Some(total) = binary_msg_length(&self.buf) {
@@ -412,7 +412,7 @@ impl Connection {
                 break; // incomplete
             }
 
-            // FIX.4.1: length-delimited via tag 9, +7 for checksum "10=XXX\x01"
+            // Plain wire message: length-delimited via the body length, +7 for the checksum trailer
             if self.buf.starts_with(b"8=FIX.") {
                 if let Some(total) = fix_msg_length(&self.buf) {
                     if self.buf.len() >= total {
@@ -613,7 +613,7 @@ impl Connection {
         }
     }
 
-    /// Build a FIX message, sign it, and send it. Increments seq and chains sign IV.
+    /// Build a wire message, sign it, and send it. Increments seq and chains sign IV.
     ///
     /// State (seq, sign_iv) is committed once the frame is accepted. A write
     /// error makes the connection unusable: it is dropped and reconnected,
@@ -654,7 +654,7 @@ impl Connection {
         Ok(())
     }
 
-    /// Build a FIX message outside the sequence count, sign it, and send it.
+    /// Build a wire message outside the sequence count, sign it, and send it.
     /// The sequence counter does not move.
     pub fn send_fix_unsequenced(&mut self, fields: &[(u32, &str)]) -> io::Result<()> {
         let msg = fix::fix_build(fields, 0);
@@ -727,11 +727,11 @@ fn partial_header_len(buf: &[u8]) -> usize {
 }
 
 /// Compute total length of a length-prefixed, trailer-free message whose
-/// tag-8 header is 4 bytes: `8=O\x01`, `8=1\x01`, or `8=X\x01`, each followed
-/// by `9=<body_len>\x01 ...`.
+/// header is 4 bytes (a binary frame or one of the two control frames), followed
+/// by the body length field and the body.
 fn binary_msg_length(data: &[u8]) -> Option<usize> {
-    // 4-byte tag-8 header ("8=O\x01" / "8=1\x01" / "8=X\x01"), then find 9=
-    let after_8 = 4; // "8=O\x01"
+    // 4-byte frame header (binary or control), then find the body length field
+    let after_8 = 4; // the 4-byte frame header
     let tag9_pos = find_subsequence(&data[after_8..], b"9=").map(|p| after_8 + p)?;
     let soh_pos = data[tag9_pos..].iter().position(|&b| b == SOH).map(|p| tag9_pos + p)?;
     let body_len: usize = std::str::from_utf8(&data[tag9_pos + 2..soh_pos])
@@ -744,8 +744,8 @@ fn binary_msg_length(data: &[u8]) -> Option<usize> {
     (soh_pos + 1).checked_add(body_len)
 }
 
-/// Compute total length of a `8=FIX.4.1\x01 9=<body_len>\x01 ...` message.
-/// Includes the 7-byte checksum trailer `10=XXX\x01`.
+/// Compute total length of a plain wire message from its body length field.
+/// Includes the 7-byte checksum trailer.
 fn fix_msg_length(data: &[u8]) -> Option<usize> {
     let tag9_pos = find_subsequence(data, b"9=").filter(|&p| p < 20)?;
     let soh_pos = data[tag9_pos..].iter().position(|&b| b == SOH).map(|p| tag9_pos + p)?;
@@ -753,7 +753,7 @@ fn fix_msg_length(data: &[u8]) -> Option<usize> {
         .ok()?
         .parse()
         .ok()?;
-    // header up to and including SOH after tag 9, + body + "10=XXX\x01" (7 bytes)
+    // header up to and including SOH after the body length, + body + checksum trailer (7 bytes)
     (soh_pos + 1 + 7).checked_add(body_len)
 }
 
@@ -1056,7 +1056,7 @@ mod tests {
 
     #[test]
     fn binary_msg_length_basic() {
-        // Build a minimal 8=O message
+        // Build a minimal binary frame
         let body = b"35=P\x01data";
         let msg = format!("8=O\x019={}\x01", body.len());
         let mut full = msg.into_bytes();
@@ -1107,7 +1107,7 @@ mod tests {
         let mut buf = o_full.clone();
         buf.extend_from_slice(&fix_msg);
 
-        // First message is 8=O
+        // First message is a binary frame
         assert!(buf.starts_with(b"8=O\x01"));
         let len1 = binary_msg_length(&buf).unwrap();
         assert_eq!(len1, o_full.len());
@@ -1261,7 +1261,7 @@ mod tests {
 
     // A stray byte in front of a compressed frame used to clear the whole
     // buffer, losing the frame (seen live as "dropping 391B (no header)",
-    // first byte 0x01 then "8=FIXCOMP").
+    // first byte 0x01 then the compressed frame header).
     #[test]
     fn frame_extraction_stray_byte_before_fixcomp() {
         let inner = fix_build(&[(35, "Q")], 1);
@@ -1278,7 +1278,7 @@ mod tests {
     }
 
     // ibx#436: a read that ends inside the header of a compressed frame
-    // ("8=FIXC", seen live) keeps those bytes: the frame is read whole with
+    // (a cut header, seen live) keeps those bytes: the frame is read whole with
     // the next bytes, for every cut of its header.
     #[test]
     fn frame_extraction_header_cut_by_the_read_end() {
@@ -1380,7 +1380,7 @@ mod tests {
         }
     }
 
-    /// Build a length-prefixed, trailer-free control frame (`8=1` / `8=X`).
+    /// Build a length-prefixed, trailer-free control frame (token-auth or encrypted).
     fn build_control_frame(tag8: &str, body: &[u8]) -> Vec<u8> {
         let header = format!("8={}\x019={}\x01", tag8, body.len());
         let mut msg = header.into_bytes();
@@ -1390,7 +1390,7 @@ mod tests {
 
     #[test]
     fn frame_extraction_control_8_1() {
-        // 8=1 token-auth state message (35=X family). Mirrors ib-agent#152 slice 2.
+        // Token-auth state control frame. Mirrors ib-agent#152 slice 2.
         let msg = build_control_frame("1", b"35=X\x011137=ABCDEF\x01");
         let mut conn = test_connection_with_buf(msg.clone());
         let frames = conn.extract_frames();
@@ -1404,7 +1404,7 @@ mod tests {
 
     #[test]
     fn frame_extraction_control_8_x() {
-        // 8=X encrypted control / auth state-machine message.
+        // Encrypted control / auth state-machine control frame.
         let msg = build_control_frame("X", b"35=X\x01encctl\x01");
         let mut conn = test_connection_with_buf(msg.clone());
         let frames = conn.extract_frames();
@@ -1418,8 +1418,8 @@ mod tests {
 
     #[test]
     fn frame_extraction_control_then_fixcomp_zero_loss() {
-        // ibx#185 acceptance: an 8=1 control frame ahead of a FIXCOMP frame in
-        // the same buffer must NOT trigger buf.clear() — the FIXCOMP queued
+        // ibx#185 acceptance: a token-auth control frame ahead of a compressed frame in
+        // the same buffer must NOT trigger buf.clear() — the compressed frame queued
         // behind it has to survive byte-for-byte.
         let control = build_control_frame("1", b"35=X\x019=0045\x01PASSED\x01");
         let inner = fix_build(&[(35, "0")], 1);
@@ -1444,7 +1444,7 @@ mod tests {
 
     #[test]
     fn frame_extraction_incomplete_control() {
-        // A partial 8=1 frame must wait for more bytes, not drop the buffer.
+        // A partial token-auth control frame must wait for more bytes, not drop the buffer.
         let msg = build_control_frame("1", b"35=X\x01partialbodythatislong\x01");
         let half = msg.len() / 2;
         let buf = msg[..half].to_vec();

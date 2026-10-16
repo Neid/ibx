@@ -14,7 +14,7 @@ use sha1::Sha1;
 
 pub const SOH: u8 = 0x01;
 
-// Standard FIX tags
+// Standard fields of the wire format
 pub const TAG_BEGIN_STRING: u32 = 8;
 pub const TAG_BODY_LENGTH: u32 = 9;
 pub const TAG_CHECKSUM: u32 = 10;
@@ -32,7 +32,7 @@ pub const TAG_RESET_SEQ_NUM: u32 = 141;
 pub const TAG_HEADLINE: u32 = 148;
 pub const TAG_SECURITY_EXCHANGE: u32 = 207;
 
-// IB custom tags
+// Gateway-specific fields
 pub const TAG_IB_BUILD: u32 = 6034;
 pub const TAG_IB_COMM_TYPE: u32 = 6040;
 pub const TAG_IB_COMP_VERSION: u32 = 6143;
@@ -54,7 +54,7 @@ pub const MSG_ORDER_CANCEL: &str = "F";
 pub const MSG_ORDER_REPLACE: &str = "G";
 pub const MSG_MARKET_DATA_REQ: &str = "V";
 
-/// Render a FIX byte buffer with SOH (0x01) shown as `|` and any other
+/// Render a wire-format byte buffer with SOH (0x01) shown as `|` and any other
 /// non-printable bytes escaped as `\xNN`. For trace-level wire diagnostics
 /// (ibx#179 capture); not used on hot paths.
 pub fn fmt_pipe(bytes: &[u8]) -> String {
@@ -69,11 +69,11 @@ pub fn fmt_pipe(bytes: &[u8]) -> String {
     s
 }
 
-/// An XML payload (tag 6118) in the layout of the reference's XML writer
+/// An XML payload (the XML payload field) in the layout of the reference's XML writer
 ///: the declaration and each element on a line
 /// of its own, a new line after each, a tab per level before each
-/// element; an element with text only stays on one line (every 35=W,
-/// 35=Z and 35=U the reference sent to the historical farm, captured
+/// element; an element with text only stays on one line (every market data
+/// snapshot, depth and custom message the reference sent to the historical farm, captured
 /// 26/09 to 02/10/2026, ibx#486). The input may be on one line or laid
 /// out already; text that is only blanks between elements is dropped.
 pub fn xml_layout(xml: &str) -> String {
@@ -147,9 +147,10 @@ pub fn fix_checksum(data: &[u8]) -> String {
     format!("{:03}", sum % 256)
 }
 
-/// Build a complete FIX message matching IB Gateway format.
+/// Build a complete wire message matching the gateway's format.
 ///
-/// `fields` should NOT include tags 8, 9, 34, or 10 (auto-generated).
+/// `fields` should NOT include the begin string, body length, sequence number
+/// or checksum fields (auto-generated).
 /// Body length is 4-digit zero-padded, MsgSeqNum is 6-digit zero-padded.
 pub fn fix_build(fields: &[(u32, &str)], seq: u32) -> Vec<u8> {
     // Build body directly into bytes (no intermediate String, no format! per field)
@@ -171,7 +172,7 @@ pub fn fix_build(fields: &[(u32, &str)], seq: u32) -> Vec<u8> {
         body.push(SOH);
     }
 
-    // Header: 8=FIX.4.1 SOH 9=NNNN SOH
+    // Header: the begin string (protocol version) SOH, the body length SOH
     let mut msg = Vec::with_capacity(body.len() + 30);
     msg.extend_from_slice(b"8=FIX.4.1\x019=");
     push_u32_padded::<4>(&mut msg, body.len() as u32);
@@ -213,7 +214,7 @@ fn push_u32_padded<const N: usize>(buf: &mut Vec<u8>, val: u32) {
     buf.extend_from_slice(&digits);
 }
 
-/// Parse a SOH-delimited FIX message into {tag: value}.
+/// Parse a SOH-delimited wire message into {tag: value}.
 pub fn fix_parse(data: &[u8]) -> HashMap<u32, String> {
     let mut result = HashMap::new();
     for part in data.split(|&b| b == SOH) {
@@ -312,10 +313,11 @@ pub fn fix_sign(msg: &[u8], mac_key: &[u8], iv: &[u8]) -> (Vec<u8>, Vec<u8>) {
     let is_fixcomp = msg.starts_with(b"8=FIXCOMP");
     let is_fix41 = msg.starts_with(b"8=FIX.4.1");
 
-    // 1. Extract body (after tag 9 SOH)
+    // 1. Extract body (after the body length field and its SOH)
     let after9 = find_after_tag(msg, 9).unwrap();
     let body_end = if is_fix41 {
-        // FIX.4.1: body ends before tag 10 (include the SOH before "10=")
+        // Plain text frame: body ends before the checksum field (include the
+        // SOH before it)
         msg.windows(4)
             .rposition(|w| w == b"\x0110=")
             .map(|p| p + 1)
@@ -336,12 +338,12 @@ pub fn fix_sign(msg: &[u8], mac_key: &[u8], iv: &[u8]) -> (Vec<u8>, Vec<u8>) {
 
 
     // 4. Rebuild message with signature (pre-allocate)
-    let sig_tag_len = 5 + 8 + 1; // "8349=" + 8 hex chars + SOH
+    let sig_tag_len = 5 + 8 + 1; // signature field name and "=" + 8 hex chars + SOH
     let signed_body_len = body.len() + sig_tag_len;
     let hdr_end = msg.iter().position(|&b| b == SOH).unwrap() + 1;
     let header = &msg[..hdr_end];
 
-    // Estimate: header + "9=NNNN\x01" + signed_body + "10=NNN\x01"
+    // Estimate: header + body length field + signed_body + checksum field
     let mut new_msg = Vec::with_capacity(hdr_end + 8 + signed_body_len + 8);
     new_msg.extend_from_slice(header);
     new_msg.extend_from_slice(b"9=");
@@ -353,7 +355,7 @@ pub fn fix_sign(msg: &[u8], mac_key: &[u8], iv: &[u8]) -> (Vec<u8>, Vec<u8>) {
     new_msg.push(SOH);
 
     if is_fix41 {
-        // Add tag 10 checksum
+        // Add the checksum field
         let cksum: u32 = new_msg.iter().map(|&b| b as u32).sum();
         new_msg.extend_from_slice(b"10=");
         push_u32_padded::<3>(&mut new_msg, cksum % 256);
@@ -366,10 +368,10 @@ pub fn fix_sign(msg: &[u8], mac_key: &[u8], iv: &[u8]) -> (Vec<u8>, Vec<u8>) {
     } else {
         find_after_tag(&new_msg, 35).unwrap()
     };
-    // End offset: skip trailing 8349=XXXXXXXX SOH (14 bytes) + SOH (1 byte)
+    // End offset: skip the trailing signature field and SOH (14 bytes) + SOH (1 byte)
     let mut end = new_msg.len() as isize - 14 - 2;
     if is_fix41 {
-        end -= 7; // also skip 10=XXX SOH
+        end -= 7; // also skip the checksum field and its SOH
     }
     if end >= start as isize {
         let rng = end as usize - start + 1;
@@ -400,7 +402,7 @@ pub fn is_signed(msg: &[u8]) -> bool {
     trailer[0] == SOH && &trailer[1..6] == b"8349=" && trailer[14] == SOH
 }
 
-/// Un-distort and verify a signed FIX message.
+/// Un-distort and verify a signed wire message.
 ///
 /// Returns (undistorted_msg, new_iv, signature_valid).
 pub fn fix_unsign(msg: &[u8], mac_key: &[u8], iv: &[u8]) -> (Vec<u8>, Vec<u8>, bool) {
@@ -468,9 +470,9 @@ pub fn fix_unsign(msg: &[u8], mac_key: &[u8], iv: &[u8]) -> (Vec<u8>, Vec<u8>, b
     (msg_bytes, new_iv.to_vec(), sig_valid)
 }
 
-/// Read one complete FIX message from a reader.
+/// Read one complete wire message from a reader.
 ///
-/// Scans for `10=XXX\x01` (checksum tag) to detect message boundary.
+/// Scans for the checksum field and its closing SOH to detect message boundary.
 pub fn fix_read<R: Read>(reader: &mut R) -> io::Result<Vec<u8>> {
     let mut buf = Vec::with_capacity(4096);
     let mut tmp = [0u8; 4096];
@@ -483,7 +485,7 @@ pub fn fix_read<R: Read>(reader: &mut R) -> io::Result<Vec<u8>> {
             ));
         }
         buf.extend_from_slice(&tmp[..n]);
-        // Look for checksum tag ending: \x0110=XXX\x01
+        // Look for the checksum field: SOH, the field, 3 digits, SOH
         if let Some(idx) = buf.windows(4).position(|w| w == b"\x0110=") {
             if let Some(end) = buf[idx + 4..].iter().position(|&b| b == SOH) {
                 let total = idx + 4 + end + 1;
@@ -493,7 +495,7 @@ pub fn fix_read<R: Read>(reader: &mut R) -> io::Result<Vec<u8>> {
     }
 }
 
-/// Read one complete FIX message, tolerating transient read timeouts.
+/// Read one complete wire message, tolerating transient read timeouts.
 ///
 /// Identical to [`fix_read`] on the happy path, but a `WouldBlock`/`TimedOut`
 /// read (a poll-timeout expiry on a slow, high-latency gateway) is retried
@@ -676,7 +678,7 @@ mod tests {
     }
 
     // ibx#275: a frame is signed only when it ends with the signature
-    // trailer (before the checksum of a FIX.4.1 message).
+    // trailer (before the checksum field of a plain text message).
     #[test]
     fn is_signed_needs_the_trailer() {
         let mac_key: Vec<u8> = (0..20).collect();
@@ -720,7 +722,7 @@ mod tests {
 
     #[test]
     fn fix_parse_empty_value_raw() {
-        // "35=\x01" should parse tag 35 with empty string
+        // A message type field with no value should parse as an empty string
         let data = b"35=\x01";
         let parsed = fix_parse(data);
         assert_eq!(parsed.get(&35), Some(&String::new()));

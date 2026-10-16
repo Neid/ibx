@@ -78,7 +78,7 @@ pub(crate) fn replay_orders(fx: &Fixture) -> OrderReplay {
         s.shared.reference.set_form_10_40(true);
     }
     if let Some(start) = fx.recs.iter().find(|r| r.msg == "START_API") {
-        // The client id of the recorded session, on the wire (6119) and in
+        // The client id of the recorded session, on the wire and in
         // the callbacks, as a client connected with it.
         let id = start.request["clientId"].as_i64().unwrap_or(0);
         s.shared.reference.set_api_client_id(id);
@@ -301,7 +301,7 @@ fn lmt_order_before_the_open() {
 // A LMT order, its cancel and a modify after the cancel (26/09/2026,
 // modify_cancelled): no callback at the cancel itself; the working
 // reports after the cancel request give PendingCancel; the Cancelled
-// status keeps 1 remaining (151=0 on the wire), then 202. The answer to
+// status keeps 1 remaining (leaves quantity 0 on the wire), then 202. The answer to
 // the modify is not in the recording.
 #[test]
 fn cancel_gives_pending_cancel_then_cancelled_then_202() {

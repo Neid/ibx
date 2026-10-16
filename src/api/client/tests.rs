@@ -1323,7 +1323,7 @@ fn customer_account_is_sent_when_the_account_config_allows_it() {
 }
 
 // ibx#307: GTX and NMIN go out as GTC and the tracked order shows GTC, as
-// the reference (captured 28/09/2026: 59=1, openOrder tif GTC).
+// the reference (captured 28/09/2026: time in force GTC on the wire, openOrder tif GTC).
 #[test]
 fn gtx_and_nmin_go_out_as_gtc() {
     for tif in ["GTX", "nmin"] {
@@ -3157,7 +3157,7 @@ fn process_msgs_reports_a_fractional_fill_in_shares() {
 
 // ibx#250, ibx#486: a server reject gives the Inactive status, then error
 // 201 with the reason, then the status once more, as the reference (every
-// 39=8 of the four-leg recordings of 26/09 to 02/10/2026).
+// rejected status report of the four-leg recordings of 26/09 to 02/10/2026).
 #[test]
 fn process_msgs_delivers_a_reject_error_after_the_status_and_the_status_again() {
     let (client, _rx, shared) = test_client();
@@ -5050,7 +5050,7 @@ fn an_untracked_execution_is_returned_by_req_executions_only() {
 }
 
 // ibx#487: a combo leg's execution shows the leg report's lastLiquidity
-// (851=2), not the combo report's (851=1); a filled order no longer tracked
+// (removed liquidity), not the combo report's (added liquidity); a filled order no longer tracked
 // shows the placing client of the report (captured 30/09/2026,
 // i105_combo_fill: openOrder and orderStatus with clientId 198).
 #[test]
@@ -7511,7 +7511,7 @@ fn a_joining_stream_gets_the_quote_at_once() {
 }
 
 // ibx#444, captured 02/10/2026: the second symbol-only AAPL request was
-// looked up (35=c) and then joined the first one's subscription. The engine
+// looked up and then joined the first one's subscription. The engine
 // says so once the lookup found the contract; the request moves to the
 // running subscription, gets what it has, and its own slot is freed.
 #[test]

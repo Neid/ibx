@@ -1,9 +1,11 @@
 //! News queries via the data connection.
 //!
-//! Request format: FIX msg_type=U, 6040=10030, 6118=XML
-//! Response format: FIX msg_type=U, 6040=10032, 6118=XML (id echo), 96=binary payload
+//! Request: a gateway-specific message with the news query sub-type and an
+//! XML payload.
+//! Response: a gateway-specific message with the news answer sub-type, an XML
+//! payload (id echo) and a raw data payload.
 //!
-//! The binary payload in tag 96 is: "200\n" + offset table + ZIP archive.
+//! The raw data payload is: "200\n" + offset table + ZIP archive.
 //! The ZIP contains a single ENTRY file in Java Properties format.
 
 use std::io::Read;
@@ -223,7 +225,7 @@ pub fn news_query_text(xml: &str) -> &str {
     extract_xml_tag(xml, "query").unwrap_or(xml)
 }
 
-/// Extract the query ID from a news response XML (tag 6118).
+/// Extract the query ID from a news response XML payload.
 pub fn parse_news_response_id(xml: &str) -> Option<String> {
     extract_xml_tag(xml, "id").map(|s| s.to_string())
 }

@@ -288,9 +288,9 @@ const COMBO_CONTRACT: &str = "28812380 QQQ,SPY BAG SMART USD QQQ,SPY COMB [75673
 
 // ibx#470 (captured 30/09/2026 in regular hours, i105_combo_fill): the
 // first combo order of a session sends the reference's set-up requests,
-// then its 35=D; the reports of its fill give the combo's execution, then
-// one execution per leg on the leg's contract, each with openOrder and
-// orderStatus at the combo's totals; each commission report after the
+// then its new order message; the reports of its fill give the combo's
+// execution, then one execution per leg on the leg's contract, each with
+// openOrder and orderStatus at the combo's totals; each commission report after the
 // order's openOrder and orderStatus once more (ibx#486). The opposite
 // combo on the same legs sends no set-up request.
 #[test]
@@ -343,11 +343,11 @@ fn combo_fill_session_is_the_captured_one() {
 
 // ibx#470 (captured 26/09/2026, market closed, i105_combo_stock_smart of
 // both runs): with the BAG symbol SPY,QQQ the set-up runs and the order
-// is refused with 478, no 35=D; a second order on the same legs is
-// refused at once. In the same session, with the symbol QQQ,SPY: no
-// set-up request, the 35=D, the price change as a 35=G without the leg
-// block, the cancel as a 35=F with the BAG conId, and the same for a
-// second order.
+// is refused with 478, no new order message; a second order on the same
+// legs is refused at once. In the same session, with the symbol QQQ,SPY:
+// no set-up request, the new order message, the price change as a replace
+// message without the leg block, the cancel as a cancel message with the
+// BAG conId, and the same for a second order.
 #[test]
 fn combo_symbol_refusal_then_order_modify_and_cancel_are_the_captured_ones() {
     let first = fixture("20260926/i105_combo_stock_smart.jsonl");
@@ -390,10 +390,10 @@ fn combo_symbol_refusal_then_order_modify_and_cancel_are_the_captured_ones() {
 }
 
 // ibx#470 (captured 26/09/2026, i105_combo_leg_prices): per-leg prices
-// and no limit price give the combo price (721.35 - 794.50) and one 6879
-// per leg after it; the price change of a leg keeps the placed prices on
-// the 35=G, with the leg block. openOrder shows the reported leg prices
-// and no limit price.
+// and no limit price give the combo price (721.35 - 794.50) and one leg
+// price field per leg after it; the price change of a leg keeps the placed
+// prices on the replace message, with the leg block. openOrder shows the
+// reported leg prices and no limit price.
 #[test]
 fn combo_leg_prices_are_the_captured_ones() {
     let first = fixture("20260926/i105_combo_stock_smart.jsonl");
@@ -553,8 +553,8 @@ fn option_vertical_set_up_is_the_captured_one() {
 
 // ibx#470 (paper 03/10/2026, combo_paper): the price change of the first
 // combo order of a session, made as soon as the order works, while the
-// server's first reports still come, goes out as a 35=G with the new
-// price and no leg block, and the server's replace report reaches
+// server's first reports still come, goes out as a replace message with
+// the new price and no leg block, and the server's replace report reaches
 // openOrder.
 #[test]
 fn modify_of_the_first_combo_order_of_a_session_goes_out() {
@@ -573,7 +573,7 @@ fn modify_of_the_first_combo_order_of_a_session_goes_out() {
     // 6121 (ibx#466).
     let server = tag(&d, 11).and_then(|c| c.strip_suffix(".0")).unwrap().to_string();
     assert_eq!((tag(&d, 35), tag(&d, 6121), tag(&d, 44)), (Some("D"), Some("28"), Some("-50.00")), "{d:?}");
-    // The first report of the order (150=A), then the change at once.
+    // The first report of the order (pending new), then the change at once.
     s.ids.insert("1770530845".into(), server.clone());
     let first_report = std::cell::Cell::new(0);
     s.play(&reports, |f| tag(f, 35) == Some("8"), |f| {

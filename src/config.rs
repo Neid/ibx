@@ -101,7 +101,7 @@ pub const TIMEOUT_FARM_CONNECT: u64 = 8;
 pub const NS_VERSION: u32 = 52;
 pub const NS_VERSION_MIN: u32 = 51;
 
-/// Stack-allocated FIX timestamp ("YYYYMMDD-HH:MM:SS"). Zero heap allocation.
+/// Stack-allocated wire-format timestamp ("YYYYMMDD-HH:MM:SS"). Zero heap allocation.
 pub struct TimestampBuf {
     buf: [u8; 17],
 }
@@ -121,7 +121,7 @@ impl std::fmt::Display for TimestampBuf {
     }
 }
 
-/// FIX-compliant UTC timestamp without chrono dependency. Zero heap allocation.
+/// Wire-format UTC timestamp without chrono dependency. Zero heap allocation.
 pub fn chrono_free_timestamp() -> TimestampBuf {
     use std::time::SystemTime;
     let dur = SystemTime::now()
@@ -156,7 +156,7 @@ fn write_u2(buf: &mut [u8], val: u8) {
     buf[1] = b'0' + val % 10;
 }
 
-/// Format unix timestamp (seconds) to IB's "YYYYMMDD HH:MM:SS" format (UTC).
+/// Format unix timestamp (seconds) to the API's "YYYYMMDD HH:MM:SS" format (UTC).
 pub fn unix_to_ib_datetime(secs: i64) -> String {
     let secs = secs as u64;
     let days = secs / 86400;
@@ -172,7 +172,8 @@ pub fn unix_to_ib_datetime(secs: i64) -> String {
 }
 
 /// Format unix timestamp (UTC seconds) to "YYYYMMDD-HH:MM:SS" — the dash-joined
-/// form the gateway requires for a time-precise good-till expiry (tag 126).
+/// form the gateway requires for a time-precise good-till expiry
+/// (the expire time field).
 /// Distinct from `unix_to_ib_datetime` (space-joined) which other callers use.
 pub fn unix_to_ib_utc_dash(secs: i64) -> String {
     let secs = secs.max(0) as u64;
@@ -187,7 +188,7 @@ pub fn unix_to_ib_utc_dash(secs: i64) -> String {
 
 /// A parsed good-till expiry: either a calendar date (no time) or a precise
 /// instant in UTC. The two are mutually exclusive on the wire — date-only is
-/// emitted as tag 432, time-precise as tag 126 (UTC).
+/// emitted as the expire date field, time-precise as the expire time field (UTC).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IbExpiry {
     /// Date with no time component. Packed `YYYYMMDD` (e.g. 20260620).
@@ -418,7 +419,7 @@ mod expiry_tests {
 
     #[test]
     fn instant_round_trips_to_wire() {
-        // parse -> seconds -> tag 126 wire string must be the dash UTC form.
+        // parse -> seconds -> expire time wire string must be the dash UTC form.
         let secs = instant("20260620 18:00:00 US/Eastern");
         assert_eq!(unix_to_ib_utc_dash(secs), "20260620-22:00:00");
     }

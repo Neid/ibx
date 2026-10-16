@@ -16,14 +16,14 @@ pub(crate) struct Replayed {
     /// Recorded server frames not sent (seq, link): no request of ibx
     /// matches them.
     pub unsent: Vec<(u64, String)>,
-    /// The market data messages (35=V) and contract lookups (35=c) of the
+    /// The market data messages and contract lookups of the
     /// reference and of ibx, normalised (see [`request_messages`]).
     pub requests_theirs: Vec<String>,
     pub session: Session,
 }
 
-/// A market data message (35=V) or a contract lookup (35=c) as compared:
-/// the framing dropped, the farm request ids (262) and the lookup id (320)
+/// A market data message or a contract lookup as compared:
+/// the framing dropped, the farm request ids and the lookup id
 /// masked, as the reference's and ibx's numbering differ.
 pub(crate) fn request_message(f: &Fields) -> String {
     let n = crate::test_support::Normaliser::framing();
@@ -41,7 +41,8 @@ pub(crate) fn request_messages(s: &Session, farm_types: &[&str], ccp_types: &[&s
     (pick(&s.farm_out, farm_types), pick(&s.ccp_out, ccp_types))
 }
 
-/// The entries of a market data message (`35=V`): (262, 263, 6008, 207, 264).
+/// The entries of a market data message: (request id, subscription request type,
+/// contract id, security exchange, market depth).
 fn entries(f: &Fields) -> Vec<(String, String, String, String, String)> {
     let action = f.iter().find(|(t, _)| *t == 263).map(|(_, v)| v.clone()).unwrap_or_default();
     let mut out = Vec::new();
@@ -76,7 +77,7 @@ fn tag(f: &Fields, tag: u32) -> Option<&str> {
 struct Ids {
     /// Reference farm id → engine farm id.
     farm: HashMap<String, String>,
-    /// Reference lookup id (320) → engine lookup id.
+    /// Reference lookup id → engine lookup id.
     lookup: HashMap<String, String>,
     /// The engine's entries and lookups already given a reference id.
     farm_taken: Vec<String>,

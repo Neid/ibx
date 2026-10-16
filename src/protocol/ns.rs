@@ -1,6 +1,6 @@
 //! NS protocol: `#%#%` magic + 4-byte BE length + semicolon-delimited ASCII payload.
 //!
-//! Used for initial connection handshake before upgrading to FIX messaging.
+//! Used for initial connection handshake before upgrading to wire-protocol messaging.
 
 use std::io::{self, Read};
 

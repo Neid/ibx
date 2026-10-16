@@ -2,13 +2,13 @@
 //!
 //! Benchmarks the full message processing path using synthetic (or captured) data:
 //!   1. HMAC unsign (verify + un-distort)
-//!   2. FIXCOMP decompression
-//!   3. Tick decode (35=P binary payload)
+//!   2. Compressed-wrapper decompression
+//!   3. Tick decode (binary tick message payload)
 //!   4. Market state update (quote mutation)
 //!   5. Full pipeline: sign → unsign → decode → state update
 //!
 //! When a JSONL fixture file is provided (from wire captures), it loads
-//! real 35=P messages captured from the wire. Otherwise uses synthetic payloads.
+//! real tick messages captured from the wire. Otherwise uses synthetic payloads.
 //!
 //! Usage:
 //!   cargo run --release --bin bench_replay
@@ -62,7 +62,7 @@ fn main() {
         ]),
     ]);
 
-    // Build FIX-framed 35=P messages (unsigned, for sign→unsign roundtrip)
+    // Build wire-framed tick messages (unsigned, for sign→unsign roundtrip)
     let fix_tick_msg = build_fix_tick_message(&tick_payload);
     let fix_tick_heavy = build_fix_tick_message(&tick_payload_heavy);
 
@@ -70,7 +70,7 @@ fn main() {
     let (signed_msg, _iv_after) = fix_sign(&fix_tick_msg, &MAC_KEY, &INIT_IV);
     let (signed_heavy, _) = fix_sign(&fix_tick_heavy, &MAC_KEY, &INIT_IV);
 
-    // Build FIXCOMP-wrapped message (compressed tick data)
+    // Build compressed-wrapper message (compressed tick data)
     let fixcomp_msg = fixcomp_build(&fix_tick_msg);
     let (signed_fixcomp, _) = fix_sign(&fixcomp_msg, &MAC_KEY, &INIT_IV);
 
@@ -115,7 +115,7 @@ fn main() {
                 buf[pos] ^= INIT_IV[i * 2 + 1];
             }
         });
-        // find_after_tag_bytes for tag 9= and 35=
+        // find_after_tag_bytes for the body length and message type fields
         bench("find_after_tag (9= + 35=)", ITERATIONS, || {
             let _ = signed_msg.windows(2).position(|w| w == b"9=");
             let _ = signed_msg.windows(3).position(|w| w == b"35=");
@@ -136,13 +136,13 @@ fn main() {
     });
     println!();
 
-    // ── Stage 2: FIXCOMP decompress ──
+    // ── Stage 2: compressed-wrapper decompress ──
     println!("── Stage 2: FIXCOMP Decompress ──");
     bench("decompress (1 inner msg)", ITERATIONS, || {
         let _ = fixcomp_decompress(&fixcomp_msg).unwrap();
     });
     {
-        // Multi-message FIXCOMP (3 inner messages)
+        // Multi-message compressed wrapper (3 inner messages)
         let inner2 = fix_build(&[(35, "0")], 2);
         let inner3 = fix_build(&[(35, "1"), (112, "farm")], 3);
         let mut combined = fix_tick_msg.clone();
@@ -216,7 +216,7 @@ fn main() {
         bench("full: unsign → decode → state → seqlock → channel", ITERATIONS, || {
             // 1. HMAC unsign
             let (unsigned, _new_iv, _valid) = fix_unsign(&signed_msg, &MAC_KEY, &INIT_IV);
-            // 2. Extract body after 35=P marker
+            // 2. Extract body after the tick message type marker
             if let Some(body) = find_body_after_tag(&unsigned, b"35=P\x01") {
                 // 3. Decode ticks
                 let ticks = tick_decoder::decode_ticks_35p(body);
@@ -238,14 +238,14 @@ fn main() {
         while rx.try_recv().is_ok() {}
     }
     {
-        // Full pipeline with FIXCOMP decompression
+        // Full pipeline with compressed-wrapper decompression
         let mut market = MarketState::new();
         let id = market.register(756733);
         market.register_server_tag(1, id, 0.01);
         market.set_min_tick(id, 0.01);
 
         bench("full with FIXCOMP: unsign → decompress → decode → state", ITERATIONS / 10, || {
-            // 1. HMAC unsign the FIXCOMP wrapper
+            // 1. HMAC unsign the compressed wrapper
             let (unsigned, _new_iv, _valid) = fix_unsign(&signed_fixcomp, &MAC_KEY, &INIT_IV);
             // 2. Decompress
             let inner_msgs = fixcomp_decompress(&unsigned).unwrap();
@@ -285,7 +285,7 @@ fn main() {
             let _ = ibx::config::chrono_free_timestamp();
         });
 
-        // Isolated: fix_build (FIX message construction)
+        // Isolated: fix_build (wire message construction)
         let clord = "12345";
         let account = "DU0000000";
         let now = ibx::config::chrono_free_timestamp();
@@ -582,7 +582,7 @@ fn finalize_payload(bits: &[u8]) -> Vec<u8> {
 }
 
 fn build_fix_tick_message(tick_payload: &[u8]) -> Vec<u8> {
-    // Build: 8=O\x01 9=<len>\x01 35=P\x01 <tick_payload>
+    // Build: binary frame header, body length, tick message type, <tick_payload>
     let body = format!("35=P\x01");
     let body_bytes = body.as_bytes();
     let body_len = body_bytes.len() + tick_payload.len();

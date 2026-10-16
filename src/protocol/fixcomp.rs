@@ -1,4 +1,4 @@
-//! Compressed FIX message framing for market data connections.
+//! Compressed wire message framing for market data connections.
 
 use flate2::read::ZlibDecoder;
 use flate2::write::ZlibEncoder;
@@ -11,20 +11,20 @@ fn parse_err(msg: &'static str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, msg)
 }
 
-/// Wrap a FIX message in compressed framing.
+/// Wrap a wire message in compressed framing.
 pub fn fixcomp_build(inner_msg: &[u8]) -> Vec<u8> {
     let mut encoder = ZlibEncoder::new(Vec::new(), Compression::default());
     encoder.write_all(inner_msg).unwrap();
     let compressed = encoder.finish().unwrap();
 
-    // Body: 95=<len>\x01 96=<compressed>\x01
+    // Body: the raw data length, then the compressed raw data
     let mut body = Vec::new();
     body.extend_from_slice(format!("95={}\x01", compressed.len()).as_bytes());
     body.extend_from_slice(b"96=");
     body.extend_from_slice(&compressed);
     body.push(SOH);
 
-    // Header: 8=FIXCOMP\x01 9=<body_len>\x01
+    // Header: the compressed-frame protocol version, then the body length
     let mut msg = Vec::new();
     msg.extend_from_slice(format!("8=FIXCOMP\x019={}\x01", body.len()).as_bytes());
     msg.extend_from_slice(&body);
@@ -33,7 +33,7 @@ pub fn fixcomp_build(inner_msg: &[u8]) -> Vec<u8> {
 
 /// Decompress a compressed message into individual inner messages.
 ///
-/// Returns `Err` if the frame is malformed (no tag 95, bad raw-data-length, etc.)
+/// Returns `Err` if the frame is malformed (no raw data length, bad raw-data-length, etc.)
 /// or if the zlib payload fails to inflate. Hot-loop callers should `log::warn!`
 /// and skip the frame rather than propagate.
 pub fn fixcomp_decompress(data: &[u8]) -> io::Result<Vec<Vec<u8>>> {
@@ -139,7 +139,7 @@ fn split_messages(buf: &[u8]) -> Vec<Vec<u8>> {
                 if o_first {
                     let o = o_s.unwrap();
                     let chunk = &remaining[o..];
-                    // 8=O protocol: length-delimited via tag 9
+                    // Binary frame: length-delimited via the body length field
                     let tag9 = match find_tag(&chunk[4..], b"9=") {
                         Some(p) => 4 + p,
                         None => break,
@@ -164,7 +164,7 @@ fn split_messages(buf: &[u8]) -> Vec<Vec<u8>> {
                 } else {
                     let f = fix_start.unwrap();
                     let chunk = &remaining[f..];
-                    // Standard FIX: find 10=XXX SOH, skip past raw data blocks
+                    // Standard wire message: find the checksum field, skip past raw data blocks
                     let mut scan = 0;
                     let mut cksum = None;
                     loop {
@@ -266,7 +266,7 @@ mod tests {
 
     #[test]
     fn roundtrip_large_message() {
-        // Build a FIX message with body > 1000 bytes
+        // Build a wire message with body > 1000 bytes
         let long_value = "X".repeat(1000);
         let inner = fix_build(&[(35, "B"), (58, &long_value)], 1);
         assert!(inner.len() > 1000);
@@ -281,7 +281,7 @@ mod tests {
 
     #[test]
     fn decompress_multiple_inner_fix_messages() {
-        // Compress two FIX messages together into one FIXCOMP wrapper
+        // Compress two wire messages together into one compressed wrapper
         let msg1 = fix_build(&[(35, "0")], 1);
         let msg2 = fix_build(&[(35, "D"), (55, "GOOG")], 2);
         let mut combined = msg1.clone();
@@ -301,14 +301,15 @@ mod tests {
 
     #[test]
     fn fixcomp_length_missing_tag9() {
-        // A buffer starting with 8=FIXCOMP but no tag 9 → should return None
+        // A buffer starting with the compressed-frame header but no body
+        // length → should return None
         let data = b"8=FIXCOMP\x0195=5\x01";
         assert_eq!(fixcomp_length(data), None);
     }
 
     #[test]
     fn fixcomp_length_body_shorter_than_declared() {
-        // Build a valid FIXCOMP, then check that fixcomp_length returns
+        // Build a valid compressed frame, then check that fixcomp_length returns
         // the expected total even if the actual data is shorter (returns None).
         let inner = fix_build(&[(35, "0")], 1);
         let comp = fixcomp_build(&inner);
@@ -322,7 +323,7 @@ mod tests {
 
     #[test]
     fn decompress_corrupt_deflate_returns_err() {
-        // Build a valid FIXCOMP frame, then trash the compressed payload so
+        // Build a valid compressed frame, then trash the compressed payload so
         // ZlibDecoder fails. The function must return Err rather than panic
         // (regression for ibx#182).
         let inner = fix_build(&[(35, "0")], 1);
@@ -337,7 +338,7 @@ mod tests {
 
     #[test]
     fn decompress_truncated_payload_returns_err() {
-        // tag 95 declares length N but the frame is shorter — must not panic.
+        // the raw data length declares N but the frame is shorter — must not panic.
         let inner = fix_build(&[(35, "0")], 1);
         let comp = fixcomp_build(&inner);
         let truncated = &comp[..comp.len() - 5];
@@ -352,14 +353,14 @@ mod tests {
         let inner = fix_build(&[(35, "A"), (108, "30")], 1);
         let comp = fixcomp_build(&inner);
 
-        // Extract the zlib data from tag 96
+        // Extract the zlib data from the raw data field
         let tag96_pos = comp
             .windows(3)
             .position(|w| w == b"96=")
             .expect("tag 96 not found");
         let zlib_start = tag96_pos + 3;
 
-        // Find tag 95 value for length
+        // Find the raw data length value
         let tag95_pos = comp
             .windows(3)
             .position(|w| w == b"95=")
@@ -384,7 +385,7 @@ mod tests {
             .read_to_end(&mut decompressed)
             .expect("zlib decompression failed");
 
-        // Decompressed data should equal the original inner FIX message
+        // Decompressed data should equal the original inner wire message
         assert_eq!(decompressed, inner);
     }
 }

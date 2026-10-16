@@ -5,8 +5,8 @@
 //! has no outside-RTH tag either. Whether it applies depends on the order
 //! type, the time in force, the exchange, and two values the server gives
 //! with the contract definition for the order's exchange: the market type
-//! (6523) and the order-type token list (6431). Rule read from the
-//! reference in ib-agent#199, checked there on 10 captured orders.
+//! and the order-type token list. Rule observed on the reference in
+//! ib-agent#199, checked there on 10 captured orders.
 
 use crate::types::{OrderKind, OrderRequest};
 
@@ -19,12 +19,12 @@ pub(crate) const OUTSIDE_RTH_IGNORED: &str = "Order Event Warning:Attribute 'Out
 /// reference with an empty list.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct RthTypes {
-    /// Market type, tag 6523 (for example USSTK).
+    /// Market type of the definition (for example USSTK).
     pub market_type: String,
     /// Security type of the contract (STK, OPT, ...).
     pub sec_type: String,
     pub currency: String,
-    /// Order-type tokens, from tag 6431 `TOKEN/N` (N = 4 counts as absent).
+    /// Order-type tokens, from the definition's order-type list `TOKEN/N` (N = 4 counts as absent).
     pub rth: bool,
     pub lth: bool,
     pub rth_only: bool,
@@ -64,7 +64,7 @@ pub(crate) struct RthTypes {
     /// The contract's valid exchanges, BEST named SMART; None when the
     /// definition has no list (ibx#630).
     pub valid_exchanges: Option<Vec<String>>,
-    /// The security type of the contract's underlying (tag 310), for a CFD
+    /// The security type of the contract's underlying, for a CFD
     /// (ibx#619).
     pub under_sec_type: String,
     /// What the order message of a contract other than a stock carries
@@ -84,8 +84,8 @@ pub(crate) struct RthTypes {
 }
 
 impl RthTypes {
-    /// From the definition's token list (tag 6431, `TOKEN/N` entries) and
-    /// market type (6523).
+    /// From the definition's order-type token list (`TOKEN/N` entries) and
+    /// market type.
     pub(crate) fn from_definition(tokens: &[String], market_type: &str, sec_type: &str, currency: &str) -> Self {
         let mut t = RthTypes {
             market_type: market_type.to_string(),
@@ -323,7 +323,7 @@ mod tests {
     use super::*;
 
     fn aapl_best() -> RthTypes {
-        // AAPL on BEST, paper 28/09/2026: RTH/1 only, 6523=USSTK.
+        // AAPL on BEST, paper 28/09/2026: RTH/1 only, market type USSTK.
         let tokens: Vec<String> = "ACTIVETIM/1,AD/5,ADJUST/1,RTH/1,AON/1".split(',').map(String::from).collect();
         RthTypes::from_definition(&tokens, "USSTK", "STK", "USD")
     }

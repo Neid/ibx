@@ -62,7 +62,7 @@ pub(crate) struct BookEntry {
     /// The OCA group, empty for none.
     pub oca_group: String,
     /// The API client of an order the server reported from another
-    /// session (6119); None for an order of this client.
+    /// session; None for an order of this client.
     pub owner: Option<i64>,
 }
 
@@ -175,11 +175,11 @@ impl OrderIdGenerator {
 /// show in openOrder (ib-agent#194, ib-agent#195, ibx#491). 0 = not reported.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct TrailLimitReported {
-    /// Limit offset (6370).
+    /// Limit offset.
     pub offset: Price,
-    /// Limit price (44).
+    /// Limit price.
     pub limit: Price,
-    /// Stop price (6117), which the server moves as the market moves.
+    /// Stop price, which the server moves as the market moves.
     pub stop: Price,
 }
 
@@ -224,7 +224,7 @@ pub struct Context {
     /// The last limit offset, limit price and stop price the server
     /// reported for a TRAIL LIMIT order (ib-agent#194, ibx#491).
     pub(crate) trail_limit_reported: HashMap<OrderId, TrailLimitReported>,
-    /// The last stop price (6117) the server reported for an order, the
+    /// The last stop price the server reported for an order, the
     /// reference's last known value a trailing replace compares with
     /// (ibx#263). A replace does not change it.
     pub(crate) reported_stop: HashMap<OrderId, crate::types::Price>,
@@ -363,7 +363,7 @@ pub struct Context {
     /// SMART component exchanges by conId, once its definition was read
     /// (#452).
     pub(crate) smart_components: HashMap<i64, Vec<String>>,
-    /// Valid exchanges by conId (tag 6046, BEST as SMART), once its
+    /// Valid exchanges by conId (BEST as SMART), once its
     /// definition was read: the components of its SmartDepth (#452).
     pub(crate) valid_exchanges: HashMap<i64, Vec<String>>,
     /// The contract as a depth refusal names it, by conId (#452).

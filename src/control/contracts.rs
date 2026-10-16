@@ -23,7 +23,7 @@ pub const TAG_LONG_NAME: u32 = 306;
 pub const TAG_SECURITY_ID: u32 = 455;
 pub const TAG_SECURITY_ID_SOURCE: u32 = 456;
 
-// IB custom tags
+// Gateway-specific tags
 pub const TAG_IB_CON_ID: u32 = 6008;
 pub const TAG_IB_LOCAL_SYMBOL: u32 = 6035;
 pub const TAG_IB_VALID_EXCHANGES: u32 = 6046;
@@ -53,7 +53,7 @@ const MARKET_RULE_FIELDS: std::ops::RangeInclusive<u32> = 6020..=6031;
 /// Market type of the contract, for example USSTK.
 pub const TAG_IB_MARKET_TYPE: u32 = 6523;
 
-/// Security types (IB internal encoding).
+/// Security types (the broker's internal encoding).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SecurityType {
     Stock,    // CS
@@ -163,7 +163,7 @@ pub struct ContractDefinition {
     pub liquid_hours: Option<String>,
     /// IANA timezone for session times (e.g. "US/Eastern").
     pub time_zone_id: Option<String>,
-    /// Exchange-path join key (tag 6256) used to pair secdef ↔ schedule replies.
+    /// Exchange-path join key used to pair secdef ↔ schedule replies.
     /// Internal — not exposed on the public API surface.
     pub join_key: String,
     /// conId of the underlying (the API underConId), 0 when absent.
@@ -180,17 +180,17 @@ pub struct ContractDefinition {
     /// `CONTFUT` (ibx#438).
     pub continuous: bool,
     // ── ibx#436: the other ContractDetails sources ──
-    /// Multiplier as received (tag 231), empty when absent.
+    /// Multiplier as received, empty when absent.
     pub multiplier_text: String,
-    /// Contract month: tag 200, else the month of tag 541.
+    /// Contract month: the contract month field, else the month of the maturity date.
     pub contract_month: String,
-    /// Real expiration date (tag 6614).
+    /// Real expiration date as received.
     pub real_expiration_date: String,
     /// Symbol of the underlying (detail 6855).
     pub under_symbol: String,
-    /// Aggregate group (tag 6178), None when absent.
+    /// Aggregate group, None when absent.
     pub agg_group: Option<i32>,
-    /// CUSIP of the alternative id group (455 with 456=1).
+    /// CUSIP of the alternative id group (the security id whose source is CUSIP).
     pub cusip: String,
     /// Second and third parts of the industry text.
     pub subcategory: String,
@@ -1105,8 +1105,8 @@ pub fn parse_schedule_response(data: &[u8]) -> Option<ContractSchedule> {
         .unwrap_or_default();
 
     // Parse repeating session groups.
-    // Each session starts with tag 6841 (start) and includes 6842 (end), 75 (date),
-    // and either 6843 (trading) or 6844 (liquid).
+    // Each session starts with its start time and includes its end time, its trade
+    // date, and either the trading hours flag or the liquid hours flag.
     let mut trading_hours = Vec::new();
     let mut liquid_hours = Vec::new();
 
@@ -1117,7 +1117,7 @@ pub fn parse_schedule_response(data: &[u8]) -> Option<ContractSchedule> {
     let mut is_liquid = false;
     let mut in_session = false;
 
-    // 24h venues (e.g. FOREX) emit sessions with both 6843=1 AND 6844=1 — append
+    // 24h venues (e.g. FOREX) emit sessions with both hours flags set — append
     // to both lists independently.
     for (tag, val) in &tags {
         match *tag {
@@ -2041,7 +2041,7 @@ pub(crate) mod tests {
 
     #[test]
     fn parse_schedule_dual_flag_appends_to_both() {
-        // 24h venues (FOREX) emit sessions with both 6843=1 AND 6844=1.
+        // 24h venues (FOREX) emit sessions with both the trading and liquid hours flags set.
         let msg = fix::fix_build(
             &[
                 (TAG_MSG_TYPE, "U"),

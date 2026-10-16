@@ -1,7 +1,7 @@
 //! Microbenchmark: tick decoder + market state update hot path.
 //!
 //! Measures pure decode + state update latency without any network or I/O.
-//! Generates realistic 35=P binary payloads and benchmarks:
+//! Generates realistic binary tick message payloads and benchmarks:
 //!   1. decode_ticks_35p() alone
 //!   2. decode + market state update (the handle_tick_data equivalent)
 //!   3. decode + state update + SeqLock push + channel send (full notify path)
@@ -21,7 +21,7 @@ const ITERATIONS: u64 = 1_000_000;
 const WARMUP: u64 = 100_000;
 
 fn main() {
-    // ── Build realistic 35=P payloads ──
+    // ── Build realistic tick message payloads ──
     // Simulate a typical SPY tick message: 1 server_tag, 3 ticks (bid, ask, last)
     let payload_small = build_35p_payload(1, &[
         (0, 1, 15025, false),  // O_BID_PRICE, width=1... we'll use width 2
@@ -54,7 +54,7 @@ fn main() {
         ]),
     ]);
 
-    // Build a full FIX-framed 35=P message for find_body_after_tag + fix_parse benchmarks
+    // Build a full wire-framed tick message for find_body_after_tag + fix_parse benchmarks
     let fix_framed = build_fix_framed_35p(&payload_typical);
 
     println!("========================================");
@@ -248,10 +248,11 @@ fn finalize_payload(bits: &[u8]) -> Vec<u8> {
 }
 
 fn build_fix_framed_35p(tick_payload: &[u8]) -> Vec<u8> {
-    // Build: 8=O\x01 9=<len>\x01 35=P\x01 <tick_payload> \x01 8349=AABBCCDD\x01
+    // Build: binary frame header, body length, tick message type, <tick_payload>,
+    // then the signature field
     let inner_body_str = format!("35=P\x01");
     let inner_body = inner_body_str.as_bytes();
-    let body_len = inner_body.len() + tick_payload.len() + 15; // +15 for 8349=AABBCCDD\x01
+    let body_len = inner_body.len() + tick_payload.len() + 15; // +15 for the signature field
     let header = format!("8=O\x019={}\x01", body_len);
     let mut msg = header.into_bytes();
     msg.extend_from_slice(inner_body);
@@ -267,7 +268,7 @@ fn find_body_after_tag<'a>(msg: &'a [u8], tag_marker: &[u8]) -> Option<&'a [u8]>
 }
 
 fn fast_msg_type(msg: &[u8]) -> Option<u8> {
-    // Fast extraction: 35= is always within the first 30 bytes of a FIX/binary msg
+    // Fast extraction: the message type is always within the first 30 bytes of a text/binary msg
     let limit = msg.len().min(40);
     let slice = &msg[..limit];
     for i in 0..limit.saturating_sub(3) {
