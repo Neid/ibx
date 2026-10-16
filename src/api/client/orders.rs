@@ -35,7 +35,7 @@ impl EClient {
         // together (ibx#547). An order that fails ends the list; the ones
         // before it go.
         let mut result = Ok(());
-        for (id, contract, order, was_held) in self.core.orders_to_transmit(order_id, contract, order) {
+        for (id, contract, order, was_held) in self.core.orders_to_transmit_checked(order_id, contract, order, &self.shared, &self.account_id) {
             result = self.send_order(id, &contract, &order, was_held, &mut built);
             if result.is_err() { break; }
         }
@@ -63,7 +63,7 @@ impl EClient {
         // The order is read and checked now, as the reference does; one
         // that is refused is not held (ibx#547).
         let (notices, refusal, _) = self.core.order_read_checks(
-            oid, contract.con_id, &contract.exchange, order, &self.shared, &self.account_id, false);
+            oid, contract.con_id, &contract.sec_type, &contract.exchange, order, &self.shared, &self.account_id, false);
         let combo = ClientCore::combo_order(contract, order, &self.shared.reference, &self.account_id);
         for (code, message) in notices {
             self.shared.orders.push_order_error(oid, code, message);
@@ -106,7 +106,7 @@ impl EClient {
         // checks once it is known comes after (ibx#665).
         let looked_up = contract.con_id == 0 && !contract.sec_type.eq_ignore_ascii_case("BAG");
         let (notices, refusal, deferred) = self.core.order_read_checks(
-            oid, contract.con_id, &contract.exchange, order, &self.shared, &self.account_id, looked_up);
+            oid, contract.con_id, &contract.sec_type, &contract.exchange, order, &self.shared, &self.account_id, looked_up);
         if !was_held {
             for (code, message) in notices {
                 self.shared.orders.push_order_error(oid, code, message);
@@ -127,7 +127,7 @@ impl EClient {
         };
         // The condition times as the reference sends them (ibx#416); the
         // order is tracked as the caller placed it.
-        let sent = ClientCore::with_condition_times(order);
+        let sent = self.core.hedge_sent(ClientCore::with_condition_times(order));
 
         // A smart combo goes out on its currency's smart combo conId.
         let con_id = combo.as_ref().map(|c| c.smart_con_id).filter(|&c| c > 0).unwrap_or(contract.con_id);

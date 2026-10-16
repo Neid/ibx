@@ -1791,6 +1791,7 @@ impl Order {
             fa_method: self.fa_method.clone(),
             fa_percentage: self.fa_percentage.clone(),
             filled_quantity: self.filled_quantity,
+            hedge_max_size: self.hedge_max_size,
             hedge_param: self.hedge_param.clone(),
             hedge_type: self.hedge_type.clone(),
             ignore_open_auction: self.ignore_open_auction,
@@ -2046,7 +2047,8 @@ impl Order {
             // paper 12/10/2026).
             route_marketable_to_bbo: Some(BoolOrInt::Int(o.route_marketable_to_bbo as i64)),
             seek_price_improvement: Some(BoolOrInt::Int(o.seek_price_improvement as i64)),
-            hedge_max_size: i32::MAX,
+            // A beta hedge's max size as the report gives it (ibx#614).
+            hedge_max_size: o.hedge_max_size,
         })
     }
 

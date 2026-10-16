@@ -288,6 +288,13 @@ fn completed_row(parsed: &std::collections::HashMap<u32, String>, account_id: &s
         oca_group: get(583),
         parent_perm_id: parsed.get(&6107).and_then(|s| s.split('.').next()).and_then(|s| s.parse().ok()).unwrap_or(0),
         auto_cancel_parent: flag(6965),
+        // A hedge order's hedge, as the reference shows it (ibx#614;
+        // paper, 16/10/2026): the letter of its kind, the beta or the
+        // ratio as a decimal number ("0.5", "1.0", "2.0"), the max size
+        // of a beta hedge (unset `i32::MAX`).
+        hedge_type: hedge_letter(&get(6665)).to_string(),
+        hedge_param: num(6703).or_else(|| num(6666)).map(hedge_param_text).unwrap_or_default(),
+        hedge_max_size: parsed.get(&6690).and_then(|v| v.parse().ok()).unwrap_or(i32::MAX),
         // The stop trigger, which the reference also shows as the trailing
         // stop price of a stop order.
         trail_stop_price: num(6117).unwrap_or(f64::MAX),
@@ -2455,6 +2462,11 @@ impl CcpState {
                 order_combo_legs: shared.orders.combo_view(clord_id).map(|v| v.leg_prices).unwrap_or_default(),
                 // The order's API client (6119, 0 when absent) and order id.
                 client_id: parsed.get(&6119).and_then(|s| s.parse().ok()).unwrap_or(0),
+                // A hedge order's hedge as the server reports it (ibx#614).
+                hedge_type: hedge_letter(parsed.get(&6665).map(String::as_str).unwrap_or("")).to_string(),
+                hedge_param: parsed.get(&6703).or_else(|| parsed.get(&6666))
+                    .and_then(|v| v.parse::<f64>().ok()).map(hedge_param_text).unwrap_or_default(),
+                hedge_max_size: parsed.get(&6690).and_then(|v| v.parse().ok()).unwrap_or(i32::MAX),
                 ..Default::default()
             };
             if let Some(entry) = context.book.get(&clord_id) {
@@ -4544,6 +4556,17 @@ pub(crate) fn parse_ledger_rows(text: &str) -> Vec<crate::bridge::LedgerRow> {
         }
     }
     rows
+}
+
+/// The API letter of a hedge kind's number (ibx#614).
+fn hedge_letter(kind: &str) -> &'static str {
+    match kind { "1" => "F", "2" => "D", "3" => "P", "4" => "B", "5" => "S", _ => "" }
+}
+
+/// A hedge's beta or ratio as the reference shows it (ibx#614): a decimal
+/// number with at least one decimal ("1.0", "0.5").
+fn hedge_param_text(v: f64) -> String {
+    if v.fract() == 0.0 && v.abs() < 1e7 { format!("{:.1}", v) } else { format!("{}", v) }
 }
 
 /// Handle 6040=143 P&L midnight seed response.

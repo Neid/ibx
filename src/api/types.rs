@@ -168,6 +168,9 @@ pub struct Order {
     pub fa_method: String,
     pub fa_percentage: String,
     pub filled_quantity: f64,
+    /// The largest hedge a beta hedge may take (session level 223,
+    /// ibx#614); unset `i32::MAX`.
+    pub hedge_max_size: i32,
     pub hedge_param: String,
     pub hedge_type: String,
     pub ignore_open_auction: bool,
@@ -330,6 +333,7 @@ impl Default for Order {
             fa_method: String::new(),
             fa_percentage: String::new(),
             filled_quantity: f64::MAX,
+            hedge_max_size: i32::MAX,
             hedge_param: String::new(),
             hedge_type: String::new(),
             ignore_open_auction: false,
@@ -412,6 +416,10 @@ impl Default for Order {
         }
     }
 }
+
+/// The max size of a selling beta hedge sent without one (ibx#614), as
+/// `ClientCore::hedge_sent` marks it for the engine's 10364.
+pub const HEDGE_MAX_SIZE_MISSING: i32 = i32::MIN;
 
 impl Order {
     /// Parse the action string to Side: the reference's names, case
@@ -534,11 +542,35 @@ impl Order {
             use_price_mgmt_algo: self.price_mgmt_algo(),
             attached_from_preset: (self.attached_leg(self.pt_order_id, &self.pt_order_type),
                 self.attached_leg(self.sl_order_id, &self.sl_order_type)),
+            // Its max size is set where the order is placed, which knows
+            // the parent's side (ibx#614).
+            hedge: self.hedge(),
             // Set where a new order is built (ibx#263).
             algo: None,
             // Set where a combo order is built, from its contract (ibx#470).
             combo: None,
         }
+    }
+
+    /// The hedge of a hedge order (ibx#614): its kind's number from the
+    /// API letter (exactly F, D, P, B or S), the beta or the ratio read
+    /// from its parameter. None for an order without a hedge type or with
+    /// one the reference refuses (refused before sending).
+    pub fn hedge(&self) -> Option<crate::types::Hedge> {
+        let kind = match self.hedge_type.as_str() {
+            "F" => 1, "D" => 2, "P" => 3, "B" => 4, "S" => 5,
+            _ => return None,
+        };
+        let param = || self.hedge_param.trim().parse::<f64>().ok().filter(|v| v.is_finite());
+        Some(crate::types::Hedge {
+            kind,
+            beta: if kind == 4 { param() } else { None },
+            ratio: if kind == 3 { param() } else { None },
+            // Sent for a beta hedge whose hedge sells only: the client
+            // clears it for the others (`ClientCore::hedge_sent`).
+            max_size: (kind == 4 && !matches!(self.hedge_max_size, i32::MAX | HEDGE_MAX_SIZE_MISSING)).then_some(self.hedge_max_size),
+            max_size_missing: kind == 4 && self.hedge_max_size == HEDGE_MAX_SIZE_MISSING,
+        })
     }
 
     /// An attached order leg given (ibx#609): its id set (not the API's

@@ -4267,6 +4267,11 @@ impl ClientCore {
                 let dropped = self.rth_dropped.lock().unwrap().contains(&order_id);
                 order.outside_rth = (order.outside_rth && !dropped)
                     || info.as_ref().is_some_and(|i| i.order.outside_rth);
+                // The hedge as the reference shows it (ibx#614; paper,
+                // 16/10/2026): the parameter of a beta or pair hedge as a
+                // decimal number ("1.0", "0.5"), the max size of a beta
+                // hedge only; nothing of a hedge on any other order.
+                Self::shown_hedge(&mut order);
                 // The flags dropped before sending show off, as the
                 // reference's openOrder (ibx#607, paper 12/10/2026).
                 let flags = shared.orders.dropped_flags(order_id);
@@ -6140,6 +6145,115 @@ impl ClientCore {
             .iter().any(|a| a.eq_ignore_ascii_case(action))
     }
 
+    /// The parent of a hedge order: an order of this client placed
+    /// before it, sent or held (ibx#614).
+    fn hedge_parent(&self, parent_id: OrderId) -> Option<(ApiContract, ApiOrder)> {
+        if let Some(t) = self.open_orders.lock().unwrap().get(&parent_id) {
+            return Some((t.contract.clone(), t.order.clone()));
+        }
+        self.held_orders.lock().unwrap().iter().find(|(id, ..)| *id == parent_id).map(|(_, c, o)| (c.clone(), o.clone()))
+    }
+
+    /// The reading of a hedge order (ibx#614; the reference 10.51, paper,
+    /// 16/10/2026, a client at level 225), each refused at once as 320
+    /// "Error reading request." with its text, nothing sent, the id not
+    /// used: a kind other than F, D, P, B or S (the exact capital letter);
+    /// a parent not placed before; a delta hedge on a parent that is no
+    /// option, or with a parameter; a beta hedge of a parent or on a
+    /// contract that is no stock, or whose beta is no number; a pair hedge
+    /// without a ratio, or a ratio of 0.
+    fn hedge_read_refusal(&self, order_id: OrderId, sec_type: &str, order: &ApiOrder) -> Option<(i64, String)> {
+        if order.hedge_type.is_empty() {
+            return None;
+        }
+        let read = |text: String| Some((320, format!("Error reading request. {}", text)));
+        let Some(hedge) = order.hedge() else {
+            return read("Invalid hedge type. Valid values are D, B, F, or P.".into());
+        };
+        let parent = self.hedge_parent(OrderId::from(order.parent_id));
+        let Some((parent_contract, _)) = parent else {
+            return read(format!("Missing parent order: server: 0 order: {} parent: {} hedge:[{}]", order_id, order.parent_id, order.hedge_type));
+        };
+        let param = order.hedge_param.trim();
+        let stock = |t: &str| t.is_empty() || t.eq_ignore_ascii_case("STK");
+        match hedge.kind {
+            2 if !parent_contract.sec_type.eq_ignore_ascii_case("OPT") => read("Invalid delta hedge order. The parent order has to be \
+                option order and hedge order can only be Stock, CFD or (in case of option on Index) Futures order.".into()),
+            2 if !param.is_empty() => read("Invalid hedge ratio".into()),
+            4 if !stock(&parent_contract.sec_type) || !stock(sec_type) => read("Invalid beta hedge order. Both parent and hedge can only be Stock orders.".into()),
+            4 if !param.is_empty() && hedge.beta.is_none() => read("Invalid beta value.".into()),
+            3 if hedge.ratio.is_none_or(|r| r == 0.0) => read("Invalid hedge ratio".into()),
+            _ => None,
+        }
+    }
+
+    /// The checks of a hedge order made once its contract is known
+    /// (ibx#614; paper, 16/10/2026): a size of its own is 10032 (the
+    /// gateway sizes the hedge), a limit price 10031 (not observed yet).
+    /// A selling beta hedge without its max size is refused later by the
+    /// engine (10364), which keeps it for its cancel.
+    fn hedge_later_refusal(&self, order: &ApiOrder) -> Option<(i64, String)> {
+        order.hedge()?;
+        let set = |v: f64| v != 0.0 && v != f64::MAX;
+        if set(order.lmt_price) {
+            return Some((10031, "Specifying limit price for hedge order is not allowed, send zero.".into()));
+        }
+        set(order.total_quantity).then(|| (10032, "Specifying size for hedge order is not allowed, send zero.".into()))
+    }
+
+    /// Whether a beta hedge's hedge sells (ibx#614): with no beta of its
+    /// own, a sell; else a parent that buys with a beta above 0, or that
+    /// sells with one below 0.
+    pub fn hedge_sells(&self, order: &ApiOrder) -> bool {
+        let Some(hedge) = order.hedge() else { return false };
+        match hedge.beta {
+            None => order.action.eq_ignore_ascii_case("SELL"),
+            Some(beta) => match self.hedge_parent(OrderId::from(order.parent_id)) {
+                Some((_, parent)) if parent.action.eq_ignore_ascii_case("BUY") => beta > 0.0,
+                Some((_, parent)) if parent.action.eq_ignore_ascii_case("SELL") => beta < 0.0,
+                _ => false,
+            },
+        }
+    }
+
+    /// The hedge fields of an order as the reference's openOrder shows
+    /// them (ibx#614).
+    fn shown_hedge(order: &mut ApiOrder) {
+        match order.hedge() {
+            Some(hedge) => {
+                order.hedge_param = hedge.beta.or(hedge.ratio)
+                    .map(|v| if v.fract() == 0.0 && v.abs() < 1e7 { format!("{:.1}", v) } else { format!("{}", v) })
+                    .unwrap_or_default();
+                if hedge.kind != 4 {
+                    order.hedge_max_size = i32::MAX;
+                }
+            }
+            None => {
+                order.hedge_type.clear();
+                order.hedge_param.clear();
+                order.hedge_max_size = i32::MAX;
+            }
+        }
+    }
+
+    /// A hedge order as the reference sends it (ibx#614; paper,
+    /// 16/10/2026): with its parent's quantity (the server sizes the
+    /// hedge: a pair of ratio 2 on a parent of 1 sells 2), and its max
+    /// size only when its hedge sells. Any other order as it is.
+    pub fn hedge_sent<'a>(&self, order: std::borrow::Cow<'a, ApiOrder>) -> std::borrow::Cow<'a, ApiOrder> {
+        if order.hedge_type.is_empty() || order.hedge().is_none() {
+            return order;
+        }
+        let quantity = self.hedge_parent(OrderId::from(order.parent_id)).map_or(order.total_quantity, |(_, p)| p.total_quantity);
+        let beta = order.hedge().is_some_and(|h| h.kind == 4);
+        let max_size = match (beta && self.hedge_sells(&order), order.hedge_max_size) {
+            (true, i32::MAX) => crate::api::types::HEDGE_MAX_SIZE_MISSING,
+            (true, size) => size,
+            (false, _) => i32::MAX,
+        };
+        std::borrow::Cow::Owned(ApiOrder { total_quantity: quantity, hedge_max_size: max_size, ..order.into_owned() })
+    }
+
     /// The reading of the attached orders of a placeOrder (ibx#609; the
     /// reference 10.51, paper, 15 and 16/10/2026, a client at level 225):
     /// a leg is its id and its type, both or neither, and the only type is
@@ -6478,8 +6592,63 @@ impl ClientCore {
     /// (ibx#665; the reference 10.51, paper, 13/10/2026: 443 about 0.9 s
     /// after an order by symbol, at once on a conId, and only 200 on a
     /// symbol with no definition).
+    /// The refusals the reference gives as it reads an order, then looks
+    /// at its id, in its order (see `order_read_checks`). The attached
+    /// orders are read last: their refusal is the one given (ibx#609).
+    #[allow(clippy::too_many_arguments)]
+    fn refusal_at_reading(
+        &self, order_id: OrderId, sec_type: &str, exchange: &str, order: &ApiOrder, shared: &SharedState,
+        account_pending: bool, account: &str,
+    ) -> Option<(i64, String)> {
+        let no_single = shared.reference.logon_features().split(',').any(|f| f == ATTACHED_NOT_IN_ONE_REQUEST_FEATURE);
+        Self::attached_orders_read_refusal(order, no_single)
+            .or_else(|| self.hedge_read_refusal(order_id, sec_type, order))
+            .or_else(|| Self::refusal_before_sending_for(order, exchange, account_pending, shared.reference.form_10_40()))
+            .or_else(|| Self::account_config_refusal(order, shared.reference.account_features().as_deref(), account))
+            .or_else(|| Self::open_flags_refusal(order, exchange))
+            .or_else(|| Self::overnight_tif_refusal(order, &shared.reference))
+            .or_else(|| Self::order_id_refusal(order_id))
+            .or_else(|| self.refusal_for_order_id(order_id, order, shared))
+            .or_else(|| self.attached_orders_id_refusal(order_id, order, shared))
+    }
+
+    /// The refusals the reference gives once the order's contract is
+    /// known, in its order (see `order_read_checks`).
+    fn refusal_with_contract(
+        &self, order: &ApiOrder, exchange: &str, shared: &SharedState, contract_zone: Option<&str>,
+        algo_warnings: &mut Vec<(i64, String)>,
+    ) -> Option<(i64, String)> {
+        Self::algo_definition_refusal(order, exchange, &shared.reference, algo_warnings)
+            .or_else(|| self.hedge_later_refusal(order))
+            .or_else(|| Self::good_till_date_refusal(order, contract_zone))
+            .or_else(|| Self::good_after_time_zone_refusal(order, contract_zone))
+            .or_else(|| Self::condition_time_zone_refusal(order, contract_zone))
+            .or_else(|| Self::price_refusal(order))
+    }
+
+    /// The orders a placeOrder with transmit on sends (ibx#509, ibx#547,
+    /// ibx#614): with the held orders of its tree, unless the placed order
+    /// itself is refused, at its reading or once its contract is known.
+    /// Then it is answered alone and the held orders stay held, as the
+    /// reference does (paper, 16/10/2026: a hedge child refused, 320 or
+    /// 10032 or 10364, and its parent held with transmit off was not sent;
+    /// its cancel ended it as an order never sent).
+    pub fn orders_to_transmit_checked(
+        &self, order_id: OrderId, contract: &ApiContract, order: &ApiOrder, shared: &SharedState, account: &str,
+    ) -> Vec<(OrderId, ApiContract, ApiOrder, bool)> {
+        let account_pending = Self::order_account_pending(order, &shared.reference, account);
+        let contract_zone = shared.reference.time_zone_id(contract.con_id);
+        let refused = self.refusal_at_reading(order_id, &contract.sec_type, &contract.exchange, order, shared, account_pending, account).is_some()
+            || self.refusal_with_contract(order, &contract.exchange, shared, contract_zone.as_deref(), &mut Vec::new()).is_some()
+            || self.hedge_sent(std::borrow::Cow::Borrowed(order)).hedge_max_size == crate::api::types::HEDGE_MAX_SIZE_MISSING;
+        if refused {
+            return vec![(order_id, contract.clone(), order.clone(), false)];
+        }
+        self.orders_to_transmit(order_id, contract, order)
+    }
+
     pub fn order_read_checks(
-        &self, order_id: OrderId, con_id: i64, exchange: &str, order: &ApiOrder, shared: &SharedState, account: &str,
+        &self, order_id: OrderId, con_id: i64, sec_type: &str, exchange: &str, order: &ApiOrder, shared: &SharedState, account: &str,
         looked_up: bool,
     ) -> (Vec<(i64, String)>, Option<(i64, String)>, Option<DeferredChecks>) {
         let mut notices = Self::implied_zone_warnings(order);
@@ -6501,25 +6670,11 @@ impl ClientCore {
         // paper 11/10/2026: after 439, 343 or 110 the same id placed again
         // gets 103, and its cancel 10147; after 321, 391 or 145 it is a
         // new order).
-        // The attached orders are read last: their refusal is the one
-        // given (ibx#609).
-        let no_single = shared.reference.logon_features().split(',').any(|f| f == ATTACHED_NOT_IN_ONE_REQUEST_FEATURE);
-        let refusal = Self::attached_orders_read_refusal(order, no_single)
-            .or_else(|| Self::refusal_before_sending_for(order, exchange, account_pending, shared.reference.form_10_40()))
-            .or_else(|| Self::account_config_refusal(order, shared.reference.account_features().as_deref(), account))
-            .or_else(|| Self::open_flags_refusal(order, exchange))
-            .or_else(|| Self::overnight_tif_refusal(order, &shared.reference))
-            .or_else(|| Self::order_id_refusal(order_id))
-            .or_else(|| self.refusal_for_order_id(order_id, order, shared))
-            .or_else(|| self.attached_orders_id_refusal(order_id, order, shared));
+        let refusal = self.refusal_at_reading(order_id, sec_type, exchange, order, shared, account_pending, account);
         if refusal.is_some() {
             return (notices, refusal, None);
         }
-        let later = Self::algo_definition_refusal(order, exchange, &shared.reference, &mut algo_warnings)
-            .or_else(|| Self::good_till_date_refusal(order, contract_zone.as_deref()))
-            .or_else(|| Self::good_after_time_zone_refusal(order, contract_zone.as_deref()))
-            .or_else(|| Self::condition_time_zone_refusal(order, contract_zone.as_deref()))
-            .or_else(|| Self::price_refusal(order));
+        let later = self.refusal_with_contract(order, exchange, shared, contract_zone.as_deref(), &mut algo_warnings);
         if later.is_some() && !order.what_if && !self.is_order_tracked(order_id) {
             self.note_order_id(order_id);
         }
@@ -7969,6 +8124,60 @@ mod tests {
         }
     }
 
+    // ibx#614 (the reference 10.51, paper, 16/10/2026): the reading of a
+    // hedge order, the checks once its contract is known, the quantity and
+    // max size it is sent with, and the parent kept held when it is refused.
+    #[test]
+    fn hedge_orders_read_checked_and_sent() {
+        let core = ClientCore::new();
+        let shared = SharedState::new();
+        let aapl = ApiContract { con_id: 265598, symbol: "AAPL".into(), sec_type: "STK".into(), exchange: "SMART".into(), ..Default::default() };
+        let parent = ApiOrder { transmit: false, total_quantity: 1.0, ..lmt(100.0) };
+        core.hold_order(10, aapl.clone(), parent.clone(), 1);
+        let hedge = |kind: &str, param: &str| ApiOrder {
+            action: "SELL".into(), order_type: "MKT".into(), total_quantity: 0.0, lmt_price: f64::MAX,
+            parent_id: 10, hedge_type: kind.into(), hedge_param: param.into(), ..Default::default()
+        };
+        let read = |o: &ApiOrder| core.hedge_read_refusal(11, "STK", o).map(|r| r.1);
+        let text = |t: &str| Some(format!("Error reading request. {t}"));
+        assert_eq!(read(&hedge("b", "1")), text("Invalid hedge type. Valid values are D, B, F, or P."), "case H");
+        assert_eq!(read(&hedge("D", "")).unwrap()[..55], text("Invalid delta hedge order. The parent order has to be option order").unwrap()[..55], "case J");
+        assert_eq!(read(&hedge("P", "")), text("Invalid hedge ratio"), "case K");
+        assert_eq!(read(&hedge("B", "abc")), text("Invalid beta value."), "case M");
+        assert_eq!(read(&ApiOrder { parent_id: 60, ..hedge("B", "1") }),
+            text("Missing parent order: server: 0 order: 11 parent: 60 hedge:[B]"), "case N");
+        assert_eq!(core.hedge_read_refusal(11, "OPT", &hedge("B", "1")),
+            Some((320, "Error reading request. Invalid beta hedge order. Both parent and hedge can only be Stock orders.".into())));
+        for ok in [hedge("B", "1"), hedge("B", "0.5"), hedge("S", ""), hedge("P", "2"), hedge("F", "")] {
+            assert_eq!(read(&ok), None, "{ok:?}");
+        }
+
+        let later = |o: &ApiOrder| core.hedge_later_refusal(o).map(|r| r.0);
+        assert_eq!(later(&hedge("B", "1")), None, "case A: refused by the engine, not here");
+        assert_eq!(core.hedge_sent(std::borrow::Cow::Owned(hedge("B", "1"))).attrs().hedge.map(|h| (h.max_size, h.max_size_missing)),
+            Some((None, true)), "case A: marked for the engine's 10364");
+        assert_eq!(later(&ApiOrder { hedge_max_size: 100, ..hedge("B", "1") }), None, "case B");
+        assert_eq!(later(&ApiOrder { total_quantity: 5.0, hedge_max_size: 100, ..hedge("B", "1") }), Some(10032), "case E");
+        assert_eq!(later(&ApiOrder { lmt_price: 1.0, ..hedge("P", "2") }), Some(10031));
+        assert_eq!(later(&hedge("P", "2")), None, "case L");
+        assert_eq!(core.hedge_sent(std::borrow::Cow::Owned(hedge("P", "2"))).hedge_max_size, i32::MAX, "case L: no max size to have");
+
+        // Sent with the parent's quantity; a max size only when the hedge sells.
+        let sent = core.hedge_sent(std::borrow::Cow::Owned(ApiOrder { hedge_max_size: 100, ..hedge("B", "0.5") }));
+        assert_eq!((sent.total_quantity, sent.attrs().hedge.and_then(|h| h.max_size)), (1.0, Some(100)));
+        let buy_parent = ApiOrder { action: "SELL".into(), transmit: false, ..lmt(900.0) };
+        core.hold_order(20, aapl.clone(), buy_parent, 1);
+        let buy_hedge = ApiOrder { action: "BUY".into(), parent_id: 20, hedge_max_size: 100, ..hedge("B", "1") };
+        assert_eq!(later(&ApiOrder { hedge_max_size: i32::MAX, ..buy_hedge.clone() }), None, "case G: a buying hedge needs none");
+        assert_eq!(core.hedge_sent(std::borrow::Cow::Borrowed(&buy_hedge)).attrs().hedge.and_then(|h| h.max_size), None);
+
+        // A refused hedge goes alone: its parent stays held.
+        let refused = core.orders_to_transmit_checked(30, &aapl, &ApiOrder { transmit: true, ..hedge("B", "1") }, &shared, "DU1");
+        assert_eq!(refused.iter().map(|o| o.0).collect::<Vec<_>>(), [30]);
+        let sent = core.orders_to_transmit_checked(30, &aapl, &ApiOrder { transmit: true, hedge_max_size: 100, ..hedge("B", "1") }, &shared, "DU1");
+        assert_eq!(sent.iter().map(|o| o.0).collect::<Vec<_>>(), [10, 30]);
+    }
+
     // ibx#609 (the reference 10.51, paper, 15 and 16/10/2026): the reading
     // of the attached order legs, then their ids.
     #[test]
@@ -8264,7 +8473,7 @@ mod tests {
 
         let core = ClientCore::new();
         let shared = SharedState::new();
-        let warned = |id: OrderId, gat: &str| core.order_read_checks(id, 265598, "SMART",
+        let warned = |id: OrderId, gat: &str| core.order_read_checks(id, 265598, "STK", "SMART",
             &ApiOrder { good_after_time: gat.into(), ..lmt(100.0) }, &shared, "DU1", false).0.iter().any(|n| n.0 == 2174);
         assert!(warned(20, "20261012 16:00:00"), "the first without a zone");
         assert!(!warned(21, "16:00:00"), "not again in the session");
@@ -8524,9 +8733,9 @@ mod tests {
             ..lmt(100.0)
         };
         let text = "Order processing failed. Unknown algo attribute:giveUp".to_string();
-        let (_, now, later) = core.order_read_checks(31, 265598, "SMART", &order, &shared, "DU1", false);
+        let (_, now, later) = core.order_read_checks(31, 265598, "STK", "SMART", &order, &shared, "DU1", false);
         assert_eq!((now, later), (Some((443, text.clone())), None));
-        let (_, now, later) = core.order_read_checks(32, 0, "SMART", &order, &shared, "DU1", true);
+        let (_, now, later) = core.order_read_checks(32, 0, "STK", "SMART", &order, &shared, "DU1", true);
         assert_eq!(now, None);
         assert_eq!(later, Some(DeferredChecks { errors: vec![(443, text.clone())], refused: true, zone_checks: Vec::new() }));
 
@@ -8553,13 +8762,13 @@ mod tests {
         let machine = crate::gateway::machine_time_zone();
         let other = if machine == "Asia/Tokyo" { "Europe/Paris" } else { "Asia/Tokyo" };
         let order = ApiOrder { good_after_time: format!("20261230 23:00:00 {other}"), ..lmt(100.0) };
-        let (_, now, later) = core.order_read_checks(41, 272093, "SMART", &order, &shared, "DU1", false);
+        let (_, now, later) = core.order_read_checks(41, 272093, "STK", "SMART", &order, &shared, "DU1", false);
         assert_eq!(now, None);
         let start = INVALID_DATE_TIME.replace("%s", "Start Time");
         assert_eq!(later.map(|d| d.zone_checks), Some(vec![(vec![other.to_string()], 337, start.clone())]));
         // Once the zone is known the check is made at once.
         shared.reference.cache_time_zone_id(272093, "US/Eastern");
-        let (_, now, later) = core.order_read_checks(42, 272093, "SMART", &order, &shared, "DU1", false);
+        let (_, now, later) = core.order_read_checks(42, 272093, "STK", "SMART", &order, &shared, "DU1", false);
         assert_eq!((now, later), (Some((337, start)), None));
     }
 
@@ -8573,7 +8782,7 @@ mod tests {
         let core = ClientCore::new();
         let shared = SharedState::new();
         shared.reference.cache_time_zone_id(265598, "US/Eastern");
-        let checks = |id: OrderId, order: &ApiOrder| core.order_read_checks(id, 265598, "SMART", order, &shared, "DU1", false).1.map(|r| r.0);
+        let checks = |id: OrderId, order: &ApiOrder| core.order_read_checks(id, 265598, "STK", "SMART", order, &shared, "DU1", false).1.map(|r| r.0);
         // A zone that is not the contract's: 343, after the id check.
         let machine = crate::gateway::machine_time_zone();
         let other = if machine == "Asia/Tokyo" { "Europe/Paris" } else { "Asia/Tokyo" };
@@ -8595,10 +8804,10 @@ mod tests {
         // OVERNIGHT + DAY, refused as the order is read: the id is not used
         // (its cancel answers 10147).
         let mkt = ApiOrder { order_type: "MKT".into(), post_only: true, ..lmt(0.0) };
-        assert_eq!(core.order_read_checks(9, 265598, "SMART", &mkt, &shared, "DU1", false).1,
+        assert_eq!(core.order_read_checks(9, 265598, "STK", "SMART", &mkt, &shared, "DU1", false).1,
             Some((10051, "Invalid order type".to_string())));
         let overnight = ApiOrder { tif: "OVERNIGHT + DAY".into(), allow_pre_open: true, ..lmt(100.0) };
-        assert_eq!(core.order_read_checks(9, 265598, "SMART", &overnight, &shared, "DU1", false).1,
+        assert_eq!(core.order_read_checks(9, 265598, "STK", "SMART", &overnight, &shared, "DU1", false).1,
             Some((10052, "Invalid time in force:OVERNIGHT + DAY".to_string())));
         assert_eq!(checks(9, &lmt(100.0)), None, "the id was not used");
         // A price that is not a number: after the id check.

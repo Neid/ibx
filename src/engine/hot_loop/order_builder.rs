@@ -163,6 +163,11 @@ fn send_orders(
                 continue;
             }
         }
+        // A selling beta hedge without its max size, once its contract is
+        // known (ibx#614).
+        if hedge_max_size_refusal(&order_req, context, shared) {
+            continue;
+        }
         // The time zones the client could not check: against the zone of
         // the contract's trading hours, once they came; the order waits for
         // them when they were asked (ibx#668; the reference 10.51, paper,
@@ -2460,6 +2465,10 @@ pub(crate) fn reference_rank(tag: u32) -> u16 {
         6262 => 54,
         6260 => 55,
         6117 => 60,
+        // The hedge of a hedge order, after the account (ibx#614).
+        6965 => 61,
+        6690 => 62,
+        6665 => 63,
         // Order attributes.
         583 => 70,
         6010 => 71,
@@ -2467,6 +2476,8 @@ pub(crate) fn reference_rank(tag: u32) -> u16 {
         // The bracket key, after the origin (ib-agent captures/pd-orders,
         // 01/10/2026).
         6531 => 73,
+        // A hedge's beta or ratio, after the bracket key (ibx#614).
+        6703 | 6666 => 74,
         // The smartComboRoutingParams of a combo (ibx#470; captured after
         // the origin and the orderRef).
         6248 | 6851 | 6852 | 6860 | 6861 | 6862 | 6866 | 6867 | 6876 | 6877 | 6878 => 74,
@@ -2545,6 +2556,32 @@ pub(crate) fn reference_rank(tag: u32) -> u16 {
         6238 => 153,
         _ => u16::MAX,
     }
+}
+
+/// A beta hedge whose hedge sells and that has no max size (ibx#614; the
+/// reference 10.51, paper, 15/10/2026, 0.23 s after the order): 10364 on
+/// the hedge, nothing sent; the order is kept for its cancel, which ends it
+/// as an order never sent (Cancelled, 202, 161), and its held parent stays
+/// held.
+fn hedge_max_size_refusal(req: &OrderRequest, context: &mut Context, shared: &Arc<SharedState>) -> bool {
+    let Some((_, Some(attrs))) = req.new_order_side() else { return false };
+    if !attrs.hedge.as_ref().is_some_and(|h| h.max_size_missing) { return false; }
+    let Some(instrument) = req.instrument() else { return false };
+    let oid = req.order_id();
+    log::warn!("Hedge order {} refused: no max size", oid);
+    shared.orders.push_order_error(oid, 10364, "Max Hedging Size value must be defined for the hedge order.".into());
+    context.unsent.insert(oid, (instrument, req.new_order_qty().unwrap_or(0), attrs.parent_id));
+    true
+}
+
+/// A hedge's beta or ratio as the reference writes it (ibx#614): at least
+/// two decimals, up to eight ("1.00", "0.50", "1.2345").
+fn hedge_number(v: f64) -> String {
+    let mut text = format!("{:.8}", v);
+    while text.ends_with('0') && text.split('.').nth(1).is_some_and(|d| d.len() > 2) {
+        text.pop();
+    }
+    text
 }
 
 /// The adjustable-stop tags (ib-agent#49), shared by the plain and extended
@@ -4363,8 +4400,20 @@ fn send_order_ex(
         (1, account_id.to_string()),
         (55, symbol),
         (54, fix_side(side).to_string()),
-        (38, format_uint(qty as u64).to_string()),
+        // A hedge's quantity with two decimals, as the reference writes it
+        // (ibx#614: 38=1.00; a bracket child's is 38=1).
+        (38, if attrs.hedge.is_some() { format!("{}.00", qty) } else { format_uint(qty as u64).to_string() }),
     ];
+    // The hedge of a hedge order (ibx#614; the reference 10.51, paper,
+    // 16/10/2026): the auto-cancel-parent flag, the kind's number, the
+    // beta or the ratio with two decimals at least, the max size.
+    if let Some(hedge) = &attrs.hedge {
+        fields.push((6965, "1".to_string()));
+        fields.push((6665, hedge.kind.to_string()));
+        if let Some(beta) = hedge.beta { fields.push((6703, hedge_number(beta))); }
+        if let Some(ratio) = hedge.ratio { fields.push((6666, hedge_number(ratio))); }
+        if let Some(size) = hedge.max_size { fields.push((6690, size.to_string())); }
+    }
 
     match kind {
         K::Market => fields.push((40, "1".to_string())),
@@ -6802,6 +6851,48 @@ mod tests {
     fn lmt_with(order_id: OrderId, attrs: crate::types::OrderAttrs) -> OrderRequest {
         OrderRequest::SubmitEx { order_id, instrument: 0, side: Side::Buy, qty: 1,
             kind: crate::types::OrderKind::Limit { price: 100 * P }, tif: b'0', attrs }
+    }
+
+    // ibx#614 (the reference 10.51, paper, 15/10/2026, case A): a selling
+    // beta hedge without its max size: 10364, nothing sent, kept for its
+    // cancel (Cancelled, 202, 161).
+    #[test]
+    fn a_selling_beta_hedge_without_its_max_size_is_refused_and_kept() {
+        let attrs = crate::types::OrderAttrs {
+            parent_id: 57731,
+            hedge: Some(crate::types::Hedge { kind: 4, beta: Some(1.0), max_size_missing: true, ..Default::default() }),
+            ..Default::default()
+        };
+        let mut context = Context::new();
+        context.market.register(265598);
+        context.pending_orders.push(OrderRequest::SubmitEx { order_id: 57732, instrument: 0, side: Side::Sell, qty: 1,
+            kind: crate::types::OrderKind::Market, tif: b'0', attrs });
+        let shared = Arc::new(SharedState::new());
+        let (conn, mut peer) = crate::test_support::Peer::pair();
+        let mut conn = Some(conn);
+        drain_and_send_orders(&mut conn, &mut context, "DU1", &mut HeartbeatState::new(), false, &shared);
+        assert!(peer.messages().is_empty(), "nothing sent");
+        assert_eq!(shared.orders.drain_order_errors(), [(57732, 10364, "Max Hedging Size value must be defined for the hedge order.".to_string())]);
+        assert!(context.unsent.contains_key(&57732), "kept for its cancel");
+    }
+
+    // ibx#614, the reference's frames of 16/10/2026 (paper, AAPL MKT
+    // hedges of a LMT parent): a beta hedge with its max size, a pair
+    // hedge of ratio 2, a bracket child with no hedge.
+    #[test]
+    fn hedge_fields_as_the_reference() {
+        let mkt = |order_id: OrderId, side: Side, attrs: crate::types::OrderAttrs| OrderRequest::SubmitEx {
+            order_id, instrument: 0, side, qty: 1, kind: crate::types::OrderKind::Market, tif: b'0', attrs };
+        let hedge = |kind, beta, ratio, max_size| Some(crate::types::Hedge { kind, beta, ratio, max_size, max_size_missing: false });
+        let fields = |f: &[(u32, String)]| f.iter().filter(|(t, _)| [6965, 6665, 6703, 6666, 6690, 38].contains(t))
+            .map(|(t, v)| format!("{t}={v}")).collect::<Vec<_>>().join("|");
+        let beta = wire_tags(mkt(1, Side::Sell, crate::types::OrderAttrs { hedge: hedge(4, Some(0.5), None, Some(100)), ..Default::default() }));
+        assert_eq!(fields(&beta), "6965=1|6690=100|6665=4|6703=0.50|38=1.00");
+        let pair = wire_tags(mkt(2, Side::Sell, crate::types::OrderAttrs { hedge: hedge(3, None, Some(2.0), None), ..Default::default() }));
+        assert_eq!(fields(&pair), "6965=1|6665=3|6666=2.00|38=1.00");
+        let child = wire_tags(mkt(3, Side::Sell, crate::types::OrderAttrs::default()));
+        assert_eq!(fields(&child), "38=1");
+        assert_eq!((hedge_number(1.0), hedge_number(1.2345), hedge_number(0.123456789)), ("1.00".into(), "1.2345".into(), "0.12345679".into()));
     }
 
     fn tags_of(frame: &[(u32, String)]) -> Vec<u32> {

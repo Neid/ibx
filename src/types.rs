@@ -564,11 +564,28 @@ pub struct OrderAttrs {
     /// The attached orders asked from the order preset (ibx#609): the
     /// profit-taker leg, then the stop-loss leg.
     pub attached_from_preset: (bool, bool),
+    /// A hedge order's hedge (ibx#614), None for any other order.
+    pub hedge: Option<Hedge>,
     /// The order's algo, None for none. The reference writes it on top of
     /// the order's own type and price fields, whatever the type (ibx#263).
     pub algo: Option<OrderAlgo>,
     /// The combo of a BAG order, None for any other order (ibx#470).
     pub combo: Option<Box<ComboSpec>>,
+}
+
+/// The hedge of a hedge order (ibx#614), as the reference sends it: its
+/// kind's number (F 1, D 2, P 3, B 4, S 5), the beta of a beta hedge, the
+/// ratio of a pair hedge, and the largest hedge of a beta hedge whose
+/// hedge sells (sent then only).
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Hedge {
+    pub kind: u8,
+    pub beta: Option<f64>,
+    pub ratio: Option<f64>,
+    pub max_size: Option<i32>,
+    /// A beta hedge whose hedge sells, without its max size: refused once
+    /// its contract is known (10364), and kept for its cancel.
+    pub max_size_missing: bool,
 }
 
 /// A combo (BAG) order as the caller gave it (ibx#470): the engine builds

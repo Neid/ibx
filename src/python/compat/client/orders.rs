@@ -29,7 +29,7 @@ impl EClient {
         // that is refused is not held (ibx#547).
         let session_account = self.account_id.lock().unwrap().clone().unwrap_or_default();
         let (notices, refusal, _) = self.core.order_read_checks(
-            oid, contract.con_id, &contract.exchange, order, &shared, &session_account, false);
+            oid, contract.con_id, &contract.sec_type, &contract.exchange, order, &shared, &session_account, false);
         let combo = ClientCore::combo_order(contract, order, &shared.reference, &session_account);
         for (code, message) in notices {
             shared.orders.push_order_error(oid, code, message);
@@ -76,7 +76,7 @@ impl EClient {
         // checks once it is known comes after (ibx#665).
         let looked_up = contract.con_id == 0 && !contract.sec_type.eq_ignore_ascii_case("BAG");
         let (notices, refusal, deferred) = self.core.order_read_checks(
-            oid, contract.con_id, &contract.exchange, api_order, &shared, &session_account, looked_up);
+            oid, contract.con_id, &contract.sec_type, &contract.exchange, api_order, &shared, &session_account, looked_up);
         if !was_held {
             for (code, message) in notices {
                 shared.orders.push_order_error(oid, code, message);
@@ -97,7 +97,7 @@ impl EClient {
         };
         // The condition times as the reference sends them (ibx#416); the
         // order is tracked as the caller placed it.
-        let sent = ClientCore::with_condition_times(api_order);
+        let sent = self.core.hedge_sent(ClientCore::with_condition_times(api_order));
 
         // A smart combo goes out on its currency's smart combo conId.
         let con_id = combo.as_ref().map(|c| c.smart_con_id).filter(|&c| c > 0).unwrap_or(contract.con_id);
@@ -233,7 +233,9 @@ impl EClient {
             // Transmit on: the order goes out with the held orders of its
             // tree, together (ibx#547). An order that fails ends the list;
             // the ones before it go.
-            for (id, contract, order, was_held) in self.core.orders_to_transmit(order_id, &full_contract, &api_order) {
+            let shared = self.shared_state()?;
+            let account = self.account_id.lock().unwrap().clone().unwrap_or_default();
+            for (id, contract, order, was_held) in self.core.orders_to_transmit_checked(order_id, &full_contract, &api_order, &shared, &account) {
                 if let Err(e) = self.send_order(py, id, &contract, &order, was_held, &mut built) {
                     if built.len() > 1 {
                         send_cmd(py, &tx, ClientCore::order_group(built))?;
