@@ -1218,6 +1218,8 @@ pub enum TickSource {
     Trades,
     Midpoint,
     BidAsk,
+    /// The aggregated trades of a crypto pair (ibx#719).
+    AggTrades,
 }
 
 impl TickSource {
@@ -1227,6 +1229,7 @@ impl TickSource {
             Self::Trades => "AllLast",
             Self::Midpoint => "MidPoint",
             Self::BidAsk => "BidAsk",
+            Self::AggTrades => "AggLast",
         }
     }
 
@@ -1236,6 +1239,7 @@ impl TickSource {
             Self::Trades => "Trades",
             Self::Midpoint => "Midpoint",
             Self::BidAsk => "Bid_ask",
+            Self::AggTrades => "Aggregated_Trades",
         }
     }
 }
@@ -1306,18 +1310,26 @@ fn check_ticks(
     }
     let what = what_to_show.to_ascii_uppercase();
     let midpoint_default = sec_type == "CASH";
+    let crypto = sec_type == "CRYPTO";
     let source = match what.as_str() {
         "TRADES" | "AGGTRADES" if midpoint_default => TickSource::Midpoint,
+        // A crypto pair's trades are its aggregated trades (ibx#719; the
+        // reference 10.51, paper, 16/10/2026, BTC on PAXOS).
+        "TRADES" | "AGGTRADES" if crypto => TickSource::AggTrades,
         "TRADES" | "AGGTRADES" => TickSource::Trades,
         "MIDPOINT" => TickSource::Midpoint,
         "BID_ASK" => TickSource::BidAsk,
         _ => return refuse("Invalid source price"),
     };
-    if what == "AGGTRADES" && sec_type != "CRYPTO" {
+    if what == "AGGTRADES" && !crypto {
         warnings.push((10299, "Expected what to show is TRADES, please use that instead of AGGTRADES.".to_string()));
+    }
+    if what == "TRADES" && crypto {
+        warnings.push((10299, "Expected what to show is AGGTRADES, please use that instead of TRADES.".to_string()));
     }
     let asked_as_other = match source {
         TickSource::Trades => what != "TRADES",
+        TickSource::AggTrades => what != "AGGTRADES",
         TickSource::Midpoint => true,
         TickSource::BidAsk => ignore_size,
     };
@@ -1455,6 +1467,9 @@ fn parse_tick_frame(xml: &str, data_name: &str) -> Option<TickFrame> {
     let done = extract_xml_tag(xml, "eoq").unwrap_or("false").trim() == "true";
     let size_step: Option<f64> = extract_xml_tag(xml, "sizeMinTick").and_then(|s| s.trim().parse().ok());
     let data_name = data_name.strip_prefix("All").unwrap_or(data_name);
+    // Aggregated trades are read as trades (ibx#719; not observed: the
+    // paper account has no crypto data).
+    let data_name = if data_name == "AggLast" { "Last" } else { data_name };
 
     let mut ticks: Vec<&str> = Vec::new();
     let mut search_start = 0;
@@ -2535,6 +2550,28 @@ mod tests {
 
     fn ticks(start: &str, end: &str, n: i32, what: &str, ignore: bool, sec_type: &str) -> (Vec<(i32, String)>, Result<CheckedTicks, (i32, String)>) {
         check_ticks_request(start, end, n, what, ignore, sec_type, "SMART", "Europe/Paris", ET_15H)
+    }
+
+    // ibx#719 (the reference 10.51, paper, 16/10/2026, BTC on PAXOS): a
+    // crypto pair's trades are asked as aggregated trades, TRADES with
+    // warning 10299 and the size filter, AGGTRADES without either; the
+    // query is named by the local symbol, its replies read as trades.
+    #[test]
+    fn crypto_trades_are_aggregated_trades() {
+        let t15 = "20261001 15:00:00 UTC";
+        let (w, ok) = ticks(t15, "", 50, "TRADES", false, "CRYPTO");
+        assert_eq!(w, vec![(10299, "Expected what to show is AGGTRADES, please use that instead of TRADES.".to_string())]);
+        let ok = ok.unwrap();
+        assert_eq!((ok.source, ok.ignore_size_filter), (TickSource::AggTrades, true));
+        let (w, ok) = ticks(t15, "", 50, "AGGTRADES", false, "CRYPTO");
+        assert!(w.is_empty());
+        assert_eq!((ok.as_ref().unwrap().source, ok.unwrap().ignore_size_filter), (TickSource::AggTrades, false));
+        let q = TickQuery { symbol: "BTC.USD".into(), con_id: 479624278, sec_type: "CRYPTO".into(), exchange: "PAXOS".into(),
+            ..tick_query(TickSource::AggTrades, None, Some(ET_15H), false) };
+        assert!(q.query_id().contains(";;BTC.USD@PAXOS Aggregated_Trades;;0;;true;;0;;U"), "{}", q.query_id());
+        assert!(build_tick_query_xml(&q, ET_15H + 60).contains("<data>AggLast</data>"));
+        let reply = "<ResultSetTick><id>cf4;;BTC.USD@PAXOS Aggregated_Trades;;0;;true;;0;;U</id><eoq>true</eoq><data>AggLast</data>            <Events><Tick><time>20261016-11:00:00</time><price>67000</price><size>1</size></Tick></Events></ResultSetTick>";
+        assert!(matches!(parse_tick_response(reply).unwrap().data, Some(crate::types::HistoricalTickData::Last(ref t)) if t.len() == 1));
     }
 
     #[test]

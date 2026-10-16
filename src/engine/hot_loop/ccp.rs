@@ -3766,6 +3766,14 @@ impl CcpState {
             {
                 shared.reference.cache_time_zone_id(*con_id, "US/Eastern");
             }
+            // The contract is kept: the query names it by its local symbol
+            // (ibx#719; the reference 10.51, paper, 16/10/2026: "BTC.USD"
+            // for BTC given by symbol).
+            if shared.reference.get_contract(*con_id).is_none()
+                && let Some(def) = records.iter().find(|d| d.con_id == *con_id)
+            {
+                self.cache_definition(def, shared);
+            }
             self.resolved_requests.push(request_with_con_id(pending.request, *con_id));
         } else {
             log::info!("Contract lookup {}: req_id={} found {} contracts", lookup_id, pending.req_id, con_ids.len());
