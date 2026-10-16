@@ -2995,8 +2995,8 @@ pub struct BarData {
     /// Timezone of `date` as reported by the reply (ibx#234) — previously
     /// parsed and then discarded, leaving the bare timestamp string as the
     /// only (unverifiable) evidence of what the bar times mean. Empty on
-    /// streaming updates, which carry no timezone of their own.
-    #[pyo3(get, set)]
+    /// streaming updates, which carry no timezone of their own. Not a
+    /// Python attribute: the official BarData has none (ibx#654).
     pub timezone: String,
 }
 
@@ -3012,11 +3012,11 @@ impl BarData {
 impl BarData {
     /// The official API's defaults: the volume and the WAP unset.
     #[new]
-    #[pyo3(signature = (date="".to_string(), open=0.0, high=0.0, low=0.0, close=0.0, volume=None, wap=None, bar_count=0, timezone="".to_string()))]
+    #[pyo3(signature = (date="".to_string(), open=0.0, high=0.0, low=0.0, close=0.0, volume=None, wap=None, bar_count=0))]
     #[allow(clippy::too_many_arguments)]
-    fn new(date: String, open: f64, high: f64, low: f64, close: f64, volume: Option<&Bound<'_, PyAny>>, wap: Option<&Bound<'_, PyAny>>, bar_count: i32, timezone: String) -> PyResult<Self> {
+    fn new(date: String, open: f64, high: f64, low: f64, close: f64, volume: Option<&Bound<'_, PyAny>>, wap: Option<&Bound<'_, PyAny>>, bar_count: i32) -> PyResult<Self> {
         let decimal = |v: Option<&Bound<'_, PyAny>>| -> PyResult<f64> { Ok(v.map(decimal_from_py).transpose()?.unwrap_or(f64::MAX)) };
-        Ok(Self { date, open, high, low, close, volume: decimal(volume)?, wap: decimal(wap)?, bar_count, timezone })
+        Ok(Self { date, open, high, low, close, volume: decimal(volume)?, wap: decimal(wap)?, bar_count, timezone: String::new() })
     }
 
     #[getter(volume)]
@@ -4084,3 +4084,76 @@ super::hide_second_spelling!(
     Contract, Order ["rule80a", "soft_dollar_tier_name", "soft_dollar_tier_val", "soft_dollar_tier_display_name"], ComboLeg, OrderComboLeg, TagValue, OrderAllocation, OrderState, PriceCondition, TimeCondition, MarginCondition, ExecutionCondition, VolumeCondition, PercentChangeCondition, BarData, IneligibilityReasonPy, ContractDetails, Execution, SmartComponentPy, NewsProviderPy, WshEventDataPy, SoftDollarTierPy, CommissionAndFeesReport ["yield_amount"],
     ContractDescription ["con_id", "currency", "description", "issuer_id", "primary_exchange", "sec_type", "symbol"], DepthMktDataDescriptionPy,
 );
+
+// The text forms of the order conditions, as the official classes' `str()`
+// (ibx#654): an unset value is written as Python writes None, values as
+// Python writes them, the operator part with its two spaces.
+
+/// `str()` of a value, as Python writes it.
+fn py_text<'py, T: IntoPyObject<'py>>(py: Python<'py>, v: T) -> PyResult<String> {
+    use pyo3::IntoPyObjectExt;
+    Ok(v.into_bound_py_any(py)?.str()?.to_string())
+}
+
+/// The operator part: " >=  value" when `isMore` is set, else " <=  value".
+fn operator_text(is_more: Option<bool>, value: &str) -> String {
+    let sign = if is_more.unwrap_or(false) { ">= " } else { "<= " };
+    format!(" {sign} {value}")
+}
+
+/// The contract part: "conId on exchange is <operator> ".
+fn contract_text(py: Python<'_>, con_id: Option<i64>, exchange: &Option<String>, is_more: Option<bool>, value: &str) -> PyResult<String> {
+    Ok(format!("{} on {} is {} ", py_text(py, con_id)?, py_text(py, exchange.clone())?, operator_text(is_more, value)))
+}
+
+#[pymethods]
+impl PriceCondition {
+    fn __str__(&self, py: Python<'_>) -> PyResult<String> {
+        const NAMES: [&str; 9] = ["Default", "DoubleBidAsk", "Last", "DoubleLast", "BidAsk", "N/A1", "N/A2", "LastBidAsk", "MidPoint"];
+        let method = self.trigger_method.and_then(|m| usize::try_from(m).ok()).and_then(|m| NAMES.get(m)).copied().unwrap_or("NOTFOUND");
+        let value = py_text(py, self.price)?;
+        Ok(format!("{method} price of {} ", contract_text(py, self.con_id, &self.exchange, self.is_more, &value)?))
+    }
+}
+
+#[pymethods]
+impl TimeCondition {
+    fn __str__(&self, py: Python<'_>) -> PyResult<String> {
+        Ok(format!("time is {} ", operator_text(self.is_more, &py_text(py, self.time.clone())?)))
+    }
+}
+
+#[pymethods]
+impl MarginCondition {
+    fn __str__(&self, py: Python<'_>) -> PyResult<String> {
+        Ok(format!("the margin cushion percent {} ", operator_text(self.is_more, &py_text(py, self.percent)?)))
+    }
+}
+
+#[pymethods]
+impl ExecutionCondition {
+    /// Joined with `+` in the official class: an unset part raises
+    /// TypeError, as there.
+    fn __str__(&self) -> PyResult<String> {
+        let part = |v: &Option<String>| v.clone().ok_or_else(|| pyo3::exceptions::PyTypeError::new_err(
+            "can only concatenate str (not \"NoneType\") to str"));
+        Ok(format!("trade occurs for {} symbol on {} exchange for {} security type",
+            part(&self.symbol)?, part(&self.exchange)?, part(&self.sec_type)?))
+    }
+}
+
+#[pymethods]
+impl VolumeCondition {
+    fn __str__(&self, py: Python<'_>) -> PyResult<String> {
+        let value = py_text(py, self.volume)?;
+        Ok(format!("volume of {} ", contract_text(py, self.con_id, &self.exchange, self.is_more, &value)?))
+    }
+}
+
+#[pymethods]
+impl PercentChangeCondition {
+    fn __str__(&self, py: Python<'_>) -> PyResult<String> {
+        let value = py_text(py, self.change_percent)?;
+        Ok(format!("percent change of {} ", contract_text(py, self.con_id, &self.exchange, self.is_more, &value)?))
+    }
+}

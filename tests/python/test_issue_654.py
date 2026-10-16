@@ -68,3 +68,44 @@ def test_order_combo_leg():
     from ibapi.order import OrderComboLeg as OLeg
     same(ibx.OrderComboLeg(), OLeg())
     same(fill(ibx.OrderComboLeg(), {"price": 1.25}), fill(OLeg(), {"price": 1.25}))
+
+
+def test_order_conditions():
+    """The conditions' text forms, default and filled (the remaining point
+    of ibx#654)."""
+    from ibapi import order_condition as oc
+    for name in ("PriceCondition", "TimeCondition", "MarginCondition", "VolumeCondition", "PercentChangeCondition"):
+        same(getattr(ibx, name)(), getattr(oc, name)())
+    filled = [
+        ("PriceCondition", (2, 265598, "SMART", True, 150.5)),
+        ("PriceCondition", (8, 265598, "SMART", False, 150.0)),
+        ("PriceCondition", (12, 265598, "SMART", False, 150.0)),
+        ("TimeCondition", (True, "20261016 15:30:00 US/Eastern")),
+        ("MarginCondition", (False, 30)),
+        ("VolumeCondition", (265598, "SMART", True, 1000000)),
+        ("PercentChangeCondition", (265598, "SMART", False, 2.5)),
+        ("ExecutionCondition", ("STK", "SMART", "AAPL")),
+    ]
+    for name, args in filled:
+        same(getattr(ibx, name)(*args), getattr(oc, name)(*args))
+    # A default execution condition joins None into its text: TypeError on both sides.
+    with pytest.raises(TypeError):
+        str(oc.ExecutionCondition())
+    with pytest.raises(TypeError):
+        str(ibx.ExecutionCondition())
+
+
+def test_bar_data_fields():
+    """BarData has the official fields only: no timezone attribute."""
+    assert not hasattr(OBar(), "timezone")
+    assert not hasattr(ibx.BarData(), "timezone")
+
+
+def test_order_with_conditions():
+    from ibapi import order_condition as oc
+    values = {"orderId": 7, "action": "BUY", "totalQuantity": Decimal("100"), "orderType": "LMT", "lmtPrice": 150.5}
+    ours = fill(ibx.Order(), values)
+    theirs = fill(OOrder(), values)
+    ours.conditions = [ibx.PriceCondition(2, 265598, "SMART", True, 150.5), ibx.TimeCondition(False, "20261016 16:00:00")]
+    theirs.conditions = [oc.PriceCondition(2, 265598, "SMART", True, 150.5), oc.TimeCondition(False, "20261016 16:00:00")]
+    same(ours, theirs)
