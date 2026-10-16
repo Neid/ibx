@@ -354,6 +354,9 @@ pub(crate) struct BarRequestInfo {
     /// The answer said its data are delayed: warning 2188 before the end
     /// (ibx#703).
     pub(crate) delayed: bool,
+    /// The contract, whose market rule rounds the prices below session
+    /// level 224 (ibx#615); 0 when not known.
+    pub(crate) con_id: i64,
 }
 
 /// A keepUpToDate bar request (ibx#429): its query, the 5-second router
@@ -445,6 +448,21 @@ pub(crate) const SCANNER_PARAMS_ANSWER: std::time::Duration = std::time::Duratio
 
 const SCANNER_LINK_LOST: &str =
     "Historical Market Data Service query message:HMDS server disconnect occurred.  Attempting reconnection...";
+/// `v` at the nearest multiple of `step`, written with the step's decimals
+/// (ibx#615).
+fn round_to_step(v: f64, step: f64) -> f64 {
+    if !v.is_finite() || v == f64::MAX {
+        return v;
+    }
+    let decimals = format!("{}", step).split('.').nth(1).map_or(0, str::len);
+    // By the steps in one unit, in binary, as the reference: 1.125025
+    // gave 1.12505 and 1.125325 gave 1.1253 (paper, 16/10/2026; every
+    // settled bar of two runs).
+    let per_unit = (1.0 / step).round();
+    let n = (v * per_unit + 0.5).floor();
+    format!("{:.*}", decimals, n / per_unit).parse().unwrap_or(v)
+}
+
 const SCANNER_LINK_RESTORED: &str = "Historical Market Data Service query message:HMDS server connection was successful.";
 /// The request id of a client's scanner parameters request in the
 /// reference's notices of the link (ibx#554): the largest int.
@@ -769,6 +787,7 @@ impl HmdsState {
                                 }
                             }
                             self.write_bar_times(req_id, &mut resp, is_complete);
+                            self.round_bar_prices(req_id, &mut resp.bars, shared);
                             // Clone only when someone is listening on the event
                             // channel — a bar batch is a deep copy (ibx#242).
                             let for_event = clone_for_event(event_tx, &resp);
@@ -1305,7 +1324,28 @@ impl HmdsState {
         if let Some(info) = self.bar_requests.iter().find(|r| r.req_id == req_id) {
             out.time = info.bar_time(b.start, &reply_zone);
         }
+        self.round_bar_prices(req_id, std::slice::from_mut(&mut out), shared);
         shared.reference.push_historical_update(req_id, out);
+    }
+
+    /// The prices of a request's bars in the steps of the contract's
+    /// market rule, as the reference gives them to a client below session
+    /// level 224 (ibx#615; paper, 16/10/2026: EUR.USD bars of 1.125465 and
+    /// 1.125675 given as 1.12545 and 1.1257 at level 214, as they are at
+    /// level 225): the nearest step, in binary. Nothing when the rule is
+    /// not known, or from level 224.
+    fn round_bar_prices(&self, req_id: ReqId, bars: &mut [crate::control::historical::HistoricalBar], shared: &SharedState) {
+        if crate::client_core::SERVER_VERSION >= crate::client_core::LEVEL_PRICE_FROM_DEFINITION {
+            return;
+        }
+        let Some(con_id) = self.bar_requests.iter().find(|r| r.req_id == req_id).map(|r| r.con_id).filter(|c| *c != 0) else { return };
+        for bar in bars {
+            for p in [&mut bar.open, &mut bar.high, &mut bar.low, &mut bar.close] {
+                if let Some(step) = shared.reference.price_step(con_id, *p) {
+                    *p = round_to_step(*p, step);
+                }
+            }
+        }
     }
 
     /// A keepUpToDate request whose history just ended takes the last
@@ -1565,6 +1605,7 @@ impl HmdsState {
             start: crate::control::historical::duration_start(end, duration, &machine_zone),
             end,
             delayed: false,
+            con_id,
         });
         let end_date_time = crate::control::historical::server_time(end);
         let qid = self.next_hmds_query_id;
@@ -1742,6 +1783,7 @@ impl HmdsState {
             ..Default::default()
         };
         self.write_bar_times(m.req_id, &mut resp, true);
+        self.round_bar_prices(m.req_id, &mut resp.bars, shared);
         self.bar_requests.retain(|b| b.req_id != m.req_id);
         let for_event = clone_for_event(event_tx, &resp);
         shared.reference.push_historical_data(m.req_id, resp);
@@ -3621,7 +3663,7 @@ pub(crate) mod tests {
         hmds.keep_up_to_date_reqs.insert(req_id);
         hmds.bar_requests.push(BarRequestInfo {
             req_id, format_date: 1, intraday: bar_size.is_intraday(), zone: Some("US/Eastern".into()), start: 0, end: 0,
-            delayed: false,
+            delayed: false, con_id: 0,
         });
         hmds.live_bars.push(LiveBars {
             req_id, window_id: window_id.to_string(), query_id: format!("{window_id};;AAPL@SMART {label};;1;;true;;0;;I"),
@@ -3631,6 +3673,30 @@ pub(crate) mod tests {
                 else { crate::control::historical::BarDataType::Midpoint }, true),
             joined: 0,
         });
+    }
+
+    // ibx#615 (the reference 10.51, paper, 16/10/2026, EUR.USD 1 min
+    // MIDPOINT bars): at level 214 the prices in the market rule's steps
+    // of 0.00005, the nearest one in binary; level 225 gave 1.125465,
+    // 1.125675, 1.125435, 1.12562 for 1.12545, 1.1257, 1.12545, 1.1256.
+    #[test]
+    fn bar_prices_in_the_market_rule_steps_below_level_224() {
+        for (v, want) in [(1.125465, 1.12545), (1.125675, 1.1257), (1.125435, 1.12545), (1.12562, 1.1256), (773.38, 773.38),
+                          (1.125325, 1.1253), (1.124875, 1.1249), (1.125525, 1.12555), (1.125025, 1.12505)] {
+            let step = if v > 100.0 { 0.01 } else { 0.00005 };
+            assert_eq!(round_to_step(v, step), want, "{v}");
+        }
+        let shared = SharedState::new();
+        shared.reference.push_market_rules(vec![crate::control::contracts::MarketRule {
+            rule_id: 239, price_increments: vec![crate::control::contracts::PriceIncrement { low_edge: 0.0, increment: 0.00005 }],
+            ..Default::default()
+        }]);
+        shared.reference.note_contract_rule(12087792, 239);
+        let mut hmds = HmdsState::new();
+        hmds.bar_requests.push(BarRequestInfo { req_id: 7, format_date: 1, intraday: true, zone: None, start: 0, end: 0, delayed: false, con_id: 12087792 });
+        let mut bars = vec![crate::control::historical::HistoricalBar { time: String::new(), open: 1.125465, high: 1.125675, low: 1.125435, close: 1.12562, volume: -1, wap: -1.0, count: -1 }];
+        hmds.round_bar_prices(7, &mut bars, &shared);
+        assert_eq!((bars[0].open, bars[0].high, bars[0].low, bars[0].close), (1.12545, 1.1257, 1.12545, 1.1256));
     }
 
     // ibx#429 (scenario b1_429_keep_up_to_date): four keepUpToDate
@@ -3771,7 +3837,7 @@ pub(crate) mod tests {
             let duration = if intraday { "1 d" } else { "1 m" };
             hmds.bar_requests.push(BarRequestInfo { req_id: req, format_date, intraday, zone: Some("US/Eastern".into()),
                 start: crate::control::historical::duration_start(end, duration, "Europe/Paris"), end,
-            delayed: false,
+            delayed: false, con_id: 0,
         });
         }
         hmds.pending_head_ts.push(("TickHeadClient1".to_string(), 9544, Instant::now() + HEAD_TIMESTAMP_TIMEOUT));
@@ -3819,7 +3885,7 @@ pub(crate) mod tests {
         };
         for (w, req) in [("cf16", 7303), ("cf20", 7304)] {
             hmds.pending_historical.push((w.to_string(), req));
-            hmds.bar_requests.push(BarRequestInfo { req_id: req, format_date: 1, intraday: false, zone: None, start: 0, end: 0, delayed: false });
+            hmds.bar_requests.push(BarRequestInfo { req_id: req, format_date: 1, intraday: false, zone: None, start: 0, end: 0, delayed: false, con_id: 0 });
         }
         for msg in [part("cf16", false, "<tz>Japan</tz><delay>1200</delay>", false), part("cf16", true, "", true),
             part("cf20", false, "<tz>MET</tz>", false), part("cf20", true, "", true)]

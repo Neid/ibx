@@ -1551,6 +1551,8 @@ pub struct ReferenceState {
     pub(crate) historical_errors: SeqQueue<(ReqId, i32, String)>,
     error_tap: ErrorTap,
     market_rules: Mutex<Vec<MarketRule>>,
+    /// The market rule of each contract whose definition came (ibx#615).
+    rule_of_contract: Mutex<HashMap<i64, i32>>,
     depth_exchanges_cache: Mutex<Vec<DepthMktDataDescription>>,
     depth_exchanges_pending: Mutex<bool>,
     /// Contract cache from CCP exec reports (con_id -> api::Contract).
@@ -1680,6 +1682,7 @@ impl ReferenceState {
             historical_errors: SeqQueue::new(&stamp),
             error_tap: ErrorTap::default(),
             market_rules: Mutex::new(Vec::new()),
+            rule_of_contract: Mutex::new(HashMap::new()),
             depth_exchanges_cache: Mutex::new(Vec::new()),
             depth_exchanges_pending: Mutex::new(false),
             contract_cache: Mutex::new(HashMap::new()),
@@ -1801,6 +1804,22 @@ impl ReferenceState {
 
     pub fn drain_historical_errors(&self) -> Vec<(ReqId, i32, String)> {
         self.historical_errors.drain()
+    }
+
+    /// The market rule of a contract, from its definition (ibx#615).
+    #[doc(hidden)] pub fn note_contract_rule(&self, con_id: i64, rule_id: i32) {
+        self.rule_of_contract.lock().unwrap().insert(con_id, rule_id);
+    }
+
+    /// The price step of a contract's market rule at `price` (ibx#615):
+    /// the increment of the last tier whose low edge is at or below the
+    /// price. None when the contract's rule is not known.
+    pub fn price_step(&self, con_id: i64, price: f64) -> Option<f64> {
+        let rule_id = *self.rule_of_contract.lock().unwrap().get(&con_id)?;
+        let rules = self.market_rules.lock().unwrap();
+        let rule = rules.iter().find(|r| r.rule_id == rule_id)?;
+        rule.price_increments.iter().filter(|t| t.low_edge <= price.abs()).last()
+            .or(rule.price_increments.first()).map(|t| t.increment).filter(|s| *s > 0.0)
     }
 
     /// Get cached market rules.

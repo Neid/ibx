@@ -461,6 +461,9 @@ fn pnl_account_refusal(class: &str, account: &str, own_account: &str) -> Result<
 /// current clients offer more than 214, so they get 214. Requests of higher
 /// levels are not implemented.
 pub const SERVER_VERSION: i32 = 214;
+/// From this session level the reference gives historical prices in the
+/// steps of the contract's definition, not its market rule (ibx#615).
+pub const LEVEL_PRICE_FROM_DEFINITION: i32 = 224;
 
 /// Each account summary frame is given twice below the session level of
 /// the reference 10.51 (ibx#486, ibx#662).

@@ -3435,6 +3435,7 @@ impl CcpState {
             shared.reference.push_market_rules(rules);
         }
         let records = contracts::parse_secdef_records(msg).unwrap_or_default();
+        note_contract_rules(&records, shared);
         // The company lookup of an underlying (ibx#436): its industry is
         // kept for the later rows of its derivatives; not a user reply.
         if let Some(i) = response_req_id.as_deref().and_then(|rid| self.pending_company.iter().position(|(id, _)| id == rid)) {
@@ -3706,6 +3707,11 @@ impl CcpState {
         let Some(idx) = self.pending_resolves.iter().position(|p| ReqId::from(p.lookup_id) == number) else { return false };
         let pending = self.pending_resolves.swap_remove(idx);
         let records = crate::control::contracts::parse_secdef_records(msg).unwrap_or_default();
+        let rules = crate::control::contracts::parse_market_rules(msg);
+        if !rules.is_empty() {
+            shared.reference.push_market_rules(rules);
+        }
+        note_contract_rules(&records, shared);
         if matches!(pending.request, crate::types::ControlCommand::DisplayGroupLookup { .. }) {
             // A display group update (ibx#424): a contract is kept and gives
             // no answer, none gives the reference's error.
@@ -4556,6 +4562,16 @@ pub(crate) fn parse_ledger_rows(text: &str) -> Vec<crate::bridge::LedgerRow> {
         }
     }
     rows
+}
+
+/// The market rule of each contract of a definition reply (ibx#615): the
+/// historical prices are given in its steps below session level 224.
+fn note_contract_rules(records: &[crate::control::contracts::ContractDefinition], shared: &SharedState) {
+    for def in records.iter().filter(|d| d.con_id != 0) {
+        if let Some(rule) = def.market_rule_id {
+            shared.reference.note_contract_rule(def.con_id, rule as i32);
+        }
+    }
 }
 
 /// The API letter of a hedge kind's number (ibx#614).
