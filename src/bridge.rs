@@ -538,9 +538,12 @@ pub enum Event {
     CompletedOrder(CompletedOrder),
     /// An order as the client reports it open, after each of its reports.
     OpenOrder { order_id: OrderId, info: RichOrderInfo },
-    /// Scanner parameters, as XML. This is the server's text as it came:
-    /// the clients rebuild it for their callback the way the reference
-    /// does, the channel does not (ibx#571).
+    /// Scanner parameters, as XML: the text the `scannerParameters`
+    /// callback gives, rebuilt as the reference hands it to a client
+    /// (ibx#571, ibx#574). The rebuild takes over 10 ms, so it is made on a
+    /// thread of its own: the event comes that much after the answer, and
+    /// can come after events written in the meantime. A text the rebuild
+    /// refuses gives no event, as no callback.
     ScannerParameters(String),
     /// Rows of a scanner subscription.
     ScannerData { req_id: ReqId, result: ScannerResult },
@@ -1643,11 +1646,15 @@ pub struct ReferenceState {
     /// The logon features that change the entries of a market data
     /// request (ibx#648), shared with the engine's request writers.
     md_entry_marks: Arc<AtomicU8>,
+    /// The last server text of the scanner parameters rebuilt for the event
+    /// channel, and its rebuild (ibx#574): one rebuild for the same text.
+    scanner_params_rebuilt: Arc<Mutex<Option<(String, String)>>>,
 }
 
 impl ReferenceState {
     fn new(stamp: &Arc<AtomicU64>) -> Self {
         Self {
+            scanner_params_rebuilt: Arc::new(Mutex::new(None)),
             historical_data: SeqQueue::new(&stamp),
             historical_updates: SeqQueue::new(&stamp),
             head_timestamps: SeqQueue::new(&stamp),
@@ -1863,9 +1870,32 @@ impl ReferenceState {
     }
 
     #[doc(hidden)] pub fn push_scanner_params(&self, xml: String) {
-        let copy = self.error_tap.copy(&xml);
+        // The channel gets the text of the callback (ibx#574), rebuilt off
+        // the engine thread.
+        if let Some(tx) = self.error_tap.events.get().cloned() {
+            let providers = self.news_providers();
+            let session = crate::control::scanner_params::Session::new(
+                &self.logon_features(), providers.iter().map(|p| p.code.as_str()));
+            let server_xml = xml.clone();
+            let cache = self.scanner_params_rebuilt.clone();
+            let _ = std::thread::Builder::new().name("ibx-scanner-params".into()).spawn(move || {
+                let rebuilt = {
+                    let mut kept = cache.lock().unwrap();
+                    match kept.as_ref() {
+                        Some((text, done)) if *text == server_xml => Some(done.clone()),
+                        _ => {
+                            let done = crate::control::scanner_params::for_client(&server_xml, &session);
+                            *kept = done.clone().map(|d| (server_xml, d));
+                            done
+                        }
+                    }
+                };
+                if let Some(rebuilt) = rebuilt {
+                    let _ = tx.try_send(Event::ScannerParameters(rebuilt));
+                }
+            });
+        }
         self.scanner_params.lock().unwrap().push(xml);
-        self.error_tap.emit(copy.map(|xml| Event::ScannerParameters(xml)));
     }
 
     #[doc(hidden)] pub fn push_scanner_data(&self, req_id: ReqId, result: ScannerResult) {
@@ -3121,7 +3151,10 @@ mod tests {
             other => panic!("not expected: {other:?}"),
         }).collect();
         assert_eq!(events, [
-            "chains 2 AAPL", "rules [239]", "histogram 3 7", "scanner <xml/>", "fundamental 4 <report/>",
+            // No scanner parameters: their event comes from a thread of
+            // its own once rebuilt, and "<xml/>" is refused by the rebuild
+            // (ibx#574; the client test reads a rebuilt one).
+            "chains 2 AAPL", "rules [239]", "histogram 3 7", "fundamental 4 <report/>",
             "article 5 0 text", "news 6 0 true", "bar 7 1.5", "bulletin 1", "commission e1", "summary 1 true",
         ]);
         // The queues keep every entry for the wrapper.

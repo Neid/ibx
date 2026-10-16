@@ -3703,15 +3703,22 @@ fn process_msgs_rebuilds_the_scanner_params_for_the_session() {
     let codes: Vec<&str> = rebuilt.lines().filter_map(|l| l.trim().strip_prefix("<scanCode>")?.strip_suffix("</scanCode>")).collect();
     assert_eq!(codes, ["S0", "S1", "S2"]);
 
-    // The event channel carries the server's text.
-    let on_channel: Vec<String> = events
-        .try_iter()
-        .filter_map(|e| match e {
-            crate::bridge::Event::ScannerParameters(xml) => Some(xml),
-            _ => None,
-        })
-        .collect();
-    assert_eq!(on_channel, [server.as_str(), server.as_str(), "<scanner>XML</scanner>", server.as_str()]);
+    // The event channel carries the callback's text (ibx#574), rebuilt on
+    // a thread of its own: the three answers of the text that rebuilds,
+    // none for the one refused.
+    let mut on_channel: Vec<String> = Vec::new();
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while on_channel.len() < 3 && std::time::Instant::now() < until {
+        if let Ok(crate::bridge::Event::ScannerParameters(xml)) = events.recv_timeout(std::time::Duration::from_millis(50)) {
+            on_channel.push(xml);
+        }
+    }
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    on_channel.extend(events.try_iter().filter_map(|e| match e {
+        crate::bridge::Event::ScannerParameters(xml) => Some(xml),
+        _ => None,
+    }));
+    assert_eq!(on_channel, [rebuilt.as_str(), rebuilt.as_str(), rebuilt.as_str()]);
 
     // Nothing waits any more.
     let mut w = ScannerParameters::default();
