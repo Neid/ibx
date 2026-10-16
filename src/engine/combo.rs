@@ -592,7 +592,7 @@ impl ComboBook {
 
     /// A gateway-specific answer (multiplier or leg confirmation) for a
     /// set-up request. None when the answer is not for one.
-    pub(crate) fn user_reply(&mut self, parsed: &HashMap<u32, String>, ts: &str) -> Option<Progress> {
+    pub(crate) fn user_reply(&mut self, parsed: &crate::protocol::fix::FieldMap<'_>, ts: &str) -> Option<Progress> {
         let req_id = parsed.get(&320)?;
         let idx = self.setups.iter().position(|s| &s.req_id == req_id
             && matches!(s.step, Step::Multiplier | Step::Confirm))?;
@@ -810,11 +810,11 @@ mod tests {
         assert_eq!(p.send.iter().map(text).collect::<Vec<_>>(),
             ["35=U|6040=36|320=FixIMCMultReq7|207=BEST|6134=9|6079=2|6080=756733|6081=1|6082=1|6080=320227571|6081=1|6082=0|6175=0"]);
         let mult: HashMap<u32, String> = [(320, "FixIMCMultReq7".to_string()), (231, "1".to_string())].into();
-        let p = book.user_reply(&mult, "T").unwrap();
+        let p = book.user_reply(&crate::protocol::fix::field_view(&mult), "T").unwrap();
         assert_eq!(p.send.iter().map(text).collect::<Vec<_>>(),
             ["35=U|6040=7|320=FixComboLegConfirmRequest8|207=BEST|6134=9|6248=1|6079=2|6080=756733|6081=1|6082=1|6080=320227571|6081=1|6082=0|6175=0"]);
         let confirm: HashMap<u32, String> = [(320, "FixComboLegConfirmRequest8".to_string()), (6085, "756733/1,320227571/-1".to_string())].into();
-        let p = book.user_reply(&confirm, "T").unwrap();
+        let p = book.user_reply(&crate::protocol::fix::field_view(&confirm), "T").unwrap();
         assert!(p.release && p.send.is_empty());
 
         let Ready::Built(combo) = book.ready(1, &spec, "T") else { panic!() };

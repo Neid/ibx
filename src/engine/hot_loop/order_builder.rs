@@ -3364,12 +3364,12 @@ fn is_volatility(req: &OrderRequest) -> bool {
 
 /// The answer of a trading permission request (ibx#666): whether the
 /// account trades the class; the orders that waited for it go on.
-pub(crate) fn permission_reply(context: &mut Context, parsed: &std::collections::HashMap<u32, String>) {
-    let Some(key) = parsed.get(&6411) else { return };
-    let allowed = parsed.get(&6414).is_some_and(|v| v != "0");
+pub(crate) fn permission_reply(context: &mut Context, parsed: &fix::FieldMap<'_>) {
+    let Some(&key) = parsed.get(&6411) else { return };
+    let allowed = parsed.get(&6414).is_some_and(|v| *v != "0");
     log::info!("Trading permission of {}: {}", key, allowed);
     context.permissions_asked.remove(key);
-    context.trading_permissions.insert(key.clone(), allowed);
+    context.trading_permissions.insert(key.to_string(), allowed);
     release_rth_parked(context);
 }
 
@@ -4241,10 +4241,10 @@ fn ask_order_preset(context: &mut Context, conn: &mut Connection, hb: &mut Heart
 
 /// The answer of an order preset request (ibx#660): the time in force it
 /// sets for its security type; the orders that waited for it go on.
-pub(crate) fn preset_reply(context: &mut Context, parsed: &std::collections::HashMap<u32, String>) {
+pub(crate) fn preset_reply(context: &mut Context, parsed: &fix::FieldMap<'_>) {
     let Some(sec_type) = parsed.get(&8168).and_then(|k| k.strip_prefix("s=")) else { return };
     let sec_type = sec_type.split('&').next().unwrap_or(sec_type).to_string();
-    let tif = parsed.get(&4026).cloned();
+    let tif = parsed.get(&4026).map(|s| s.to_string());
     log::info!("Order preset of {}: time in force {:?}", sec_type, tif);
     context.presets_asked.remove(&sec_type);
     context.order_presets.insert(sec_type, tif);
@@ -5123,7 +5123,7 @@ mod tests {
 
         let reply: std::collections::HashMap<u32, String> =
             [(8166, "G"), (8168, "s=STK"), (8169, "v=1"), (4026, "GTC")].into_iter().map(|(t, v)| (t, v.to_string())).collect();
-        preset_reply(&mut context, &reply);
+        preset_reply(&mut context, &fix::field_view(&reply));
         context.pending_orders.push(order(FIRST + 1));
         drain_and_send_orders(&mut conn, &mut context, "DU1", &mut hb, false, &shared);
         let sent: Vec<Vec<(u32, String)>> = peer.messages().iter().map(|m| crate::test_support::parse_fields(m)).collect();
@@ -7229,7 +7229,7 @@ mod tests {
             assert!(shared.orders.drain_order_errors().is_empty(), "it waits for the preset");
             let reply: std::collections::HashMap<u32, String> =
                 [(8168, "s=STK"), (4026, "DAY")].into_iter().map(|(t, v)| (t, v.to_string())).collect();
-            preset_reply(&mut context, &reply);
+            preset_reply(&mut context, &fix::field_view(&reply));
             drain_and_send_orders(&mut conn, &mut context, "DU1", &mut HeartbeatState::new(), false, &shared);
             assert!(peer.messages().is_empty(), "nothing sent");
             assert_eq!(shared.orders.drain_order_errors(), [(id, 10355, format!("Cannot auto-attach {leg}. Preset is not defined."))]);
@@ -7745,7 +7745,7 @@ mod tests {
                 (Some("U"), Some("65"), Some("0"), Some("2/OPT/R")));
             let answer: std::collections::HashMap<u32, String> = [(6040, "66"), (6410, "0"), (6411, "2/OPT/R"),
                 (6412, "1"), (6414, allowed)].into_iter().map(|(t, v)| (t, v.to_string())).collect();
-            permission_reply(&mut context, &answer);
+            permission_reply(&mut context, &fix::field_view(&answer));
             let frames = drain_frames(&mut context, &shared, &mut conn, &mut server);
             (frames, shared, context, conn, server)
         };
@@ -7811,7 +7811,7 @@ mod tests {
             let (frames, shared, mut context, mut conn, mut server) = order_by_con_id("515974959", "CME", order(), &ES_PUT);
             assert_eq!(frames.len(), 1, "the permission is asked and the order waits: {frames:?}");
             assert_eq!(tag(&frames[0], 6411), Some("CME/FOP/GLOBEX"));
-            permission_reply(&mut context, &permission_answer("CME/FOP/GLOBEX", allowed));
+            permission_reply(&mut context, &fix::field_view(&permission_answer("CME/FOP/GLOBEX", allowed)));
             (drain_frames(&mut context, &shared, &mut conn, &mut server), shared)
         };
         let (frames, shared) = run("0");
@@ -7839,7 +7839,7 @@ mod tests {
             .map(|(t, v)| format!("{t}={v}")).collect();
         assert_eq!(message.join("|"), concat!("35=D|44=0.01|6122=c|38=1|40=2|55=SAP|200=202612|201=1|202=85|167=WAR|48=HE0DGD|22=101|",
             "231=0.10|54=1|59=0|100=FWB|6210=FWB|6008=566386640|6088=Socket|15=EUR|6211=|6238="));
-        permission_reply(&mut context, &permission_answer("FWB/WAR/STK", "0"));
+        permission_reply(&mut context, &fix::field_view(&permission_answer("FWB/WAR/STK", "0")));
         context.pending_orders.push(order(84));
         assert!(drain_frames(&mut context, &shared, &mut conn, &mut server).is_empty(), "nothing sent");
         assert_eq!(shared.orders.drain_order_errors(), [(84, 460, "No trading permissions.".to_string())]);
@@ -7898,7 +7898,7 @@ mod tests {
         assert_eq!(frames.iter().map(|f| tag(f, 35).unwrap_or("")).collect::<Vec<_>>(), ["U", "D"], "{frames:?}");
         assert_eq!(message_of(&frames[1]), concat!("35=D|6122=c|152=100.00|38=1|40=1|55=VFIAX|167=FUND|48=922908710|22=101|",
             "231=1.00|54=1|59=0|100=FUNDSERV|6210=FUNDSERV|6008=48013549|6088=Socket|15=USD|6211=|6238="));
-        permission_reply(&mut context, &permission_answer("FUNDSERV/FUND/NONE", "0"));
+        permission_reply(&mut context, &fix::field_view(&permission_answer("FUNDSERV/FUND/NONE", "0")));
         context.pending_orders.push(cash(89));
         assert!(drain_frames(&mut context, &shared, &mut conn, &mut server).is_empty(), "nothing sent");
         assert_eq!(shared.orders.drain_order_errors(), [(89, 460, "No trading permissions.".to_string())]);
@@ -7918,7 +7918,7 @@ mod tests {
         for (allowed, code) in [("0", 460), ("1", 321)] {
             let (frames, shared, mut context, mut conn, mut server) = order_by_con_id("515974959", "CME", vol(91), &ES_PUT);
             assert_eq!(frames.iter().map(|f| tag(f, 35).unwrap_or("")).collect::<Vec<_>>(), ["U"], "it waits: {frames:?}");
-            permission_reply(&mut context, &permission_answer("CME/FOP/GLOBEX", allowed));
+            permission_reply(&mut context, &fix::field_view(&permission_answer("CME/FOP/GLOBEX", allowed)));
             assert!(drain_frames(&mut context, &shared, &mut conn, &mut server).is_empty(), "nothing sent");
             let errors = shared.orders.drain_order_errors();
             assert_eq!(errors.iter().map(|e| (e.0, e.1)).collect::<Vec<_>>(), [(91, code)], "{errors:?}");
@@ -7940,7 +7940,7 @@ mod tests {
         for (allowed, code) in [("0", 460), ("1", 321)] {
             let (frames, shared, mut context, mut conn, mut server) = order_by_con_id("29105555", "SMART", order(), &IBM_BOND);
             assert_eq!(frames.iter().map(|f| tag(f, 35).unwrap_or("")).collect::<Vec<_>>(), ["U"], "it waits: {frames:?}");
-            permission_reply(&mut context, &permission_answer("7/BOND/USA_DEBT", allowed));
+            permission_reply(&mut context, &fix::field_view(&permission_answer("7/BOND/USA_DEBT", allowed)));
             assert!(drain_frames(&mut context, &shared, &mut conn, &mut server).is_empty(), "nothing sent");
             let errors = shared.orders.drain_order_errors();
             assert_eq!(errors.iter().map(|e| (e.0, e.1)).collect::<Vec<_>>(), [(90, code)], "{errors:?}");

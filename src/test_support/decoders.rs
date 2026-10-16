@@ -58,7 +58,14 @@ pub fn xyz(b: &[u8]) {
 
 /// Wire-format text frames: field parsing, signature check, checksum framing.
 pub fn fix(b: &[u8]) {
-    let _ = fix::fix_parse(b);
+    let owned = fix::fix_parse(b);
+    // The borrowed reading gives the same fields and values as the owned
+    // one, borrowed or copied (ibx#701).
+    let mut lossy = None;
+    let fields = fix::fix_fields(b, &mut lossy);
+    assert!(fields.len() == owned.len() && fields.iter().all(|(t, v)| owned.get(t).map(String::as_str) == Some(*v)),
+        "borrowed fields differ from the owned ones");
+    assert_eq!(fix::fix_parse_borrowed(b).is_some(), lossy.is_none());
     let _ = fix::is_signed(b);
     let _ = fix::fix_unsign(b, &[7u8; 20], &[3u8; 16]);
     let _ = fix::fix_read(&mut std::io::Cursor::new(b));

@@ -3793,7 +3793,7 @@ pub(crate) fn format_price_ref(price: Price) -> StackStr {
 /// the wire those are not-available sentinels, not values: the gateway's own
 /// field parser maps nan/unparseable to unset (ibx#214). Without the finite
 /// filter, "nan" saturated to 0 and "inf" to i64::MAX.
-pub(crate) fn parse_price_tag(val: Option<&String>) -> Price {
+pub(crate) fn parse_price_tag(val: Option<&str>) -> Price {
     val.and_then(|s| s.parse::<f64>().ok())
         .filter(|f| f.is_finite())
         .map(|f| (f * PRICE_SCALE as f64) as Price)
@@ -3816,13 +3816,13 @@ pub(crate) fn decode_tif(tif: u8) -> &'static str {
 /// (ibx#307): DAY when the time in force is absent; else its first character,
 /// DTC for good-till-cancel with the DTC flag set, OVERNIGHT + DAY with the
 /// include-overnight flag set, else OVERNIGHT when the exchange is OVERNIGHT.
-pub(crate) fn report_tif(parsed: &std::collections::HashMap<u32, String>) -> u8 {
+pub(crate) fn report_tif(parsed: &fix::FieldMap<'_>) -> u8 {
     let Some(mut code) = parsed.get(&59).and_then(|s| s.bytes().next()) else { return b'0' };
-    let flag = |tag: u32| parsed.get(&tag).map(|s| s.as_str()) == Some("1");
+    let flag = |tag: u32| parsed.get(&tag).copied() == Some("1");
     if code == b'1' && flag(6436) { code = crate::types::TIF_DTC; }
     if flag(8534) {
         code = b'b';
-    } else if parsed.get(&6004).map(|s| s.as_str()) == Some("OVERNIGHT") {
+    } else if parsed.get(&6004).copied() == Some("OVERNIGHT") {
         code = b'j';
     }
     code

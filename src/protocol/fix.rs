@@ -232,6 +232,44 @@ pub fn fix_parse(data: &[u8]) -> HashMap<u32, String> {
     result
 }
 
+/// The fields of a message, each value borrowed from the message bytes.
+pub type FieldMap<'a> = HashMap<u32, &'a str>;
+
+/// The fields of a message with no copy of their values: the same rules as
+/// [`fix_parse`] (field numbers read from the bytes, what is not a number
+/// skipped, a repeated field keeps its last value, the map sized once).
+/// A value that is not UTF-8 cannot be borrowed as text, so the whole
+/// message gives `None` and the caller reads it with [`fix_parse`], which
+/// keeps such a value with replacements; [`fix_fields`] does both
+/// (ibx#701).
+pub fn fix_parse_borrowed(data: &[u8]) -> Option<FieldMap<'_>> {
+    let mut result = HashMap::with_capacity(data.iter().filter(|&&b| b == SOH).count() + 1);
+    for part in data.split(|&b| b == SOH) {
+        let Some(eq) = part.iter().position(|&b| b == b'=') else { continue };
+        let Some(tag) = parse_tag(&part[..eq]) else { continue };
+        result.insert(tag, std::str::from_utf8(&part[eq + 1..]).ok()?);
+    }
+    Some(result)
+}
+
+/// The fields of a message, borrowed from its bytes. A message with a value
+/// that is not UTF-8 (rare) is read with [`fix_parse`] into `lossy`, and
+/// the map borrows from there: the values are those of [`fix_parse`] in
+/// both cases (ibx#701).
+pub fn fix_fields<'a>(data: &'a [u8], lossy: &'a mut Option<HashMap<u32, String>>) -> FieldMap<'a> {
+    if let Some(fields) = fix_parse_borrowed(data) {
+        return fields;
+    }
+    lossy.insert(fix_parse(data)).iter().map(|(tag, val)| (*tag, val.as_str())).collect()
+}
+
+/// A view of an owned map of fields, for the tests that build one by hand
+/// (ibx#701).
+#[cfg(test)]
+pub(crate) fn field_view(owned: &HashMap<u32, String>) -> FieldMap<'_> {
+    owned.iter().map(|(tag, val)| (*tag, val.as_str())).collect()
+}
+
 /// A field number: ASCII digits only, within `u32`.
 #[inline]
 fn parse_tag(digits: &[u8]) -> Option<u32> {
@@ -766,6 +804,40 @@ mod tests {
         assert_eq!(parsed.get(&58).map(String::as_str), Some("c"));
         assert_eq!(parsed.get(&207).map(String::as_str), Some("\u{FFFD}Q"));
         assert_eq!(fix_parse(b"58=a=b").get(&58).map(String::as_str), Some("a=b"));
+    }
+
+    // ibx#701: the borrowed map follows the same rules as the owned one;
+    // a value that is not UTF-8 makes the whole message fall back to the
+    // owned reading, with the same values.
+    #[test]
+    fn fix_parse_borrowed_reads_field_numbers_from_the_bytes() {
+        let data = b"8=X\x01x5=1\x01=2\x0199999999999=3\x0158=a=b\x0158=c\x01 7=4\x01207=Q\x01";
+        let parsed = fix_parse_borrowed(data).unwrap();
+        assert_eq!(parsed.len(), 3, "{parsed:?}");
+        assert_eq!(parsed.get(&8).copied(), Some("X"));
+        assert_eq!(parsed.get(&58).copied(), Some("c"));
+        assert_eq!(parsed.get(&207).copied(), Some("Q"));
+        assert_eq!(fix_parse_borrowed(b"58=a=b").unwrap().get(&58).copied(), Some("a=b"));
+        assert_eq!(fix_parse_borrowed(b"35=\x01").unwrap().get(&35).copied(), Some(""));
+        let owned = fix_parse(data);
+        assert!(parsed.iter().all(|(tag, val)| owned.get(tag).map(String::as_str) == Some(*val)));
+        assert_eq!(parsed.len(), owned.len());
+    }
+
+    #[test]
+    fn fix_fields_falls_back_to_the_owned_reading_on_a_value_not_utf8() {
+        let data = b"8=X\x01207=\xFFQ\x01\xDE\xAD=1\x0155=AAPL\x01";
+        assert!(fix_parse_borrowed(data).is_none());
+        let mut lossy = None;
+        let fields = fix_fields(data, &mut lossy);
+        assert_eq!(fields.len(), 3, "{fields:?}");
+        assert_eq!(fields.get(&207).copied(), Some("\u{FFFD}Q"));
+        assert_eq!(fields.get(&55).copied(), Some("AAPL"));
+        assert_eq!(fields.get(&8).copied(), Some("X"));
+        // A message in UTF-8 is borrowed: nothing goes to the owned map.
+        let mut unused = None;
+        assert_eq!(fix_fields(b"55=AAPL\x01", &mut unused).get(&55).copied(), Some("AAPL"));
+        assert!(unused.is_none());
     }
 
     #[test]

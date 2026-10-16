@@ -2173,6 +2173,8 @@ decoder,protocol::ns::is_ns_text,NS text or XYZ binary,src/robustness/decoders.r
 decoder,protocol::xyz::xyz_parse_response,XYZ login message,src/robustness/decoders.rs::xyz_messages ; src/robustness/mutation.rs::recorded_frames_mutated_through_the_decoders
 decoder,protocol::xyz::parse_swcr_token_challenge,XYZ second factor challenge,src/robustness/decoders.rs::xyz_messages ; src/robustness/mutation.rs::recorded_frames_mutated_through_the_decoders
 decoder,protocol::fix::fix_parse,FIX tags,src/robustness/decoders.rs::fix_frames ; src/robustness/mutation.rs::recorded_frames_mutated_through_the_decoders
+decoder,protocol::fix::fix_parse_borrowed,fields borrowed from the message (ibx#701),src/robustness/decoders.rs::fix_frames ; src/robustness/mutation.rs::recorded_frames_mutated_through_the_decoders
+decoder,protocol::fix::fix_fields,fields borrowed or copied when not UTF-8 (ibx#701),src/robustness/decoders.rs::fix_frames ; src/robustness/mutation.rs::recorded_frames_mutated_through_the_decoders
 decoder,protocol::fix::is_signed,FIX signature trailer,src/robustness/decoders.rs::fix_frames ; src/robustness/mutation.rs::recorded_frames_mutated_through_the_decoders
 decoder,protocol::fix::fix_unsign,FIX signature check,src/robustness/decoders.rs::fix_frames ; src/robustness/decoders.rs::connection_framing ; src/robustness/mutation.rs::recorded_frames_mutated_through_the_decoders
 decoder,protocol::fix::fix_read,FIX frame read,src/robustness/decoders.rs::fix_frames ; src/robustness/mutation.rs::recorded_frames_mutated_through_the_decoders
