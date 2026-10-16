@@ -124,7 +124,11 @@ impl EClient {
                     // (ibx#455).
                     for (req_id, code, text) in run(&mut ib.tbt_errors, until) {
                         wrapper.error(req_id, code as i64, &text, "");
-                        self.core.unregister_tbt(req_id);
+                        // A duplicate leaves the live request of that id
+                        // (ibx#720).
+                        if code != 102 {
+                            self.core.unregister_tbt(req_id);
+                        }
                     }
                 }
                 Kind::tbt_trades => self.deliver_tbt_trades(wrapper, run(&mut ib.tbt_trades, until)),

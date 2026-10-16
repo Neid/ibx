@@ -500,6 +500,13 @@ impl HotLoop {
     fn start_tbt(&mut self, req_id: ReqId, con_id: i64, id: InstrumentId, symbol: &str, exchange: &str, sec_type: &str,
         tbt_type: crate::types::TbtType, number_of_ticks: i32, ignore_size: bool) {
         use crate::engine::routing::DataType;
+        // An id already in use by a live request: 102, the live one goes
+        // on (ibx#720; the reference 10.51, paper, 16/10/2026, a second
+        // BidAsk request of AAPL under the same id, 0.2 s after it).
+        if self.hmds.tbt_subscriptions.iter().any(|s| s.clients.contains(&req_id)) {
+            self.shared.market.push_tbt_error(req_id, 102, "Duplicate ticker id".to_string());
+            return;
+        }
         let st = if sec_type.is_empty() { "STK" } else { sec_type };
         let route_exchange = farm::routing_exchange(exchange, st).to_string();
         let agg_group = self.agg_group_for(con_id, &route_exchange);
@@ -7017,6 +7024,26 @@ mod tbt_tests {
         engine.inject_hmds_message(&tbt_frame(&trade_entry(1, 1_790_000_001, 1, 12, 7, "ISLAND")));
         let reqs: Vec<ReqId> = shared.market.drain_tbt_trades().iter().map(|t| t.req_id).collect();
         assert_eq!(reqs, [5]);
+    }
+
+    // ibx#720 (the reference 10.51, paper, 16/10/2026): a second request
+    // under the id of a live one gets 102, nothing is asked, and the live
+    // request goes on.
+    #[test]
+    fn a_duplicate_tick_by_tick_id_gets_102() {
+        let shared = Arc::new(SharedState::new());
+        let mut engine = HotLoop::new(shared.clone(), None, None);
+        let (conn, mut side) = loopback();
+        engine.hmds_conn = Some(conn);
+        let (tx, rx) = crossbeam_channel::bounded(8);
+        let tx = crate::engine::park::ControlSender::from(tx);
+        engine.set_control_rx(rx);
+        use crate::types::TbtType::BidAsk;
+        subscribe_with(&mut engine, &tx, 9904, 265598, "AAPL", "SMART", "STK", BidAsk, 0, false);
+        subscribe_with(&mut engine, &tx, 9904, 265598, "AAPL", "SMART", "STK", BidAsk, 0, false);
+        assert_eq!(plain_sent(&mut side).len(), 1, "one query");
+        assert_eq!(shared.market.drain_tbt_errors(), [(9904, 102, "Duplicate ticker id".to_string())]);
+        assert!(engine.hmds.tbt_subscriptions[0].clients.contains(&9904), "the live request goes on");
     }
 
     // ibx#455: a refused query ends its own request with 10189; a request

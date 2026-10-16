@@ -801,7 +801,11 @@ impl EClient {
                     // the engine already let them go (ibx#455).
                     for (req_id, code, text) in run(&mut ib.tbt_errors, until) {
                         call_wrapper!(self.wrapper, py, "error", (req_id, code as i64, text.as_str(), ""));
-                        self.core.unregister_tbt(req_id);
+                        // A duplicate leaves the live request of that id
+                        // (ibx#720).
+                        if code != 102 {
+                            self.core.unregister_tbt(req_id);
+                        }
                     }
                     }
                     Kind::tbt_trades => {

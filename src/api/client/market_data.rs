@@ -245,6 +245,11 @@ impl EClient {
         if !crate::client_core::ClientCore::ids_fit("cancel_tick_by_tick_data", &[req_id]) { return Ok(()); }
         if self.core.unregister_tbt(req_id).is_some() {
             self.send(ControlCommand::UnsubscribeTbt { req_id })?;
+        } else {
+            // No such request (refused by the server, or never made): 300,
+            // as the reference (ibx#720; paper, 16/10/2026: the cancel of a
+            // request refused with 10189 or 354).
+            self.shared.orders.push_order_error(req_id, 300, format!("Can't find EId with tickerId:{}", req_id));
         }
         Ok(())
     }

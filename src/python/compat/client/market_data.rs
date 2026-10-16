@@ -194,6 +194,9 @@ impl EClient {
         if self.core.unregister_tbt(req_id).is_some() {
             let tx = self.tx()?;
             send_cmd(py, &tx, ControlCommand::UnsubscribeTbt { req_id })?;
+        } else {
+            // No such request: 300, as the reference (ibx#720).
+            self.shared_state()?.orders.push_order_error(req_id, 300, format!("Can't find EId with tickerId:{}", req_id));
         }
         Ok(())
     }
