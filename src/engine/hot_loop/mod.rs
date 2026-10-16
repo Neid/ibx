@@ -2289,9 +2289,15 @@ impl HotLoop {
                         Some((kind, _)) if sec_type.is_empty() => kind.clone(),
                         _ => sec_type,
                     };
+                    // Below session level 224 its prices are given in the
+                    // steps of its market rule, which its definition names:
+                    // the reference looks a conId up before the query
+                    // (ibx#615; paper, 16/10/2026).
+                    let rule_needed = crate::client_core::SERVER_VERSION < crate::client_core::LEVEL_PRICE_FROM_DEFINITION
+                        && !self.shared.reference.knows_contract_rule(con_id);
                     // Once: a definition that never came leaves the group
                     // set (-1) and the request goes as it is.
-                    if sec_type.is_empty() && con_id > 0 && !self.context.agg_groups.contains_key(&con_id)
+                    if (sec_type.is_empty() || rule_needed) && con_id > 0 && !self.context.agg_groups.contains_key(&con_id)
                         && self.ask_definition(con_id, &exchange)
                     {
                         self.context.def_parked.push((con_id, ControlCommand::FetchHistorical {
@@ -7299,6 +7305,38 @@ mod bars_routing_tests {
         let day = engine.pool.find("cashhmds").expect("day charts farm");
         assert_eq!(engine.pool.get(day).unwrap().queued(), 1);
         assert!(shared.reference.drain_historical_errors().is_empty());
+    }
+
+    // ibx#615 (the reference 10.51, paper, 16/10/2026): bars of a contract
+    // given by its conId, type and exchange wait for its definition when
+    // its market rule is not known, below session level 224; the rule of
+    // the engine's own lookup is kept, and the bars then go.
+    #[test]
+    fn bars_of_a_con_id_wait_for_the_market_rule() {
+        use crate::control::contracts::*;
+        let shared = Arc::new(SharedState::new());
+        let mut engine = HotLoop::new(shared.clone(), None, None);
+        let (client, _server) = crate::protocol::connection::mem_pair();
+        engine.hmds_conn = Some(Connection::new_mem(client));
+        let (ccp, _ccp_side) = crate::protocol::connection::mem_pair();
+        engine.ccp_conn = Some(Connection::new_mem(ccp));
+        engine.set_routing_table(TableKind::Historical,
+            "IDEALPRO,CASH,DayChart|Bar5Sec,4,*,ndc1.example,4000,cashhmds");
+        let (tx, rx) = crossbeam_channel::bounded(8);
+        engine.set_control_rx(rx);
+        tx.send(bars(1, 12087792, "IDEALPRO", "CASH", "1 min")).unwrap();
+        engine.poll_once();
+        assert!(engine.pool.find("cashhmds").is_none(), "nothing asked before the definition");
+        let lookup = engine.context.lot_lookups[0].0.clone();
+        let reply = fix::fix_build(&[(35, "d"), (320, &lookup), (55, "EUR"), (167, "CASH"), (6008, "12087792"),
+            (TAG_IB_MARKET_RULE_ID, "239"), (TAG_MARKET_RULE_COUNT, "1"), (TAG_MARKET_RULE_ID, "239"),
+            (TAG_PRICE_INCREMENT_COUNT, "1"), (TAG_LOW_EDGE, "0"), (TAG_INCREMENT, "0.00005")], 1);
+        engine.inject_ccp_message(&reply);
+        assert_eq!(shared.reference.price_step(12087792, 1.1), Some(0.00005));
+        engine.send_lot_ready();
+        engine.poll_once();
+        let day = engine.pool.find("cashhmds").expect("day charts farm");
+        assert_eq!(engine.pool.get(day).unwrap().queued(), 1);
     }
 }
 

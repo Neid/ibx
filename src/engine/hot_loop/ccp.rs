@@ -3367,6 +3367,14 @@ impl CcpState {
         // the session series (ibx#698).
         let response_req_id = contracts::secdef_response_req_id(msg)
             .map(|rid| ccp_conn.as_ref().map_or_else(|| rid.clone(), |c| c.internal_name(&rid)));
+        // The market rules and each contract's rule, from every reply, the
+        // engine's own lookups too: a contract given by its conId alone is
+        // known by such a lookup only (ibx#615).
+        let rules = contracts::parse_market_rules(msg);
+        if !rules.is_empty() {
+            shared.reference.push_market_rules(rules);
+        }
+        note_contract_rules(&contracts::parse_secdef_records(msg).unwrap_or_default(), shared);
         // Asked for an order's outside RTH (ibx#465): not a user reply.
         if let Some(rid) = response_req_id.as_deref() {
             // Asked to build a combo (ibx#470): not a user reply.
@@ -3430,12 +3438,7 @@ impl CcpState {
             // Asked for the option of an option calculation (ibx#442).
             if self.optcalc.secdef_reply(rid, msg, ccp_conn, hb, shared) { return; }
         }
-        let rules = contracts::parse_market_rules(msg);
-        if !rules.is_empty() {
-            shared.reference.push_market_rules(rules);
-        }
         let records = contracts::parse_secdef_records(msg).unwrap_or_default();
-        note_contract_rules(&records, shared);
         // The company lookup of an underlying (ibx#436): its industry is
         // kept for the later rows of its derivatives; not a user reply.
         if let Some(i) = response_req_id.as_deref().and_then(|rid| self.pending_company.iter().position(|(id, _)| id == rid)) {

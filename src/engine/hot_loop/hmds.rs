@@ -357,6 +357,12 @@ pub(crate) struct BarRequestInfo {
     /// The contract, whose market rule rounds the prices below session
     /// level 224 (ibx#615); 0 when not known.
     pub(crate) con_id: i64,
+    /// The zone the answer's first part named: the later parts do not name
+    /// it again (ibx#615; paper, 16/10/2026, 5-second bars of EUR.USD).
+    pub(crate) reply_zone: String,
+    /// The bars of the answer's earlier parts, given with its last part in
+    /// time order (ibx#615).
+    pub(crate) held: Vec<crate::control::historical::HistoricalBar>,
 }
 
 /// A keepUpToDate bar request (ibx#429): its query, the 5-second router
@@ -770,6 +776,7 @@ impl HmdsState {
                             if let Some(live) = self.live_bars.iter_mut().find(|l| l.req_id == req_id) {
                                 let (bars, sessions) = crate::control::historical::parse_series(xml_tag);
                                 live.series.extend(bars);
+                                live.series.sort_by_key(|b| b.start);
                                 live.sessions.extend(sessions);
                                 live.history_done |= is_complete;
                                 if live.reply_zone.is_empty() {
@@ -784,6 +791,25 @@ impl HmdsState {
                                 info.delayed |= xml_tag.contains("<delay>");
                                 if is_complete && info.delayed {
                                     shared.reference.push_historical_error(req_id, 2188, DELAYED_HISTORY.to_string());
+                                }
+                            }
+                            // The parts of an answer are not in time order (the
+                            // later bars first, paper, 16/10/2026, 5-second bars
+                            // of EUR.USD): the bars are given once the last part
+                            // came, in time order, as the reference.
+                            if let Some(info) = self.bar_requests.iter_mut().find(|r| r.req_id == req_id) {
+                                if !is_complete {
+                                    if !resp.timezone.is_empty() {
+                                        info.reply_zone = resp.timezone.clone();
+                                    }
+                                    info.held.append(&mut resp.bars);
+                                    return;
+                                }
+                                if !info.held.is_empty() {
+                                    let mut bars = std::mem::take(&mut info.held);
+                                    bars.append(&mut resp.bars);
+                                    bars.sort_by_key(|b| crate::control::historical::parse_server_time(&b.time).unwrap_or(i64::MIN));
+                                    resp.bars = bars;
                                 }
                             }
                             self.write_bar_times(req_id, &mut resp, is_complete);
@@ -1359,8 +1385,13 @@ impl HmdsState {
 
     /// Write the bar times of an answer as the reference writes them, and,
     /// at its end, the start and end of the request (ibx#431).
-    fn write_bar_times(&self, req_id: ReqId, resp: &mut crate::control::historical::HistoricalResponse, is_complete: bool) {
-        let Some(info) = self.bar_requests.iter().find(|r| r.req_id == req_id) else { return };
+    fn write_bar_times(&mut self, req_id: ReqId, resp: &mut crate::control::historical::HistoricalResponse, is_complete: bool) {
+        let Some(info) = self.bar_requests.iter_mut().find(|r| r.req_id == req_id) else { return };
+        if resp.timezone.is_empty() {
+            resp.timezone = info.reply_zone.clone();
+        } else {
+            info.reply_zone = resp.timezone.clone();
+        }
         for bar in &mut resp.bars {
             if let Some(secs) = crate::control::historical::parse_server_time(&bar.time) {
                 bar.time = info.bar_time(secs, &resp.timezone);
@@ -1606,6 +1637,7 @@ impl HmdsState {
             end,
             delayed: false,
             con_id,
+            reply_zone: String::new(), held: Vec::new(),
         });
         let end_date_time = crate::control::historical::server_time(end);
         let qid = self.next_hmds_query_id;
@@ -3663,7 +3695,7 @@ pub(crate) mod tests {
         hmds.keep_up_to_date_reqs.insert(req_id);
         hmds.bar_requests.push(BarRequestInfo {
             req_id, format_date: 1, intraday: bar_size.is_intraday(), zone: Some("US/Eastern".into()), start: 0, end: 0,
-            delayed: false, con_id: 0,
+            delayed: false, con_id: 0, reply_zone: String::new(), held: Vec::new(),
         });
         hmds.live_bars.push(LiveBars {
             req_id, window_id: window_id.to_string(), query_id: format!("{window_id};;AAPL@SMART {label};;1;;true;;0;;I"),
@@ -3693,7 +3725,7 @@ pub(crate) mod tests {
         }]);
         shared.reference.note_contract_rule(12087792, 239);
         let mut hmds = HmdsState::new();
-        hmds.bar_requests.push(BarRequestInfo { req_id: 7, format_date: 1, intraday: true, zone: None, start: 0, end: 0, delayed: false, con_id: 12087792 });
+        hmds.bar_requests.push(BarRequestInfo { req_id: 7, format_date: 1, intraday: true, zone: None, start: 0, end: 0, delayed: false, con_id: 12087792, reply_zone: String::new(), held: Vec::new() });
         let mut bars = vec![crate::control::historical::HistoricalBar { time: String::new(), open: 1.125465, high: 1.125675, low: 1.125435, close: 1.12562, volume: -1, wap: -1.0, count: -1 }];
         hmds.round_bar_prices(7, &mut bars, &shared);
         assert_eq!((bars[0].open, bars[0].high, bars[0].low, bars[0].close), (1.12545, 1.1257, 1.12545, 1.1256));
@@ -3837,7 +3869,7 @@ pub(crate) mod tests {
             let duration = if intraday { "1 d" } else { "1 m" };
             hmds.bar_requests.push(BarRequestInfo { req_id: req, format_date, intraday, zone: Some("US/Eastern".into()),
                 start: crate::control::historical::duration_start(end, duration, "Europe/Paris"), end,
-            delayed: false, con_id: 0,
+            delayed: false, con_id: 0, reply_zone: String::new(), held: Vec::new(),
         });
         }
         hmds.pending_head_ts.push(("TickHeadClient1".to_string(), 9544, Instant::now() + HEAD_TIMESTAMP_TIMEOUT));
@@ -3885,7 +3917,7 @@ pub(crate) mod tests {
         };
         for (w, req) in [("cf16", 7303), ("cf20", 7304)] {
             hmds.pending_historical.push((w.to_string(), req));
-            hmds.bar_requests.push(BarRequestInfo { req_id: req, format_date: 1, intraday: false, zone: None, start: 0, end: 0, delayed: false, con_id: 0 });
+            hmds.bar_requests.push(BarRequestInfo { req_id: req, format_date: 1, intraday: false, zone: None, start: 0, end: 0, delayed: false, con_id: 0, reply_zone: String::new(), held: Vec::new() });
         }
         for msg in [part("cf16", false, "<tz>Japan</tz><delay>1200</delay>", false), part("cf16", true, "", true),
             part("cf20", false, "<tz>MET</tz>", false), part("cf20", true, "", true)]
@@ -3896,6 +3928,33 @@ pub(crate) mod tests {
             "Up-to-the-second historical data requires additional subscription for the API.".to_string())]);
         let ends: Vec<ReqId> = shared.reference.drain_historical_data().iter().filter(|(_, d)| d.is_complete).map(|(r, _)| *r).collect();
         assert_eq!(ends, [7303, 7304]);
+    }
+
+    // ibx#615 (paper, 16/10/2026, 5-second midpoint bars of EUR.USD): the
+    // zone is named by the answer's first part only, and the first part has
+    // the later bars. The reference gives every bar once the last part
+    // came, in time order and in that zone, not in the machine's zone.
+    #[test]
+    fn bars_of_the_parts_in_time_order_and_the_first_parts_zone() {
+        let mut hmds = HmdsState::new();
+        let shared = SharedState::new();
+        let mut hb = HeartbeatState::new();
+        let mut conn: Option<Connection> = None;
+        let part = |eoq: bool, head: &str, time: &str| {
+            let bars = format!("<Bar><time>{time}</time><open>1</open><close>1</close><high>1</high><low>1</low><weightedAvg>1</weightedAvg><volume>-1</volume><count>-1</count></Bar>");
+            let xml = format!("<ResultSetBar><id>cf16;;@IDEALPRO Midpoint;;1;;true;;0;;I</id><eoq>{eoq}</eoq>{head}<Events>{bars}</Events></ResultSetBar>");
+            crate::protocol::fix::fix_build(&[(35, "W"), (6118, xml.as_str())], 1)
+        };
+        hmds.pending_historical.push(("cf16".to_string(), 7305));
+        hmds.bar_requests.push(BarRequestInfo { req_id: 7305, format_date: 1, intraday: true, zone: None, start: 0, end: 0,
+            delayed: false, con_id: 0, reply_zone: String::new(), held: Vec::new() });
+        for msg in [part(false, "<tz>US/Eastern</tz>", "20261016-10:56:05"), part(true, "", "20261016-10:56:00")] {
+            hmds.process_hmds_message(&msg, &mut conn, &shared, &None, &mut hb);
+        }
+        let data = shared.reference.drain_historical_data();
+        assert_eq!(data.len(), 1, "one answer, at its last part");
+        let times: Vec<&str> = data[0].1.bars.iter().map(|b| b.time.as_str()).collect();
+        assert_eq!(times, ["20261016 06:56:00 US/Eastern", "20261016 06:56:05 US/Eastern"]);
     }
 
     #[test]

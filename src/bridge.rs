@@ -1811,6 +1811,11 @@ impl ReferenceState {
         self.rule_of_contract.lock().unwrap().insert(con_id, rule_id);
     }
 
+    /// True when the market rule of a contract is known (ibx#615).
+    #[doc(hidden)] pub fn knows_contract_rule(&self, con_id: i64) -> bool {
+        self.rule_of_contract.lock().unwrap().contains_key(&con_id)
+    }
+
     /// The price step of a contract's market rule at `price` (ibx#615):
     /// the increment of the last tier whose low edge is at or below the
     /// price. None when the contract's rule is not known.
