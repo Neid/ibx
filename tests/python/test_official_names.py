@@ -110,9 +110,8 @@ CALLBACK_OBJECTS = {
     "PercentChangeCondition": "ibapi.order_condition",
 }
 CONDITION_TYPES = {"Price", "Time", "Margin", "Execution", "Volume", "PercentChange"}
-KNOWN_ATTRIBUTE_DIFFERENCES = {
-    "BarData": (set(), {"timezone"}),
-}
+# None left: BarData's timezone went with ibx#654.
+KNOWN_ATTRIBUTE_DIFFERENCES = {}
 
 
 def test_callback_objects_list_the_official_names():
