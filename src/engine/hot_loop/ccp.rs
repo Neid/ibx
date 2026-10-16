@@ -1450,7 +1450,10 @@ impl CcpState {
             "UT" | "UM" | "RL" | "EB" | "UP" if self.is_partition_frame(msg) => {}
             "UT" | "UM" | "RL" => handle_account_update(msg, context, shared),
             "EB" => handle_account_end(msg, shared),
-            "UP" => handle_portfolio_message(msg, context, shared, event_tx),
+            "UP" => {
+                handle_portfolio_message(msg, context, shared, event_tx);
+                self.look_up_portfolio_contracts(msg, ccp_conn, shared, hb);
+            }
             "d" => self.handle_secdef_reply(msg, ccp_conn, context, shared, event_tx, hb),
             other => {
                 log::debug!("CCP unhandled 35={}: {} bytes", other, msg.len());
@@ -3461,9 +3464,17 @@ impl CcpState {
         }
         // A reply can list one conId once per exchange: the contract cache
         // keeps the first record of each conId, the one on the lookup's own
-        // exchange, not the last listed exchange.
+        // exchange, not the last listed exchange. The portfolio's batch
+        // lookup fills only the contracts not known yet: a contract known
+        // from the day's trade reports stays as an order shows it (ibx#705;
+        // the reference 10.51's recording of the session start: AAPL's
+        // openOrder with no primary exchange after the batch).
+        let batch = response_req_id.as_deref()
+            .is_some_and(|r| r.starts_with(crate::control::contracts::SECDEF_SMALL_BATCH_NAME));
         for (i, def) in records.iter().enumerate() {
-            if !records[..i].iter().any(|d| d.con_id == def.con_id) {
+            if !records[..i].iter().any(|d| d.con_id == def.con_id)
+                && !(batch && shared.reference.get_contract(def.con_id).is_some())
+            {
                 self.cache_definition(def, shared);
             }
         }
@@ -4697,7 +4708,6 @@ impl CcpState {
                     shared.portfolio.set_position_fixed(instrument, qty);
                     emit(event_tx, Event::PositionUpdate { instrument, con_id, position_fixed: qty, avg_cost });
                 }
-                self.auto_fetch_secdef_if_cold(con_id, ccp_conn, shared, hb);
             }
             con_id = v.parse().unwrap_or(0);
             qty = 0;
@@ -4719,8 +4729,49 @@ impl CcpState {
             shared.portfolio.set_position_fixed(instrument, qty);
             emit(event_tx, Event::PositionUpdate { instrument, con_id, position_fixed: qty, avg_cost });
         }
-        self.auto_fetch_secdef_if_cold(con_id, ccp_conn, shared, hb);
     }
+    let _ = (ccp_conn, hb);
+    }
+
+    /// The contracts of a portfolio message not known yet, looked up in one
+    /// batch on any exchange, in the message's order, as the reference
+    /// (ibx#705; the reference 10.51, paper, 16/10/2026: one
+    /// `SmallBatchReqByConid` of the login's five contracts, right after its
+    /// first portfolio message). The answer fills the contract cache.
+    fn look_up_portfolio_contracts(&mut self, msg: &[u8], ccp_conn: &mut Option<Connection>, _shared: &SharedState, hb: &mut HeartbeatState) {
+        let Ok(text) = std::str::from_utf8(msg) else { return };
+        let mut cold: Vec<i64> = Vec::new();
+        for v in text.split('').filter_map(|p| p.strip_prefix("6008=")) {
+            let Ok(con_id) = v.parse::<i64>() else { continue };
+            // Every contract of the message not asked yet, also one known
+            // from the day's trade reports (the reference asked AAPL and
+            // SPY, traded that day).
+            if con_id == 0 || cold.contains(&con_id) || self.auto_fetched_conids.contains(&con_id) {
+                continue;
+            }
+            cold.push(con_id);
+        }
+        if cold.is_empty() { return; }
+        let Some(conn) = ccp_conn.as_mut() else { return };
+        let req_id = self.next_internal_secdef_id;
+        self.next_internal_secdef_id = self.next_internal_secdef_id.wrapping_add(1);
+        let name = format!("{}{}", crate::control::contracts::SECDEF_SMALL_BATCH_NAME, req_id);
+        let count = cold.len().to_string();
+        let ids: Vec<String> = cold.iter().map(|c| c.to_string()).collect();
+        let ts = chrono_free_timestamp();
+        let mut fields: Vec<(u32, &str)> = vec![
+            (fix::TAG_MSG_TYPE, "c"), (fix::TAG_SENDING_TIME, &ts),
+            (crate::control::contracts::TAG_SECURITY_REQ_ID, &name),
+            (crate::control::contracts::TAG_SECURITY_REQ_TYPE, "2"), (146, &count),
+        ];
+        for id in &ids {
+            fields.extend([(crate::control::contracts::TAG_IB_CON_ID, id.as_str()), (6004, "ANYEXCH")]);
+        }
+        let _ = conn.send_fix(&fields);
+        hb.last_ccp_sent = Instant::now();
+        log::info!("Portfolio contracts looked up in one batch ({}): {:?}", name, cold);
+        self.auto_fetched_conids.extend(cold);
+        self.pending_secdef.push((ReqId::from(req_id), false, Instant::now() + SECDEF_TIMEOUT));
     }
 
     /// Issue an internal secdef request for `con_id` if the reference cache is cold and we
@@ -5866,6 +5917,30 @@ mod tests {
             assert_eq!(context.order(42).unwrap().status, OrderStatus::Submitted, "39={}", code);
         }
         assert!(shared.orders.drain_order_updates().is_empty());
+    }
+
+    // ibx#705 (the reference 10.51, paper, 16/10/2026): the contracts of a
+    // portfolio message not known yet are looked up in one batch, each on
+    // any exchange, in the message's order; the answer fills the cache, and
+    // a later message asks nothing more.
+    #[test]
+    fn portfolio_contracts_are_looked_up_in_one_batch() {
+        let (mut ccp, mut context, shared) = u186_test_state();
+        let (client, mut server) = crate::protocol::connection::mem_pair();
+        let mut conn = Some(Connection::new_mem(client));
+        let mut hb = HeartbeatState::new();
+        let up = "35=UP|6529=AR.1|6068=AAPL                  |8001=PositionList|6064=0|6008=265598|167=STK|6068=MSFT                  |8001=PositionList|6064=-10|6008=272093|167=STK|".replace('|', "");
+        ccp.process_ccp_message(up.as_bytes(), &mut conn, &mut context, &shared, &None, &mut hb, "DU1");
+        let wire = sent_frames(&mut server);
+        assert_eq!(wire.matches("|35=c|").count(), 1, "{wire}");
+        assert!(wire.contains("|321=2|146=2|6008=265598|6004=ANYEXCH|6008=272093|6004=ANYEXCH|"), "{wire}");
+        let name = wire.split("|320=").nth(1).and_then(|r| r.split('|').next()).unwrap().to_string();
+        assert!(name.starts_with("SmallBatchReqByConid"), "{name}");
+        let reply = pipe_msg(&format!("35=d|43=N|320={name}|322=*|323=4|55=AAPL|167=STK|207=BEST|6008=265598|15=USD|6035=AAPL|55=MSFT|167=STK|207=BEST|6008=272093|15=USD|6035=MSFT"));
+        ccp.process_ccp_message(&reply, &mut conn, &mut context, &shared, &None, &mut hb, "DU1");
+        assert!(shared.reference.get_contract(265598).is_some() && shared.reference.get_contract(272093).is_some());
+        ccp.process_ccp_message(up.as_bytes(), &mut conn, &mut context, &shared, &None, &mut hb, "DU1");
+        assert!(!sent_frames(&mut server).contains("|35=c|"), "nothing asked again");
     }
 
     // ibx#411: one portfolio message carries a row per position (ib-agent#192
