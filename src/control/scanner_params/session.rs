@@ -24,6 +24,9 @@ use super::{ClassId, Node, Refused, Slot, Value};
 pub struct Session {
     names: HashSet<String>,
     no_research: bool,
+    /// The server's clock less the machine's, in milliseconds: the year of
+    /// the years generator is the server's (ibx#653).
+    clock_offset_ms: i64,
 }
 
 /// Feature of the logon that switches every vendor item off.
@@ -43,7 +46,20 @@ impl Session {
             .collect();
         let no_research = names.contains(NO_RESEARCH);
         names.extend(news_provider_codes.into_iter().filter(|code| !code.is_empty()).map(str::to_string));
-        Session { names, no_research }
+        Session { names, no_research, clock_offset_ms: 0 }
+    }
+
+    /// The same, with the offset of the server's clock to the machine's
+    /// (ibx#653): the reference counts the years of the years generator up
+    /// to the machine's clock plus that offset, in the machine's zone.
+    pub fn with_clock_offset(mut self, offset_ms: i64) -> Session {
+        self.clock_offset_ms = offset_ms;
+        self
+    }
+
+    /// The offset of the server's clock to the machine's, in milliseconds.
+    pub fn clock_offset_ms(&self) -> i64 {
+        self.clock_offset_ms
     }
 
     /// Whether the session has a feature or a news provider of this name.
@@ -345,6 +361,7 @@ fn years(parts: &[&str], labels: &[&str], this_year: i32) -> Result<Option<Vec<Y
     let several = if display.len() == 2 { display[1] } else { one };
     let Some(start) = java_int(start) else { return Ok(None) };
     if !(-YEAR_LIMIT..=YEAR_LIMIT).contains(&start) {
+        log::warn!("Scanner parameters: years generator from year {start}, beyond the calendar modelled: refused (ibx#653)");
         return Err(Refused);
     }
     let entry = |year: i32| {
@@ -574,6 +591,7 @@ fn hash_walk<'a>(keys: &[Option<&'a str>]) -> Result<Vec<Option<&'a str>>, Refus
         let before = hashes[..i].iter().filter(|&&h| bucket(h, size) == bucket(hash, size)).count();
         if before >= 8 {
             if size >= 64 {
+                log::warn!("Scanner parameters: nine or more net items in one bucket of a table of {size}: the walk of such a bucket is not modelled, refused (ibx#653)");
                 return Err(Refused);
             }
             size *= 2;

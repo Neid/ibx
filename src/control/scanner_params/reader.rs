@@ -263,8 +263,13 @@ impl Reader<'_> {
                 }
                 match class_named(type_attr) {
                     Some(c) => class = Some(c),
-                    // Names no class: the level ends here.
-                    None => return Ok(false),
+                    // Names no class of the model: the level ends here. A
+                    // class of the reference's runtime outside the scanner
+                    // model is not modelled (ibx#653).
+                    None => {
+                        log::info!("Scanner parameters: type {type_attr:?} names no class of the scanner model; read as naming none (not modelled)");
+                        return Ok(false);
+                    }
                 }
             }
             let mut class = class.ok_or(Failure::Refused)?;
@@ -360,6 +365,9 @@ impl Reader<'_> {
                 class = named;
             } else if enum_named(t).is_some() {
                 return Err(Failure::Refused);
+            } else {
+                // Not modelled (ibx#653): see the member's case.
+                log::info!("Scanner parameters: item type {t:?} names no class of the scanner model; ignored (not modelled)");
             }
         }
         let mut item = Node::of(class).ok_or(Failure::Refused)?;

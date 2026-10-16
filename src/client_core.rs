@@ -363,6 +363,7 @@ pub(crate) fn news_tick(generic_tick_list: &str) -> NewsTick {
 pub(crate) fn scanner_session(shared: &SharedState) -> crate::control::scanner_params::Session {
     let providers = shared.reference.news_providers();
     crate::control::scanner_params::Session::new(&shared.reference.logon_features(), providers.iter().map(|p| p.code.as_str()))
+        .with_clock_offset(shared.reference.clock().offset_ms())
 }
 
 /// The scanner parameters that wait for the client, each as the

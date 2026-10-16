@@ -372,8 +372,14 @@ pub fn rebuild(server_xml: &str) -> Option<String> {
 /// It takes over 10 ms on the document of a real session: not for the
 /// engine thread.
 pub fn for_client(server_xml: &str, session: &Session) -> Option<String> {
-    let this_year = jiff::Timestamp::now().to_zoned(crate::gateway::machine_tz()).year();
-    for_client_in(server_xml, session, i32::from(this_year))
+    for_client_in(server_xml, session, server_year(session, jiff::Timestamp::now()))
+}
+
+/// The year of the years generator: the machine's clock `now` plus the
+/// offset to the server's clock, in the machine's zone (ibx#653).
+fn server_year(session: &Session, now: jiff::Timestamp) -> i32 {
+    let server = now.checked_add(jiff::SignedDuration::from_millis(session.clock_offset_ms())).unwrap_or(now);
+    i32::from(server.to_zoned(crate::gateway::machine_tz()).year())
 }
 
 /// [`for_client`] in a given year of the machine's clock: computed values

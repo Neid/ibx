@@ -1909,7 +1909,8 @@ impl ReferenceState {
         if let Some(tx) = self.error_tap.events.get().cloned() {
             let providers = self.news_providers();
             let session = crate::control::scanner_params::Session::new(
-                &self.logon_features(), providers.iter().map(|p| p.code.as_str()));
+                &self.logon_features(), providers.iter().map(|p| p.code.as_str()))
+                .with_clock_offset(self.clock().offset_ms());
             let server_xml = xml.clone();
             let cache = self.scanner_params_rebuilt.clone();
             let _ = std::thread::Builder::new().name("ibx-scanner-params".into()).spawn(move || {

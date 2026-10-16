@@ -531,3 +531,17 @@ fn virtual_filter_has_its_display_name_once() {
     assert_eq!(filter.members[slots[0]], Value::Text("D".into()));
     assert_eq!(body_of(&xml).matches("<displayName>D</displayName>").count(), 1);
 }
+
+// ibx#653: the years generator counts up to the server's year: the
+// machine's clock plus the offset to the server's clock, in the machine's
+// zone; a few seconds around the new year make the difference.
+#[test]
+fn the_year_is_the_servers() {
+    let zone = crate::gateway::machine_tz();
+    let new_year = jiff::civil::date(2027, 1, 1).at(0, 0, 0, 0).to_zoned(zone).unwrap().timestamp();
+    let just_before = new_year.checked_sub(jiff::SignedDuration::from_secs(2)).unwrap();
+    let plain = Session::new("", []);
+    assert_eq!(super::server_year(&plain, just_before), 2026);
+    assert_eq!(super::server_year(&Session::new("", []).with_clock_offset(5_000), just_before), 2027, "the server is 5 s ahead");
+    assert_eq!(super::server_year(&Session::new("", []).with_clock_offset(-5_000), new_year), 2026, "the server is 5 s behind");
+}
