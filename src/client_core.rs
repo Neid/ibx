@@ -464,6 +464,9 @@ pub const SERVER_VERSION: i32 = 214;
 /// From this session level the reference gives historical prices in the
 /// steps of the contract's definition, not its market rule (ibx#615).
 pub const LEVEL_PRICE_FROM_DEFINITION: i32 = 224;
+/// From this session level the reference gives the fractional part of a
+/// trade's size; below it, a whole number (ibx#613).
+pub const LEVEL_FRACTIONAL_LAST_SIZE: i32 = 222;
 
 /// Each account summary frame is given twice below the session level of
 /// the reference 10.51 (ibx#486, ibx#662).

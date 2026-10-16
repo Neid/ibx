@@ -1491,7 +1491,12 @@ fn parse_tick_frame(xml: &str, data_name: &str) -> Option<TickFrame> {
                     unreported: f.iter().any(|x| x == "U"),
                 },
                 price: price(t, "price"),
-                size: size(t, "size"),
+                // A whole number below session level 222 (ibx#613).
+                size: if crate::client_core::SERVER_VERSION < crate::client_core::LEVEL_FRACTIONAL_LAST_SIZE {
+                    size(t, "size").round()
+                } else {
+                    size(t, "size")
+                },
                 exchange: text(t, "exch"),
                 special_conditions: text(t, "cond"),
             }
@@ -2628,6 +2633,18 @@ mod tests {
         let xml = build_tick_query_xml(&q, now);
         assert!(xml.contains("<id>tk_1;;EUR.USD@IDEALPRO Midpoint;;0;;true;;0;;U</id>"), "{}", xml);
         assert!(xml.contains("<exchange>FXSUBPIP</exchange><secType>CASH</secType>"), "{}", xml);
+    }
+
+    // ibx#613: below session level 222 a trade's fractional size is given
+    // as a whole number (the rule of level 222, not observed yet: no
+    // fractional trade on the paper account).
+    #[test]
+    fn a_fractional_trade_size_is_whole_below_level_222() {
+        let xml = "<ResultSetTick><id>cf4;;BTC.USD@PAXOS Trades;;0;;true;;0;;U</id><eoq>true</eoq><data>AllLast</data>            <sizeMinTick>0.00000001</sizeMinTick><Events>            <Tick><time>20261016-11:00:00</time><price>67000</price><size>40000000</size></Tick>            <Tick><time>20261016-11:00:01</time><price>67000</price><size>160000000</size></Tick>            <Tick><time>20261016-11:00:02</time><price>67000</price><size>2600000</size></Tick></Events></ResultSetTick>";
+        let frame = parse_tick_response(xml).unwrap();
+        let Some(crate::types::HistoricalTickData::Last(ticks)) = frame.data else { panic!("{:?}", frame.data) };
+        assert!(crate::client_core::SERVER_VERSION < crate::client_core::LEVEL_FRACTIONAL_LAST_SIZE);
+        assert_eq!(ticks.iter().map(|t| t.size).collect::<Vec<_>>(), [0.0, 2.0, 0.0]);
     }
 
     #[test]
