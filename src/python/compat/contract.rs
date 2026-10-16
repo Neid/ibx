@@ -1619,7 +1619,7 @@ fn conditions_to_py(py: Python<'_>, conditions: &[OrderCondition]) -> PyResult<P
             OrderCondition::Time { time, is_more } =>
                 Py::new(py, TimeCondition { time: Some(time.clone()), is_more: Some(*is_more) })?.into_any(),
             OrderCondition::Margin { percent, is_more } =>
-                Py::new(py, MarginCondition { percent: Some(*percent), is_more: Some(*is_more) })?.into_any(),
+                Py::new(py, MarginCondition { percent: Some(MarginPercent::Int(i64::from(*percent))), is_more: Some(*is_more) })?.into_any(),
             OrderCondition::Execution { symbol, exchange, sec_type } => Py::new(py, ExecutionCondition {
                 symbol: Some(symbol.clone()), exchange: Some(exchange.clone()), sec_type: Some(sec_type.clone()),
             })?.into_any(),
@@ -1688,7 +1688,18 @@ impl Order {
         list.iter().enumerate().map(|(i, any)| {
             if let Ok(c) = any.cast::<PriceCondition>() { return Ok(c.borrow().to_internal()); }
             if let Ok(c) = any.cast::<TimeCondition>() { return Ok(c.borrow().to_internal()); }
-            if let Ok(c) = any.cast::<MarginCondition>() { return Ok(c.borrow().to_internal()); }
+            if let Ok(c) = any.cast::<MarginCondition>() {
+                if matches!(c.borrow().percent, Some(MarginPercent::Float(_))) {
+                    return Err(margin_percent_error(py));
+                }
+                return Ok(c.borrow().to_internal());
+            }
+            // The official class with a float percent, the same (ibx#722).
+            if any.getattr("condType").and_then(|t| t.extract::<i64>()).is_ok_and(|t| t == 4)
+                && any.getattr("percent").is_ok_and(|p| p.is_instance_of::<pyo3::types::PyFloat>())
+            {
+                return Err(margin_percent_error(py));
+            }
             if let Ok(c) = any.cast::<ExecutionCondition>() { return Ok(c.borrow().to_internal()); }
             if let Ok(c) = any.cast::<VolumeCondition>() { return Ok(c.borrow().to_internal()); }
             if let Ok(c) = any.cast::<PercentChangeCondition>() { return Ok(c.borrow().to_internal()); }
@@ -2697,10 +2708,38 @@ impl TimeCondition {
 #[pyclass(from_py_object)]
 #[derive(Clone)]
 pub struct MarginCondition {
-    #[pyo3(get, set)]
-    pub percent: Option<u32>,
+    /// As given: an int, or a float the official client cannot place
+    /// (ibx#722).
+    pub percent: Option<MarginPercent>,
     #[pyo3(get, set)]
     pub is_more: Option<bool>,
+}
+
+/// A margin condition's percent as the official class keeps it (ibx#722).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum MarginPercent {
+    Int(i64),
+    Float(f64),
+}
+
+impl MarginPercent {
+    fn from_py(v: &Bound<'_, PyAny>) -> PyResult<Option<Self>> {
+        if v.is_none() {
+            return Ok(None);
+        }
+        if v.is_instance_of::<pyo3::types::PyFloat>() {
+            return Ok(Some(Self::Float(v.extract()?)));
+        }
+        Ok(Some(Self::Int(v.extract()?)))
+    }
+
+    fn to_py<'py>(self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        use pyo3::IntoPyObjectExt;
+        match self {
+            Self::Int(i) => i.into_bound_py_any(py),
+            Self::Float(f) => f.into_bound_py_any(py),
+        }
+    }
 }
 
 #[pymethods]
@@ -2708,8 +2747,23 @@ impl MarginCondition {
     #[new]
     #[pyo3(signature = (isMore=None, percent=None))]
     #[allow(non_snake_case)]
-    fn new(isMore: Option<bool>, percent: Option<u32>) -> Self {
-        Self { percent, is_more: isMore }
+    fn new(isMore: Option<bool>, percent: Option<&Bound<'_, PyAny>>) -> PyResult<Self> {
+        let percent = match percent { Some(p) => MarginPercent::from_py(p)?, None => None };
+        Ok(Self { percent, is_more: isMore })
+    }
+
+    #[getter(percent)]
+    fn get_percent<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        match self.percent {
+            Some(p) => p.to_py(py),
+            None => Ok(py.None().into_bound(py)),
+        }
+    }
+
+    #[setter(percent)]
+    fn set_percent(&mut self, value: &Bound<'_, PyAny>) -> PyResult<()> {
+        self.percent = MarginPercent::from_py(value)?;
+        Ok(())
     }
 
     #[classattr]
@@ -2751,7 +2805,34 @@ official_names!(MarginCondition, [("isMore", "is_more")]);
 
 impl MarginCondition {
     pub fn to_internal(&self) -> OrderCondition {
-        OrderCondition::Margin { percent: self.percent.unwrap_or(0), is_more: self.is_more.unwrap_or(false) }
+        let percent = match self.percent { Some(MarginPercent::Int(i)) => u32::try_from(i).unwrap_or(0), _ => 0 };
+        OrderCondition::Margin { percent, is_more: self.is_more.unwrap_or(false) }
+    }
+}
+
+/// The official client library's `ClientException` (code, msg, text).
+pub fn client_exception_class(py: Python<'_>) -> PyResult<Bound<'_, PyAny>> {
+    static CLASS: pyo3::sync::PyOnceLock<Py<PyAny>> = pyo3::sync::PyOnceLock::new();
+    let class = CLASS.get_or_try_init(py, || -> PyResult<Py<PyAny>> {
+        let code = c"class ClientException(Exception):
+    def __init__(self, code, msg, text):
+        self.code = code
+        self.msg = msg
+        self.text = text
+";
+        Ok(PyModule::from_code(py, code, c"ibx_errors.py", c"ibx_errors")?.getattr("ClientException")?.unbind())
+    })?;
+    Ok(class.bind(py).clone())
+}
+
+/// A margin condition whose percent is a float: the official client fails
+/// to encode the order and raises this from placeOrder, nothing sent
+/// (ibx#722; the official library 10.51 at session level 214, 16/10/2026,
+/// MarginCondition(True, 30.5)).
+fn margin_percent_error(py: Python<'_>) -> PyErr {
+    match client_exception_class(py).and_then(|c| c.call1((588, "Error encoding protobuf - ", "Error encoding conditions"))) {
+        Ok(e) => PyErr::from_value(e),
+        Err(e) => e,
     }
 }
 
@@ -3863,6 +3944,7 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PriceCondition>()?;
     m.add_class::<TimeCondition>()?;
     m.add_class::<MarginCondition>()?;
+    m.add("ClientException", client_exception_class(m.py())?)?;
     m.add_class::<ExecutionCondition>()?;
     m.add_class::<VolumeCondition>()?;
     m.add_class::<PercentChangeCondition>()?;
@@ -4126,7 +4208,8 @@ impl TimeCondition {
 #[pymethods]
 impl MarginCondition {
     fn __str__(&self, py: Python<'_>) -> PyResult<String> {
-        Ok(format!("the margin cushion percent {} ", operator_text(self.is_more, &py_text(py, self.percent)?)))
+        let value = match self.percent { Some(p) => p.to_py(py)?.str()?.to_string(), None => "None".to_string() };
+        Ok(format!("the margin cushion percent {} ", operator_text(self.is_more, &value)))
     }
 }
 
