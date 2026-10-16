@@ -21,6 +21,12 @@ const NEXT: i64 = 900;
 /// `engine` refused order `id` with `rule`'s code and text (its `%s` filled
 /// with any value) and sent nothing for it.
 fn assert_refused(engine: &mut Engine, id: i64, rule: &str) {
+    assert_refused_text(engine, id, rule, None);
+}
+
+/// As [`assert_refused`], with `seen` the text the reference 10.51 was seen
+/// giving for the rule where it is not the table's.
+fn assert_refused_text(engine: &mut Engine, id: i64, rule: &str, seen: Option<&str>) {
     let rule = local_rule(rule);
     // The engine's refusals come from its thread.
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
@@ -31,9 +37,12 @@ fn assert_refused(engine: &mut Engine, id: i64, rule: &str) {
     }
     let mine: Vec<&(i64, i64, String)> = errors.iter().filter(|e| e.0 == id).collect();
     assert!(
-        mine.iter().any(|(_, code, text)| *code == rule.api_code && (matches_template(&rule.text, text, false)
-            // The table is 10.40's; 10.51 adds the order id to 103 (ibx#625).
-            || (rule.api_code == 103 && *text == format!("{}: {}", rule.text, id)))),
+        mine.iter().any(|(_, code, text)| *code == rule.api_code && match seen {
+            Some(seen) => text == seen,
+            None => matches_template(&rule.text, text, false)
+                // The table is 10.40's; 10.51 adds the order id to 103 (ibx#625).
+                || (rule.api_code == 103 && *text == format!("{}: {}", rule.text, id)),
+        }),
         "rule {} (gateway code {}): want {} {:?}, got {:?}", rule.id, rule.code, rule.api_code, rule.text, errors,
     );
     // Nothing sent for the refused order: the next order is the first the
@@ -57,6 +66,13 @@ fn refused(rule: &str, contract: &Contract, order: &Order) {
     let mut engine = Engine::start();
     engine.client.place_order(REFUSED, contract, order).expect("a refusal is an error callback, not a call error");
     assert_refused(&mut engine, REFUSED, rule);
+}
+
+/// As [`refused`], with the text the reference 10.51 was seen giving.
+fn refused_seen(rule: &str, contract: &Contract, order: &Order, seen: &str) {
+    let mut engine = Engine::start();
+    engine.client.place_order(REFUSED, contract, order).expect("a refusal is an error callback, not a call error");
+    assert_refused_text(&mut engine, REFUSED, rule, Some(seen));
 }
 
 fn order(order_type: &str) -> Order {
@@ -400,4 +416,242 @@ fn touched_order_without_a_trigger_price() {
 fn unknown_action() {
     refused("321-1", &aapl(), &Order { action: "HOLD".into(), ..order("LMT") });
     refused("321-1", &aapl(), &Order { action: String::new(), ..order("LMT") });
+}
+
+// ── The rules new in 10.51 (ibx#688) ──
+
+// (ibx#688) The overnight times in force sent through the classic request
+// form: 10052 naming the time in force, nothing sent (ibx#660, paper
+// 13/10/2026). The other cases of the rule, a time in force that is not
+// known and includeOvernight with another time in force than DAY, are not
+// followed yet (ibx#688).
+#[test]
+fn overnight_time_in_force() {
+    refused("10052-1", &aapl(), &Order { tif: "OVERNIGHT".into(), ..order("LMT") });
+    refused("10052-1", &aapl(), &Order { tif: "OVERNIGHT + DAY".into(), ..order("LMT") });
+}
+
+// (ibx#688) A what-if type on an order that is not a what-if.
+#[test]
+fn what_if_type_without_what_if() {
+    refused("10352-1", &aapl(), &Order { what_if_type: 1, ..order("LMT") });
+}
+
+// (ibx#688) A what-if type below 0 or above the highest known one.
+#[test]
+fn what_if_type_out_of_range() {
+    refused("10351-1", &aapl(), &Order { what_if: true, what_if_type: -1, ..order("LMT") });
+    refused("10351-1", &aapl(), &Order { what_if: true, what_if_type: 7, ..order("LMT") });
+}
+
+// (ibx#688) A what-if type above a preview on an account without the other
+// kinds, as the paper account (ibx#608, paper 12/10/2026).
+#[test]
+fn what_if_type_above_a_preview() {
+    refused("10351-2", &aapl(), &Order { what_if: true, what_if_type: 2, ..order("LMT") });
+}
+
+fn non_guaranteed() -> Vec<TagValue> {
+    vec![TagValue { tag: "NonGuaranteed".into(), value: "1".into() }]
+}
+
+// (ibx#688) A non-guaranteed combo that is not routed to SMART.
+#[test]
+fn non_guaranteed_combo_not_smart() {
+    let directed = Contract { exchange: "ARCA".into(), ..bag(vec![leg(756733, "BUY"), leg(320227571, "SELL")]) };
+    refused("10368-1", &directed, &Order { smart_combo_routing_params: non_guaranteed(), ..order("LMT") });
+}
+
+// (ibx#688) A combo of three legs with a limit order type and no limit
+// price (ibx#660, observed 13/10/2026).
+#[test]
+fn combo_of_three_legs_without_a_limit_price() {
+    let directed = Contract {
+        exchange: "ARCA".into(),
+        ..bag(vec![leg(756733, "BUY"), leg(320227571, "SELL"), leg(9579970, "BUY")])
+    };
+    refused("10369-1", &directed, &Order { lmt_price: f64::MAX, ..order("LMT") });
+}
+
+// (ibx#688) Post-only on an order type that cannot rest as post-only
+// (ibx#607, paper 12/10/2026).
+#[test]
+fn post_only_on_a_market_order() {
+    refused("10051-1", &aapl(), &Order { post_only: true, ..order("MKT") });
+}
+
+// (ibx#688) Post-only routed to the broker's own alternative trading
+// system.
+#[test]
+fn post_only_on_the_own_trading_system() {
+    let own = Contract { exchange: "IBKRATS".into(), ..aapl() };
+    refused("464-1", &own, &Order { post_only: true, ..order("LMT") });
+}
+
+// (ibx#688) Post-only on the broker's own accumulate/distribute algo
+// (ibx#623).
+#[test]
+fn post_only_on_the_own_algo() {
+    refused("442-1", &aapl(), &Order { post_only: true, algo_strategy: "AD".into(), ..order("LMT") });
+}
+
+/// The text the reference 10.51 gives for the open flags with the time in
+/// force OVERNIGHT + DAY: the table's, with the time in force after it
+/// (paper 12/10/2026).
+const OVERNIGHT_DAY_SEEN: &str = "Invalid time in force:OVERNIGHT + DAY";
+
+// (ibx#688) Post-only with the time in force OVERNIGHT + DAY.
+#[test]
+fn post_only_overnight_and_day() {
+    let order = Order { post_only: true, tif: "OVERNIGHT + DAY".into(), ..order("LMT") };
+    refused_seen("10052-6", &aapl(), &order, OVERNIGHT_DAY_SEEN);
+}
+
+// (ibx#688) Pre-open or opening auction flags on an overnight venue.
+#[test]
+fn open_flags_on_an_overnight_venue() {
+    let on = |exchange: &str| Contract { exchange: exchange.into(), ..aapl() };
+    refused("464-2", &on("OVERNIGHT"), &Order { allow_pre_open: true, ..order("LMT") });
+    refused("464-2", &on("IBEOS"), &Order { ignore_open_auction: true, ..order("LMT") });
+}
+
+// (ibx#688) Pre-open or opening auction flags with the time in force
+// OVERNIGHT + DAY.
+#[test]
+fn open_flags_overnight_and_day() {
+    let tif = "OVERNIGHT + DAY".to_string();
+    refused_seen("10052-7", &aapl(), &Order { allow_pre_open: true, tif: tif.clone(), ..order("LMT") }, OVERNIGHT_DAY_SEEN);
+    refused_seen("10052-7", &aapl(), &Order { ignore_open_auction: true, tif, ..order("LMT") }, OVERNIGHT_DAY_SEEN);
+}
+
+// (ibx#688) Skipping the opening auction with the scale auto-reset.
+#[test]
+fn ignore_open_auction_with_scale_auto_reset() {
+    refused("10340-3", &aapl(), &Order { ignore_open_auction: true, scale_auto_reset: true, ..order("LMT") });
+}
+
+/// An order asking for attached orders: `sl` and `pt`, an id (or the API's
+/// unset value) and a type, for the stop loss and the profit taker.
+fn attached(sl: (i32, &str), pt: (i32, &str)) -> Order {
+    Order {
+        sl_order_id: sl.0, sl_order_type: sl.1.into(), pt_order_id: pt.0, pt_order_type: pt.1.into(),
+        ..order("LMT")
+    }
+}
+
+const UNSET: i32 = i32::MAX;
+
+/// The reading refusals of the attached orders, as the reference 10.51
+/// gives them (ibx#609; paper 15 and 16/10/2026): "Error reading request."
+/// then a space before the cause, where the table has a colon.
+fn read_seen(rule: &str) -> String {
+    let text = local_rule(rule).text;
+    let cause = text.strip_prefix("Error reading request:").expect("a reading refusal");
+    format!("Error reading request. {cause}")
+}
+
+// (ibx#688) Attached orders on a session whose logon forbids attaching
+// them in one request.
+#[test]
+fn attached_orders_not_in_one_request() {
+    let mut engine = Engine::start();
+    engine.shared.reference.set_logon_features("NOAPISLPTSGL");
+    engine.client.place_order(REFUSED, &aapl(), &attached((8, "PRESET"), (9, "PRESET"))).unwrap();
+    assert_refused_text(&mut engine, REFUSED, "10354-1", Some(&read_seen("10354-1")));
+}
+
+// (ibx#688) A stop-loss leg with an id and no PRESET type.
+#[test]
+fn attached_stop_loss_without_its_type() {
+    refused_seen("10356-1", &aapl(), &attached((8, ""), (UNSET, "")), &read_seen("10356-1"));
+}
+
+// (ibx#688) A profit-taker leg with the PRESET type and no id.
+#[test]
+fn attached_profit_taker_without_its_id() {
+    refused_seen("10356-2", &aapl(), &attached((UNSET, ""), (UNSET, "PRESET")), &read_seen("10356-2"));
+}
+
+// (ibx#688) An attached order id that is not a valid id.
+#[test]
+fn attached_order_id_zero() {
+    refused("10149-2", &aapl(), &attached((UNSET, ""), (0, "PRESET")));
+}
+
+// (ibx#688) An attached order id below the highest used.
+#[test]
+fn attached_order_id_below_the_highest_used() {
+    let mut engine = Engine::start();
+    engine.client.place_order(50, &aapl(), &order("LMT")).unwrap();
+    assert_eq!(engine.orders(1).len(), 1, "the first order is sent");
+    engine.client.place_order(60, &aapl(), &attached((UNSET, ""), (40, "PRESET"))).unwrap();
+    assert_refused(&mut engine, 60, "103-2");
+}
+
+// (ibx#688) An attached order under the parent's own id, or both legs
+// under one id (observed 16/10/2026).
+#[test]
+fn attached_order_ids_not_all_different() {
+    refused("103-3", &aapl(), &attached((UNSET, ""), (REFUSED as i32, "PRESET")));
+    refused("103-3", &aapl(), &attached((8, "PRESET"), (8, "PRESET")));
+}
+
+// (ibx#688) Attached orders asked from an order preset that does not
+// define them: the preset is asked first, then the profit taker is named
+// first, the stop loss alone names itself (ibx#609, paper 16/10/2026);
+// the order is dropped, nothing sent.
+#[test]
+fn attached_from_a_preset_without_them() {
+    for (rule, order) in [
+        ("10355-1", attached((8, "PRESET"), (9, "PRESET"))),
+        ("10355-2", attached((8, "PRESET"), (UNSET, ""))),
+    ] {
+        let mut engine = Engine::start();
+        engine.client.place_order(REFUSED, &aapl(), &order).unwrap();
+        engine.answer_preset("STK", "DAY");
+        assert_refused(&mut engine, REFUSED, rule);
+    }
+}
+
+// (ibx#688) An order placed with no time in force takes the one of the
+// order preset of its type, with the notice, and is sent with it (ibx#660,
+// paper 13/10/2026: the notice ends with a period).
+#[test]
+fn time_in_force_from_the_order_preset() {
+    let mut engine = Engine::start();
+    engine.client.place_order(REFUSED, &aapl(), &Order { tif: String::new(), ..order("LMT") }).unwrap();
+    engine.answer_preset("STK", "GTC");
+    let frames = engine.orders(1);
+    let id = REFUSED.to_string();
+    let sent: Vec<&ibx::test_support::Fields> = frames.iter().filter(|f| field(f, 6121) == Some(id.as_str())).collect();
+    assert_eq!(sent.len(), 1, "the order is sent: {frames:?}");
+    assert_eq!(field(sent[0], 59), Some("1"), "with the preset's time in force");
+    let rule = local_rule("10349-1");
+    let errors = engine.errors();
+    assert!(errors.iter().any(|(oid, code, text)| *oid == REFUSED && *code == rule.api_code
+        && *text == "Order TIF was set to GTC based on order preset."), "{errors:?}");
+}
+
+// (ibx#688) Route marketable orders to the best bid or offer only, with
+// the bypass of its warning off (the default): the warning, then the
+// order is discarded, nothing sent (ibx#608, paper 12/10/2026).
+#[test]
+fn route_marketable_to_bbo_without_the_bypass() {
+    refused("10353-1", &aapl(), &Order { route_marketable_to_bbo: true, ..order("LMT") });
+}
+
+// (ibx#688) A selling beta hedge without its max size, under a parent
+// held with transmit off (ibx#614, paper 15/10/2026): refused, nothing
+// sent, the parent stays held.
+#[test]
+fn selling_beta_hedge_without_a_max_size() {
+    let mut engine = Engine::start();
+    engine.client.place_order(6, &aapl(), &Order { transmit: false, ..order("LMT") }).unwrap();
+    let hedge = Order {
+        action: "SELL".into(), parent_id: 6, hedge_type: "B".into(), hedge_param: "1".into(), lmt_price: f64::MAX,
+        total_quantity: 0.0, ..order("MKT")
+    };
+    engine.client.place_order(REFUSED, &aapl(), &hedge).unwrap();
+    assert_refused(&mut engine, REFUSED, "10364-1");
+    assert!(engine.orders(0).iter().all(|f| field(f, 6121) != Some("6")), "the parent stays held");
 }

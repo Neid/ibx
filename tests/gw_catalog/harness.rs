@@ -103,6 +103,31 @@ impl Engine {
         }
     }
 
+    /// Answer the engine's request of the order preset of `sec_type` once it
+    /// is sent (or after 5 s), as the server does: with the preset's time in
+    /// force, none when `tif` is empty (ibx#688).
+    pub fn answer_preset(&mut self, sec_type: &str, tif: &str) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut asked = false;
+        while !asked && Instant::now() < deadline {
+            for m in self.ccp.messages() {
+                let fields = parse_fields(&m);
+                asked |= field(&fields, 35) == Some("U") && field(&fields, 6040) == Some("193");
+                if fields.iter().any(|(t, v)| *t == 35 && matches!(v.as_str(), "D" | "G" | "F")) {
+                    self.orders.push(fields);
+                }
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        assert!(asked, "the preset of {sec_type} is asked");
+        let kind = format!("s={sec_type}");
+        let mut reply = vec![(35, "U"), (6040, "194"), (8166, "G"), (8168, kind.as_str())];
+        if !tif.is_empty() {
+            reply.push((4026, tif));
+        }
+        self.ccp.send_fix(&reply);
+    }
+
     /// The callbacks the API client got since the last call.
     pub fn callbacks(&self) -> Vec<String> {
         let mut w = RecordingWrapper::default();

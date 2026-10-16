@@ -1553,24 +1553,24 @@ local_rule,10314-1,10314 read: the time of a time condition is not a date and ti
 local_rule,10315-1,10315 read: activeStartTime / activeStopTime not in the hh:mm:ss form,open #485
 local_rule,10316-1,10316 read: message version < 24 with the old outsideRth / trigger flag,open #485
 local_rule,10340-1,10340 read: externalUserId / manualOrderIndicator from client versions 187 to 189,open #485
-local_rule,10354-1,10354 read: new request form: attachedOrders given and the server feature that forbids attaching in one request is on,no test
-local_rule,10356-1,"10356 read: new request form: attachedOrders with a stop-loss order id but no stop-loss type PRESET, or the reverse",no test
-local_rule,10356-2,"10356 read: new request form: attachedOrders with a profit-taker order id but no profit-taker type PRESET, or the reverse",no test
-local_rule,10363-1,"10363 read: new request form: a text field of the request holds a non-ASCII character (every request of that form, placeOrder included)",no test
+local_rule,10354-1,10354 read: new request form: attachedOrders given and the server feature that forbids attaching in one request is on,tests/gw_catalog/refusals.rs::attached_orders_not_in_one_request
+local_rule,10356-1,"10356 read: new request form: attachedOrders with a stop-loss order id but no stop-loss type PRESET, or the reverse",tests/gw_catalog/refusals.rs::attached_stop_loss_without_its_type
+local_rule,10356-2,"10356 read: new request form: attachedOrders with a profit-taker order id but no profit-taker type PRESET, or the reverse",tests/gw_catalog/refusals.rs::attached_profit_taker_without_its_id
+local_rule,10363-1,"10363 read: new request form: a text field of the request holds a non-ASCII character (every request of that form, placeOrder included)",open #602
 local_rule,321-1,"321 check: side unknown, or SSHORT when the session has neither the institutional flag nor an away clearing",tests/gw_catalog/refusals.rs::short_side_without_the_logon_flags ; tests/gw_catalog/refusals.rs::unknown_action
 local_rule,452-1,452 check: exchange empty,open #485
-local_rule,10052-1,"10052 check: time in force OVERNIGHT or OVERNIGHT + DAY, or includeOvernight set with a time in force other than DAY, or a time in force text that is not known; the error is sent and the request goes on (classic request form)",no test
-local_rule,10052-2,"10052 check: new request form: time in force OVERNIGHT or OVERNIGHT + DAY, or includeOvernight set with a time in force other than DAY, or a time in force text that is not known; the request is refused",no test
-local_rule,10052-3,"10052 check: new request form, client version 215 or above, server feature that requires a time in force on, and the time in force is empty",no test
+local_rule,10052-1,"10052 check: time in force OVERNIGHT or OVERNIGHT + DAY, or includeOvernight set with a time in force other than DAY, or a time in force text that is not known; the error is sent and the request goes on (classic request form)",open #688
+local_rule,10052-2,"10052 check: new request form: time in force OVERNIGHT or OVERNIGHT + DAY, or includeOvernight set with a time in force other than DAY, or a time in force text that is not known; the request is refused",open #602
+local_rule,10052-3,"10052 check: new request form, client version 215 or above, server feature that requires a time in force on, and the time in force is empty",open #602
 local_rule,10272-1,10272 check: duration set with a time in force other than GTD,open #485
 local_rule,10273-1,10273 check: GTD with both an expiration date and time and a duration,open #485
 local_rule,391-1,"391 check: GTD with neither an expiration date and time nor a duration; the text is the date and time message with 'End Time' as the field name, not the message of 391",open #485
 local_rule,10244-1,"10244 check: crypto order with a cash quantity where none is allowed: a LMT order, or a MKT SELL order",open #485
 local_rule,10289-1,10289 check: crypto MKT BUY order without a cash quantity,open #485
 local_rule,10052-4,"10052 check: crypto BUY order whose time in force is not allowed for crypto (IOC or minutes, and with a server feature off also DAY, GTC, GTD); text = the time in force after a colon (the plain message when the time in force is empty)",open #485
-local_rule,10366-1,10366 check: time in force in minutes with goodAfterTime set,no test
+local_rule,10366-1,10366 check: time in force in minutes with goodAfterTime set,open #688
 local_rule,10040-1,10040 check: the broker's own ATS destination with an unknown security type and no conId,open #485
-local_rule,10372-1,"10372 check: lastTradeDateOrContractMonth not empty and neither an expiry form, nor yyyyMM, nor yyyyMMdd",no test
+local_rule,10372-1,"10372 check: lastTradeDateOrContractMonth not empty and neither an expiry form, nor yyyyMM, nor yyyyMMdd",open #688
 local_rule,477-1,477 check: CASH pseudo-FX destination not allowed for the account,open #485
 local_rule,498-1,"498 check: side SSHORTX or a short combo leg, feature off",open #485
 local_rule,160-1,"160 check: size 0 (not QUOTE, no FA sizing, not hedge child, no cash quantity), and (new in 10.51) the destination is not AVGCOST",open #485
@@ -1588,7 +1588,7 @@ local_rule,494-1,494 check: exempt code on an order that is not SSHORTX,tests/gw
 local_rule,353-1,353 check: slot 1 with a location,tests/gw_catalog/refusals.rs::short_sale_slot_1_with_a_location
 local_rule,352-1,352 check: slot 2 without a location,tests/gw_catalog/refusals.rs::short_sale_slot_2_without_a_location
 local_rule,495-1,495 check: exempt code not valid,open #485
-local_rule,10052-5,10052 check: VOL order with time in force GTC,no test
+local_rule,10052-5,10052 check: VOL order with time in force GTC,open #673
 local_rule,411-1,411 check: VOL order with outsideRth set,open #485
 local_rule,371-1,"371 check: VOL: volatility missing or negative, or set on a non-VOL order",open #485
 local_rule,367-1,367 check: VOL: volatility type not 1 or 2,open #485
@@ -1599,17 +1599,17 @@ local_rule,372-1,372 check: VOL attribute on a non-VOL order,open #485
 local_rule,373-1,373 check: stock range on an order that is not VOL or relative to stock,open #485
 local_rule,375-1,375 check: negative stock range,open #485
 local_rule,374-1,374 check: low stock range not below the high one,open #485
-local_rule,10352-1,10352 check: whatIf false and whatIfType above 0,no test
-local_rule,10351-1,10351 check: whatIfType below 0 or above the highest known type,no test
-local_rule,10351-2,"10351 check: whatIf true, whatIfType above 1, and the account does not allow what-if types (a settings flag and a server feature)",no test
+local_rule,10352-1,10352 check: whatIf false and whatIfType above 0,tests/gw_catalog/refusals.rs::what_if_type_without_what_if
+local_rule,10351-1,10351 check: whatIfType below 0 or above the highest known type,tests/gw_catalog/refusals.rs::what_if_type_out_of_range
+local_rule,10351-2,"10351 check: whatIf true, whatIfType above 1, and the account does not allow what-if types (a settings flag and a server feature)",tests/gw_catalog/refusals.rs::what_if_type_above_a_preview
 local_rule,413-1,413 check: whatIf true and transmit false (10.51: checked with the what-if type rules),tests/gw_catalog/refusals.rs::what_if_without_transmit
 local_rule,457-1,457 check: FA / account rule,open #481
 local_rule,10136-1,10136 check: account application not approved (non-FA session),open #481
 local_rule,10132-1,10132 check: read-only account,open #485
 local_rule,10226-1,10226 check: invalid FA method,open #481
 local_rule,435-1,435 check: multi-account non-FA session and no account,open #481
-local_rule,10368-1,"10368 check: BAG with NonGuaranteed set, and not exactly 2 legs or not routed to SMART",no test
-local_rule,10369-1,"10369 check: BAG with more than 2 legs, an order type that carries a limit price (LMT, LOC, LIT, STP LMT, TRAIL LIMIT, TRAIL LIT, PEG MID, PEG BEST, PEG MKT and related types), and lmtPrice unset",no test
+local_rule,10368-1,"10368 check: BAG with NonGuaranteed set, and not exactly 2 legs or not routed to SMART",tests/gw_catalog/refusals.rs::non_guaranteed_combo_not_smart
+local_rule,10369-1,"10369 check: BAG with more than 2 legs, an order type that carries a limit price (LMT, LOC, LIT, STP LMT, TRAIL LIMIT, TRAIL LIT, PEG MID, PEG BEST, PEG MKT and related types), and lmtPrice unset",tests/gw_catalog/refusals.rs::combo_of_three_legs_without_a_limit_price
 local_rule,10265-1,10265 check: FA group without a method,open #481
 local_rule,10030-1,10030 check: discretionary amount and percent both set,open #485
 local_rule,10061-1,10061 check: trailing unit percent and the value < 0 or > 100,tests/gw_catalog/refusals.rs::trailing_percent_above_100
@@ -1632,14 +1632,14 @@ local_rule,135-1,135 check: parent order id not found; text = the parent id afte
 local_rule,417-1,417 check: scale initial component size vs total size,open #485
 local_rule,145-2,145 check: customerAccount set and the account configuration does not allow a customer account,tests/gw_catalog/refusals.rs::customer_account_without_the_account_config
 local_rule,145-3,145 check: professionalCustomer true and the account configuration does not allow it,tests/gw_catalog/refusals.rs::professional_customer_without_the_account_config
-local_rule,10051-1,10051 check: postOnly set and the order type does not support post-only,no test
-local_rule,464-1,464 check: postOnly set and the destination is the broker's own ATS,no test
-local_rule,442-1,442 check: postOnly set on an algo order of a kind that excludes it,no test
-local_rule,10052-6,10052 check: postOnly set with time in force OVERNIGHT + DAY,no test
-local_rule,464-2,464 check: allowPreOpen or ignoreOpenAuction set and the destination is an overnight venue (OVERNIGHT or its electronic overnight venue),no test
-local_rule,10052-7,10052 check: allowPreOpen or ignoreOpenAuction set with time in force OVERNIGHT + DAY,no test
-local_rule,10340-2,"10340 check: ignoreOpenAuction set, destination SMART, and the pre-open reroute attribute set",no test
-local_rule,10340-3,10340 check: ignoreOpenAuction set and the scale auto-reset attribute set,no test
+local_rule,10051-1,10051 check: postOnly set and the order type does not support post-only,tests/gw_catalog/refusals.rs::post_only_on_a_market_order
+local_rule,464-1,464 check: postOnly set and the destination is the broker's own ATS,tests/gw_catalog/refusals.rs::post_only_on_the_own_trading_system
+local_rule,442-1,442 check: postOnly set on an algo order of a kind that excludes it,tests/gw_catalog/refusals.rs::post_only_on_the_own_algo
+local_rule,10052-6,10052 check: postOnly set with time in force OVERNIGHT + DAY,tests/gw_catalog/refusals.rs::post_only_overnight_and_day
+local_rule,464-2,464 check: allowPreOpen or ignoreOpenAuction set and the destination is an overnight venue (OVERNIGHT or its electronic overnight venue),tests/gw_catalog/refusals.rs::open_flags_on_an_overnight_venue
+local_rule,10052-7,10052 check: allowPreOpen or ignoreOpenAuction set with time in force OVERNIGHT + DAY,tests/gw_catalog/refusals.rs::open_flags_overnight_and_day
+local_rule,10340-2,"10340 check: ignoreOpenAuction set, destination SMART, and the pre-open reroute attribute set",open #688
+local_rule,10340-3,10340 check: ignoreOpenAuction set and the scale auto-reset attribute set,tests/gw_catalog/refusals.rs::ignore_open_auction_with_scale_auto_reset
 local_rule,10007-1,"10007 read: hedge type not D, B, F or P",open #485
 local_rule,10006-1,"10006 read: hedge order (hedge type set) whose parent order is not found, for a new order (a known order id is only logged); text = the message, then client id, order id, parent id and hedge type",open #485
 local_rule,10010-1,"10010 read: delta hedge whose parent or hedge contract does not fit (parent an option; hedge stock, CFD, or futures for an index option); text = the message, then client id, order id, parent id and hedge type",open #485
@@ -1648,9 +1648,9 @@ local_rule,10033-1,10033 read: beta hedge whose parent or hedge is not a stock o
 local_rule,10008-1,10008 read: beta hedge with a beta value that is not a number,open #485
 local_rule,10149-1,10149 flow: orderId 0 or unset,tests/gw_catalog/refusals.rs::order_id_zero
 local_rule,103-1,103 flow: orderId not in the order table and not above the highest used,tests/gw_catalog/refusals.rs::a_new_order_id_below_the_highest_used
-local_rule,10149-2,10149 flow: new request form: the order id or an attached order id is not a known order and not a valid id,no test
-local_rule,103-2,103 flow: new request form: the order id or an attached order id is not a known order and not above the highest used,no test
-local_rule,103-3,103 flow: new request form: the order id and the attached order ids are not all different,no test
+local_rule,10149-2,10149 flow: new request form: the order id or an attached order id is not a known order and not a valid id,tests/gw_catalog/refusals.rs::attached_order_id_zero
+local_rule,103-2,103 flow: new request form: the order id or an attached order id is not a known order and not above the highest used,tests/gw_catalog/refusals.rs::attached_order_id_below_the_highest_used
+local_rule,103-3,103 flow: new request form: the order id and the attached order ids are not all different,tests/gw_catalog/refusals.rs::attached_order_ids_not_all_different
 local_rule,10268-1,10268 flow: eTradeOnly set with the feature on,open #485
 local_rule,10269-1,10269 flow: firmQuoteOnly set with the feature on,open #485
 local_rule,10270-1,10270 flow: nbboPriceCap set with the feature on,open #485
@@ -1659,7 +1659,7 @@ local_rule,2168-1,"2168 flow: warning, order sent: eTradeOnly set, feature off, 
 local_rule,2169-1,"2169 flow: warning, order sent: firmQuoteOnly set, feature off",open #485
 local_rule,2170-1,"2170 flow: warning, order sent: nbboPriceCap set, feature off",open #485
 local_rule,2181-1,"2181 flow: warning, order sent: optOutSmartRouting set, feature off",open #485
-local_rule,2184-1,"2184 flow: warning, order sent: FA session, the order has an allocation group, and the allocation warning was not acknowledged before (shown once, then remembered in the settings); text ends with a link",no test
+local_rule,2184-1,"2184 flow: warning, order sent: FA session, the order has an allocation group, and the allocation warning was not acknowledged before (shown once, then remembered in the settings); text ends with a link",open #507
 local_rule,2102-1,"2102 flow: a new order whose id is still pending: warning code, order not sent",open #485
 local_rule,2139-1,"2139 flow: warning, order sent",open #485
 local_rule,2146-1,"2146 flow: warning, order sent: order id too high",open #485
@@ -1685,8 +1685,8 @@ local_rule,10206-1,10206 build: cash quantity with more than 2 decimals,open #48
 local_rule,10207-1,10207 build: FUND size with more than 3 decimals,open #485
 local_rule,10302-1,10302 build: min trade quantity not allowed,open #485
 local_rule,10303-1,10303 build: min trade quantity not a positive integer,open #485
-local_rule,10362-1,"10362 build: destination OVERNIGHT or its electronic overnight venue, or includeOvernight set, and the contract has no overnight venue among its valid exchanges",no test
-local_rule,10371-1,"10371 build: conditionsIncludeOvernight set, and the contract has no overnight venue among its valid exchanges, or is of an excluded kind, or the account lacks the server feature for overnight conditions",no test
+local_rule,10362-1,"10362 build: destination OVERNIGHT or its electronic overnight venue, or includeOvernight set, and the contract has no overnight venue among its valid exchanges",src/engine/hot_loop/order_builder.rs::include_overnight_needs_an_overnight_exchange
+local_rule,10371-1,"10371 build: conditionsIncludeOvernight set, and the contract has no overnight venue among its valid exchanges, or is of an excluded kind, or the account lacks the server feature for overnight conditions",open #602
 local_rule,439-1,439 build: no algo definition with this name for the exchanges,src/control/algo.rs::refusals_follow_the_definitions
 local_rule,442-2,442 build: algo not allowed for the order,src/control/algo.rs::overnight_and_number_rules
 local_rule,10314-2,10314 build: a time algo parameter is not a date and time,open #485
@@ -1709,21 +1709,21 @@ local_rule,461-1,461 rules: size not a multiple of the lot,open #485
 local_rule,10098-1,10098 rules: SNAP order with a negative offset,open #485
 local_rule,2137-1,"2137 rules: closing order larger than the position: warning code, order refused",open #485
 local_rule,10132-2,10132 rules: read-only account,open #485
-local_rule,10361-1,10361 rules: VOL order whose volatility is below the minimum of its volatility type,no test
-local_rule,10364-1,10364 rules: an attached hedge child of the kind that takes a maximum hedge size has none,no test
-local_rule,10365-1,10365 rules: the maximum hedge size of such a hedge child is below its filled quantity,no test
-local_rule,10355-1,10355 rules: new request form: attachedOrders asks for a profit taker and the order preset has none; order dropped,no test
-local_rule,10355-2,10355 rules: new request form: attachedOrders asks for a stop loss and the order preset has none; order dropped,no test
-local_rule,10349-1,"10349 rules: notice, order still sent: API order whose time in force was taken from the order preset",no test
-local_rule,10353-1,"10353 rules: API order with routeMarketableToBbo set and the API precaution 'Bypass Route Marketable to BBO Warning' off: warning code, order discarded",no test
-local_rule,2185-1,"2185 rules: a hedge child of the kind that takes a maximum hedge size, with a maximum below the computed hedge size, hedge-size precaution on: warning code, order refused",no test
+local_rule,10361-1,10361 rules: VOL order whose volatility is below the minimum of its volatility type,open #673
+local_rule,10364-1,10364 rules: an attached hedge child of the kind that takes a maximum hedge size has none,tests/gw_catalog/refusals.rs::selling_beta_hedge_without_a_max_size
+local_rule,10365-1,10365 rules: the maximum hedge size of such a hedge child is below its filled quantity,open #688
+local_rule,10355-1,10355 rules: new request form: attachedOrders asks for a profit taker and the order preset has none; order dropped,tests/gw_catalog/refusals.rs::attached_from_a_preset_without_them
+local_rule,10355-2,10355 rules: new request form: attachedOrders asks for a stop loss and the order preset has none; order dropped,tests/gw_catalog/refusals.rs::attached_from_a_preset_without_them
+local_rule,10349-1,"10349 rules: notice, order still sent: API order whose time in force was taken from the order preset",tests/gw_catalog/refusals.rs::time_in_force_from_the_order_preset
+local_rule,10353-1,"10353 rules: API order with routeMarketableToBbo set and the API precaution 'Bypass Route Marketable to BBO Warning' off: warning code, order discarded",tests/gw_catalog/refusals.rs::route_marketable_to_bbo_without_the_bypass
+local_rule,2185-1,"2185 rules: a hedge child of the kind that takes a maximum hedge size, with a maximum below the computed hedge size, hedge-size precaution on: warning code, order refused",open #688
 local_rule,104-1,"104 modify: modify of an order that is filled, cancelled or with a cancel pending",src/client_core.rs::place_on_a_cancelled_order_id_is_refused ; src/engine/hot_loop/order_builder.rs::modify_of_an_order_the_engine_no_longer_holds_is_refused
 local_rule,105-1,105 modify: modified order does not match the original,tests/gw_catalog/refusals.rs::modify_of_the_side
 local_rule,329-1,329 modify: modify to another order type,tests/gw_catalog/refusals.rs::modify_to_another_order_type
 local_rule,462-1,462 modify: modify to another time in force,src/api/client/tests.rs::modify_must_restate_the_held_overnight_time_in_force
 local_rule,10326-1,10326 modify: OCA group changed,tests/gw_catalog/refusals.rs::modify_of_the_oca_group
 local_rule,10327-1,10327 modify: OCA type changed,tests/gw_catalog/refusals.rs::modify_of_the_oca_type
-local_rule,10273-2,10273 modify: modify of a GTD order where the new or the working order has an expiration date and time and the new or the working order has a duration,no test
+local_rule,10273-2,10273 modify: modify of a GTD order where the new or the working order has an expiration date and time and the new or the working order has a duration,open #688
 local_rule,10059-1,10059 modify: combo modify with a leg the working order does not have,tests/gw_catalog/refusals.rs::combo_modify_with_another_leg
 local_rule,10147-1,10147 cancel: cancel of an order id that is not found,tests/gw_catalog/refusals.rs::cancel_of_an_unknown_order
 local_rule,10148-1,10148 cancel: cancel of an order in a state that cannot be cancelled,tests/gw_catalog/refusals.rs::cancel_of_an_order_with_a_cancel_pending
