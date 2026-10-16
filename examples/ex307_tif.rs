@@ -1,6 +1,6 @@
 //! ibx#307 probe. Paper account only.
 //!
-//! GTX and NMIN go out as GTC (59=1) and read back as GTC, as the
+//! GTX and NMIN go out as GTC on the wire and read back as GTC, as the
 //! reference. Limit orders far from the market, cancelled at the end.
 //!
 //! Env: IB_USERNAME, IB_PASSWORD.

@@ -49,8 +49,8 @@ fn mac_addresses(b: &[u8]) -> Vec<String> {
     out
 }
 
-/// Usernames in the login fields: `;521;S<user>;` (connect request) and
-/// `96=S<user>/` (farm logon), unless masked.
+/// Usernames in the login fields: the user field of the connect request and
+/// the user field of the farm logon, unless masked.
 fn usernames(b: &[u8]) -> Vec<String> {
     let mut out = Vec::new();
     for (start, stops) in [(&b";521;S"[..], &b";|\x00"[..]), (&b"96=S"[..], &b"/|\x00\x01;"[..])] {

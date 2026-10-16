@@ -104,7 +104,7 @@ pub(super) fn phase_account_pnl(conns: Conns) -> Conns {
         // handler, which emits no Event — so poll it every iteration instead of only
         // when one arrives. Checking it inside the Tick/OrderUpdate arms meant a
         // Closed session (no tick to wake us, no ack for a $1 limit) never looked at
-        // the account at all, and the phase then blamed tag 9806 for what was really
+        // the account at all, and the phase then blamed the logon's account field for what was really
         // an absence of events.
         if !account_received {
             let acct = shared.portfolio.account();
@@ -975,7 +975,7 @@ pub(super) fn phase_pnl_subscription(conns: Conns) -> Conns {
     conns
 }
 
-/// Phase: explicit whole-account P&L subscribe/cancel lifecycle (CCP 6040=142 / cancel).
+/// Phase: explicit whole-account P&L subscribe/cancel lifecycle (the server's P&L subscription query / cancel).
 ///
 /// Distinct from `phase_pnl_subscription`, which only reads account state after an
 /// order. This exercises the `SubscribePnl`/`CancelPnl` ControlCommands directly.
@@ -998,7 +998,7 @@ pub(super) fn phase_pnl_subscribe_command(conns: Conns) -> Conns {
         .unwrap();
     let join = run_hot_loop(hot_loop);
 
-    // The server pushes 6040=143 midnight seeds — one repeating group per open
+    // The server pushes midnight seeds — one repeating group per open
     // position. A flat paper account yields no seeds, which is a valid outcome, so
     // we wait a bounded window and log whatever arrived rather than requiring seeds.
     let deadline = Instant::now() + Duration::from_secs(8);
@@ -1017,7 +1017,7 @@ pub(super) fn phase_pnl_subscribe_command(conns: Conns) -> Conns {
 
     let conns = shutdown_and_reclaim(&control_tx, join, account_id);
 
-    // The assertion is the lifecycle itself: a malformed 6040=142 would have
+    // The assertion is the lifecycle itself: a malformed P&L subscription query would have
     // dropped the CCP session, and shutdown_and_reclaim's ccp_keepalive (plus the
     // CCP-dependent phases that follow) would then fail.
     println!("  midnight seeds received: {}", seeds_seen);

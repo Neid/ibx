@@ -1,4 +1,4 @@
-//! Compatibility tests against IB paper account.
+//! Compatibility tests against the paper account.
 //!
 //! Requires IB_USERNAME and IB_PASSWORD environment variables.
 //! Run with: cargo test --test ib_paper_compat -- --ignored --nocapture
@@ -824,12 +824,12 @@ fn tbt_shared_streams_phase_live() {
 }
 
 /// ibx#191 PR A focused live entry — validates that after a full disconnect,
-/// a fresh `Gateway::connect` receives the CCP recovery push (35=8 with
-/// 150=0/39=0 per ib-agent#155) and that a subsequent
+/// a fresh `Gateway::connect` receives the CCP recovery push (an execution report with
+/// a new report and Submitted status per ib-agent#155) and that a subsequent
 /// `cancel_order(<prior_session_orderId>)` succeeds.
 ///
-/// Two `Gateway::connect` calls in one process. Paper account skips the IBKey
-/// gate so this runs unattended. IB throttles back-to-back logins within ~60s,
+/// Two `Gateway::connect` calls in one process. Paper account skips the second-factor
+/// gate so this runs unattended. The server throttles back-to-back logins within ~60s,
 /// so the test waits 90s between sessions. Run:
 ///   cargo test --test ib_paper_compat cross_session_recovery_phase_live -- --ignored --nocapture
 #[test]
@@ -895,13 +895,13 @@ fn cross_session_recovery_phase_live() {
     assert!(session_a_acked, "Session A: LMT order never acked within 30s");
     println!("  Session A: orderId={} acked + sockets closed", order_id);
 
-    // IB throttles back-to-back Gateway::connect calls ("Never received data
+    // The server throttles back-to-back Gateway::connect calls ("Never received data
     // start after auth" if too soon). Wait ~90s before attempting Session B.
     let wait_secs = 90u64;
     println!("  Waiting {}s before Session B to clear IB auth throttle...\n", wait_secs);
     std::thread::sleep(Duration::from_secs(wait_secs));
 
-    // ─── Session B: fresh connect → expect 35=8 recovery push → cancel orderId ───
+    // ─── Session B: fresh connect → expect execution report recovery push → cancel orderId ───
     println!("Session B: fresh Gateway::connect → expect recovery push for orderId={}", order_id);
     let (gw_b, farm_b, ccp_b, hmds_b) = connect_paper(&config)
         .expect("Session B: Gateway::connect failed");
@@ -1024,7 +1024,7 @@ fn cancel_by_perm_id_phase_live() {
     println!("  Captured permId={} for orderId={}", perm_id, order_id);
 
     // Look up the local orderId by permId (mirrors EClient::cancel_order_by_perm_id).
-    // collect_open_orders merges shared.orders.order_cache (populated by 35=8 ack)
+    // collect_open_orders merges shared.orders.order_cache (populated by the execution report ack)
     // with ClientCore.open_orders.
     let core = ibx::client_core::ClientCore::new();
     let found = core.collect_open_orders(&shared)

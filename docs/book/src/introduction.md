@@ -4,7 +4,7 @@
 
 # IBX
 
-<p class="ibx-tagline">Direct IB connection engine. No Java Gateway. No middleman. Built in Rust for ultra-low-latency, available as both a Rust crate and a Python wheel.</p>
+<p class="ibx-tagline">Direct broker connection engine. No Java Gateway. No middleman. Built in Rust for ultra-low-latency, available as both a Rust crate and a Python wheel.</p>
 
 <p class="ibx-cta">
   <a class="primary" href="./getting-started.html">Get Started →</a>
@@ -41,7 +41,7 @@
 
 ### No JVM, no gateway
 
-Connect straight to the IB servers. No localhost hop, no garbage-collector pauses, no separate process to babysit.
+Connect straight to the broker's servers. No localhost hop, no garbage-collector pauses, no separate process to babysit.
 
 </div>
 
@@ -80,4 +80,4 @@ Hot loop pinned to a core, zero-allocation tick parsing, lock-free dispatch. Tic
 
 ## Project status
 
-IBX is under active development. The Rust and Python APIs track the official IB API surface; gaps are tracked in the [Endpoint Coverage](./reference/coverage.html) chapter.
+IBX is under active development. The Rust and Python APIs track the official API surface; gaps are tracked in the [Endpoint Coverage](./reference/coverage.html) chapter.

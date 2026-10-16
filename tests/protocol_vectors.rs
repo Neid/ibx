@@ -263,7 +263,7 @@ fn bidask_first_tick() {
 }
 
 // ============================================================
-// FIX protocol
+// Server protocol
 // ============================================================
 
 #[test]
@@ -301,7 +301,7 @@ fn xor_fold_sequential() {
 // Real-time bar captures (RTBAR)
 // ============================================================
 // Binary payload test vectors.
-// Format: 8=O\x019=0043\x0135=G\x01 [binary OHLCV data]
+// Format: a binary frame header with a fixed body length, then [binary OHLCV data]
 
 /// Known RTBAR captures: (raw_bytes, (time, open, high, low, close, volume, count))
 const RTBAR_CAPTURES: &[(&[u8], (u32, f64, f64, f64, f64, u32, u32))] = &[
@@ -345,7 +345,7 @@ const RTBAR_CAPTURES: &[(&[u8], (u32, f64, f64, f64, f64, u32, u32))] = &[
 
 #[test]
 fn rtbar_captures_have_fix_prefix() {
-    // Verify all captures start with the expected FIX header
+    // Verify all captures start with the expected binary frame header
     for (raw, _) in RTBAR_CAPTURES {
         assert!(raw.starts_with(b"8=O\x01"));
         let text = String::from_utf8_lossy(&raw[..20]);
@@ -355,7 +355,7 @@ fn rtbar_captures_have_fix_prefix() {
 
 #[test]
 fn rtbar_captures_consistent_length() {
-    // All captures should have the same body length (tag 9=0043)
+    // All captures should have the same body length
     for (raw, _) in RTBAR_CAPTURES {
         let text = String::from_utf8_lossy(raw);
         assert!(text.contains("9=0043"));

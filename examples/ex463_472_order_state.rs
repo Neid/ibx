@@ -1,7 +1,7 @@
 //! ibx#463 / ibx#472 probe. Paper account only.
 //!
 //! A: far limit, user cancel, then a modify of the cancelled id (expect 104, nothing sent).
-//! B: far IOC limit cancelled by the server (expect 39=D PendingCancel, then 39=4 Cancelled).
+//! B: far IOC limit cancelled by the server (expect PendingCancel, then Cancelled).
 //! C: marketable limit that fills, a modify of the filled id (expect 104, no new order),
 //!    then a sell to flatten.
 //!

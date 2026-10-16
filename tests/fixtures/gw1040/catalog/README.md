@@ -63,5 +63,5 @@ Each order attribute with its tag and the kind of value written for it: `boolean
 ## Trademark terms
 
 The texts and names that hold a trademark term carry the placeholder `%TM%` in its place: the messages of codes
-2180, 10106, 10122, 10234, 10235 and 10247, the local rule of 10235, and the attribute name of tag 8015. The
+2180, 10106, 10122, 10234, 10235 and 10247, the local rule of 10235, and the attribute name of one order attribute. The
 tests read `%TM%` like `%s`: any text.

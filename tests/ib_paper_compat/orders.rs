@@ -194,7 +194,7 @@ pub(super) fn phase_stop_order(conns: Conns) -> Conns {
         false)
 }
 
-// ─── Phase 9: Order modify (35=G) ───
+// ─── Phase 9: Order modify (replace message) ───
 
 pub(super) fn phase_modify_order(conns: Conns) -> Conns {
     phase!("--- Phase 9: Order Modify (35=G) + Cancel (SPY) ---");
@@ -1628,7 +1628,7 @@ pub(super) fn phase_cancel_reject(conns: Conns) -> Conns {
     if got_reject {
         pass!("  PASS\n");
     } else {
-        // CancelReject may not be emitted if IB silently ignores the second cancel
+        // CancelReject may not be emitted if the server silently ignores the second cancel
         println!("  SKIP: No CancelReject received (IB may silently ignore duplicate cancel)\n");
     }
     conns
@@ -2094,7 +2094,7 @@ pub(super) fn phase_cancel_filled_order(conns: Conns) -> Conns {
             }
             _ => {}
         }
-        // Give IB a moment to respond, then move on
+        // Give the server a moment to respond, then move on
         if phase == 2 {
             let wait_deadline = Instant::now() + Duration::from_secs(5);
             while Instant::now() < wait_deadline {
@@ -2135,7 +2135,7 @@ pub(super) fn phase_cancel_filled_order(conns: Conns) -> Conns {
         println!("  SKIP: No fill received — market may be closed\n");
         return conns;
     }
-    // IB may silently ignore cancel on filled order (no CancelReject),
+    // The server may silently ignore cancel on filled order (no CancelReject),
     // or it may send one. Either way, the system didn't crash.
     if got_cancel_reject {
         pass!("  PASS (CancelReject received as expected)\n");

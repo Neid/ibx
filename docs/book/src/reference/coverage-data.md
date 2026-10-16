@@ -1,8 +1,8 @@
-# API Coverage Matrix (v0.7.1)
+# API Coverage Matrix (v0.8.0)
 
 *Auto-generated from source — do not edit.*
 
-Canonical IB API methods vs ibx implementation status.
+Canonical official API methods vs ibx implementation status.
 
 - **Y** = Implemented
 - **STUB** = Accepts call but not wired to server (logs warning or no-op)
@@ -10,14 +10,14 @@ Canonical IB API methods vs ibx implementation status.
 
 ## Summary
 
-| | IB API | Rust | Python |
+| | Official API | Rust | Python |
 |---|:---:|:---:|:---:|
-| **EClient methods** | 77 | 67 impl, 9 stub | 67 impl, 10 stub |
-| **EWrapper callbacks** | 81 | 72 impl, 6 stub | 72 impl, 9 stub |
+| **EClient methods** | 79 | 69 impl, 9 stub | 69 impl, 10 stub |
+| **EWrapper callbacks** | 81 | 72 impl, 8 stub | 72 impl, 9 stub |
 
 ## EClient Methods
 
-| Category | IB API Method | C++ Name | Rust | Python |
+| Category | Official API Method | C++ Name | Rust | Python |
 |----------|---------------|----------|:----:|:------:|
 | Connection | `connect` | `eConnect` | Y | Y |
 |  | `disconnect` | `eDisconnect` | Y | Y |
@@ -95,7 +95,9 @@ Canonical IB API methods vs ibx implementation status.
 |  | `unsubscribe_from_group_events` | `unsubscribeFromGroupEvents` | Y | Y |
 |  | `update_display_group` | `updateDisplayGroup` | Y | Y |
 | WSH | `req_wsh_meta_data` | `reqWshMetaData` | STUB | STUB |
+|  | `cancel_wsh_meta_data` | `cancelWshMetaData` | Y | Y |
 |  | `req_wsh_event_data` | `reqWshEventData` | STUB | STUB |
+|  | `cancel_wsh_event_data` | `cancelWshEventData` | Y | Y |
 
 ## EWrapper Callbacks
 
@@ -180,5 +182,5 @@ Canonical IB API methods vs ibx implementation status.
 | Display Groups | `display_group_list` | Y | Y |
 |  | `display_group_updated` | Y | Y |
 | Other | `delta_neutral_validation` | STUB | STUB |
-| WSH | `wsh_meta_data` | - | STUB |
-|  | `wsh_event_data` | - | STUB |
+| WSH | `wsh_meta_data` | STUB | STUB |
+|  | `wsh_event_data` | STUB | STUB |

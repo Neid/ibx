@@ -1,6 +1,6 @@
 //! ibx#425 probe. Paper account only.
 //!
-//! The account config (6040=210) is read at login. On the paper account it
+//! The account config is read at login. On the paper account it
 //! has no CUSTACCT, so an order with customerAccount or with
 //! professionalCustomer=true is refused with error 145 and nothing is sent.
 //!

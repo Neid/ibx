@@ -6,7 +6,7 @@
 //!   $env:RUST_LOG="info"; cargo run --release --example ex176_live_2fa_code_provider
 //!
 //! Requires `IB_LIVE_USERNAME` / `IB_LIVE_PASSWORD` in `.env` (auto-loaded).
-//! When the IBKey app shows the 8-char code, type it at the prompt.
+//! When the second-factor app shows the 8-char code, type it at the prompt.
 //!
 //! Note: one wrong code is terminal — the server skips AUTH_FINISH and tears
 //! the socket down (ib-agent#149). There is no retry loop.
@@ -39,7 +39,7 @@ fn load_dotenv() {
     }
 }
 
-/// Prompt the operator for the 8-character code displayed in the IBKey app.
+/// Prompt the operator for the 8-character code displayed in the second-factor app.
 fn read_code_from_stdin(challenge: IbKeyChallenge) -> io::Result<String> {
     println!();
     println!("== IBKey Challenge/Response ==");

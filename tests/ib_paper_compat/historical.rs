@@ -234,9 +234,9 @@ pub(super) fn phase_query_error_surfaces(mut conns: Conns, gw: &Gateway, config:
     );
 
     const REQ_ID: ReqId = 18600;
-    // The combo `bar_size=15 mins` + `duration=1 W` is technically within the IB
+    // The combo `bar_size=15 mins` + `duration=1 W` is technically within the broker's
     // docs' allowed ranges but is rejected by the live gateway with
-    // <QueryError>Invalid time length</QueryError>. If IB ever lifts this
+    // <QueryError>Invalid time length</QueryError>. If the server ever lifts this
     // restriction, the phase will report SKIP rather than fail.
     control_tx.send(ControlCommand::FetchHistorical {
         sec_type: "STK".into(), exchange: "SMART".into(),
@@ -461,13 +461,13 @@ pub(super) fn phase_fundamental_data(mut conns: Conns, gw: &Gateway, config: &Ga
 ///   1. Connect to real server (Gateway::connect or connect_farm)
 ///   2. Create HotLoop with real connections + ControlCommand channel
 ///   3. Send ControlCommand through the channel (NOT inject_* or push_*)
-///   4. Let the hot_loop process it → sends FIX to server → receives response
+///   4. Let the hot_loop process it → sends the request to the server → receives response
 ///   5. Verify SPECIFIC VALUES in the response (not just "did something arrive")
 ///   6. Clean up (shutdown_and_reclaim)
 ///
 /// This test verifies historical news end-to-end:
-///   ControlCommand::FetchHistoricalNews → hot_loop → HMDS FIX request
-///   → real server → FIX response → hot_loop parses j.c codec + ZIP
+///   ControlCommand::FetchHistoricalNews → hot_loop → HMDS request
+///   → real server → server response → hot_loop parses j.c codec + ZIP
 ///   → SharedState → drain_historical_news → verify headline values
 pub(super) fn phase_historical_news(mut conns: Conns, gw: &Gateway, config: &GatewayConfig) -> Conns {
     phase!("--- Phase 85: Historical News (AAPL, end-to-end) ---");

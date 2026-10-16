@@ -1,6 +1,6 @@
 //! Compatibility tests for the control plane modules.
 //!
-//! Tests cross-module interactions: contracts ↔ FIX protocol, historical ↔ FIX protocol,
+//! Tests cross-module interactions: contracts ↔ server protocol, historical ↔ server protocol,
 //! account parsing, and full workflows that span multiple control plane components.
 
 use ibx::control::account::*;
@@ -10,7 +10,7 @@ use ibx::protocol::fix;
 use ibx::protocol::fixcomp;
 
 // ============================================================
-// Contract definition: FIX roundtrip (build request → parse response)
+// Contract definition: wire roundtrip (build request → parse response)
 // ============================================================
 
 #[test]
@@ -207,7 +207,7 @@ fn secdef_response_pagination() {
 }
 
 // ============================================================
-// Historical data: XML build, parse, and FIX wrapping
+// Historical data: XML build, parse, and message wrapping
 // ============================================================
 
 #[test]
@@ -227,7 +227,7 @@ fn historical_request_full_workflow() {
         include_expired: false,
     };
 
-    // Build FIX message
+    // Build the server message
     let msg = build_historical_request(&req, 42);
     let tags = fix::fix_parse(&msg);
     assert_eq!(tags[&fix::TAG_MSG_TYPE], "W");

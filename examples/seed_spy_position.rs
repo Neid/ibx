@@ -66,7 +66,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     // BUY 1 share at LMT $760 — aggressive over yesterday's close (~$725)
-    // to cross the wider pre-market spread, but well within IB's
+    // to cross the wider pre-market spread, but well within the broker's
     // price-band protection. GTC + outside_rth=true so it can fill pre-market.
     let order = Order {
         action: "BUY".into(),

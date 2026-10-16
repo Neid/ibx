@@ -461,7 +461,7 @@ class TestSessionFeatures:
 
         o = matching[0]["order"]
 
-        # oca_type: 3 from exec report (FIX-derived), 0 from local tracking (user didn't set it)
+        # oca_type: 3 from exec report (from the wire), 0 from local tracking (user didn't set it)
         assert isinstance(o.oca_type, int), f"oca_type not int: {type(o.oca_type)}"
         assert o.oca_type in (0, 3), f"Unexpected oca_type={o.oca_type}"
 

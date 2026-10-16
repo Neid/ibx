@@ -39,7 +39,7 @@ pub struct Engine {
     /// lost link (2103) among the errors.
     _farm: Peer,
     handle: Option<JoinHandle<()>>,
-    /// Every order message (35=D, 35=G, 35=F) the server got so far.
+    /// Every order message (new order, replace, cancel) the server got so far.
     orders: Vec<Fields>,
 }
 

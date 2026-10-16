@@ -19,7 +19,7 @@ pip install git+https://github.com/deepentropy/ibx
 
 ## Credentials
 
-IBX connects directly to IB servers — there is no separate gateway process. Set your account credentials via environment variables:
+IBX connects directly to the broker's servers — there is no separate gateway process. Set your account credentials via environment variables:
 
 ```bash
 export IB_USERNAME="your_username"

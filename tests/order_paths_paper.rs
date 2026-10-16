@@ -59,7 +59,7 @@ fn wire() -> &'static WireLog {
 type Frame = Vec<(u32, String)>;
 
 fn parse_frame(line: &str) -> Frame {
-    // "WIRE> seq=N 8=FIX..|..." or "WIRE< ccp/comp 8=FIX..|..."
+    // "WIRE> seq=N <text frame>" or "WIRE< ccp/comp <text frame>"
     let body = line.find("8=").map(|i| &line[i..]).unwrap_or("");
     body.split('|')
         .filter_map(|f| {
@@ -83,7 +83,7 @@ fn frames(outbound: bool, msg_type: &str, clord: &str) -> Vec<Frame> {
         .collect()
 }
 
-/// The new orders sent for the API order id `id` (6121, ibx#466).
+/// The new orders sent for the API order id `id` (ibx#466).
 fn new_orders(id: i64) -> Vec<Frame> {
     let id = id.to_string();
     wire().lines.lock().unwrap().iter()
@@ -93,7 +93,7 @@ fn new_orders(id: i64) -> Vec<Frame> {
         .collect()
 }
 
-/// The ClOrdID of the order of API order id `id` at `version`: the server
+/// The client id of the order of API order id `id` at `version`: the server
 /// id its new order went out under, from the order id generator (ibx#466).
 fn clord_of(id: i64, version: u32) -> String {
     let server = new_orders(id).first()
@@ -497,7 +497,7 @@ fn conditions(paper: &mut Paper, base: i64) {
 
 /// ibx#250, ibx#486: a server reject reaches the caller as the Inactive
 /// status, then error 201 with the server's reason, then the status once
-/// more, as the reference (every 39=8 of the four-leg recordings of 26/09
+/// more, as the reference (every Rejected report of the four-leg recordings of 26/09
 /// to 02/10/2026, ib-agent captures/four-leg). The server refuses FOK on
 /// this route (ib-agent#192 C7).
 fn server_reject(paper: &mut Paper, id: i64) {
@@ -521,13 +521,13 @@ fn server_reject(paper: &mut Paper, id: i64) {
 }
 
 /// ibx#486: an order on a contract given without a conId: its contract is
-/// looked up by symbol first (35=c FixSecDefReqBySymbol before the 35=D),
+/// looked up by symbol first (a contract lookup by symbol before the new order),
 /// the order goes out with the conId found, and the server takes it.
 ///
-/// Only the frames after the place call are read, each parsed: the 35=D
-/// is found by its API order id (6121; its ClOrdID is the server id of the
+/// Only the frames after the place call are read, each parsed: the new order
+/// is found by its API order id (its client id is the server id of the
 /// order, ibx#466), the lookup by its message type, request name and
-/// symbol, its answer by the lookup's 320.
+/// symbol, its answer by the lookup's request id.
 fn order_by_symbol(paper: &mut Paper, id: i64) {
     println!("  order by symbol (order {})", id);
     let by_symbol = Contract { con_id: 0, ..aapl() };
@@ -549,7 +549,7 @@ fn order_by_symbol(paper: &mut Paper, id: i64) {
 }
 
 /// The wire checks of [`order_by_symbol`] on the frames logged after the
-/// place call: one lookup by symbol, its answer, then the order's 35=D with
+/// place call: one lookup by symbol, its answer, then the order's new order message with
 /// the conId found.
 fn order_by_symbol_checks(lines: &[String], id: i64, symbol: &str, con_id: &str) -> Vec<(bool, String)> {
     let lines: Vec<(bool, Frame)> = lines.iter()
@@ -574,7 +574,7 @@ fn order_by_symbol_checks(lines: &[String], id: i64, symbol: &str, con_id: &str)
 }
 
 // The checks of the order by symbol on the frame shapes the engine logs
-// (offline): the 35=D is found by its API order id (6121), its ClOrdID
+// (offline): the new order is found by its API order id, its client id
 // being the server id of the order (ibx#466).
 #[test]
 fn order_by_symbol_checks_read_the_logged_frames() {
@@ -584,7 +584,7 @@ fn order_by_symbol_checks_read_the_logged_frames() {
     let order = format!("WIRE> seq=9 8=FIX.4.1|9=0215|35=D|34=000009|52=x|11=1288736441.0|44=100.00|1=DU1|6122=c|6121={id}|6119=0|38=1|40=2|55=AAPL|167=STK|54=1|59=0|100=BEST|6210=BEST|6008=265598|6088=Socket|15=USD|10=096|");
     let ok = |lines: Vec<String>| order_by_symbol_checks(&lines, id, "AAPL", "265598").iter().all(|(ok, _)| *ok);
     assert!(ok(vec!["log line".into(), lookup.into(), answer.into(), order.clone()]));
-    // The 35=D first, no answer, no conId, two lookups: each fails.
+    // The new order first, no answer, no conId, two lookups: each fails.
     assert!(!ok(vec![order.clone(), lookup.into(), answer.into()]));
     assert!(!ok(vec![lookup.into(), order.clone()]));
     assert!(!ok(vec![lookup.into(), answer.into(), order.replace("|6008=265598", "")]));

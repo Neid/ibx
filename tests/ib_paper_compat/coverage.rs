@@ -1,4 +1,4 @@
-//! Endpoint coverage manifest and gap reporting for IB compatibility suite.
+//! Endpoint coverage manifest and gap reporting for the compatibility suite.
 //!
 //! This phase enforces that every `ControlCommand` variant is either:
 //! - covered by an integration phase in this suite, or

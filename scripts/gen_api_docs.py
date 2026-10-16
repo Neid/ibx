@@ -80,7 +80,7 @@ PARAM_DOCS: dict[str, str] = {
     "filter": "Execution filter (client_id, acct_code, time, symbol, sec_type, exchange, side).",
     "b_auto_bind": "If `true`, auto-bind future orders to this client.",
     "bbo_exchange": "BBO exchange for smart component lookup (e.g. `\"SMART\"`).",
-    "acct_code": "Account code (e.g. `\"DU1234567\"`).",
+    "acct_code": "Account code (e.g. `\"DUXXXXXXX\"`).",
     "account": "Account ID.",
     "model_code": "Model portfolio code (empty for default).",
     "group_name": "Account group name (e.g. `\"All\"`).",
@@ -775,7 +775,7 @@ def generate_python_md(ver: str) -> str:
     return "\n".join(out), method_count
 
 
-# ── IB API Coverage Matrix ──
+# ── Official API Coverage Matrix ──
 
 # Canonical ibapi EClient methods (source of truth).
 # Category, ibapi method name, ibapi C++ name (for reference).
@@ -1028,7 +1028,7 @@ def generate_coverage_md(ver: str) -> str:
         "",
         "*Auto-generated from source — do not edit.*",
         "",
-        "Canonical IB API methods vs ibx implementation status.",
+        "Canonical official API methods vs ibx implementation status.",
         "",
         "- **Y** = Implemented",
         "- **STUB** = Accepts call but not wired to server (logs warning or no-op)",
@@ -1051,7 +1051,7 @@ def generate_coverage_md(ver: str) -> str:
 
     out.append("## Summary")
     out.append("")
-    out.append("| | IB API | Rust | Python |")
+    out.append("| | Official API | Rust | Python |")
     out.append("|---|:---:|:---:|:---:|")
     out.append(f"| **EClient methods** | {total_client} | {rust_impl} impl, {rust_stub} stub | {py_impl} impl, {py_stub} stub |")
     out.append(f"| **EWrapper callbacks** | {total_wrapper} | {rw_impl} impl, {rw_stub} stub | {pw_impl} impl, {pw_stub} stub |")
@@ -1060,7 +1060,7 @@ def generate_coverage_md(ver: str) -> str:
     # EClient table
     out.append("## EClient Methods")
     out.append("")
-    out.append("| Category | IB API Method | C++ Name | Rust | Python |")
+    out.append("| Category | Official API Method | C++ Name | Rust | Python |")
     out.append("|----------|---------------|----------|:----:|:------:|")
     current_cat = ""
     for cat, name, cpp_name in IBAPI_ECLIENT:

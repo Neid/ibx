@@ -1,9 +1,9 @@
 //! ibx#179 — place → restart → cancel wire capture.
 //!
 //! Run in two phases against the paper account, with `RUST_LOG=trace` to dump
-//! every outbound/inbound FIX message. Phase A places, persists state, exits.
+//! every outbound/inbound server message. Phase A places, persists state, exits.
 //! Phase B reads state, attempts cancel against the prior session's order_id,
-//! logs whatever CCP returns (cancel-ack, 35=3 reject, 35=j business reject).
+//! logs whatever CCP returns (cancel-ack, session-level reject, business reject).
 //!
 //! Phase A:
 //!   $env:RUST_LOG="trace"; $env:IB_USERNAME="..."; $env:IB_PASSWORD="..."
@@ -154,7 +154,7 @@ fn phase_cancel() -> Result<(), Box<dyn std::error::Error>> {
     let mut w = W { state: state.clone() };
 
     // Drain any unsolicited inbound for 2s before cancelling — gives the
-    // gateway time to push openOrder/35=8 for prior-session orders if it does.
+    // gateway time to push openOrder/execution reports for prior-session orders if it does.
     println!("=== PHASE B: draining inbound for 2s ===");
     pump(&client, &mut w, &state, Duration::from_secs(2), |_| false);
 

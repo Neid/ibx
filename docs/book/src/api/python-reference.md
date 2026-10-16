@@ -1,4 +1,4 @@
-# Python API Reference (v0.7.1)
+# Python API Reference (v0.8.0)
 
 *Auto-generated from source — do not edit.*
 
@@ -30,7 +30,7 @@ def new(wrapper))
 
 #### `connect`
 
-Connect to IB and start the engine.  Live logins (``paper=False``) enter a second-factor approval window and **block** until the factor is approved (mobile push) or the server ends the wait. As in the reference there is no client timeout by default: the server closes the login after about 18 min. The keepalives of the server are answered during the whole wait. This is a human approval gate, not a hang. To bound or avoid it: use ``paper=True``, pass an ``ib_key_timeout_secs``, or run ``connect()`` on a worker thread with your own timeout. Paper logins skip the gate entirely. Set ``RUST_LOG=info`` to see a log line when the wait begins.  ``code_provider``: a callable used for the typed-code variant of the second factor. When the server sends the challenge it is called once, during ``connect()``, with a dict ``{"display_id": str, "avth_url": str}``, and must return the code as a ``str``; an exception it raises ends the login. It runs on its own thread while the login keeps answering the keepalives. ``None`` (default): wait for the mobile push approval.  Multiple ``EClient`` instances can run concurrently in one process; each owns its own state, sockets, and engine thread, and ``connect()`` does not serialize across instances. If you pin engines via ``core_id``, give each a distinct value. See ibx#203 / ibx#207.
+Connect to the broker and start the engine.  Live logins (``paper=False``) enter a second-factor approval window and **block** until the factor is approved (mobile push) or the server ends the wait. As in the reference there is no client timeout by default: the server closes the login after about 18 min. The keepalives of the server are answered during the whole wait. This is a human approval gate, not a hang. To bound or avoid it: use ``paper=True``, pass an ``ib_key_timeout_secs``, or run ``connect()`` on a worker thread with your own timeout. Paper logins skip the gate entirely. Set ``RUST_LOG=info`` to see a log line when the wait begins.  ``code_provider``: a callable used for the typed-code variant of the second factor. When the server sends the challenge it is called once, during ``connect()``, with a dict ``{"display_id": str, "avth_url": str}``, and must return the code as a ``str``; an exception it raises ends the login. It runs on its own thread while the login keeps answering the keepalives. ``None`` (default): wait for the mobile push approval.  Multiple ``EClient`` instances can run concurrently in one process; each owns its own state, sockets, and engine thread, and ``connect()`` does not serialize across instances. If you pin engines via ``core_id``, give each a distinct value. See ibx#203 / ibx#207.  An engine pinned with ``core_id`` polls without pause and keeps that core busy; without it the engine thread rests while there is nothing to do and is woken by the first byte received or the first request (ibx#530).
 
 ```python
 def connect(host="cdc1.ibllc.com".to_string(), port=0, client_id=0, username="".to_string(), password="".to_string(), paper=true, core_id=None, ib_key_timeout_secs=None, ib_key_token_sub_type=None, code_provider=None))
@@ -44,7 +44,7 @@ def connect(host="cdc1.ibllc.com".to_string(), port=0, client_id=0, username="".
 | `username` | `str` | Account username. |
 | `password` | `str` | Account password. |
 | `paper` | `bool` | If `true`, connect to paper trading. If `false`, connect blocks on the live second-factor approval window (see method note). |
-| `core_id` | `usize or None` | CPU core affinity for the hot loop thread. Use a distinct value per engine when running several in one process. A pinned engine polls without pause and keeps that core busy; without it the engine thread rests while there is nothing to do. |
+| `core_id` | `usize or None` | CPU core affinity for the hot loop thread. Use a distinct value per engine when running several in one process. |
 | `ib_key_timeout_secs` | `int or None` | Live second-factor approval timeout in seconds. Default: no client timeout, the wait ends when the server answers or closes the login (about 18 min). Set it to fail fast on unattended live logins; ignored for paper. |
 | `ib_key_token_sub_type` | `str or None` | Override of the second-factor token sub-type. Default: the value the server lists for the session. Ignored for paper. |
 | `code_provider` | `Py<PyAny> or None` | Callable for the typed-code second factor: called once during `connect()` with a dict `{"display_id", "avth_url"}`, returns the code as `str`. Default: wait for the mobile push approval. Ignored for paper. |
@@ -53,7 +53,7 @@ def connect(host="cdc1.ibllc.com".to_string(), port=0, client_id=0, username="".
 
 #### `disconnect`
 
-Disconnect from IB.
+Disconnect from the broker.
 
 ```python
 def disconnect()
@@ -235,7 +235,7 @@ def req_account_updates(subscribe, _acct_code=""))
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `subscribe` | `bool` | `true` to start updates, `false` to stop. |
-| `acct_code` | `str` | Account code (e.g. `"DU1234567"`). |
+| `acct_code` | `str` | Account code (e.g. `"DUXXXXXXX"`). |
 
 ---
 
@@ -438,7 +438,7 @@ def req_executions(req_id, exec_filter=None))
 
 #### `req_completed_orders`
 
-Request completed orders.
+Request completed orders: the server's finished orders of the trading day, as the reference asks them; given by the event loop (ibx#695).
 
 ```python
 def req_completed_orders(api_only=false))
@@ -1087,6 +1087,102 @@ def req_current_time()
 
 ---
 
+#### `req_current_time_in_millis`
+
+```python
+def req_current_time_in_millis()
+```
+
+---
+
+#### `cancel_contract_data`
+
+Below session level 215, error 503 for the request, as the official client library answers; from 215 nothing (ibx#557). A running contract details request goes on in both cases.
+
+```python
+def cancel_contract_data(req_id)
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `req_id` | `int` | Request identifier. Used to match responses to requests. |
+
+---
+
+#### `cancel_historical_ticks`
+
+Below session level 215, error 503 for the request; from 215 nothing (ibx#557). A running historical ticks request goes on.
+
+```python
+def cancel_historical_ticks(req_id)
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `req_id` | `int` | Request identifier. Used to match responses to requests. |
+
+---
+
+#### `verify_request`
+
+A session opened without the intent to verify: error 544.
+
+```python
+def verify_request(api_name, api_version))
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `api_name` | `str` |  |
+| `api_version` | `str` |  |
+
+---
+
+#### `verify_message`
+
+No verification is in progress: error 10095 as the reference.
+
+```python
+def verify_message(api_data))
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `api_data` | `str` |  |
+
+---
+
+#### `verify_and_auth_request`
+
+A session opened without the intent to verify: error 551.
+
+```python
+def verify_and_auth_request(api_name, api_version, opaque_isv_key))
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `api_name` | `str` |  |
+| `api_version` | `str` |  |
+| `opaque_isv_key` | `str` |  |
+
+---
+
+#### `verify_and_auth_message`
+
+The reference gives no answer: nothing happens.
+
+```python
+def verify_and_auth_message(api_data, xyz_response))
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `api_data` | `str` |  |
+| `xyz_response` | `str` |  |
+
+---
+
 #### `request_fa`
 
 Request FA data. Not yet implemented.
@@ -1254,7 +1350,7 @@ def req_user_info(req_id)
 
 #### `req_wsh_meta_data`
 
-Request Wall Street Horizon metadata. Not yet implemented.
+The permission check of the reference (ibx#443): error 10276 when the session has no WSH news source, 10277 when it is not subscribed. The data request itself is not implemented: with the permission, error 10279.
 
 ```python
 def req_wsh_meta_data(req_id)
@@ -1266,9 +1362,23 @@ def req_wsh_meta_data(req_id)
 
 ---
 
+#### `cancel_wsh_meta_data`
+
+No answer, as the reference (ibx#443).
+
+```python
+def cancel_wsh_meta_data(req_id)
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `req_id` | `int` | Request identifier. Used to match responses to requests. |
+
+---
+
 #### `req_wsh_event_data`
 
-Request Wall Street Horizon event data. Not yet implemented.
+The permission check of the reference (ibx#443), as `req_wsh_meta_data`. The data request itself is not implemented: with the permission, error 10282, since no meta data is held.
 
 ```python
 def req_wsh_event_data(req_id, wsh_event_data=None))
@@ -1277,7 +1387,21 @@ def req_wsh_event_data(req_id, wsh_event_data=None))
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `req_id` | `int` | Request identifier. Used to match responses to requests. |
-| `wsh_event_data` | `Py<PyAny> or None` |  |
+| `wsh_event_data` | `WshEventDataPy or None` |  |
+
+---
+
+#### `cancel_wsh_event_data`
+
+No answer, as the reference (ibx#443).
+
+```python
+def cancel_wsh_event_data(req_id)
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `req_id` | `int` | Request identifier. Used to match responses to requests. |
 
 ---
 
@@ -1349,6 +1473,49 @@ Current server time (Unix seconds).
 
 ---
 
+#### `current_time_in_millis`
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `time_in_millis` | `int` |  |
+
+---
+
+#### `verify_message_api`
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `api_data` | `str` |  |
+
+---
+
+#### `verify_completed`
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `is_successful` | `bool` |  |
+| `error_text` | `str` |  |
+
+---
+
+#### `verify_and_auth_message_api`
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `api_data` | `str` |  |
+| `xyz_challange` | `str` |  |
+
+---
+
+#### `verify_and_auth_completed`
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `is_successful` | `bool` |  |
+| `error_text` | `str` |  |
+
+---
+
 #### `tick_price`
 
 Price tick update (bid, ask, last, etc.).
@@ -1370,7 +1537,7 @@ Size tick update (bid size, ask size, volume, etc.).
 |-----------|------|-------------|
 | `req_id` | `int` | Request identifier. Used to match responses to requests. |
 | `tick_type` | `int` | Tick type ID or tick-by-tick type string. |
-| `size` | `float` | Tick size. |
+| `size` | `Decimal` | Tick size. |
 
 ---
 
@@ -1427,8 +1594,8 @@ Order status update (filled, remaining, avg price, etc.).
 |-----------|------|-------------|
 | `order_id` | `int` | Order identifier. Must be unique per session. |
 | `status` | `str` | Order status string (`"Submitted"`, `"Filled"`, `"Cancelled"`, etc.). |
-| `filled` | `float` | Cumulative filled quantity. |
-| `remaining` | `float` | Remaining quantity. |
+| `filled` | `Decimal` | Cumulative filled quantity. |
+| `remaining` | `Decimal` | Remaining quantity. |
 | `avg_fill_price` | `float` | Average fill price. |
 | `perm_id` | `int` | Permanent order ID assigned by the server. |
 | `parent_id` | `int` | Parent order ID (0 if no parent). |
@@ -1510,7 +1677,7 @@ Portfolio position update.
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `contract` | `Py<PyAny>` | Contract specification (symbol, secType, exchange, currency, etc.). |
-| `position` | `float` | Book position (row index) or position size. |
+| `position` | `Decimal` | Book position (row index) or position size. |
 | `market_price` | `float` | Current market price. |
 | `market_value` | `float` | Current market value of position. |
 | `average_cost` | `float` | Average cost basis. |
@@ -1572,7 +1739,7 @@ Position entry (account, contract, size, avg cost).
 |-----------|------|-------------|
 | `account` | `str` | Account ID. |
 | `contract` | `Py<PyAny>` | Contract specification (symbol, secType, exchange, currency, etc.). |
-| `pos` | `float` | Position size (decimal shares). |
+| `pos` | `Decimal` | Position size (decimal shares). |
 | `avg_cost` | `float` | Average cost per share. |
 
 ---
@@ -1603,7 +1770,7 @@ Single-position P&L update.
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `req_id` | `int` | Request identifier. Used to match responses to requests. |
-| `pos` | `float` | Position size (decimal shares). |
+| `pos` | `Decimal` | Position size (decimal shares). |
 | `daily_pnl` | `float` | Daily profit/loss. |
 | `unrealized_pnl` | `float` | Unrealized profit/loss. |
 | `realized_pnl` | `float` | Realized profit/loss. |
@@ -1698,7 +1865,7 @@ Tick-by-tick last trade.
 | `tick_type` | `int` | Tick type ID or tick-by-tick type string. |
 | `time` | `int` | Tick timestamp (Unix seconds). |
 | `price` | `float` | Tick price. |
-| `size` | `float` | Tick size. |
+| `size` | `Decimal` | Tick size. |
 | `tick_attrib_last` | `Py<PyAny>` |  |
 | `exchange` | `str` | Exchange name. |
 | `special_conditions` | `str` | Special trade conditions. |
@@ -1715,8 +1882,8 @@ Tick-by-tick bid/ask quote.
 | `time` | `int` | Tick timestamp (Unix seconds). |
 | `bid_price` | `float` | Bid price. |
 | `ask_price` | `float` | Ask price. |
-| `bid_size` | `float` | Bid size. |
-| `ask_size` | `float` | Ask size. |
+| `bid_size` | `Decimal` | Bid size. |
+| `ask_size` | `Decimal` | Ask size. |
 | `tick_attrib_bid_ask` | `Py<PyAny>` |  |
 
 ---
@@ -1842,7 +2009,7 @@ L2 book update (single exchange).
 | `operation` | `int` | Book operation: 0=insert, 1=update, 2=delete. |
 | `side` | `int` | Book side: 0=ask, 1=bid. Or order side `"BOT"`/`"SLD"`. |
 | `price` | `float` | Tick price. |
-| `size` | `float` | Tick size. |
+| `size` | `Decimal` | Tick size. |
 
 ---
 
@@ -1858,7 +2025,7 @@ L2 book update (with market maker).
 | `operation` | `int` | Book operation: 0=insert, 1=update, 2=delete. |
 | `side` | `int` | Book side: 0=ask, 1=bid. Or order side `"BOT"`/`"SLD"`. |
 | `price` | `float` | Tick price. |
-| `size` | `float` | Tick size. |
+| `size` | `Decimal` | Tick size. |
 | `is_smart_depth` | `bool` | If `true`, aggregate depth from multiple exchanges via SMART. |
 
 ---
@@ -1885,8 +2052,8 @@ Real-time 5-second OHLCV bar.
 | `high` | `float` | High price. |
 | `low` | `float` | Low price. |
 | `close` | `float` | Close price. |
-| `volume` | `float` | Volume. |
-| `wap` | `float` | Volume-weighted average price. |
+| `volume` | `Decimal` | Volume. |
+| `wap` | `Decimal` | Volume-weighted average price. |
 | `count` | `int` | Trade count. |
 
 ---
@@ -2029,7 +2196,7 @@ Multi-account position entry.
 | `account` | `str` | Account ID. |
 | `model_code` | `str` | Model portfolio code (empty for default). |
 | `contract` | `Py<PyAny>` | Contract specification (symbol, secType, exchange, currency, etc.). |
-| `pos` | `float` | Position size (decimal shares). |
+| `pos` | `Decimal` | Position size (decimal shares). |
 | `avg_cost` | `float` | Average cost per share. |
 
 ---

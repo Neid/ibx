@@ -78,7 +78,7 @@ pub(super) fn phase_pacing_violation_recovery(conns: Conns) -> Conns {
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
     let end_dt = format_utc_timestamp(now);
 
-    // Fire 10 historical requests in rapid succession (IB pacing limit is ~60/10min)
+    // Fire 10 historical requests in rapid succession (the server's pacing limit is ~60/10min)
     let num_requests = 10i64;
     for i in 0..num_requests {
         control_tx.send(ControlCommand::FetchHistorical {

@@ -1,6 +1,6 @@
 [book]
 title = "IBX"
-description = "Direct IB connection engine — Rust + Python."
+description = "Direct broker connection engine — Rust + Python."
 authors = ["IBX contributors"]
 language = "en"
 src = "src"

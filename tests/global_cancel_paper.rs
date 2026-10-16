@@ -3,7 +3,7 @@
 //! An order left open by an earlier session is listed by the server at
 //! connect (the logon replay). `req_global_cancel` cancels every order of
 //! the book, as the reference: those of this session, of other clients and
-//! of earlier sessions. An order the replay gave as not routed yet (39=A)
+//! of earlier sessions. An order the replay gave as not routed yet (PreSubmitted)
 //! was not in the book, so the global cancel sent nothing for it (paper
 //! 04/10/2026).
 //!
@@ -13,7 +13,7 @@
 //!
 //! The order ids are the reference's (ibx#466): 32-bit, the next valid id
 //! the highest order id the client used + 1. The new order carries its API
-//! order id (6121), so session 2 lists it with the order id of session 1,
+//! order id, so session 2 lists it with the order id of session 1,
 //! and its next valid id is above it. Its permId is the server id it went
 //! out under, of the order id generator; the orders are told apart by
 //! permId too.

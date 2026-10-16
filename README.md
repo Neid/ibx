@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <strong>Direct IB connection engine. No Java Gateway. No middleman.</strong>
+  <strong>Direct broker connection engine. No Java Gateway. No middleman.</strong>
 </p>
 
 <p align="center">
@@ -24,13 +24,13 @@
 
 ---
 
-IBX connects directly to Interactive Brokers servers — without requiring the official Java Gateway. Built in Rust for ultra-low-latency, available as both a Rust library and a Python library via PyO3. Both expose an ibapi-compatible `EClient`/`Wrapper` API.
+IBX connects directly to the broker's servers — without requiring the official Java Gateway. Built in Rust for ultra-low-latency, available as both a Rust library and a Python library via PyO3. Both expose an ibapi-compatible `EClient`/`Wrapper` API.
 
 ## Benchmarks
 
 ### Processing Latency (no network)
 
-Internal engine processing measured in isolation (1M iterations, no network I/O). Compared to the Java Gateway's internal processing, measured via bytecode instrumentation.
+Internal engine processing measured in isolation (1M iterations, no network I/O). Compared to the Java Gateway's internal processing, measured in its running process.
 
 #### Tick Reading (wire → strategy)
 
@@ -113,7 +113,7 @@ client.cancel_order(id, "");
 
 ## Python Usage
 
-IBX exposes an [ibapi](https://github.com/InteractiveBrokers/tws-api)-compatible `EClient`/`EWrapper` API. Same callback pattern, same method names — but connecting directly through the Rust engine instead of through TWS or IB Gateway. Drop-in compatible with existing ibapi and [ib_async](https://github.com/ib-api-reloaded/ib_async) code.
+IBX exposes an ibapi-compatible `EClient`/`EWrapper` API. Same callback pattern, same method names — but connecting directly through the Rust engine instead of through the official desktop application or gateway. Drop-in compatible with existing ibapi and [ib_async](https://github.com/ib-api-reloaded/ib_async) code.
 
 ### Install
 
@@ -202,7 +202,7 @@ MKT, LMT, STP, STP LMT, TRAIL, TRAIL LIMIT, MOC, LOC, MTL, MIT, LIT, MKT PRT, ST
 
 ## Notebooks
 
-Jupyter notebooks adapted from [ib_async's examples](https://ib-api-reloaded.github.io/ib_async/notebooks.html), using the ibapi-compatible `EClient`/`EWrapper` pattern. All connect through the Rust engine — no TWS or IB Gateway needed.
+Jupyter notebooks adapted from [ib_async's examples](https://ib-api-reloaded.github.io/ib_async/notebooks.html), using the ibapi-compatible `EClient`/`EWrapper` pattern. All connect through the Rust engine — no official desktop application or gateway needed.
 
 | Notebook | Description |
 |---|---|
@@ -240,7 +240,7 @@ Jupyter notebooks adapted from [ib_async's examples](https://ib-api-reloaded.git
                └────┬───┘     └────┬─────┘
                     │              │
               ──────▼──────────────▼──────
-                     IB Servers
+                   Broker Servers
 ```
 
 **Hot path**: Poll socket (non-blocking) → verify → decompress → decode ticks → update SeqLock quotes → push `Event::Tick` to channel → drain orders → encode → send. All on a single pinned core, zero allocations.
@@ -253,7 +253,7 @@ Jupyter notebooks adapted from [ib_async's examples](https://ib-api-reloaded.git
 
 - Rust 2024 edition (1.85+)
 - Python 3.11+ (for PyO3 bindings)
-- Interactive Brokers account (paper or live)
+- A brokerage account with API access (paper or live)
 
 ## License
 

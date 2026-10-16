@@ -1,9 +1,9 @@
-"""Comprehensive Python wrapper compatibility tests against live IB paper account.
+"""Comprehensive Python wrapper compatibility tests against the live paper account.
 
 Requires IB_USERNAME and IB_PASSWORD environment variables.
 Run with: pytest tests/python/test_live_python_wrappers.py -v --timeout=180
 
-Tests the full Python EClient/EWrapper API surface against a real IB connection:
+Tests the full Python EClient/EWrapper API surface against a real server connection:
 connection, market data, orders, historical data, account, contracts, scanner, news.
 """
 
@@ -21,7 +21,7 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-# ── Well-known IB con_ids ──
+# ── Well-known con_ids ──
 SPY_CON_ID = 756733
 AAPL_CON_ID = 265598
 MSFT_CON_ID = 272093
@@ -224,7 +224,7 @@ class FullWrapper(EWrapper):
 
 @pytest.fixture(scope="module")
 def ib_connection():
-    """Single IB connection shared across all tests in this module."""
+    """Single server connection shared across all tests in this module."""
     wrapper = FullWrapper()
     client = EClient(wrapper)
 

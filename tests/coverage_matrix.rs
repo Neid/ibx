@@ -4,8 +4,8 @@
 //! Rows (`kind,id,description,test`):
 //! - `rule`: a numbered section of the gateway translation specs;
 //! - `error`: an API error code of the gateway catalog;
-//! - `writer`: a field of the new order (35=D), replace (35=G) and cancel
-//!   (35=F) messages, as the gateway's writers emit them;
+//! - `writer`: a field of the new order, replace and cancel
+//!   messages, as the gateway's writers emit them;
 //! - `order_request`: a variant of `OrderRequest`;
 //! - `eclient`: a public `EClient` method;
 //! - `local_rule`: a local order refusal of the gateway catalog

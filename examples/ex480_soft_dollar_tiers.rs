@@ -1,6 +1,6 @@
 //! ibx#480 probe. Read-only: login, reqSoftDollarTiers, disconnect.
 //!
-//! Prints the soft dollar tiers ibx returns (from logon tag 6522; none when
+//! Prints the soft dollar tiers ibx returns (from the logon's soft dollar tier field; none when
 //! the logon has no tiers, as on paper).
 //!
 //! Paper: IB_USERNAME, IB_PASSWORD.

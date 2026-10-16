@@ -144,7 +144,7 @@ class TestCrossSessionOrderVisibility:
         # ── Session B: connect fresh, check if session A's order is visible ──
         wrapper_b, client_b, thread_b = connect_session()
 
-        # Wait for init burst (35=8 exec reports from 6040=72 and 35=H)
+        # Wait for init burst (execution reports from the executions query and the order status request)
         time.sleep(5)
 
         # Call req_all_open_orders — should include session A's order

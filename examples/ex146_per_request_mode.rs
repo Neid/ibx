@@ -1,4 +1,4 @@
-//! Issue #146 — per-request market-data mode (FIX field 9887).
+//! Issue #146 — per-request market-data mode (a field of the market data request).
 //!
 //! Subscribes to a thinly-traded ticker with parallel realtime + frozen subs
 //! and prints which feed delivers ticks. Frozen sub keeps streaming after-hours

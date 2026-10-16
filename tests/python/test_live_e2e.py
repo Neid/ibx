@@ -1,9 +1,9 @@
-"""Python end-to-end compatibility test against live IB paper account (issue #85).
+"""Python end-to-end compatibility test against the live paper account (issue #85).
 
 Requires IB_USERNAME and IB_PASSWORD environment variables.
 Run with: pytest tests/python/test_live_e2e.py -v --timeout=120
 
-This test connects the Python EClient → real Gateway → IB and verifies
+This test connects the Python EClient → real Gateway → the servers and verifies
 the full end-to-end flow: connect → contract details → market data → order → disconnect.
 """
 
@@ -22,7 +22,7 @@ pytestmark = pytest.mark.skipif(
 
 
 class LiveWrapper(EWrapper):
-    """Records callbacks from live IB connection."""
+    """Records callbacks from a live connection."""
 
     def __init__(self):
         super().__init__()
@@ -78,11 +78,11 @@ class LiveWrapper(EWrapper):
 
 
 class TestLiveE2E:
-    """End-to-end tests against live IB paper account."""
+    """End-to-end tests against the live paper account."""
 
     @pytest.fixture(autouse=True)
     def setup_connection(self):
-        """Connect to IB and tear down after each test."""
+        """Connect to the server and tear down after each test."""
         self.wrapper = LiveWrapper()
         self.client = EClient(self.wrapper)
 

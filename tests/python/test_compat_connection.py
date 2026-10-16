@@ -1,7 +1,7 @@
 """Tests for ibapi-compatible connection lifecycle (issue #55).
 
 Unit tests verify API signatures and error handling without a live gateway.
-Compatibility tests (marked @pytest.mark.live) require IB paper trading gateway.
+Compatibility tests (marked @pytest.mark.live) require a paper trading gateway.
 """
 
 import os

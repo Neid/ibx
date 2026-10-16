@@ -1,6 +1,6 @@
 # Gateway 1040 reference scenarios
 
-Scenarios recorded from the official IB Gateway 1040 on a paper account, for the scenario replay tests
+Scenarios recorded from the reference gateway 1040 on a paper account, for the scenario replay tests
 (ibx#487) and the fixture tree of ibx#484. Each file holds one scenario with its four legs in one time order.
 
 ## Layout
@@ -14,10 +14,10 @@ Scenarios recorded from the official IB Gateway 1040 on a paper account, for the
   - `contracts` (symbol, secType, conId seen in the scenario), `api_conn`, `seq_range`, `counts` per leg;
   - `script_version`, `notes`.
 - Then one line per record, in the gateway's own order (`seq`):
-  - `leg`: `api_out` (API client to gateway), `fix_out` (gateway to IB server), `fix_in` (IB server to gateway),
+  - `leg`: `api_out` (API client to gateway), `fix_out` (gateway to server), `fix_in` (server to gateway),
     `api_in` (gateway to API client);
   - `seq`, `nanos` (ns since the recorder started), `conn` (`api:<port>`, `CCP`, `usfarm`, `ushmds`, ...), `hook`
-    (where the record was taken), `raw_b64` (bytes), and decoded fields (FIX tags as `[tag, value]` pairs, API fields
+    (where the record was taken), `raw_b64` (bytes), and decoded fields (text frame fields as `[tag, value]` pairs, API fields
     split on NUL).
 
 All legs come from one recorder inside the gateway JVM with one sequence counter, so the order between legs is the
@@ -26,10 +26,10 @@ it always comes after the `fix_in` that caused it.
 
 ## Masking
 
-- Account id: `DUXXXXXXX`. IB username: `{user}`. Machine fingerprint: `{hwid}|XX:XX:XX:XX:XX:XX`.
-- Masked in raw and decoded forms. When a mask changes the length of a text FIX frame, `9=`, `95=` and `10=` are
+- Account id: `DUXXXXXXX`. Username: `{user}`. Machine fingerprint: `{hwid}|XX:XX:XX:XX:XX:XX`.
+- Masked in raw and decoded forms. When a mask changes the length of a text frame, the frame's length fields and its checksum are
   recomputed; protobuf lengths are rewritten. Binary and NS frames get masks of the same length.
-- Check before adding a file: no match for `\b(DU|DF|U|F)[0-9]{6,8}\b` (outside `8349` signatures), no MAC address,
+- Check before adding a file: no match for `\b(DU|DF|U|F)[0-9]{6,8}\b` (outside signature fields), no MAC address,
   no username.
 
 ## Files (28/09/2026; depth slices 02/10/2026; combos 03/10/2026; global cancel 04/10/2026; 05/10/2026)
@@ -51,7 +51,7 @@ it always comes after the `fix_in` that caused it.
 | `20261002` | pre-open | b1_432_hist_ticks: historical ticks of AAPL and EUR.USD (start, end, both, no zone, refusals, AGGTRADES); b1_429_keep_up_to_date: four keepUpToDate requests, their updates, cancels and refusals; b1_431_hist_format: formatDate 1 and 2 bars, historicalDataEnd strings, head timestamps, cancel of an unknown request |
 | `20261002` | pre-open | b1_cleanup: reqAllOpenOrders and reqPositions, both answered from the gateway's state (no frame) |
 | `20261005` | RTH | b2_generic: generic ticks (AAPL with sixteen of them, SPY with mdoff, an invalid list, EUR.USD with 233 on the cash farm, MNQ with 588 on the futures farm); b2_mkt_errors: two ids on AAPL, 7203 refused (354 with type 1, with 233, 10167 and delayed data with type 3, type 1 again); b2_tbt: tick-by-tick types, past ticks, ignoreSize, EUR.USD on the cash farm, an unknown type; b2_rtbars: real-time bars shared by four requests, empty bars, the cancel of one; b2_trail: plain TRAIL orders and their trail stop prices |
-| `20261001` | RTH | global_cancel_replayed: 8 orders of earlier sessions in the logon replay (150=A 20=3 39=A), then reqAllOpenOrders, reqGlobalCancel (8 cancels tagged ALL, in the book's order) and reqAllOpenOrders of client 193 (slice: the replay's order reports and the API connection; the scenario connections in between left out) |
+| `20261001` | RTH | global_cancel_replayed: 8 orders of earlier sessions in the logon replay (pending-new status-only reports, PreSubmitted), then reqAllOpenOrders, reqGlobalCancel (8 cancels tagged ALL, in the book's order) and reqAllOpenOrders of client 193 (slice: the replay's order reports and the API connection; the scenario connections in between left out) |
 
 | `20261007` | pre-open | session_start: the server frames of the auth link from the logon on (account config, the execution replay of two fills of the morning, the working order, the account and portfolio frames), then the first API client: reqPositions, reqAccountUpdates, reqPnL / reqPnLSingle, reqOpenOrders, reqAllOpenOrders, reqCompletedOrders, reqExecutions and the cancel of the working order (slice: no logon frame, heartbeats or farms; the requests the gateway made by itself before the first API record are left out) |
 

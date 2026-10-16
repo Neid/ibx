@@ -1,4 +1,4 @@
-//! Tag order of the new order (35=D), replace (35=G) and cancel (35=F)
+//! Field order of the new order, replace and cancel
 //! messages against the gateway's writers (ibx#485 items 3 and 4).
 //!
 //! The writer table (`order_writers.csv`) lists every tag the gateway
@@ -45,7 +45,7 @@ struct Expect {
 }
 
 /// A new order. Every new stock order of these cases has a currency and
-/// the stock multiplier, and the origin attribute (`6122=c` on every
+/// the stock multiplier, and the origin attribute (set on every
 /// captured new order and replace of an API order).
 fn d(order_type: &'static str, facts: &[&'static str]) -> Expect {
     let mut all = vec!["currency", "multiplier", "attr:6122"];
@@ -386,9 +386,9 @@ fn frame_ids(requests: &[OrderRequest]) -> Vec<i64> {
     out
 }
 
-/// The order id of a message: its API order id (6121) on a new order, the
-/// ClOrdID being the server's id of the order (ibx#466, ibx#486); else the
-/// API order id of the new order sent under the id part of its ClOrdID.
+/// The order id of a message: its API order id on a new order, the
+/// client id being the server's id of the order (ibx#466, ibx#486); else the
+/// API order id of the new order sent under the id part of its client id.
 fn frame_id(frame: &Fields, frames: &[Fields]) -> Option<i64> {
     let api_id = |f: &Fields| super::harness::field(f, 6121).and_then(|v| v.parse().ok());
     if let Some(id) = api_id(frame) {
@@ -520,8 +520,8 @@ fn attribute_values_follow_the_attribute_table_kinds() {
 }
 
 /// The checks find each kind of difference: a tag the gateway never
-/// writes (21, ibx#466), a tag out of order, a missing attribute
-/// (orderRef, ibx#466), a tag whose condition is false (44 on a MKT).
+/// writes (the handling instruction, ibx#466), a tag out of order, a missing attribute
+/// (orderRef, ibx#466), a tag whose condition is false (a price on a MKT).
 #[test]
 fn the_checks_find_each_kind_of_difference() {
     let rows = catalog::writer("D");

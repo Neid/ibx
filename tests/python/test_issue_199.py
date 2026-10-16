@@ -121,7 +121,7 @@ class TestGtdLifecycle:
         pytest.fail(f"GTD order {oid} never reached an accepted state: {self.wrapper.statuses(oid)}")
 
     def test_time_precise_gtd_acks_and_cancels_on_schedule(self):
-        """Time-precise GTD (tag 126, UTC) acks, rests, and the gateway
+        """Time-precise GTD (the GTD expiry time field, UTC) acks, rests, and the gateway
         broker-side cancels it at the requested instant without a client cancel."""
         expiry_dt = datetime.now(timezone.utc) + timedelta(seconds=75)
         gtd = expiry_dt.strftime("%Y%m%d %H:%M:%S UTC")
@@ -143,7 +143,7 @@ class TestGtdLifecycle:
         )
 
     def test_date_only_gtd_acks(self):
-        """Date-only GTD (tag 432) is accepted and rests. Cancelled in teardown."""
+        """Date-only GTD (the GTD expiry date field) is accepted and rests. Cancelled in teardown."""
         gtd = (datetime.now(timezone.utc) + timedelta(days=1)).strftime("%Y%m%d")
 
         oid = self.wrapper.next_id + 1  # distinct from any prior order this session

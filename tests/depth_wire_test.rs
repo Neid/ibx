@@ -29,14 +29,14 @@ fn raw_farm_subscribe_test() {
     eprintln!("sign_iv={:02x?}", &farm.sign_iv[..8]);
     farm.seq = 0;
 
-    // L1: 35=V|263=1|146=1|262=1|6008=265598|207=BEST|167=CS|264=0|9830=1|
+    // L1: a top-of-book market data request for AAPL (conId 265598) on BEST.
     let r1 = farm.send_fixcomp(&[
         (35, "V"), (263, "1"), (146, "1"), (262, "1"),
         (6008, "265598"), (207, "BEST"), (167, "CS"), (264, "0"), (9830, "1"),
     ]);
     eprintln!("L1 subscribe: {:?} seq={}", r1, farm.seq);
 
-    // Depth: 35=V|263=1|146=1|262=2|6008=265598|207=NASDAQ|167=CS|264=626|
+    // Depth: a market depth request for AAPL on NASDAQ.
     let r2 = farm.send_fixcomp(&[
         (35, "V"), (263, "1"), (146, "1"), (262, "2"),
         (6008, "265598"), (207, "NASDAQ"), (167, "CS"), (264, "626"),

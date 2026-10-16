@@ -43,7 +43,7 @@ fn count_phase_failure() {
 
 /// The order errors (local refusals, warnings) and the notices of the
 /// server reports (201 reject, 202 cancel), which the reference gives after
-/// the report's status (ibx#486; every 39=8 and 39=4 of the four-leg
+/// the report's status (ibx#486; every Rejected and Cancelled report of the four-leg
 /// recordings of 26/09 to 02/10/2026). Drains both queues.
 pub(super) fn drain_order_messages(shared: &SharedState) -> Vec<(i64, i64, String)> {
     let mut out = shared.orders.drain_order_errors();
@@ -233,7 +233,7 @@ pub(super) fn shutdown_and_reclaim(
     let hmds = hl.hmds_conn.take();
 
     // Keep auth connection alive between phases — drain pending data and send heartbeat.
-    // Without this, IB kills the auth connection if we're idle for >10s during
+    // Without this, the server kills the auth connection if we're idle for >10s during
     // phase transitions (e.g., reconnection in historical phases).
     ccp_keepalive(&mut ccp);
 
@@ -241,9 +241,9 @@ pub(super) fn shutdown_and_reclaim(
 }
 
 /// Send a heartbeat on the auth connection and respond to any pending TestRequests.
-/// Prevents IB from killing the connection during phase transitions.
+/// Prevents the server from killing the connection during phase transitions.
 pub(super) fn ccp_keepalive(ccp: &mut Connection) {
-    // Drain any pending data (heartbeats, TestRequests from IB)
+    // Drain any pending data (heartbeats, TestRequests from the server)
     let _ = ccp.try_recv();
     let frames = ccp.extract_frames();
     for frame in frames {
@@ -796,9 +796,9 @@ fn run_submit_cancel_phase_inner(
             Ok(Event::OrderUpdate(update)) => {
                 if statuses.last() != Some(&update.status) { statuses.push(update.status); }
                 match update.status {
-                    // PreSubmitted (39=A) is the server's ack: received, not yet
+                    // PreSubmitted is the server's ack: received, not yet
                     // working on the exchange. An at-the-open order stops there until
-                    // the auction and never reaches Submitted (39=0) intraday, so it
+                    // the auction and never reaches Submitted intraday, so it
                     // must count as the ack and fire the cancel, or the order rests
                     // forever and the phase reports "never acknowledged" while the
                     // acks were in fact arriving (ib-agent#164 timed them at ~120ms).

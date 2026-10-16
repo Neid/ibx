@@ -161,11 +161,11 @@ fn session(shared: &Arc<SharedState>) -> (EClient, Peer, ibx::engine::park::Cont
 // Paper 05/10/2026 (global_cancel_paper): an order a Rust client placed in
 // one session was not found among the open orders of the next session by
 // its order id, which was built from the clock, above the int range, so
-// the new order carried no API order id (6121). The order ids are now the
+// the new order carried no API order id. The order ids are now the
 // reference's (ibx#466): the next valid id is the highest order id the
 // client used + 1, 1 for a client with none; the new order goes out under
-// a server id of the order id generator, its API order id in 6121. The
-// next session's logon replay gives the order with its 6121: it is listed
+// a server id of the order id generator, its API order id in its own field. The
+// next session's logon replay gives the order with its API order id: it is listed
 // with that order id and its permId (the server id), and the next valid id
 // of that session is above it.
 #[test]

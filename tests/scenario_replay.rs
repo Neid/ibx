@@ -144,7 +144,7 @@ fn premarket_order_types_and_order_events() {
 
 // The market data part of the same scenario: AAPL top of book after the
 // orders on AAPL (BMW and 7203 go to other farms: left out): the first
-// 35=P gives the trade fields (lastTimestamp, last, lastSize, volume,
+// quote message gives the trade fields (lastTimestamp, last, lastSize, volume,
 // close) to the request, also when the orders registered the contract
 // before (ibx#487: they went to the orders' slot).
 #[test]
@@ -171,9 +171,9 @@ fn overnight_time_in_force() {
 // (ibx#486). Left out as in src/golden/orders.rs: TRAIL MIT, TRAIL LIT,
 // PASSV REL, RPI and PEG BEST (ibx#469). The commission reports (no order
 // id) are those of the fills of the orders left out.
-// The exchange map cancel of QQQ (seq 5489) has no 6088: the QQQ request
+// The exchange map cancel of QQQ (seq 5489) has no API source field: the QQQ request
 // was cancelled before the map came; those of AAPL and SPY in other
-// recordings have 6088=Socket, their requests still running (02/10/2026
+// recordings have the API socket source, their requests still running (02/10/2026
 // seq 2461 and 2590, 28/09/2026 seq 5292 and 22088) (ibx#487).
 #[test]
 fn rth_order_types() {
@@ -292,9 +292,9 @@ fn pnl_and_pnl_single() {
 }
 
 // Orders of earlier sessions known from the logon replay (01/10/2026,
-// paper): 8 orders of client 0 the replay gives as not routed yet (150=A
-// 20=3 39=A), then client 193: reqAllOpenOrders lists them in the book's
-// order, API order id 0 (no 6121), permId the ClOrdID's id, client 0;
+// paper): 8 orders of client 0 the replay gives as not routed yet (pending-new
+// status-only reports, PreSubmitted), then client 193: reqAllOpenOrders lists them in the book's
+// order, API order id 0 (no API order id field), permId the id part of the client id, client 0;
 // reqGlobalCancel sends the 8 cancels tagged ALL in the book's order, and
 // client 193 gets nothing of their reports (the orders are client 0's);
 // reqAllOpenOrders then lists none.

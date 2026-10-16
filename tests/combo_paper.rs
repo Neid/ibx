@@ -5,11 +5,12 @@
 //! and is held or works until it is cancelled. Checked against the
 //! reference's captures of 26/09/2026 (ib-agent#105):
 //! - the first order of the session sends the combo set-up requests, then
-//!   a 35=D with the BAG conId of the logon (6008), 167=BAG, the leg
-//!   symbols in 55, the leg block and NonGuaranteed;
+//!   a new order message with the BAG conId of the logon, the BAG security
+//!   type, the leg symbols in the symbol field, the leg block and
+//!   NonGuaranteed;
 //! - openOrder shows the combo contract (conId, symbol and local symbol
 //!   QQQ,SPY, trading class COMB, comboLegsDescrip, two legs);
-//! - the price change goes out as a 35=G and the server reports the
+//! - the price change goes out as a replace message and the server reports the
 //!   replace with the new price, then the cancel;
 //! - a second order on the same combo sends no set-up request.
 //!
@@ -161,7 +162,7 @@ fn combo_order_on_paper() {
     let setup = sent("c").iter().filter(|l| l.contains("SecDefReqMsgReqByConid")).count()
         + sent("U").iter().filter(|l| l.contains("|6040=7|")).count();
     check(setup >= 2, "the set-up requests went out (BAG definition, leg confirmation)");
-    // The 35=D by its API order id; its ClOrdID is the server id of the
+    // The new order by its API order id; its client id is the server id of the
     // order (ibx#466).
     let d = sent("D").into_iter().find(|l| l.contains(&format!("|6121={id}|"))).unwrap_or_default();
     println!("    35=D: {d}");
@@ -179,8 +180,8 @@ fn combo_order_on_paper() {
     }
     if up {
         client.place_order(id, &combo(), &order(-50.10)).expect("modify");
-        // The server's report of the replace (11 = the order's version 1,
-        // 150=5), not ibx's own openOrder echo of the tracked order.
+        // The server's report of the replace (the order's client id at version 1,
+        // a replaced report), not ibx's own openOrder echo of the tracked order.
         let replace = format!("|11={server}.1|");
         let replaced = || received("8").into_iter()
             .find(|l| l.contains(&replace) && l.contains("|150=5|"));

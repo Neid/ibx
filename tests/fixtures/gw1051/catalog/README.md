@@ -57,5 +57,5 @@ Not observed on the reference yet, and the rows ibx is not compared with: ibx#68
 ## Trademark terms
 
 The texts and names that hold a trademark term carry the placeholder `%TM%` in its place: the messages of codes
-2180, 10106, 10122, 10234, 10235 and 10247, and the attribute name of the order attribute 8015 (the same rows as in
+2180, 10106, 10122, 10234, 10235 and 10247, and the attribute name of one order attribute (the same rows as in
 1040). The tests read `%TM%` like `%s`: any text.

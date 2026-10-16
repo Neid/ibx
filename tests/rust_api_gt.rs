@@ -1315,8 +1315,8 @@ fn api_gt_suite() {
             order_type: "LMT".into(),
             lmt_price: 1.0,
             tif: "GTC".into(),
-            // The server refuses outside-RTH for algo orders ("Only RTH orders
-            // are allowed for IB algorithmic orders"). This case passed before
+            // The server refuses outside-RTH for algo orders (only RTH orders
+            // are allowed for algorithmic orders). This case passed before
             // only because ibx dropped the flag on adaptive orders (ibx#318).
             outside_rth: false,
             algo_strategy: "Adaptive".into(),
@@ -2708,8 +2708,9 @@ impl Wrapper for ChainWrapper {
 /// 2AAPL when listed), then the end; the same request again gives the same
 /// rows in the same order without a new query; OPT gives 321; an ES future
 /// on CME gives futures option groups on CME, then the end. Works with the
-/// market closed. The log shows the 6040=5, 35=c and 6040=138 queries for
-/// AAPL, none for the second AAPL request, and one 6040=138 with 6995=CME
+/// market closed. The log shows the underlying query, the contract lookup
+/// by symbol and the option chain query for AAPL, none for the second AAPL
+/// request, and one option chain query on CME
 /// for ES.
 /// Run with: cargo test --test rust_api_gt api_option_chains_live -- --ignored --nocapture
 #[test]

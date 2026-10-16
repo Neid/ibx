@@ -1,4 +1,4 @@
-# Rust API Reference (v0.7.1)
+# Rust API Reference (v0.8.0)
 
 *Auto-generated from source — do not edit.*
 
@@ -16,7 +16,7 @@
 
 #### `connect`
 
-Connect to IB and start the engine.
+Connect to the server and start the engine.
 
 ```rust
 pub fn connect(config: &EClientConfig) -> Result<Self, Box<dyn std::error::Error>>
@@ -32,7 +32,7 @@ pub fn connect(config: &EClientConfig) -> Result<Self, Box<dyn std::error::Error
 
 #### `connect_with_events`
 
-Connect to IB and start the engine with an [`Event`] channel attached. Returns the client plus a receiver carrying every [`Event`] the engine produces. This is a second, optional delivery path that runs alongside [`process_msgs()`](EClient::process_msgs) — it does not replace it, and nothing is removed from the wrapper callbacks when it is in use. The channel is bounded by `capacity`; the engine never blocks on it, so a consumer that falls behind loses events rather than slowing the hot loop. Drain it from a thread that is not the one calling `process_msgs()`, or keep `capacity` generous. Attaching a channel makes the engine build events it would otherwise skip, which means one copy of each answer (bar batches, contract definitions, option chains, scanner rows and the others, ibx#498). Use [`connect()`](EClient::connect) when you only need the wrapper callbacks (ibx#242).
+Connect to the server and start the engine with an [`Event`] channel attached. Returns the client plus a receiver carrying every [`Event`] the engine produces. This is a second, optional delivery path that runs alongside [`process_msgs()`](EClient::process_msgs) — it does not replace it, and nothing is removed from the wrapper callbacks when it is in use. The channel is bounded by `capacity`; the engine never blocks on it, so a consumer that falls behind loses events rather than slowing the hot loop. Drain it from a thread that is not the one calling `process_msgs()`, or keep `capacity` generous. The errors the client answers itself (a failed snapshot, smart components that waited, positions not ready) are made by `process_msgs()` and reach the channel then; a refused market data subscription also comes from the engine at once, by instrument (`Event::MarketDataError`, ibx#575). Attaching a channel makes the engine build events it would otherwise skip, which means one copy of each answer (bar batches, contract definitions, option chains, scanner rows and the others, ibx#498). Use [`connect()`](EClient::connect) when you only need the wrapper callbacks (ibx#242).
 
 ```rust
 pub fn connect_with_events( config: &EClientConfig, capacity: usize, ) -> Result<(Self, Receiver<Event>), Box<dyn std::error::Error>>
@@ -52,13 +52,13 @@ pub fn connect_with_events( config: &EClientConfig, capacity: usize, ) -> Result
 Construct from pre-built components (for testing or custom setups).
 
 ```rust
-pub fn from_parts( shared: Arc<SharedState>, control_tx: Sender<ControlCommand>, handle: thread::JoinHandle<()>, account_id: String, ) -> Self
+pub fn from_parts( shared: Arc<SharedState>, control_tx: impl Into<ControlSender>, handle: thread::JoinHandle<()>, account_id: String, ) -> Self
 ```
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `shared` | `Arc<SharedState>` | Shared state handle. |
-| `control_tx` | `Sender<ControlCommand>` | Control channel sender. |
+| `control_tx` | `impl Into<ControlSender>` | Control channel sender. |
 | `handle` | `thread::JoinHandle<(` | Background thread handle. |
 
 **Returns:** `Self`
@@ -112,6 +112,16 @@ pub fn seed_instrument(&self, con_id: i64, instrument: InstrumentId)
 
 ---
 
+#### `pnl_second_later_for_test`
+
+The P&L computed again at the next read, as one second later (ibx#511; for tests).
+
+```rust
+pub fn pnl_second_later_for_test(&self)
+```
+
+---
+
 #### `server_version`
 
 API level the session follows: 214, the level the reference gives a current client (ibx#426)., for code that tests it before using a feature.
@@ -150,7 +160,7 @@ pub fn is_connected(&self) -> bool
 
 #### `disconnect`
 
-Disconnect from IB.  Sends `Shutdown` to the hot loop, waits for the background thread to exit, and marks the client as disconnected.
+Disconnect from the server.  Sends `Shutdown` to the hot loop, waits for the background thread to exit, and marks the client as disconnected.
 
 ```rust
 pub fn disconnect(&self)
@@ -188,7 +198,7 @@ pub fn misc_url(&self, key: &str) -> Option<String>
 
 #### `session_token_bytes`
 
-Canonical big-endian session-token bytes (leading zeros stripped) captured at connect. Round-trips through `BigUint::from_bytes_be` to the SRP shared secret K and is the second SHA-1 input for SSO `Authenticate-TWS` bodies.
+Canonical big-endian session-token bytes (leading zeros stripped) captured at connect. Round-trips through `BigUint::from_bytes_be` to the SRP shared secret K and is the second SHA-1 input for SSO authenticate bodies.
 
 ```rust
 pub fn session_token_bytes(&self) -> &[u8]
@@ -214,10 +224,10 @@ pub fn token_type(&self) -> &str
 
 #### `req_positions`
 
-Request positions. A subscription, as the reference (ibx#477): the snapshot and `position_end` once the position data is in, then one `position` row each time a position or its average cost changes, until `cancel_positions`. What is ready now is sent through `wrapper`; the rest comes through `process_msgs`. No wait in the caller's thread.
+Request positions. A subscription, as the reference (ibx#477): the snapshot and `position_end` once the position data is in, then one `position` row each time a position or its average cost changes, until `cancel_positions`. Everything comes through `process_msgs` (ibx#532). No wait in the caller's thread.
 
 ```rust
-pub fn req_positions(&self, wrapper: &mut impl Wrapper)
+pub fn req_positions(&self, _wrapper: &mut impl Wrapper)
 ```
 
 | Parameter | Type | Description |
@@ -328,7 +338,7 @@ pub fn req_account_updates(&self, subscribe: bool, acct_code: &str)
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `subscribe` | `bool` | `true` to start updates, `false` to stop. |
-| `acct_code` | `&str` | Account code (e.g. `"DU1234567"`). |
+| `acct_code` | `&str` | Account code (e.g. `"DUXXXXXXX"`). |
 
 ---
 
@@ -347,7 +357,7 @@ pub fn cancel_positions(&self)
 Request managed accounts. Every account of the logon's account list, in logon order, comma separated, as the reference (ibx#420); the logon account when the logon had no list.
 
 ```rust
-pub fn req_managed_accts(&self, wrapper: &mut impl Wrapper)
+pub fn req_managed_accts(&self, _wrapper: &mut impl Wrapper)
 ```
 
 | Parameter | Type | Description |
@@ -358,10 +368,10 @@ pub fn req_managed_accts(&self, wrapper: &mut impl Wrapper)
 
 #### `req_account_updates_multi`
 
-Request account updates for multiple accounts/models. A subscription, as the reference (ibx#476): the account values (unless `ledger_and_nlv`) and the ledger rows as the server sent them, each through `account_update_multi` with the request id and model code, then `account_update_multi_end`; then the rows that change, until `cancel_account_updates_multi`. A request id already running gives error 322. What is ready is sent through `wrapper` at once; the rest comes through `process_msgs`.
+Request account updates for multiple accounts/models. A subscription, as the reference (ibx#476): the account values (unless `ledger_and_nlv`) and the ledger rows as the server sent them, each through `account_update_multi` with the request id and model code, then `account_update_multi_end`; then the rows that change, until `cancel_account_updates_multi`. A request id already running gives error 322. Everything comes through `process_msgs` (ibx#532).
 
 ```rust
-pub fn req_account_updates_multi( &self, req_id: i64, account: &str, model_code: &str, ledger_and_nlv: bool, wrapper: &mut impl Wrapper, )
+pub fn req_account_updates_multi( &self, req_id: i64, account: &str, model_code: &str, ledger_and_nlv: bool, _wrapper: &mut impl Wrapper, )
 ```
 
 | Parameter | Type | Description |
@@ -393,7 +403,7 @@ pub fn cancel_account_updates_multi(&self, req_id: i64)
 Request positions for multiple accounts/models. A subscription, as the reference (ibx#476): `position_multi` rows with the request id and model code, `position_multi_end`, then a row each time a position or its average cost changes, until `cancel_positions_multi`.
 
 ```rust
-pub fn req_positions_multi( &self, req_id: i64, account: &str, model_code: &str, wrapper: &mut impl Wrapper, )
+pub fn req_positions_multi( &self, req_id: i64, account: &str, model_code: &str, _wrapper: &mut impl Wrapper, )
 ```
 
 | Parameter | Type | Description |
@@ -501,7 +511,7 @@ pub fn req_global_cancel(&self) -> Result<(), String>
 Request next valid order ID.: the highest order id this client used + 1, as the reference computes it per client id (1 when none), a 32-bit id. The ids of the client's earlier sessions count as far as the server's replays of the logon show them (orders with the client's id); right after the connect the answer waits for the order replay of the logon. Nothing is reserved.
 
 ```rust
-pub fn req_ids(&self, wrapper: &mut impl Wrapper)
+pub fn req_ids(&self, _wrapper: &mut impl Wrapper)
 ```
 
 | Parameter | Type | Description |
@@ -527,7 +537,7 @@ pub fn next_order_id(&self) -> i64
 Request open orders for this client. Before the order replay of the logon has ended, and while the auth link is lost, the request is answered only after the order replay, from `process_msgs` (ibx#251).
 
 ```rust
-pub fn req_open_orders(&self, wrapper: &mut impl Wrapper)
+pub fn req_open_orders(&self, _wrapper: &mut impl Wrapper)
 ```
 
 | Parameter | Type | Description |
@@ -541,7 +551,7 @@ pub fn req_open_orders(&self, wrapper: &mut impl Wrapper)
 Request all open orders. Held like [`req_open_orders`](Self::req_open_orders) until the order replay (ibx#251).
 
 ```rust
-pub fn req_all_open_orders(&self, wrapper: &mut impl Wrapper)
+pub fn req_all_open_orders(&self, _wrapper: &mut impl Wrapper)
 ```
 
 | Parameter | Type | Description |
@@ -552,15 +562,29 @@ pub fn req_all_open_orders(&self, wrapper: &mut impl Wrapper)
 
 #### `req_completed_orders`
 
-Request completed orders. Immediately delivers all archived completed orders, then calls `completed_orders_end`.
+Request completed orders. Delivers all archived completed orders, then calls `completed_orders_end`, through `process_msgs` (ibx#532).
 
 ```rust
-pub fn req_completed_orders(&self, wrapper: &mut impl Wrapper)
+pub fn req_completed_orders(&self, _wrapper: &mut impl Wrapper)
 ```
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `wrapper` | `&mut impl Wrapper` | Wrapper callback receiver for synchronous delivery. |
+
+---
+
+#### `req_completed_orders_only`
+
+reqCompletedOrders with its apiOnly flag (ibx#695): the server's finished orders of the trading day, as the reference asks them; given by `process_msgs`.
+
+```rust
+pub fn req_completed_orders_only(&self, api_only: bool)
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `api_only` | `bool` |  |
 
 ---
 
@@ -583,7 +607,7 @@ pub fn req_auto_open_orders(&self, _b_auto_bind: bool)
 Request execution reports. Replays stored executions (optionally filtered), firing `exec_details` + `commission_and_fees_report` for each, then `exec_details_end`.
 
 ```rust
-pub fn req_executions(&self, req_id: i64, filter: &ExecutionFilter, wrapper: &mut impl Wrapper)
+pub fn req_executions(&self, req_id: i64, filter: &ExecutionFilter, _wrapper: &mut impl Wrapper)
 ```
 
 | Parameter | Type | Description |
@@ -615,7 +639,7 @@ pub fn parse_algo_params(strategy: &str, params: &[TagValue]) -> Result<AlgoPara
 
 #### `req_mkt_data`
 
-Subscribe to market data. When `snapshot` is true, the request is a snapshot, as the reference's: each tick type is sent once, then `tick_snapshot_end` when the bid, ask, last, open and close came (with the option computations for an option; the types a contract has none of are not waited for), or 11 seconds after the start; then the request is gone. A snapshot with generic ticks, or beyond the per-second snapshot limit, is refused with error 321. `generic_tick_list` is checked as the reference checks it: a list with an unknown tick, or one not legal for the security type, is refused with error 321 (ibx#450). Each generic tick valid for the contract is its own farm entry, shared by the requests of the contract, and its values come as the reference's ticks (`control::generic_values`): option volume 29/30 (100), open interest 27/28 (101), average option volume 87 (105), implied and historical volatility 24 (106) and 23 (104), misc stats 21 and 15-20 (165), auction 34-36 and 61 (225), RTVolume 48 (233) and RT trade volume 77 (375), shortable 46 and 89 (236), trade count, rate and volume rate 54-56 (293-295), last RTH trade 57 (318), dividends 59 (456), futures open interest 86 (588). The other legal ticks are accepted and not sent. The news tick, "292" (every subscribed news source) or "292:CODE1+CODE2", subscribes the contract's headlines, delivered as `tick_news` (ibx#458); a derivative contract or a code that is not a subscribed source ends the request with error 10094. For an option, a future option or a warrant, the request also runs the option model of the reference (ibx#502): `tick_option_computation` with tick types 10, 11 and 12 (bid, ask, last: the server's implied volatility of the side and the greeks of the local option model at the underlying's mid price) and 13 (the model: the server's model greeks and volatility), on real-time data. `mdoff` keeps the top of book ticks from the request. Several request ids may ask for one contract, as with the reference (ibx#444): they share its subscription, a request that joins gets at once what the others have, and the subscription ends with the cancel of the last one.
+Subscribe to market data. When `snapshot` is true, the request is a snapshot, as the reference's: each tick type is sent once, then `tick_snapshot_end` when the bid, ask, last, open and close came (with the option computations for an option; the types a contract has none of are not waited for), or 11 seconds after the start; then the request is gone. A snapshot with generic ticks, or beyond the per-second snapshot limit, is refused with error 321. `generic_tick_list` is checked as the reference checks it: a list with an unknown tick, or one not legal for the security type, is refused with error 321 (ibx#450). Each generic tick valid for the contract is its own farm entry, shared by the requests of the contract, and its values come as the reference's ticks (`control::generic_values`): option volume 29/30 (100), open interest 27/28 (101), average option volume 87 (105), implied and historical volatility 24 (106) and 23 (104), misc stats 21 and 15-20 (165), auction 34-36 and 61 (225), RTVolume 48 (233) and RT trade volume 77 (375), shortable 46 and 89 (236), trade count, rate and volume rate 54-56 (293-295), last RTH trade 57 (318), dividends 59 (456), futures open interest 86 (588). The other legal ticks are accepted and not sent. The news tick, "292" (every subscribed news source) or "292:CODE1+CODE2", subscribes the contract's headlines, delivered as `tick_news` (ibx#458); a derivative contract or a code that is not a subscribed source ends the request with error 10094. `mdoff` keeps the top of book ticks from the request. Several request ids may ask for one contract, as with the reference (ibx#444): they share its subscription, a request that joins gets at once what the others have, and the subscription ends with the cancel of the last one.
 
 ```rust
 pub fn req_mkt_data( &self, req_id: i64, contract: &Contract, generic_tick_list: &str, snapshot: bool, regulatory_snapshot: bool, ) -> Result<(), String>
@@ -1064,7 +1088,7 @@ pub fn cancel_head_time_stamp(&self, req_id: i64) -> Result<(), String>
 Request market rule by ID. Answered from the rules of the definition replies received; an id not received, or a rule with no price increments, gives 322 (ibx#437).
 
 ```rust
-pub fn req_market_rule(&self, market_rule_id: i32, wrapper: &mut impl crate::api::wrapper::Wrapper)
+pub fn req_market_rule(&self, market_rule_id: i32, _wrapper: &mut impl crate::api::wrapper::Wrapper)
 ```
 
 | Parameter | Type | Description |
@@ -1304,7 +1328,7 @@ pub fn req_historical_schedule( &self, req_id: i64, contract: &Contract, end_dat
 Request smart routing components for a BBO exchange. Gateway-local, as the reference (ibx#441): the exchange map of the BBO exchange that market data made known (the `bboExchange` of `tick_req_params`); an unknown one gives error 321. When the map has not come yet, the answer comes from `process_msgs`, within 2 s.
 
 ```rust
-pub fn req_smart_components(&self, req_id: i64, bbo_exchange: &str, wrapper: &mut impl Wrapper)
+pub fn req_smart_components(&self, req_id: i64, bbo_exchange: &str, _wrapper: &mut impl Wrapper)
 ```
 
 | Parameter | Type | Description |
@@ -1320,7 +1344,7 @@ pub fn req_smart_components(&self, req_id: i64, bbo_exchange: &str, wrapper: &mu
 Request available news providers. Gateway-local — returns provider list from init data.
 
 ```rust
-pub fn req_news_providers(&self, wrapper: &mut impl Wrapper)
+pub fn req_news_providers(&self, _wrapper: &mut impl Wrapper)
 ```
 
 | Parameter | Type | Description |
@@ -1334,12 +1358,114 @@ pub fn req_news_providers(&self, wrapper: &mut impl Wrapper)
 Request current server time. Answered locally, as the reference: the local clock plus the offset to the server clock of the logon (ibx#421).
 
 ```rust
-pub fn req_current_time(&self, wrapper: &mut impl Wrapper)
+pub fn req_current_time(&self, _wrapper: &mut impl Wrapper)
 ```
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `wrapper` | `&mut impl Wrapper` | Wrapper callback receiver for synchronous delivery. |
+
+---
+
+#### `req_current_time_in_millis`
+
+Request current server time in milliseconds. Answered locally from the clock of `req_current_time` (ibx#516).
+
+```rust
+pub fn req_current_time_in_millis(&self, _wrapper: &mut impl Wrapper)
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `wrapper` | `&mut impl Wrapper` | Wrapper callback receiver for synchronous delivery. |
+
+---
+
+#### `cancel_contract_data`
+
+ Below session level 215, error 503 for the request; from 215 nothing (ibx#557). A running contract details request goes on in both cases, as on the reference.
+
+```rust
+pub fn cancel_contract_data(&self, req_id: i64)
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `req_id` | `i64` | Request identifier. Used to match responses to requests. |
+
+---
+
+#### `cancel_historical_ticks`
+
+ Below session level 215, error 503 for the request; from 215 nothing (ibx#557). A running historical ticks request goes on in both cases, as on the reference.
+
+```rust
+pub fn cancel_historical_ticks(&self, req_id: i64)
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `req_id` | `i64` | Request identifier. Used to match responses to requests. |
+
+---
+
+#### `verify_request`
+
+ A session opened without the intent to verify: error 544, nothing sent.
+
+```rust
+pub fn verify_request(&self, _api_name: &str, _api_version: &str)
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `api_name` | `&str` |  |
+| `api_version` | `&str` |  |
+
+---
+
+#### `verify_message`
+
+ No verification is in progress: error 10095 as the reference.
+
+```rust
+pub fn verify_message(&self, _api_data: &str)
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `api_data` | `&str` |  |
+
+---
+
+#### `verify_and_auth_request`
+
+ A session opened without the intent to verify: error 551, nothing sent.
+
+```rust
+pub fn verify_and_auth_request(&self, _api_name: &str, _api_version: &str, _opaque_isv_key: &str)
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `api_name` | `&str` |  |
+| `api_version` | `&str` |  |
+| `opaque_isv_key` | `&str` |  |
+
+---
+
+#### `verify_and_auth_message`
+
+ The reference gives no answer: nothing happens.
+
+```rust
+pub fn verify_and_auth_message(&self, _api_data: &str, _xyz_response: &str)
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `api_data` | `&str` |  |
+| `xyz_response` | `&str` |  |
 
 ---
 
@@ -1378,7 +1504,7 @@ pub fn replace_fa(&self, req_id: i64, _fa_data_type: i32, _cxml: &str)
 Query display groups. Gateway-local, as the reference (ibx#424): the fixed list of groups.
 
 ```rust
-pub fn query_display_groups(&self, req_id: i64, wrapper: &mut impl Wrapper)
+pub fn query_display_groups(&self, req_id: i64, _wrapper: &mut impl Wrapper)
 ```
 
 | Parameter | Type | Description |
@@ -1393,7 +1519,7 @@ pub fn query_display_groups(&self, req_id: i64, wrapper: &mut impl Wrapper)
 Subscribe to display group events. Gateway-local, as the reference (ibx#424): the contract of the group at once, `none` since no group has one; error 321 for a group outside 1 to 7 or a request id already subscribed.
 
 ```rust
-pub fn subscribe_to_group_events(&self, req_id: i64, group_id: i32, wrapper: &mut impl Wrapper)
+pub fn subscribe_to_group_events(&self, req_id: i64, group_id: i32, _wrapper: &mut impl Wrapper)
 ```
 
 | Parameter | Type | Description |
@@ -1435,10 +1561,10 @@ pub fn update_display_group(&self, req_id: i64, contract_info: &str)
 
 #### `req_soft_dollar_tiers`
 
-Request soft dollar tiers. Gateway-local — returns tiers parsed from CCP logon tag 6522, none when the logon has no tiers (ibx#480).
+Request soft dollar tiers. Gateway-local — returns tiers parsed from the CCP logon's soft dollar tier field, none when the logon has no tiers (ibx#480).
 
 ```rust
-pub fn req_soft_dollar_tiers(&self, req_id: i64, wrapper: &mut impl Wrapper)
+pub fn req_soft_dollar_tiers(&self, req_id: i64, _wrapper: &mut impl Wrapper)
 ```
 
 | Parameter | Type | Description |
@@ -1450,10 +1576,10 @@ pub fn req_soft_dollar_tiers(&self, req_id: i64, wrapper: &mut impl Wrapper)
 
 #### `req_family_codes`
 
-Request family codes. Gateway-local — returns codes parsed from CCP logon tag 6823.
+Request family codes. Gateway-local — returns codes parsed from the CCP logon's family code field.
 
 ```rust
-pub fn req_family_codes(&self, wrapper: &mut impl Wrapper)
+pub fn req_family_codes(&self, _wrapper: &mut impl Wrapper)
 ```
 
 | Parameter | Type | Description |
@@ -1481,7 +1607,7 @@ pub fn set_server_log_level(&self, log_level: i32)
 Request user info. Gateway-local — returns whiteBrandingId from CCP logon.
 
 ```rust
-pub fn req_user_info(&self, req_id: i64, wrapper: &mut impl Wrapper)
+pub fn req_user_info(&self, req_id: i64, _wrapper: &mut impl Wrapper)
 ```
 
 | Parameter | Type | Description |
@@ -1493,10 +1619,24 @@ pub fn req_user_info(&self, req_id: i64, wrapper: &mut impl Wrapper)
 
 #### `req_wsh_meta_data`
 
-Request WSH metadata. Not yet implemented.
+Request WSH meta data. The permission check of the reference (ibx#443): error 10276 when the session has no WSH news source, 10277 when it is not subscribed. The data request itself is not implemented: with the permission, error 10279.
 
 ```rust
-pub fn req_wsh_meta_data(&self, _req_id: i64)
+pub fn req_wsh_meta_data(&self, req_id: i64)
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `req_id` | `i64` | Request identifier. Used to match responses to requests. |
+
+---
+
+#### `cancel_wsh_meta_data`
+
+Cancel a WSH meta data request. No answer, as the reference (ibx#443).
+
+```rust
+pub fn cancel_wsh_meta_data(&self, _req_id: i64)
 ```
 
 | Parameter | Type | Description |
@@ -1507,10 +1647,25 @@ pub fn req_wsh_meta_data(&self, _req_id: i64)
 
 #### `req_wsh_event_data`
 
-Request WSH event data. Not yet implemented.
+Request WSH event data. The permission check of the reference (ibx#443): error 10276 when the session has no WSH news source, 10277 when it is not subscribed. The data request itself is not implemented: with the permission, error 10282, since no meta data is held.
 
 ```rust
-pub fn req_wsh_event_data(&self, _req_id: i64)
+pub fn req_wsh_event_data(&self, req_id: i64, _wsh_event_data: &crate::api::types::WshEventData)
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `req_id` | `i64` | Request identifier. Used to match responses to requests. |
+| `wsh_event_data` | `&crate::api::types::WshEventData` |  |
+
+---
+
+#### `cancel_wsh_event_data`
+
+Cancel a WSH event data request. No answer, as the reference (ibx#443).
+
+```rust
+pub fn cancel_wsh_event_data(&self, _req_id: i64)
 ```
 
 | Parameter | Type | Description |
@@ -1573,6 +1728,51 @@ Current server time (Unix seconds).
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `time` | `i64` | Tick timestamp (Unix seconds). |
+
+---
+
+#### `current_time_in_millis`
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `time_in_millis` | `i64` |  |
+
+---
+
+#### `verify_message_api`
+
+The verification callbacks of the official client library. A session opened without the intent to verify never gets them (ibx#516).
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `api_data` | `&str` |  |
+
+---
+
+#### `verify_completed`
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `is_successful` | `bool` |  |
+| `error_text` | `&str` |  |
+
+---
+
+#### `verify_and_auth_message_api`
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `api_data` | `&str` |  |
+| `xyz_challange` | `&str` |  |
+
+---
+
+#### `verify_and_auth_completed`
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `is_successful` | `bool` |  |
+| `error_text` | `&str` |  |
 
 ---
 
@@ -2449,5 +2649,27 @@ User info (white branding ID).
 |-----------|------|-------------|
 | `req_id` | `i64` | Request identifier. Used to match responses to requests. |
 | `white_branding_id` | `&str` | White branding ID (empty for standard accounts). |
+
+---
+
+#### `wsh_meta_data`
+
+WSH meta data, as `wshMetaData` (ibx#443).
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `req_id` | `i64` | Request identifier. Used to match responses to requests. |
+| `data_json` | `&str` |  |
+
+---
+
+#### `wsh_event_data`
+
+WSH event data, as `wshEventData` (ibx#443).
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `req_id` | `i64` | Request identifier. Used to match responses to requests. |
+| `data_json` | `&str` |  |
 
 ---

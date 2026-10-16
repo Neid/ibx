@@ -684,7 +684,7 @@ pub(super) fn phase_forex_streaming_validation(conns: Conns) -> Conns {
         None,
     );
 
-    // EUR.USD con_id = 12087792 (well-known IB con_id)
+    // EUR.USD con_id = 12087792 (well-known con_id)
     control_tx
         .send(ControlCommand::Subscribe {
             con_id: 12087792,
@@ -1176,7 +1176,7 @@ pub(super) fn phase_concurrent_subscribe_stress(conns: Conns) -> Conns {
         None,
     );
 
-    // 10 well-known US stock con_ids (IB paper account should have market data for all)
+    // 10 well-known US stock con_ids (the paper account should have market data for all)
     let instruments: &[(i64, &str)] = &[
         (756733, "SPY"),      // S&P 500 ETF
         (265598, "AAPL"),     // Apple

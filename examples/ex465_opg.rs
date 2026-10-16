@@ -2,7 +2,7 @@
 //! account only, US pre-market.
 //!
 //! A LOO order (LMT, TIF OPG) below the market (inside the price cap) gets the server's order
-//! message (6360=TIME, 6361=...), which ibx reports as warning 399; the order
+//! message (a timed notice with its text), which ibx reports as warning 399; the order
 //! stays PreSubmitted. It is cancelled at the end.
 //!
 //! Env: IB_USERNAME, IB_PASSWORD.

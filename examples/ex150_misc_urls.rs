@@ -1,4 +1,4 @@
-//! Issue #150 — verify FIX tag 6321 (PRIV_LAB_MISC_URLS) is parsed at logon.
+//! Issue #150 — verify the logon's miscellaneous URL field is parsed.
 //!
 //! Connects, prints the populated misc_urls map and the region_dam lookup
 //! used by webapp REST consumers.

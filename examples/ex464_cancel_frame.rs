@@ -1,10 +1,11 @@
 //! ibx#464 step 2 probe. Paper account only.
 //!
-//! The cancel is written like the reference: 11 = the order's next ClOrdID
-//! version, 41, 38, 54, 1, 6008, 6088=Socket, 6944=SEL.
+//! The cancel is written like the reference: the order's client id at its next
+//! version, the original client id, quantity, side, account, conId, the API
+//! source and the selected-orders scope.
 //! A: far limit order, cancel. B: far limit order, modify the price, cancel
 //! (the cancel's version follows the modify's). Each must end Cancelled.
-//! The global cancel (6944=ALL) is not run here: it would also cancel the
+//! The global cancel (the all-orders scope) is not run here: it would also cancel the
 //! account's other working orders.
 //!
 //! Env: IB_USERNAME, IB_PASSWORD, PROBE_REF_PRICE (SPY reference price).

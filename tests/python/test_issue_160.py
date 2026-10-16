@@ -1,8 +1,8 @@
 """IBX Test #160: req_open_orders must not surface gateway sentinel records.
 
-Regression: the mass-order-status request sent on (re)connect uses ClOrdID="*",
+Regression: the mass-order-status request sent on (re)connect uses a client id of "*",
 Symbol="*". The gateway's reply burst includes an echo of that wildcard with
-ClOrdID=0 / Symbol="*" / Qty=0 that was being parsed as if it were a real
+client id 0 / symbol "*" / quantity 0 that was being parsed as if it were a real
 order, then surfaced through wrapper.open_order.
 
 Run: pytest tests/python/test_issue_160.py -v --timeout=60
