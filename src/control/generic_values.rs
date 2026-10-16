@@ -73,13 +73,16 @@ pub const INDEX_FUTURE_PREMIUM: i32 = 162;
 
 /// The ticks ibx subscribes: the others of a valid list are accepted and
 /// not sent (their decoders are not read yet).
-const SENT: [i32; 26] = [
+const SENT: [i32; 27] = [
     OPTION_VOLUME, OPTION_OPEN_INTEREST, AVERAGE_OPTION_VOLUME, IMPLIED_VOLATILITY, MISC_STATS, AUCTION,
     RT_VOLUME, SHORTABLE, TRADE_COUNT, TRADE_RATE, VOLUME_RATE, LAST_RTH_TRADE, RT_TRADE_VOLUME,
     RT_HISTORICAL_VOLATILITY, DIVIDENDS, HISTORICAL_VOLATILITY, FUTURES_OPEN_INTEREST, 104,
     PL_PRICE, FUNDAMENTALS, IPO_PRICES, SHORT_TERM_VOLUME, SLOW_MARK_PRICE, INDEX_FUTURE_PREMIUM,
-    ETF_NAV_LAST, ETF_FROZEN_NAV_LAST,
+    ETF_NAV_LAST, ETF_FROZEN_NAV_LAST, ODD_LOT,
 ];
+
+/// The odd-lot bid and ask quotes (ibx#616), from session level 225.
+pub const ODD_LOT: i32 = 787;
 
 /// The ticks whose block has a 16-bit length.
 const LONG_LENGTH: [i32; 29] = [
@@ -88,7 +91,7 @@ const LONG_LENGTH: [i32; 29] = [
 ];
 
 /// The ticks whose block has no length.
-const NO_LENGTH: [i32; 6] = [376, 320, 530, 532, 221, 619];
+const NO_LENGTH: [i32; 7] = [376, 320, 530, 532, 221, 619, ODD_LOT];
 
 /// How the length of a block of this tick is written: 1 or 2 bytes, 0
 /// when it has none (its payload is a list of quote entries, which ends
@@ -123,7 +126,7 @@ pub fn sent(code: i32) -> bool {
 /// the others wait for the top of book's acknowledgement.
 pub fn at_once(code: i32) -> bool {
     matches!(code, OPTION_OPEN_INTEREST | IMPLIED_VOLATILITY | RT_VOLUME | RT_TRADE_VOLUME | DIVIDENDS | FUTURES_OPEN_INTEREST
-        | PL_PRICE | FUNDAMENTALS | SLOW_MARK_PRICE | INDEX_FUTURE_PREMIUM)
+        | PL_PRICE | FUNDAMENTALS | SLOW_MARK_PRICE | INDEX_FUTURE_PREMIUM | ODD_LOT)
 }
 
 fn one_of(sec_type: &str, set: &[&str]) -> bool {
@@ -158,7 +161,7 @@ pub fn valid_for(code: i32, sec_type: &str) -> bool {
         SHORTABLE => one_of(sec_type, &["STK", "BOND", "BILL", "FIXED", "IOPT"]),
         DIVIDENDS => one_of(sec_type, &["STK", "FUT", "OPT", "IND", "FOP", "CFD", "SLB"]),
         RT_HISTORICAL_VOLATILITY | FUTURES_OPEN_INTEREST => one_of(sec_type, &["FUT"]),
-        PL_PRICE | SLOW_MARK_PRICE | SHORT_TERM_VOLUME => true,
+        PL_PRICE | SLOW_MARK_PRICE | SHORT_TERM_VOLUME | ODD_LOT => true,
         FUNDAMENTALS => !one_of(sec_type, &["CFD", "FOP", "FUT", "IOPT", "OPT", "SLB", "WAR"]),
         IPO_PRICES => one_of(sec_type, &["STK"]),
         INDEX_FUTURE_PREMIUM => one_of(sec_type, &["IND"]),
@@ -236,6 +239,7 @@ enum Field {
     TradeCount, TradeRate, VolumeRate, LastRthTrade, FuturesOpenInterest,
     PlPrice, SlowMarkPrice, Volume3Min, Volume5Min, Volume10Min, IndexPremium,
     EtfNavLast, EtfFrozenNavLast,
+    OddBidPrice, OddAskPrice, OddBidSize, OddAskSize, OddBidExchange, OddAskExchange,
 }
 
 /// The unset value of an int field (the reference's `Integer.MAX_VALUE`).
@@ -363,6 +367,41 @@ pub fn decode(code: i32, payload: &[u8], rec: &mut GenericRecord, ctx: DecodeCtx
         }
         // Historical volatility (512): the daily one; tick 23.
         // The index future premium, tick 31, as it changes.
+        // The odd-lot quotes (ibx#616; the reference 10.51, paper,
+        // 12/10/2026, MSFT in regular hours, at level 225): a list of quote
+        // entries, the bid and ask prices (0, 1; in price ticks of the
+        // entry's acknowledgement), sizes (4, 5) and exchanges (16, 17; a
+        // set of the contract's exchanges). For the bid then the ask, the
+        // price (105, 106), size (107, 108) and exchanges (109, 110), each
+        // when it changed; an unset price (below 0) or exchange (0) gives
+        // none. The exchanges go as the set's number, written as letters
+        // by the farm.
+        ODD_LOT => {
+            let Some((entries, _)) = entry_list(payload) else { return out };
+            let get = |t: u64| entries.iter().find(|(e, _)| *e == t).map(|(_, v)| *v);
+            let sides = [
+                (0, 4, 16, Field::OddBidPrice, Field::OddBidSize, Field::OddBidExchange, (105, 107, 109)),
+                (1, 5, 17, Field::OddAskPrice, Field::OddAskSize, Field::OddAskExchange, (106, 108, 110)),
+            ];
+            for (p, s, x, pf, sf, xf, (pt, st, xt)) in sides {
+                if let Some(raw) = get(p) {
+                    let px = raw as f64 * ctx.entry_min_tick;
+                    if rec.set_double(pf, px) && raw >= 0 {
+                        price(&mut out, pt, px);
+                    }
+                }
+                if let Some(raw) = get(s)
+                    && rec.set_int(sf, raw) && raw > 0
+                {
+                    size(&mut out, st, raw);
+                }
+                if let Some(mask) = get(x)
+                    && rec.set_int(xf, mask) && mask != 0
+                {
+                    out.push(GenTick::Text(xt, mask.to_string()));
+                }
+            }
+        }
         ETF_NAV_LAST | ETF_FROZEN_NAV_LAST => {
             let Some(d) = r.double() else { return out };
             let (field, tick) = if code == ETF_NAV_LAST { (Field::EtfNavLast, 96) } else { (Field::EtfFrozenNavLast, 97) };
@@ -966,6 +1005,26 @@ mod tests {
     fn futures_open_interest() {
         let mut rec = GenericRecord::default();
         assert_eq!(decode(588, &hex("00020134"), &mut rec, CTX), vec![GenTick::Size(86, 131380.0)]);
+    }
+
+    // ibx#616, the blocks of the reference 10.51's odd-lot entry (paper,
+    // 12/10/2026, MSFT in regular hours, run r1 of `.tmp/632`, price tick
+    // 0.01): the first block unset gives nothing; then the ask 538.86 x 23
+    // on the exchange set 512; then 538.93 x 3 on 64; then an unset ask,
+    // nothing. The client got 106, 108, 110 twice.
+    #[test]
+    fn odd_lot_quotes_of_the_recording() {
+        let ctx = DecodeCtx { entry_min_tick: 0.01, ..CTX };
+        let mut rec = GenericRecord::default();
+        let mut ticks = |h: &str| decode(ODD_LOT, &hex(h), &mut rec, ctx);
+        assert!(ticks("04e424000ce42c003c0c84008c005800").is_empty());
+        assert_eq!(ticks("0e00d27e2c17890200"),
+            [GenTick::Price(106, 538.86), GenTick::Size(108, 23.0), GenTick::Text(110, "512".into())]);
+        assert_eq!(ticks("0e00d2852c038840"),
+            [GenTick::Price(106, 538.93), GenTick::Size(108, 3.0), GenTick::Text(110, "64".into())]);
+        assert!(ticks("0ce42c008800").is_empty());
+        assert_eq!(length_width(ODD_LOT), 0, "a list of quote entries");
+        assert!(at_once(ODD_LOT) && sent(ODD_LOT) && valid_for(ODD_LOT, "STK"));
     }
 
     #[test]

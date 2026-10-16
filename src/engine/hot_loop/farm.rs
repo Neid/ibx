@@ -1568,7 +1568,17 @@ impl FarmState {
             rt_in_shares: !context.market.lot_sizes(),
         };
         let rec = self.generic_records.entry(instrument).or_default();
-        let ticks = crate::control::generic_values::decode(code, payload, rec, ctx);
+        let mut ticks = crate::control::generic_values::decode(code, payload, rec, ctx);
+        // The odd-lot exchanges as the contract's exchange letters (ibx#616).
+        if code == crate::control::generic_values::ODD_LOT {
+            for t in ticks.iter_mut() {
+                if let crate::control::generic_values::GenTick::Text(109 | 110, mask) = t
+                    && let Ok(m) = mask.parse::<i64>()
+                {
+                    *mask = crate::client_core::render_exchange_mask(m, instrument, shared);
+                }
+            }
+        }
         if !ticks.is_empty() {
             shared.market.push_generic_ticks(crate::bridge::GenericTicks {
                 at: shared.market.md_events.position(), instrument, code, ticks,

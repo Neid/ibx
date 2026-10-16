@@ -65,7 +65,7 @@ const LISTED: [(i32, Option<i32>, &str, Legal); 29] = [
 ];
 
 /// The odd-lot bid and ask quotes (ibx#616).
-pub const ODD_LOT: i32 = 787;
+pub const ODD_LOT: i32 = crate::control::generic_values::ODD_LOT;
 
 /// The tick an API id names, as the reference looks it up: by request code
 /// first, then by alias; 221 is the alias of Pl Price (232), its own code
