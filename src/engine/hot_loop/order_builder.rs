@@ -402,7 +402,20 @@ fn send_orders(
             if route_bbo_precaution(&order_req, context, shared) {
                 continue;
             }
-            // Attached orders the order preset does not define (ibx#609).
+            // Attached orders the order preset does not define (ibx#609),
+            // once the preset of the contract's type is known: the
+            // reference asks it first (ibx#717; paper, 16/10/2026: its
+            // answer 0.2 s after the order, 10355 0.79 s after it).
+            if order_req.new_order_side().and_then(|(_, a)| a).is_some_and(|a| a.attached_from_preset != (false, false))
+                && let Some(instrument) = order_req.instrument()
+            {
+                let sec_type = context.market.order_routing(instrument).0;
+                let sec_type = if matches!(sec_type.as_str(), "" | "CS") { "STK".to_string() } else { sec_type };
+                if !ask_order_preset(context, conn, hb, &sec_type) {
+                    context.rth_parked.push(rewrap(order_req));
+                    continue;
+                }
+            }
             if attached_preset_refusal(&order_req, context, shared) {
                 continue;
             }
@@ -4182,21 +4195,10 @@ fn preset_tif(
 ) -> bool {
     let oid = req.order_id();
     let Some(tif) = req.preset_tif_mut() else { return true };
-    let Some(preset) = context.order_presets.get(sec_type) else {
-        if context.presets_asked.insert(sec_type.to_string()) {
-            let request_id = format!("OPR.{}", context.next_preset_request);
-            context.next_preset_request += 1;
-            let kind = format!("s={sec_type}");
-            let now = chrono_free_timestamp();
-            match conn.send_fix(&[(35, "U"), (52, &now), (6556, &request_id), (6040, "193"),
-                (8166, "G"), (8176, "1"), (8168, &kind)])
-            {
-                Ok(()) => hb.last_ccp_sent = Instant::now(),
-                Err(e) => log::error!("Order preset request not sent: {}", e),
-            }
-        }
+    if !ask_order_preset(context, conn, hb, sec_type) {
         return false;
-    };
+    }
+    let Some(preset) = context.order_presets.get(sec_type) else { return false };
     if let Some(name) = preset {
         let code = match name.as_str() {
             "GTC" => b'1',
@@ -4210,6 +4212,27 @@ fn preset_tif(
         shared.orders.push_order_error(oid, 10349, format!("Order TIF was set to {name} based on order preset."));
     }
     true
+}
+
+/// Whether the order preset of a security type is known; when not, it is
+/// asked once (ibx#660, ibx#717) and the order waits for the answer.
+fn ask_order_preset(context: &mut Context, conn: &mut Connection, hb: &mut HeartbeatState, sec_type: &str) -> bool {
+    if context.order_presets.contains_key(sec_type) {
+        return true;
+    }
+    if context.presets_asked.insert(sec_type.to_string()) {
+        let request_id = format!("OPR.{}", context.next_preset_request);
+        context.next_preset_request += 1;
+        let kind = format!("s={sec_type}");
+        let now = chrono_free_timestamp();
+        match conn.send_fix(&[(35, "U"), (52, &now), (6556, &request_id), (6040, "193"),
+            (8166, "G"), (8176, "1"), (8168, &kind)])
+        {
+            Ok(()) => hb.last_ccp_sent = Instant::now(),
+            Err(e) => log::error!("Order preset request not sent: {}", e),
+        }
+    }
+    false
 }
 
 /// The answer of an order preset request (ibx#660): the time in force it
@@ -7188,6 +7211,15 @@ mod tests {
             let shared = Arc::new(SharedState::new());
             let (conn, mut peer) = crate::test_support::Peer::pair();
             let mut conn = Some(conn);
+            drain_and_send_orders(&mut conn, &mut context, "DU1", &mut HeartbeatState::new(), false, &shared);
+            // The preset of the type is asked first, the order waits
+            // (ibx#717).
+            let asked: Vec<String> = peer.messages().iter().map(|m| String::from_utf8_lossy(m).replace('', "|")).collect();
+            assert!(asked.len() == 1 && asked[0].contains("6040=193") && asked[0].contains("8168=s=STK"), "{asked:?}");
+            assert!(shared.orders.drain_order_errors().is_empty(), "it waits for the preset");
+            let reply: std::collections::HashMap<u32, String> =
+                [(8168, "s=STK"), (4026, "DAY")].into_iter().map(|(t, v)| (t, v.to_string())).collect();
+            preset_reply(&mut context, &reply);
             drain_and_send_orders(&mut conn, &mut context, "DU1", &mut HeartbeatState::new(), false, &shared);
             assert!(peer.messages().is_empty(), "nothing sent");
             assert_eq!(shared.orders.drain_order_errors(), [(id, 10355, format!("Cannot auto-attach {leg}. Preset is not defined."))]);
