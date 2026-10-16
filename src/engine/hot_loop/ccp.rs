@@ -599,6 +599,9 @@ pub(crate) struct CcpState {
     pub(crate) pnl_partition_id: Option<String>,
     /// Running number of the partition's account requests.
     pub(crate) next_partition_request: u32,
+    /// The P&L seeds were asked again for the account's "Core" model
+    /// (ibx#714).
+    core_seeds_asked: bool,
     /// Set by a reconnect until the end frame of the order status replay.
     pub(crate) awaiting_status_replay: bool,
     /// Set at the logon until the end frame of its order status replay:
@@ -1059,6 +1062,7 @@ impl CcpState {
             // The reference's counter of its account and P&L requests was
             // at 8 for it (observed 15/10/2026); not seen by the API.
             next_partition_request: 8,
+            core_seeds_asked: false,
             awaiting_status_replay: false,
             awaiting_login_replay: false,
             fill_up_pending: None,
@@ -1380,6 +1384,25 @@ impl CcpState {
                             // Position + market price feed (init burst + after each fill)
                             self.handle_position_feed(msg, ccp_conn, context, shared, event_tx, hb);
                             shared.portfolio.set_account_download_complete();
+                            // The first position list of the "Core" model: the
+                            // P&L seeds are asked again for that model, as the
+                            // reference at its login (ibx#714; the reference
+                            // 10.51, paper, 16/10/2026: PLR.6 with the model,
+                            // 0.2 s after the account's PLR.4, right after this
+                            // list; the same seeds answered).
+                            if !self.core_seeds_asked && parsed.get(&6700).is_some_and(|m| m == "Core")
+                                && let Some(account) = parsed.get(&1).filter(|a| !a.is_empty())
+                                && let Some(conn) = ccp_conn.as_mut()
+                            {
+                                let ts = chrono_free_timestamp();
+                                if conn.send_fix(&[(fix::TAG_MSG_TYPE, "U"), (fix::TAG_SENDING_TIME, &ts), (6040, "142"),
+                                    (6529, "PLR.6"), (1, account.as_str()), (6700, "Core")]).is_ok()
+                                {
+                                    hb.last_ccp_sent = Instant::now();
+                                    self.core_seeds_asked = true;
+                                    log::info!("P&L seeds asked for the Core model of {}", account);
+                                }
+                            }
                         }
                         "77" => {
                             self.handle_account_summary(&parsed, context, shared);
