@@ -2566,6 +2566,16 @@ impl PriceCondition {
         Self { con_id: conId, exchange: exch, price, is_more: isMore, trigger_method: triggerMethod }
     }
 
+    /// The trigger methods by name and number, as the official class's
+    /// table: an attribute per name, `idx2name`, `toStr` (ibx#712).
+    #[classattr]
+    #[pyo3(name = "TriggerMethodEnum")]
+    fn trigger_method_enum(py: Python<'_>) -> PyResult<Py<PyAny>> {
+        let table = small_enum_class(py)?;
+        let names = ("Default", "DoubleBidAsk", "Last", "DoubleLast", "BidAsk", "N/A1", "N/A2", "LastBidAsk", "MidPoint");
+        Ok(table.call1(names)?.unbind())
+    }
+
     #[classattr]
     #[pyo3(name = "condType")]
     fn cond_type() -> i32 { 1 }
@@ -2574,6 +2584,27 @@ impl PriceCondition {
     #[classattr]
     #[pyo3(name = "isConjunctionConnection")]
     fn joined_by_and() -> bool { true }
+
+    // The condition type numbers, class attributes of the official
+    // condition classes (ibx#712).
+    #[classattr]
+    #[pyo3(name = "Price")]
+    fn type_price() -> i32 { 1 }
+    #[classattr]
+    #[pyo3(name = "Time")]
+    fn type_time() -> i32 { 3 }
+    #[classattr]
+    #[pyo3(name = "Margin")]
+    fn type_margin() -> i32 { 4 }
+    #[classattr]
+    #[pyo3(name = "Execution")]
+    fn type_execution() -> i32 { 5 }
+    #[classattr]
+    #[pyo3(name = "Volume")]
+    fn type_volume() -> i32 { 6 }
+    #[classattr]
+    #[pyo3(name = "PercentChange")]
+    fn type_percent_change() -> i32 { 7 }
 
     fn __repr__(&self) -> String {
         let op = if self.is_more.unwrap_or(false) { ">" } else { "<" };
@@ -2625,6 +2656,27 @@ impl TimeCondition {
     #[pyo3(name = "isConjunctionConnection")]
     fn joined_by_and() -> bool { true }
 
+    // The condition type numbers, class attributes of the official
+    // condition classes (ibx#712).
+    #[classattr]
+    #[pyo3(name = "Price")]
+    fn type_price() -> i32 { 1 }
+    #[classattr]
+    #[pyo3(name = "Time")]
+    fn type_time() -> i32 { 3 }
+    #[classattr]
+    #[pyo3(name = "Margin")]
+    fn type_margin() -> i32 { 4 }
+    #[classattr]
+    #[pyo3(name = "Execution")]
+    fn type_execution() -> i32 { 5 }
+    #[classattr]
+    #[pyo3(name = "Volume")]
+    fn type_volume() -> i32 { 6 }
+    #[classattr]
+    #[pyo3(name = "PercentChange")]
+    fn type_percent_change() -> i32 { 7 }
+
     fn __repr__(&self) -> String {
         let op = if self.is_more.unwrap_or(false) { ">" } else { "<" };
         format!("TimeCondition(time {} {:?})", op, self.time)
@@ -2666,6 +2718,27 @@ impl MarginCondition {
     #[classattr]
     #[pyo3(name = "isConjunctionConnection")]
     fn joined_by_and() -> bool { true }
+
+    // The condition type numbers, class attributes of the official
+    // condition classes (ibx#712).
+    #[classattr]
+    #[pyo3(name = "Price")]
+    fn type_price() -> i32 { 1 }
+    #[classattr]
+    #[pyo3(name = "Time")]
+    fn type_time() -> i32 { 3 }
+    #[classattr]
+    #[pyo3(name = "Margin")]
+    fn type_margin() -> i32 { 4 }
+    #[classattr]
+    #[pyo3(name = "Execution")]
+    fn type_execution() -> i32 { 5 }
+    #[classattr]
+    #[pyo3(name = "Volume")]
+    fn type_volume() -> i32 { 6 }
+    #[classattr]
+    #[pyo3(name = "PercentChange")]
+    fn type_percent_change() -> i32 { 7 }
 
     fn __repr__(&self) -> String {
         format!("MarginCondition({:?}% {})", self.percent, if self.is_more.unwrap_or(false) { "above" } else { "below" })
@@ -2709,6 +2782,27 @@ impl ExecutionCondition {
     #[classattr]
     #[pyo3(name = "isConjunctionConnection")]
     fn joined_by_and() -> bool { true }
+
+    // The condition type numbers, class attributes of the official
+    // condition classes (ibx#712).
+    #[classattr]
+    #[pyo3(name = "Price")]
+    fn type_price() -> i32 { 1 }
+    #[classattr]
+    #[pyo3(name = "Time")]
+    fn type_time() -> i32 { 3 }
+    #[classattr]
+    #[pyo3(name = "Margin")]
+    fn type_margin() -> i32 { 4 }
+    #[classattr]
+    #[pyo3(name = "Execution")]
+    fn type_execution() -> i32 { 5 }
+    #[classattr]
+    #[pyo3(name = "Volume")]
+    fn type_volume() -> i32 { 6 }
+    #[classattr]
+    #[pyo3(name = "PercentChange")]
+    fn type_percent_change() -> i32 { 7 }
 
     fn __repr__(&self) -> String {
         format!("ExecutionCondition(symbol={:?}, exchange={:?})", self.symbol, self.exchange)
@@ -2758,6 +2852,27 @@ impl VolumeCondition {
     #[classattr]
     #[pyo3(name = "isConjunctionConnection")]
     fn joined_by_and() -> bool { true }
+
+    // The condition type numbers, class attributes of the official
+    // condition classes (ibx#712).
+    #[classattr]
+    #[pyo3(name = "Price")]
+    fn type_price() -> i32 { 1 }
+    #[classattr]
+    #[pyo3(name = "Time")]
+    fn type_time() -> i32 { 3 }
+    #[classattr]
+    #[pyo3(name = "Margin")]
+    fn type_margin() -> i32 { 4 }
+    #[classattr]
+    #[pyo3(name = "Execution")]
+    fn type_execution() -> i32 { 5 }
+    #[classattr]
+    #[pyo3(name = "Volume")]
+    fn type_volume() -> i32 { 6 }
+    #[classattr]
+    #[pyo3(name = "PercentChange")]
+    fn type_percent_change() -> i32 { 7 }
 
     fn __repr__(&self) -> String {
         let op = if self.is_more.unwrap_or(false) { ">" } else { "<" };
@@ -2810,6 +2925,27 @@ impl PercentChangeCondition {
     #[classattr]
     #[pyo3(name = "isConjunctionConnection")]
     fn joined_by_and() -> bool { true }
+
+    // The condition type numbers, class attributes of the official
+    // condition classes (ibx#712).
+    #[classattr]
+    #[pyo3(name = "Price")]
+    fn type_price() -> i32 { 1 }
+    #[classattr]
+    #[pyo3(name = "Time")]
+    fn type_time() -> i32 { 3 }
+    #[classattr]
+    #[pyo3(name = "Margin")]
+    fn type_margin() -> i32 { 4 }
+    #[classattr]
+    #[pyo3(name = "Execution")]
+    fn type_execution() -> i32 { 5 }
+    #[classattr]
+    #[pyo3(name = "Volume")]
+    fn type_volume() -> i32 { 6 }
+    #[classattr]
+    #[pyo3(name = "PercentChange")]
+    fn type_percent_change() -> i32 { 7 }
 
     fn __repr__(&self) -> String {
         let op = if self.is_more.unwrap_or(false) { ">" } else { "<" };
@@ -3241,6 +3377,33 @@ impl ContractDetails {
     }
 }
 
+/// The official library's small table of names by number (attributes per
+/// name, `idx2name`, `toStr`), for the class attributes that are one
+/// (ibx#712).
+fn small_enum_class(py: Python<'_>) -> PyResult<Bound<'_, PyAny>> {
+    let code = c"class Enum:\n    def __init__(self, *args):\n        self.idx2name = {}\n        for idx, name in enumerate(args):\n            setattr(self, name, idx)\n            self.idx2name[idx] = name\n\n    def toStr(self, idx):\n        return self.idx2name.get(idx, \"NOTFOUND\")\n";
+    PyModule::from_code(py, code, c"ibx_enum.py", c"ibx_enum")?.getattr("Enum")
+}
+
+/// The official `OptionExerciseType` (ibx#712): an `enum.Enum` whose
+/// values are (number, name). Made once, kept in the module.
+pub fn option_exercise_type(py: Python<'_>) -> PyResult<Bound<'_, PyAny>> {
+    static CLASS: pyo3::sync::PyOnceLock<Py<PyAny>> = pyo3::sync::PyOnceLock::new();
+    let class = CLASS.get_or_try_init(py, || -> PyResult<Py<PyAny>> {
+        let code = c"from enum import Enum\n\nclass OptionExerciseType(Enum):\n    NoneItem = (-1, \"None\")\n    Exercise = (1, \"Exercise\")\n    Lapse = (2, \"Lapse\")\n    DoNothing = (3, \"DoNothing\")\n    Assigned = (100, \"Assigned \")\n    AutoexerciseClearing = (101, \"AutoexerciseClearing\")\n    Expired = (102, \"Expired\")\n    Netting = (103, \"Netting\")\n    AutoexerciseTrading = (200, \"AutoexerciseTrading\")\n";
+        Ok(PyModule::from_code(py, code, c"ibx_execution.py", c"ibx_execution")?.getattr("OptionExerciseType")?.unbind())
+    })?;
+    Ok(class.bind(py).clone())
+}
+
+/// The name the official text gives an exercise or lapse type number.
+fn option_exercise_name(n: i32) -> &'static str {
+    match n {
+        1 => "Exercise", 2 => "Lapse", 3 => "DoNothing", 100 => "Assigned ", 101 => "AutoexerciseClearing",
+        102 => "Expired", 103 => "Netting", 200 => "AutoexerciseTrading", _ => "None",
+    }
+}
+
 // ── Execution ──
 
 /// ibapi-compatible Execution class (used in exec_details callback). The
@@ -3287,6 +3450,9 @@ pub struct Execution {
     pub pending_price_revision: bool,
     #[pyo3(get, set)]
     pub submitter: String,
+    /// The number of the option exercise or lapse type (ibx#712): -1 when
+    /// none, as the official default.
+    pub opt_exercise_or_lapse_type: i32,
 }
 
 impl Default for Execution {
@@ -3312,26 +3478,49 @@ impl Default for Execution {
             last_liquidity: 0,
             pending_price_revision: false,
             submitter: String::new(),
+            opt_exercise_or_lapse_type: -1,
         }
     }
 }
 
 #[pymethods]
 impl Execution {
+    /// The official `OptionExerciseType` member of the execution (ibx#712).
+    #[getter(optExerciseOrLapseType)]
+    fn get_opt_exercise_or_lapse_type(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        let class = option_exercise_type(py)?;
+        for member in class.try_iter()? {
+            let member = member?;
+            if member.getattr("value")?.get_item(0)?.extract::<i32>()? == self.opt_exercise_or_lapse_type {
+                return Ok(member.unbind());
+            }
+        }
+        Ok(class.getattr("NoneItem")?.unbind())
+    }
+    #[setter(optExerciseOrLapseType)]
+    fn set_opt_exercise_or_lapse_type(&mut self, v: &Bound<'_, PyAny>) -> PyResult<()> {
+        self.opt_exercise_or_lapse_type = match v.extract::<i32>() {
+            Ok(n) => n,
+            Err(_) => v.getattr("value")?.get_item(0)?.extract()?,
+        };
+        Ok(())
+    }
+
     #[new]
     #[pyo3(signature = ())]
     fn new() -> Self { Self::default() }
 
-    /// The official library's text (ibx#654); ibx has no exercise or
-    /// lapse type, the official default's name is given.
+    /// The official library's text (ibx#654); the exercise or lapse type
+    /// by its name (ibx#712).
     fn __str__(&self) -> String {
-        format!("ExecId: {}, Time: {}, Account: {}, Exchange: {}, Side: {}, Shares: {}, Price: {}, PermId: {}, ClientId: {}, OrderId: {}, Liquidation: {}, CumQty: {}, AvgPrice: {}, OrderRef: {}, EvRule: {}, EvMultiplier: {}, ModelCode: {}, LastLiquidity: {}, PendingPriceRevision: {}, Submitter: {}, OptExerciseOrLapseType: None",
+        format!("ExecId: {}, Time: {}, Account: {}, Exchange: {}, Side: {}, Shares: {}, Price: {}, PermId: {}, ClientId: {}, OrderId: {}, Liquidation: {}, CumQty: {}, AvgPrice: {}, OrderRef: {}, EvRule: {}, EvMultiplier: {}, ModelCode: {}, LastLiquidity: {}, PendingPriceRevision: {}, Submitter: {}, OptExerciseOrLapseType: {}",
             self.exec_id, self.time, self.acct_number, self.exchange, self.side, decimal_max_string(self.shares),
             float_max_string(self.price), long_max_string(self.perm_id), int_max_string(self.client_id),
             int_max_string(self.order_id), int_max_string(self.liquidation as i64), decimal_max_string(self.cum_qty),
             float_max_string(self.avg_price), self.order_ref, self.ev_rule, float_max_string(self.ev_multiplier),
             self.model_code, int_max_string(self.last_liquidity as i64),
-            if self.pending_price_revision { "True" } else { "False" }, self.submitter)
+            if self.pending_price_revision { "True" } else { "False" }, self.submitter,
+            option_exercise_name(self.opt_exercise_or_lapse_type))
     }
 
     #[getter(shares)]

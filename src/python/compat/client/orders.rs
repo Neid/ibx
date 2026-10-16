@@ -405,6 +405,8 @@ impl EClient {
                 last_liquidity: se.execution.last_liquidity,
                 pending_price_revision: se.execution.pending_price_revision,
                 submitter: String::new(),
+                // No exercise or lapse report on the paper account (ibx#712).
+                opt_exercise_or_lapse_type: -1,
             };
             let exec_py = Py::new(py, exec_obj)?.into_any();
 

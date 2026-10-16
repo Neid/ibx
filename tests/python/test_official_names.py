@@ -92,7 +92,8 @@ def test_the_plain_objects_start_as_the_official_ones():
 
 
 # ibx#697 (decision of 15/10/2026): a callback object lists the official names
-# only; the second spelling stays usable. Known differences: ibx#712.
+# only; the second spelling stays usable. One known difference (ibx#712): the
+# bar keeps the time zone of its date, which the official object drops.
 CALLBACK_OBJECTS = {
     "Contract": "ibapi.contract", "ContractDetails": "ibapi.contract", "ComboLeg": "ibapi.contract",
     "ContractDescription": "ibapi.contract", "Order": "ibapi.order", "OrderComboLeg": "ibapi.order",
@@ -110,11 +111,7 @@ CALLBACK_OBJECTS = {
 }
 CONDITION_TYPES = {"Price", "Time", "Margin", "Execution", "Volume", "PercentChange"}
 KNOWN_ATTRIBUTE_DIFFERENCES = {
-    "Execution": ({"optExerciseOrLapseType"}, set()),
     "BarData": (set(), {"timezone"}),
-    "PriceCondition": (CONDITION_TYPES | {"TriggerMethodEnum"}, set()),
-    **{c: (CONDITION_TYPES, set()) for c in ["TimeCondition", "MarginCondition", "ExecutionCondition",
-                                             "VolumeCondition", "PercentChangeCondition"]},
 }
 
 
@@ -237,3 +234,22 @@ def test_live_script_in_the_official_form_runs_on_the_paper_account():
     finally:
         app.disconnect()
         loop.join(timeout=5)
+
+
+# ibx#712: the execution's exercise or lapse type, the condition type numbers
+# and the trigger methods, as the official objects give them.
+def test_exercise_type_condition_numbers_and_trigger_methods():
+    pytest.importorskip("ibapi")
+    import ibx
+    from ibapi.execution import Execution, OptionExerciseType
+    from ibapi.order_condition import PriceCondition, VolumeCondition
+
+    ours, theirs = ibx.Execution(), Execution()
+    assert ours.optExerciseOrLapseType.value == theirs.optExerciseOrLapseType.value == (-1, "None")
+    ours.optExerciseOrLapseType = OptionExerciseType.Lapse
+    assert ours.optExerciseOrLapseType.name == "Lapse" and "OptExerciseOrLapseType: Lapse" in str(ours)
+    for name in ["Price", "Time", "Margin", "Execution", "Volume", "PercentChange"]:
+        assert getattr(ibx.VolumeCondition, name) == getattr(VolumeCondition, name), name
+    ours, theirs = ibx.PriceCondition.TriggerMethodEnum, PriceCondition.TriggerMethodEnum
+    assert ours.idx2name == theirs.idx2name and ours.MidPoint == theirs.MidPoint == 8
+    assert ours.toStr(7) == "LastBidAsk" and ours.toStr(99) == "NOTFOUND"
