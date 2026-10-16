@@ -561,6 +561,9 @@ pub struct OrderAttrs {
     pub short_sale: ShortSale,
     /// The API usePriceMgmtAlgo: None when unset (ibx#492).
     pub use_price_mgmt_algo: Option<bool>,
+    /// The attached orders asked from the order preset (ibx#609): the
+    /// profit-taker leg, then the stop-loss leg.
+    pub attached_from_preset: (bool, bool),
     /// The order's algo, None for none. The reference writes it on top of
     /// the order's own type and price fields, whatever the type (ibx#263).
     pub algo: Option<OrderAlgo>,

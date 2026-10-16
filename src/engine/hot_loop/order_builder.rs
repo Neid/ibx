@@ -375,6 +375,10 @@ fn send_orders(
             if route_bbo_precaution(&order_req, context, shared) {
                 continue;
             }
+            // Attached orders the order preset does not define (ibx#609).
+            if attached_preset_refusal(&order_req, context, shared) {
+                continue;
+            }
             // Directed to an exchange the contract does not list (ibx#630).
             match invalid_exchange_refusal(&order_req, context, conn, hb, shared) {
                 Some(false) => { context.rth_parked.push(rewrap(order_req)); continue; }
@@ -4006,6 +4010,41 @@ fn route_bbo_precaution(req: &OrderRequest, context: &mut Context, shared: &Arc<
     true
 }
 
+/// Attached orders asked from the order preset when the preset does not
+/// auto-attach them (ibx#609; the reference 10.51, paper, 16/10/2026,
+/// both legs: 10355 for the profit taker 0.79 s after the order, then
+/// orderStatus Cancelled with nothing filled and a permId, then 202 "Order
+/// was discarded."; nothing sent). The profit-taker leg is named first,
+/// then the stop-loss leg; one refusal only. The presets of an account
+/// have both auto-attach switches off unless set by hand; ibx does not
+/// build the attached orders a preset would define (#717).
+fn attached_preset_refusal(req: &OrderRequest, context: &mut Context, shared: &Arc<SharedState>) -> bool {
+    let Some((_, Some(attrs))) = req.new_order_side() else { return false };
+    let leg = match attrs.attached_from_preset {
+        (true, _) => "Profit Taker",
+        (false, true) => "Stop Loss",
+        (false, false) => return false,
+    };
+    let (Some(qty), Some(instrument)) = (req.new_order_qty(), req.instrument()) else { return false };
+    let oid = req.order_id();
+    log::warn!("Order {} discarded: {} from a preset that does not define it", oid, leg);
+    shared.orders.push_order_error(oid, 10355, format!("Cannot auto-attach {}. Preset is not defined.", leg));
+    let perm_id = context.new_server_id();
+    shared.orders.push_order_update(OrderUpdate {
+        order_id: oid,
+        instrument,
+        status: OrderStatus::Cancelled,
+        filled_qty_fixed: 0,
+        remaining_qty_fixed: qty,
+        avg_fill_price: 0,
+        perm_id,
+        parent_id: attrs.parent_id,
+        timestamp_ns: context.now_ns(),
+    });
+    shared.orders.push_order_notice(oid, 202, "Order Canceled - reason:Order was discarded.".into());
+    true
+}
+
 /// Seek price improvement is written only on an order routed to SMART
 /// (ibx#608, 10.51: the attribute's own rule); elsewhere it is
 /// left out without a warning, and the order's openOrder shows it off.
@@ -6975,6 +7014,31 @@ mod tests {
 
         let sent = wire_tags_with(|ctx| ctx.bypass_route_bbo_warning = true, lmt_with(111, attrs));
         assert_eq!(tag(&sent, 8265), Some("1"));
+    }
+
+    // ibx#609 (the reference 10.51, paper, 16/10/2026, case E of
+    // `.tmp/609/case.py`): attached orders asked from a preset that does
+    // not auto-attach them: 10355 naming the profit taker, Cancelled with
+    // a permId, 202; nothing sent. The stop-loss leg alone names itself.
+    #[test]
+    fn attached_orders_from_an_undefined_preset_are_discarded() {
+        for (legs, id, leg) in [((true, true), 58081, "Profit Taker"), ((false, true), 58090, "Stop Loss")] {
+            let attrs = crate::types::OrderAttrs { attached_from_preset: legs, ..Default::default() };
+            let mut context = Context::new();
+            context.market.register(265598);
+            context.pending_orders.push(lmt_with(id, attrs));
+            let shared = Arc::new(SharedState::new());
+            let (conn, mut peer) = crate::test_support::Peer::pair();
+            let mut conn = Some(conn);
+            drain_and_send_orders(&mut conn, &mut context, "DU1", &mut HeartbeatState::new(), false, &shared);
+            assert!(peer.messages().is_empty(), "nothing sent");
+            assert_eq!(shared.orders.drain_order_errors(), [(id, 10355, format!("Cannot auto-attach {leg}. Preset is not defined."))]);
+            let updates = shared.orders.drain_order_updates();
+            assert_eq!(updates.iter().map(|u| (u.order_id, u.status)).collect::<Vec<_>>(), [(id, OrderStatus::Cancelled)]);
+            assert_ne!(updates[0].perm_id, id, "a permId of its own");
+            assert_eq!(shared.orders.drain_order_notices().iter().map(|n| (n.0, n.1, n.2.as_str())).collect::<Vec<_>>(),
+                [(id, 202, "Order Canceled - reason:Order was discarded.")]);
+        }
     }
 
     /// The captured frame's fields named in `tags`, in its order.

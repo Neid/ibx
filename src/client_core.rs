@@ -1174,6 +1174,12 @@ fn gcd(a: u32, b: u32) -> u32 {
 /// sent (ibx#463; captured 25/09/2026).
 pub const MODIFY_OF_FINISHED_ORDER: (i64, &str) = (104, "Cannot modify a filled order.");
 
+/// The logon capability with which a session takes no attached orders
+/// in one placeOrder, and its text (ibx#609).
+pub const ATTACHED_NOT_IN_ONE_REQUEST_FEATURE: &str = "NOAPISLPTSGL";
+pub const ATTACHED_NOT_IN_ONE_REQUEST: &str =
+    "Attaching stop-loss or profit-taker is not allowed as part of a single placeOrder request, please submit such orders separately.";
+
 /// A new order under the id of an order of this client that is working (ibx#538).
 pub const DUPLICATE_ORDER_ID: (i64, &str) = (103, "Duplicate order id");
 
@@ -6134,6 +6140,49 @@ impl ClientCore {
             .iter().any(|a| a.eq_ignore_ascii_case(action))
     }
 
+    /// The reading of the attached orders of a placeOrder (ibx#609; the
+    /// reference 10.51, paper, 15 and 16/10/2026, a client at level 225):
+    /// a leg is its id and its type, both or neither, and the only type is
+    /// "PRESET" in any case; the stop-loss leg is read first. A bad leg is
+    /// 320 with its text, nothing sent, the id not used. A session whose
+    /// logon says so takes no attached orders in one request.
+    pub fn attached_orders_read_refusal(order: &ApiOrder, no_single: bool) -> Option<(i64, String)> {
+        if !order.has_attached_orders() {
+            return None;
+        }
+        let read = |text: &str| Some((320, format!("Error reading request. {}", text)));
+        if no_single {
+            return read(ATTACHED_NOT_IN_ONE_REQUEST);
+        }
+        let leg_ok = |id: i32, kind: &str| (id != i32::MAX) == kind.eq_ignore_ascii_case("PRESET");
+        if !leg_ok(order.sl_order_id, &order.sl_order_type) {
+            return read("Invalid value for Stop Loss order-id or order-type");
+        }
+        if !leg_ok(order.pt_order_id, &order.pt_order_type) {
+            return read("Invalid value for Profit Taker order-id or order-type");
+        }
+        None
+    }
+
+    /// The ids of the attached orders, checked after the parent's
+    /// (ibx#609): the profit-taker's then the stop-loss's as a new order's
+    /// id, then the three must differ (103 "Duplicate order id", observed
+    /// 16/10/2026 with the profit-taker under the parent's id).
+    fn attached_orders_id_refusal(&self, order_id: OrderId, order: &ApiOrder, shared: &SharedState) -> Option<(i64, String)> {
+        if !order.has_attached_orders() {
+            return None;
+        }
+        let legs: Vec<OrderId> = [order.pt_order_id, order.sl_order_id].into_iter()
+            .filter(|&id| id != i32::MAX).map(OrderId::from).collect();
+        for &id in &legs {
+            if let Some(refusal) = Self::order_id_refusal(id).or_else(|| self.refusal_for_order_id(id, order, shared)) {
+                return Some(refusal);
+            }
+        }
+        let distinct = !legs.contains(&order_id) && (legs.len() < 2 || legs[0] != legs[1]);
+        (!distinct).then(|| (DUPLICATE_ORDER_ID.0, DUPLICATE_ORDER_ID.1.to_string()))
+    }
+
     /// An order id the reference refuses with 10149 when no order has it:
     /// 0 and the two int bounds (ibx#485). ibx
     /// used to take the next id
@@ -6452,12 +6501,17 @@ impl ClientCore {
         // paper 11/10/2026: after 439, 343 or 110 the same id placed again
         // gets 103, and its cancel 10147; after 321, 391 or 145 it is a
         // new order).
-        let refusal = Self::refusal_before_sending_for(order, exchange, account_pending, shared.reference.form_10_40())
+        // The attached orders are read last: their refusal is the one
+        // given (ibx#609).
+        let no_single = shared.reference.logon_features().split(',').any(|f| f == ATTACHED_NOT_IN_ONE_REQUEST_FEATURE);
+        let refusal = Self::attached_orders_read_refusal(order, no_single)
+            .or_else(|| Self::refusal_before_sending_for(order, exchange, account_pending, shared.reference.form_10_40()))
             .or_else(|| Self::account_config_refusal(order, shared.reference.account_features().as_deref(), account))
             .or_else(|| Self::open_flags_refusal(order, exchange))
             .or_else(|| Self::overnight_tif_refusal(order, &shared.reference))
             .or_else(|| Self::order_id_refusal(order_id))
-            .or_else(|| self.refusal_for_order_id(order_id, order, shared));
+            .or_else(|| self.refusal_for_order_id(order_id, order, shared))
+            .or_else(|| self.attached_orders_id_refusal(order_id, order, shared));
         if refusal.is_some() {
             return (notices, refusal, None);
         }
@@ -7913,6 +7967,36 @@ mod tests {
             Ok(ControlCommand::PnlQuotes { con_ids, second_price }) => assert_eq!((con_ids, second_price), (vec![8314], false)),
             other => panic!("{other:?}"),
         }
+    }
+
+    // ibx#609 (the reference 10.51, paper, 15 and 16/10/2026): the reading
+    // of the attached order legs, then their ids.
+    #[test]
+    fn attached_order_legs_read_and_ids() {
+        let legs = |sl: (i32, &str), pt: (i32, &str)| ApiOrder {
+            sl_order_id: sl.0, sl_order_type: sl.1.into(), pt_order_id: pt.0, pt_order_type: pt.1.into(), ..lmt(100.0)
+        };
+        let none = i32::MAX;
+        let read = |o: &ApiOrder| ClientCore::attached_orders_read_refusal(o, false);
+        let sl = Some((320, "Error reading request. Invalid value for Stop Loss order-id or order-type".to_string()));
+        let pt = Some((320, "Error reading request. Invalid value for Profit Taker order-id or order-type".to_string()));
+        assert_eq!(read(&legs((11, "STP"), (12, "LMT"))), sl, "case A: the stop-loss leg first");
+        assert_eq!(read(&legs((11, "STP"), (none, ""))), sl, "case B");
+        assert_eq!(read(&legs((none, ""), (12, "ZZZ"))), pt, "case C");
+        assert_eq!(read(&legs((11, ""), (none, ""))), sl, "case D: an id without a type");
+        assert_eq!(read(&legs((none, ""), (none, "PRESET"))), pt, "case G: a type without an id");
+        assert_eq!(read(&legs((11, "preset"), (12, "PRESET"))), None, "case E: any case");
+        assert_eq!(read(&lmt(100.0)), None);
+        assert_eq!(ClientCore::attached_orders_read_refusal(&legs((11, "PRESET"), (none, "")), true).unwrap().1,
+            format!("Error reading request. {ATTACHED_NOT_IN_ONE_REQUEST}"));
+
+        let core = ClientCore::new();
+        let shared = SharedState::new();
+        let ids = |order: &ApiOrder| core.attached_orders_id_refusal(10, order, &shared);
+        assert_eq!(ids(&legs((11, "PRESET"), (12, "PRESET"))), None);
+        assert_eq!(ids(&legs((11, "PRESET"), (10, "PRESET"))), Some((103, "Duplicate order id".to_string())), "case F");
+        assert_eq!(ids(&legs((12, "PRESET"), (12, "PRESET"))), Some((103, "Duplicate order id".to_string())));
+        assert_eq!(ids(&legs((0, "PRESET"), (none, ""))).map(|r| r.0), Some(10149));
     }
 
     // ibx#466: an order with an orderRef goes to the extended encoder,

@@ -532,11 +532,25 @@ impl Order {
                 exempt_code: self.exempt_code,
             },
             use_price_mgmt_algo: self.price_mgmt_algo(),
+            attached_from_preset: (self.attached_leg(self.pt_order_id, &self.pt_order_type),
+                self.attached_leg(self.sl_order_id, &self.sl_order_type)),
             // Set where a new order is built (ibx#263).
             algo: None,
             // Set where a combo order is built, from its contract (ibx#470).
             combo: None,
         }
+    }
+
+    /// An attached order leg given (ibx#609): its id set (not the API's
+    /// unset value) or its type not empty, as the official client sends
+    /// them.
+    pub fn attached_leg(&self, id: i32, kind: &str) -> bool {
+        id != i32::MAX || !kind.is_empty()
+    }
+
+    /// Whether the order asks for attached orders (ibx#609).
+    pub fn has_attached_orders(&self) -> bool {
+        self.attached_leg(self.sl_order_id, &self.sl_order_type) || self.attached_leg(self.pt_order_id, &self.pt_order_type)
     }
 
     /// The usePriceMgmtAlgo value: None when unset (`i32::MAX`, the API's
@@ -574,6 +588,8 @@ impl Order {
             || self.allow_pre_open
             || self.ignore_open_auction
             || self.deactivate
+            // The attached orders of ibx#609.
+            || self.has_attached_orders()
             // The order attributes of ibx#608.
             || self.route_marketable_to_bbo
             || self.seek_price_improvement
