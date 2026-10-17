@@ -275,6 +275,13 @@ impl EWrapper {
 
     fn wsh_event_data(&self, _req_id: i64, _data_json: &str) {}
 
+    // ── Configuration ──
+
+    /// The answer to `update_config_proto_buf`, as the official
+    /// `updateConfigResponseProtoBuf`: its `UpdateConfigResponse` object
+    /// (ibx#612). It comes from session level 221.
+    fn update_config_response_proto_buf(&self, _update_config_response_proto: Py<PyAny>) {}
+
     // ── Tier 3: Completed Orders ──
 
     fn completed_order(&self, _contract: Py<PyAny>, _order: Py<PyAny>, _order_state: Py<PyAny>) {}

@@ -255,6 +255,39 @@ impl EClient {
         Ok(())
     }
 
+    // ── Configuration ──
+
+    /// Update the configuration, as the official `updateConfigProtoBuf`
+    /// (session level 221): an `UpdateConfigRequest` of the official
+    /// library, or an object with its attributes; None does nothing. The
+    /// answer is `update_config_response_proto_buf`. Below level 221, error
+    /// 503 for the request, as the official client library answers, and
+    /// nothing sent (ibx#612). From 221 a logon that forbids configuration
+    /// access gets 321; the answer to an update taken is still to decide
+    /// (ibx#610), and ibx answers level 214 until then.
+    #[pyo3(signature = (update_config_request_proto))]
+    fn update_config_proto_buf(&self, py: Python<'_>, update_config_request_proto: Option<Bound<'_, PyAny>>) -> PyResult<()> {
+        let Some(proto) = update_config_request_proto.filter(|p| !p.is_none()) else { return Ok(()) };
+        let request = super::super::config::update_config_request(&proto)?;
+        // One API request for the pacing, whatever it sends (ibx#565).
+        let _request = crate::engine::park::one_request();
+        if let Some(r) = self.not_connected(request.req_id.map_or(-1, i64::from)) { return r; }
+        let shared = self.shared_state()?;
+        let level = crate::client_core::SERVER_VERSION;
+        if let Some((id, code, text)) =
+            crate::client_core::update_config_refusal(level, &request, &shared.reference.logon_features())
+        {
+            if level < crate::client_core::LEVEL_UPDATE_CONFIG {
+                // The official client library's own check, on the caller's
+                // thread before anything is sent: never put off (ibx#532).
+                self.wrapper.call_method1(py, "error", (id, code, text, ""))?;
+            } else {
+                shared.orders.push_order_error(id, code, text.to_string());
+            }
+        }
+        Ok(())
+    }
+
     // ── FA (Financial Advisor) ──
 
     fn request_fa(&self, py: Python<'_>, _fa_data_type: i32) -> PyResult<()> {

@@ -1,6 +1,7 @@
 //! ibapi-compatible layer: EWrapper, EClient, Contract, Order, tick types.
 
 pub mod client;
+pub mod config;
 pub mod contract;
 pub mod tick_types;
 pub mod values;

@@ -248,6 +248,13 @@ pub trait Wrapper {
 
     /// WSH event data, as `wshEventData` (ibx#443).
     fn wsh_event_data(&mut self, req_id: i64, data_json: &str) {}
+
+    // ── Configuration ──
+
+    /// The answer to an update of the configuration, as
+    /// `updateConfigResponseProtoBuf` (ibx#612). It comes from session
+    /// level 221.
+    fn update_config_response(&mut self, response: &crate::api::config::UpdateConfigResponse) {}
 }
 
 /// Test helpers for Wrapper-based testing. Hidden from docs; built only

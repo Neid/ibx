@@ -156,6 +156,7 @@ pub fn epoch_text(secs: i64, buf: &mut [u8; 24]) -> &str {
 
 mod md_stream;
 pub(crate) mod inbox;
+pub mod update_config;
 pub use md_stream::{MdOut, StreamState};
 
 /// Security types and exchanges whose bid and ask auto-execution comes
@@ -1732,6 +1733,46 @@ pub fn lookup_cancel_refusal(level: i32, ticks: bool) -> Option<(i64, &'static s
     (level < LEVEL_LOOKUP_CANCELS)
         .then_some(if ticks { CANCEL_HISTORICAL_TICKS_UNSUPPORTED } else { CANCEL_CONTRACT_DATA_UNSUPPORTED })
 }
+/// The session level from which the official client library sends
+/// updateConfig (ibx#612).
+pub const LEVEL_UPDATE_CONFIG: i32 = 221;
+
+// The answer to an update that passes the reference's checks waits for the
+// decision asked on ibx#610: ibx answers level 221 only once it is made.
+const _: () = assert!(SERVER_VERSION < LEVEL_UPDATE_CONFIG,
+    "answer an update that passes the checks (decision of ibx#610) before raising the session level (ibx#612)");
+
+pub const UPDATE_CONFIG_UNSUPPORTED: (i64, &str) =
+    (503, "The TWS is out of date and must be upgraded.  It does not support update config requests.");
+
+/// updateConfig on a session whose logon does not allow configuration
+/// access: error 321 with the cause 10357, with no request id (ibx#612).
+pub const UPDATE_CONFIG_NOT_AVAILABLE: (i64, i64, &str) =
+    (-1, 321, "Error validating request.-'UpdateConfig(109)' : cause - Configuration access via API is not available. Please refer to the application interface to view or update your settings.");
+
+/// The logon feature that takes configuration access away from the API.
+const NO_CONFIG_API_FEATURE: &str = "NOCONFIGAPI";
+
+/// The error that refuses an updateConfig on a session of level `level`
+/// with logon features `logon_features`, as (id, code, text), or `None`
+/// when the request is taken (ibx#612).
+///
+/// Below level 221 the official client library refuses it itself with
+/// 503, for the request's id or -1 without one, and sends nothing
+/// (observed 17/10/2026, paper, market closed, the official client at
+/// level 214 on the reference 10.51). From 221 a logon whose features
+/// forbid configuration access gets 321 with the cause 10357 and id -1
+/// (not observed yet: the paper account's logon allows it).
+pub fn update_config_refusal(
+    level: i32, request: &crate::api::config::UpdateConfigRequest, logon_features: &str,
+) -> Option<(i64, i64, &'static str)> {
+    if level < LEVEL_UPDATE_CONFIG {
+        let (code, text) = UPDATE_CONFIG_UNSUPPORTED;
+        return Some((request.req_id.map_or(-1, i64::from), code, text));
+    }
+    crate::control::logon::has_feature(logon_features, NO_CONFIG_API_FEATURE).then_some(UPDATE_CONFIG_NOT_AVAILABLE)
+}
+
 pub const VERIFY_REQUEST_NO_INTENT: (i64, i64, &str) =
     (-1, 544, "Verify Request Sending Error -   Intent to authenticate needs to be expressed during initial connect request.");
 pub const VERIFY_AND_AUTH_REQUEST_NO_INTENT: (i64, i64, &str) =
@@ -9458,6 +9499,23 @@ mod session_tests {
         assert_eq!(lookup_cancel_refusal(214, true), Some(CANCEL_HISTORICAL_TICKS_UNSUPPORTED));
         assert_eq!(lookup_cancel_refusal(215, false), None);
         assert_eq!(lookup_cancel_refusal(225, true), None);
+    }
+
+    // ibx#612 (the reference 10.51, paper, 17/10/2026: the official client
+    // refuses at level 214, for the request's id or -1 without one).
+    #[test]
+    fn the_configuration_update_is_refused_below_level_221_and_without_configuration_access() {
+        use crate::api::config::UpdateConfigRequest;
+        let with_id = UpdateConfigRequest { req_id: Some(7401), ..Default::default() };
+        let (code, text) = UPDATE_CONFIG_UNSUPPORTED;
+        assert_eq!(update_config_refusal(214, &with_id, ""), Some((7401, code, text)));
+        assert_eq!(update_config_refusal(220, &UpdateConfigRequest::default(), "NOCONFIGAPI"), Some((-1, code, text)));
+        assert_eq!(text, "The TWS is out of date and must be upgraded.  It does not support update config requests.");
+        // From 221 only a logon without configuration access refuses it.
+        assert_eq!(update_config_refusal(221, &with_id, "APIELOG,SECDEFTA"), None);
+        assert_eq!(update_config_refusal(225, &with_id, "APIELOG,NOCONFIGAPI,SECDEFTA"), Some(UPDATE_CONFIG_NOT_AVAILABLE));
+        assert_eq!(update_config_refusal(225, &with_id, "NOCONFIGAPIX"), None);
+        assert!(SERVER_VERSION < LEVEL_UPDATE_CONFIG);
     }
 
     // ibx#426: `yyyyMMdd HH:mm:ss {zone}`, local time.

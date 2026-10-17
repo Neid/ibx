@@ -133,6 +133,25 @@ impl EClient {
     /// answer: nothing happens.
     pub fn verify_and_auth_message(&self, _api_data: &str, _xyz_response: &str) {}
 
+    // ── Configuration ──
+
+    /// Update the configuration. Matches `updateConfigProtoBuf` in C++
+    /// (session level 221); the answer is `update_config_response`. Below
+    /// level 221, error 503 for the request, as the official client library
+    /// answers, and nothing sent (ibx#612). From 221 a logon that forbids
+    /// configuration access gets 321; the answer to an update taken is
+    /// still to decide (ibx#610), and ibx answers level 214 until then.
+    pub fn update_config(&self, request: &crate::api::config::UpdateConfigRequest) {
+        // One API request for the pacing, whatever it sends (ibx#565).
+        let _request = crate::engine::park::one_request();
+        let features = self.shared.reference.logon_features();
+        if let Some((id, code, text)) =
+            crate::client_core::update_config_refusal(crate::client_core::SERVER_VERSION, request, &features)
+        {
+            self.shared.orders.push_order_error(id, code, text.to_string());
+        }
+    }
+
     // ── FA (Financial Advisor) ──
 
     /// Request FA data. On a session that is not FA, error 321 as the

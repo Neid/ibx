@@ -792,4 +792,32 @@ impl EClient {
         crate::gateway::apply_first_logon(&logon, version_cutoff, version_cutoff_date, max_backfill_years, &*self.shared_state()?);
         Ok(())
     }
+
+    /// The request read from an `updateConfigProtoBuf` argument, in the
+    /// form of the Rust client (ibx#612, test-only).
+    #[doc(hidden)]
+    fn _test_update_config_request(&self, request: Bound<'_, PyAny>) -> PyResult<String> {
+        Ok(format!("{:?}", super::super::config::update_config_request(&request)?))
+    }
+
+    /// Give an update answer to the wrapper, as the official library builds
+    /// it (ibx#612, test-only). `warnings`: (message id, title, text).
+    #[doc(hidden)]
+    #[pyo3(signature = (req_id, status, message, changed_fields, errors, warnings))]
+    fn _test_update_config_response(
+        &self, py: Python<'_>, req_id: Option<i32>, status: Option<String>, message: Option<String>,
+        changed_fields: Vec<String>, errors: Vec<String>, warnings: Vec<(i32, String, String)>,
+    ) -> PyResult<()> {
+        let response = crate::api::config::UpdateConfigResponse {
+            req_id, status, message, changed_fields, errors,
+            warnings: warnings.into_iter()
+                .map(|(id, title, text)| crate::api::config::UpdateConfigWarning {
+                    message_id: Some(id), title: Some(title), message: Some(text),
+                })
+                .collect(),
+        };
+        let object = super::super::config::update_config_response(py, &response)?;
+        self.wrapper.call_method1(py, "update_config_response_proto_buf", (object,))?;
+        Ok(())
+    }
 }

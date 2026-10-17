@@ -7308,6 +7308,22 @@ fn requests_the_reference_session_does_not_have() {
     ]);
 }
 
+// ibx#612: at session level 214 an update of the configuration is refused
+// with 503 for its id, or -1 without one, and nothing goes to the engine,
+// as the official client library at level 214 (reference 10.51, paper,
+// 17/10/2026).
+#[test]
+fn update_config_is_refused_below_level_221() {
+    let (client, rx, shared) = test_client();
+    let mut request = crate::api::config::UpdateConfigRequest { req_id: Some(7401), ..Default::default() };
+    client.update_config(&request);
+    request.req_id = None;
+    client.update_config(&request);
+    assert!(rx.try_recv().is_err(), "nothing goes to the engine");
+    let text = "The TWS is out of date and must be upgraded.  It does not support update config requests.".to_string();
+    assert_eq!(shared.orders.drain_order_errors(), [(7401, 503, text.clone()), (-1, 503, text)]);
+}
+
 // ibx#561: on a paced session a market data request asks for its slot
 // first, which the engine tells at once, and sends its subscribe with no
 // reply to wait for.
