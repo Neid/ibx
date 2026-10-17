@@ -5858,8 +5858,9 @@ impl ClientCore {
     /// go out without the fields their message needs (ibx#202).
     pub fn validate_order_contract(sec_type: &str) -> Result<(), String> {
         // A metal (ibx#666, 16/10/2026) is written; a bond goes to the
-        // engine for its permission (460) and is refused there after it.
-        const WRITTEN: [&str; 11] = ["STK", "BAG", "FUT", "CFD", "CASH", "OPT", "FOP", "WAR", "FUND", "CMDTY", "BOND"];
+        // engine for its permission (460) and is refused there after it; a
+        // crypto order too (without the permission it stays pending).
+        const WRITTEN: [&str; 12] = ["STK", "BAG", "FUT", "CFD", "CASH", "OPT", "FOP", "WAR", "FUND", "CMDTY", "BOND", "CRYPTO"];
         if sec_type.is_empty() || WRITTEN.iter().any(|t| sec_type.eq_ignore_ascii_case(t)) {
             return Ok(());
         }

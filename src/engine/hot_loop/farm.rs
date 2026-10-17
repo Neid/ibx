@@ -475,6 +475,22 @@ pub(crate) struct PnlQuoteEntry {
     pub(crate) cash: bool,
 }
 
+/// One entry of the top of book a fund order asks for the engine itself
+/// (ibx#666): the bid and ask pair of the fund on the order's exchange,
+/// with no API source; kept for the session, its data goes to no one.
+#[derive(Debug, Clone)]
+pub(crate) struct OrderQuoteEntry {
+    pub(crate) farm_req: u32,
+    pub(crate) con_id: i64,
+    pub(crate) exchange: String,
+    pub(crate) sec_type: String,
+    /// 442 or 443.
+    pub(crate) code: i32,
+    /// From its acknowledgement.
+    pub(crate) tag: Option<u32>,
+    pub(crate) farm: FarmId,
+}
+
 /// The second price kind of the reference's P&L quotes (ibx#511), asked
 /// for reqPnL only; its values are not used.
 pub(crate) const PNL_SECOND_PRICE: i32 = 504;
@@ -680,6 +696,12 @@ pub(crate) struct FarmState {
     /// The contracts whose dividends the P&L asked: once per contract in
     /// the session (ibx#511).
     pnl_dividends_asked: std::collections::HashSet<i64>,
+    /// The top of book a fund order asked for the engine (ibx#666).
+    pub(crate) order_quotes: Vec<OrderQuoteEntry>,
+    /// Fund orders whose top of book waits for the definition its route
+    /// needs: instrument, conId, the order's exchange, the time it is given
+    /// up.
+    pub(crate) order_quote_starts: Vec<(InstrumentId, i64, String, Instant)>,
     /// Generic tick requests waiting for their top of book to go out.
     pub(crate) generic_waiting: Vec<GenericWaiting>,
     /// The generic tick fields of each contract, as its record keeps them.
@@ -746,6 +768,8 @@ impl FarmState {
             generic: Vec::new(),
             pnl_quotes: Vec::new(),
             pnl_dividends_asked: std::collections::HashSet::new(),
+            order_quotes: Vec::new(),
+            order_quote_starts: Vec::new(),
             generic_waiting: Vec::new(),
             generic_records: std::collections::HashMap::new(),
             top_confirmed: Vec::new(),
@@ -1095,6 +1119,14 @@ impl FarmState {
         if let Some(e) = self.status.iter_mut().find(|e| e.farm == rx_farm && e.farm_req == req_id) {
             e.tag = Some(server_tag);
             log::info!("Market data status ack: server_tag {} -> instrument {}", server_tag, e.instrument);
+            return;
+        }
+
+        // The ack of a fund order's own top of book (ibx#666): its tag is
+        // kept; its data goes to no one.
+        if let Some(e) = self.order_quotes.iter_mut().find(|e| e.farm == rx_farm && e.farm_req == req_id) {
+            e.tag = Some(server_tag);
+            log::info!("Order quote {} ack: server_tag {} -> con_id {}", e.code, server_tag, e.con_id);
             return;
         }
 
@@ -1606,6 +1638,38 @@ impl FarmState {
             let mine: Vec<PnlQuoteEntry> = again.iter().filter(|e| e.farm == farm).cloned().collect();
             (farm, pnl_quotes_message("1", &mine))
         }).collect()
+    }
+
+    /// The top of book a fund order asks for the engine (ibx#666), as the
+    /// reference writes it (paper, 16/10/2026, VFIAX on FUNDSERV): one
+    /// message with the bid and ask pair on the order's exchange, the entry
+    /// marks, no API source. None when the contract has one already.
+    pub(crate) fn order_quote(&mut self, con_id: i64, exchange: &str, sec_type: &str, farm: FarmId) -> Option<(FarmId, Vec<(u32, String)>)> {
+        if self.has_order_quote(con_id) {
+            return None;
+        }
+        let mut entries = Vec::with_capacity(2);
+        for code in [442, 443] {
+            entries.push(OrderQuoteEntry {
+                farm_req: self.next_md_req_id, con_id, exchange: exchange.to_string(),
+                sec_type: fix_sec_type(sec_type).to_string(), code, tag: None, farm,
+            });
+            self.next_md_req_id += 1;
+        }
+        let msg = order_quote_message("1", &entries, self.marks());
+        self.order_quotes.extend(entries);
+        Some((farm, msg))
+    }
+
+    /// A fund order asked the contract's top of book already (ibx#666).
+    pub(crate) fn has_order_quote(&self, con_id: i64) -> bool {
+        self.order_quotes.iter().any(|e| e.con_id == con_id)
+    }
+
+    /// A fund order's top of book is on `farm`: the farm stays up for it
+    /// (ibx#666).
+    pub(crate) fn order_quotes_use_farm(&self, farm: FarmId) -> bool {
+        self.order_quotes.iter().any(|e| e.farm == farm)
     }
 
     /// A whole generic tick frame for the exchange map tests: true when it carried
@@ -2282,6 +2346,9 @@ impl FarmState {
         self.exchange_map_subs.retain(|s| s.farm != farm);
         self.generic_farm_lost(farm);
         self.pnl_quotes_farm_lost(farm);
+        // A fund order's top of book on it is forgotten: the next order of
+        // the fund asks it again (ibx#666; a loss was not observed).
+        self.order_quotes.retain(|e| e.farm != farm);
         // The option models on it stop; they start again with their top of
         // book (ibx#502).
         let cancels = self.optmd.farm_lost(farm);
@@ -3205,6 +3272,26 @@ fn pnl_quotes_message(action: &str, entries: &[PnlQuoteEntry]) -> Vec<(u32, Stri
             (167, if e.cash { "CASH" } else { "CS" }.to_string()),
             (264, e.code.to_string()),
         ]);
+    }
+    msg
+}
+
+/// A message of a fund order's top of book entries (ibx#666): each its id,
+/// the conId, the exchange, the type, the code and its entry mark; no API
+/// source.
+fn order_quote_message(action: &str, entries: &[OrderQuoteEntry], marks: u8) -> Vec<(u32, String)> {
+    let mut msg = md_message_head(action, entries.len());
+    for e in entries {
+        msg.extend([
+            (262, e.farm_req.to_string()),
+            (6008, e.con_id.to_string()),
+            (207, e.exchange.clone()),
+            (167, e.sec_type.clone()),
+            (264, e.code.to_string()),
+        ]);
+        if let Some(mark) = entry_mark(&e.code.to_string(), marks, false) {
+            msg.push((9839, mark.to_string()));
+        }
     }
     msg
 }

@@ -331,7 +331,9 @@ fn send_orders(
                     "Error validating request.-'PlaceOrder(3)' : cause - VOL orders on {sec_type} are not written by ibx yet (ibx#673)"));
                 continue;
             }
-            if let Some((code, text)) = unwritten_type_refusal(&order_req, &sec_type).filter(|_| sec_type != "BOND") {
+            // A crypto order's permission comes first too: without it the
+            // order stays pending with no error (ibx#666).
+            if let Some((code, text)) = unwritten_type_refusal(&order_req, &sec_type).filter(|_| !matches!(sec_type.as_str(), "BOND" | "CRYPTO")) {
                 let oid = order_req.order_id();
                 log::warn!("Order {} refused: {} order ({})", oid, sec_type, code);
                 shared.orders.push_order_error(oid, code, text);
@@ -3264,6 +3266,14 @@ fn not_held_refusal(req: &OrderRequest, context: &mut Context, shared: &Arc<Shar
 /// the question on its way, the next one of the class was refused (a SAP
 /// warrant on FWB, pre-market 15/10/2026). Futures and CFDs without the
 /// permission go out and the server refuses them (paper 13/10/2026).
+/// A crypto order waits for the answer too; without the permission it gets
+/// no error and nothing is sent: it stays pending, and its cancel ends it
+/// as ApiCancelled, nothing filled and its whole quantity remaining, its
+/// prices unset (the reference 10.51, paper, regular hours 16/10/2026: a
+/// BTC limit order on PAXOS by conId, the permission and the trading hours
+/// asked after the lookup, the answer no permission, then nothing until
+/// the cancel 5 s later). With the permission, ibx refuses it: its message
+/// is not written yet.
 /// `Some(false)` while an answer the order waits for is on its way.
 fn permission_refusal(
     req: &OrderRequest,
@@ -3276,38 +3286,41 @@ fn permission_refusal(
     if req.combo().is_some() { return None; }
     let instrument = req.instrument()?;
     let sec_type = context.market.order_routing(instrument).0;
-    if !matches!(sec_type.as_str(), "OPT" | "FOP" | "WAR" | "CMDTY" | "FUND" | "BOND") { return None; }
+    if !matches!(sec_type.as_str(), "OPT" | "FOP" | "WAR" | "CMDTY" | "FUND" | "BOND" | "CRYPTO") { return None; }
     // A warrant, a metal and a fund go out with the question on its way
     // (paper, 16/10/2026: XAUUSD and a VFIAX buy by cash sent at once, the
     // server refusing them; the next fund order then refused with 460).
     let waits = !matches!(sec_type.as_str(), "WAR" | "CMDTY" | "FUND");
-    // A bond not refused for its permission is refused for its message,
-    // which ibx does not write yet.
-    let bond_unwritten = |shared: &Arc<SharedState>| {
+    // A bond or a crypto order not stopped for its permission is refused
+    // for its message, which ibx does not write yet.
+    let own_message = matches!(sec_type.as_str(), "BOND" | "CRYPTO");
+    let unwritten = |shared: &Arc<SharedState>| {
         let oid = req.order_id();
-        let (code, text) = unwritten_type_refusal(req, "BOND").unwrap_or_default();
-        log::warn!("Order {} refused: BOND order ({})", oid, code);
+        let (code, text) = unwritten_type_refusal(req, &sec_type).unwrap_or_default();
+        log::warn!("Order {} refused: {} order ({})", oid, sec_type, code);
         shared.orders.push_order_error(oid, code, text);
         Some(true)
     };
     let key = match definition(context, conn, hb, instrument) {
-        Definition::NoContract if sec_type == "BOND" => return bond_unwritten(shared),
+        Definition::NoContract if own_message => return unwritten(shared),
         Definition::NoContract => return None,
         Definition::Waiting => return Some(false),
         Definition::Known(types, _) => types.permission_key.clone(),
     };
     // Past this check, refused or not, an option or futures option order
     // starts the market data of its option, for the engine itself
-    // (ibx#693).
-    if key.is_empty() || context.trading_permissions.contains_key(&key) {
+    // (ibx#693); a fund order its top of book, when it does not wait for
+    // the answer too (ibx#666).
+    if key.is_empty() || !waits || context.trading_permissions.contains_key(&key) {
         note_order_model(context, instrument, &sec_type);
     }
     if key.is_empty() {
-        return if sec_type == "BOND" { bond_unwritten(shared) } else { None };
+        return if own_message { unwritten(shared) } else { None };
     }
     match context.trading_permissions.get(&key) {
-        // A bond with the permission: its message is not written yet.
-        Some(true) if sec_type == "BOND" => bond_unwritten(shared),
+        // A bond or a crypto order with the permission: its message is not
+        // written yet.
+        Some(true) if own_message => unwritten(shared),
         // A volatility order with the permission: its message is not
         // written yet (ibx#673).
         Some(true) if is_volatility(req) => {
@@ -3318,6 +3331,16 @@ fn permission_refusal(
             Some(true)
         }
         Some(true) => None,
+        // A crypto order without the permission: no error, nothing sent;
+        // it stays pending until its cancel (ApiCancelled).
+        Some(false) if sec_type == "CRYPTO" => {
+            let oid = req.order_id();
+            log::warn!("Order {} kept pending: no trading permission for {}", oid, key);
+            if !matches!(req, OrderRequest::SubmitWhatIf { .. }) {
+                context.api_pending.insert(oid, req.clone());
+            }
+            Some(true)
+        }
         Some(false) => {
             let oid = req.order_id();
             log::warn!("Order {} refused: no trading permission for {} (460)", oid, key);
@@ -3354,8 +3377,17 @@ fn permission_refusal(
 /// refused for the permission; none for stocks, warrants and funds, nor for
 /// an option order refused before this check). Kept for the session; the
 /// engine drops a second start of a contract already started.
+///
+/// A fund order past the check starts the fund's top of book alone, for
+/// the engine (ibx#666; the reference 10.51, paper, regular hours
+/// 16/10/2026, VFIAX bought by cash on FUNDSERV, the first fund order of
+/// two sessions: once sent with the permission asked, once refused with
+/// 460 after the answer; the fund's farm connected with its notices and
+/// the pair asked there, kept to the end of the recordings. Nothing for a
+/// fund order refused before the check, nor for a second order of the
+/// fund in the session).
 fn note_order_model(context: &mut Context, instrument: crate::types::InstrumentId, sec_type: &str) {
-    if !matches!(sec_type, "OPT" | "FOP") { return; }
+    if !matches!(sec_type, "OPT" | "FOP" | "FUND") { return; }
     let Some(con_id) = context.market.con_id(instrument).filter(|c| *c > 0) else { return };
     if context.order_models.iter().any(|(_, c, _)| *c == con_id) { return; }
     let exchange = context.market.exchange(instrument).to_string();
@@ -8122,6 +8154,77 @@ mod tests {
             let errors = shared.orders.drain_order_errors();
             assert_eq!(errors.iter().map(|e| (e.0, e.1)).collect::<Vec<_>>(), [(90, code)], "{errors:?}");
         }
+    }
+
+    const BTC: [(u32, &str); 7] = [(55, "BTC"), (167, "CRYPTO"), (15, "USD"), (207, "PAXOS"), (6035, "BTC.USD"),
+        (6411, "PAXOS/CRYPTO/NONE"), (6431, "DAY/3,LMT/3,MKT/1")];
+
+    // ibx#666 (the reference 10.51, paper, regular hours 16/10/2026,
+    // `.tmp/666/case3.py` case Y): a crypto order waits for the permission
+    // of its class; without it, no error, no status and nothing sent; its
+    // cancel ends it as ApiCancelled, nothing filled, its quantity
+    // remaining, permId 0, with nothing sent either. The next crypto order
+    // of the class stays pending the same way. With the permission ibx
+    // refuses it: its message is not written yet.
+    #[test]
+    fn a_crypto_order_without_the_permission_stays_pending() {
+        let order = |id| OrderRequest::SubmitLimit { order_id: id, instrument: 0, side: Side::Buy, qty: 1, price: px(1000.0) };
+        let (frames, shared, mut context, mut conn, mut server) = order_by_con_id("479624278", "PAXOS", order(95), &BTC);
+        assert_eq!(frames.iter().map(|f| tag(f, 35).unwrap_or("")).collect::<Vec<_>>(), ["U"], "it waits: {frames:?}");
+        assert_eq!(tag(&frames[0], 6411), Some("PAXOS/CRYPTO/NONE"));
+        permission_reply(&mut context, &fix::field_view(&permission_answer("PAXOS/CRYPTO/NONE", "0")));
+        assert!(drain_frames(&mut context, &shared, &mut conn, &mut server).is_empty(), "nothing sent");
+        assert!(shared.orders.drain_order_errors().is_empty(), "no error");
+        assert!(shared.orders.drain_order_updates().is_empty(), "no status");
+        context.pending_orders.push(OrderRequest::Cancel { order_id: 95 });
+        assert!(drain_frames(&mut context, &shared, &mut conn, &mut server).is_empty(), "nothing sent at the cancel");
+        let updates = shared.orders.drain_order_updates();
+        assert_eq!(updates.iter().map(|u| (u.order_id, u.status, u.filled_qty_fixed, u.remaining_qty_fixed, u.perm_id)).collect::<Vec<_>>(),
+            [(95, OrderStatus::ApiCancelled, 0, crate::types::QTY_SCALE, 0)]);
+        assert!(shared.orders.drain_order_errors().is_empty() && shared.orders.drain_order_notices().is_empty());
+
+        context.pending_orders.push(order(96));
+        assert!(drain_frames(&mut context, &shared, &mut conn, &mut server).is_empty(), "not asked again, nothing sent");
+        assert!(shared.orders.drain_order_errors().is_empty());
+        assert!(context.api_pending.contains_key(&96));
+
+        let (frames, shared, mut context, mut conn, mut server) = order_by_con_id("479624278", "PAXOS", order(97), &BTC);
+        assert_eq!(frames.len(), 1, "it waits: {frames:?}");
+        permission_reply(&mut context, &fix::field_view(&permission_answer("PAXOS/CRYPTO/NONE", "1")));
+        assert!(drain_frames(&mut context, &shared, &mut conn, &mut server).is_empty(), "nothing sent");
+        let errors = shared.orders.drain_order_errors();
+        assert_eq!(errors.iter().map(|e| (e.0, e.1)).collect::<Vec<_>>(), [(97, 321)], "{errors:?}");
+        assert!(context.api_pending.is_empty());
+    }
+
+    // ibx#666 (the reference 10.51, paper, regular hours 16/10/2026,
+    // `.tmp/666/wire_gw_types3.jsonl` and `wire_gw_types4.jsonl`): a fund
+    // order past its permission check starts the fund's top of book for the
+    // engine: sent with the question on its way, or refused with 460 once
+    // the answer is known. A fund order refused with 10203 before the check
+    // starts nothing.
+    #[test]
+    fn a_fund_order_past_its_permission_check_starts_the_fund_top_of_book() {
+        let cash = |id| OrderRequest::SubmitEx { order_id: id, instrument: 0, side: Side::Buy, qty: 0,
+            kind: crate::types::OrderKind::Market, tif: b'0', attrs: crate::types::OrderAttrs { cash_qty: px(100.0), ..Default::default() } };
+        let (frames, shared, context, ..) = order_by_con_id("48013549", "FUNDSERV",
+            OrderRequest::SubmitMarket { order_id: 98, instrument: 0, side: Side::Buy, qty: 1 }, &VFIAX);
+        assert!(frames.is_empty() && context.order_models.is_empty(), "nothing for an order refused before the check");
+        assert_eq!(shared.orders.drain_order_errors().iter().map(|e| e.1).collect::<Vec<_>>(), [10203]);
+
+        // Sent at once, the question on its way.
+        let (frames, _, context, ..) = order_by_con_id("48013549", "FUNDSERV", cash(99), &VFIAX);
+        assert_eq!(frames.iter().map(|f| tag(f, 35).unwrap_or("")).collect::<Vec<_>>(), ["U", "D"], "{frames:?}");
+        assert_eq!(context.order_models, [(0, 48013549, "FUNDSERV".to_string())]);
+
+        // Refused with 460 once the answer is known.
+        let (_, shared, mut context, mut conn, mut server) = order_by_con_id("48013549", "FUNDSERV", cash(100), &VFIAX);
+        context.order_models.clear();
+        permission_reply(&mut context, &fix::field_view(&permission_answer("FUNDSERV/FUND/NONE", "0")));
+        context.pending_orders.push(cash(101));
+        assert!(drain_frames(&mut context, &shared, &mut conn, &mut server).is_empty(), "nothing sent");
+        assert_eq!(shared.orders.drain_order_errors().iter().map(|e| (e.0, e.1)).collect::<Vec<_>>(), [(101, 460)]);
+        assert_eq!(context.order_models, [(0, 48013549, "FUNDSERV".to_string())]);
     }
 
     // ibx#542, paper 09/10/2026 (the reference and ibx on the same case):

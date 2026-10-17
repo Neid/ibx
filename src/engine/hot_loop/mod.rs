@@ -920,6 +920,11 @@ impl HotLoop {
     /// kept for the session; none for a contract whose model runs.
     fn start_order_models(&mut self, now: Instant) {
         for (instrument, con_id, exchange) in std::mem::take(&mut self.context.order_models) {
+            // A fund order asks the fund's top of book alone (ibx#666).
+            if self.context.market.order_routing(instrument).0 == "FUND" {
+                self.farm.order_quote_starts.push((instrument, con_id, exchange, now + optmd::OptMd::start_wait()));
+                continue;
+            }
             if self.farm.optmd.has_contract(con_id) || self.farm.optmd.has(instrument) {
                 continue;
             }
@@ -928,6 +933,50 @@ impl HotLoop {
                 instrument, con_id, snapshot: false, opt_farm: PRIMARY_MD,
                 deadline: now + optmd::OptMd::start_wait(), order: Some(exchange),
             });
+        }
+        if !self.farm.order_quote_starts.is_empty() {
+            self.start_order_quotes(now);
+        }
+    }
+
+    /// The top of book of the funds the orders named (ibx#666): one per
+    /// contract, kept for the session, on the farm of the fund's route on
+    /// the order's exchange. The fund's farm, when it is not connected yet,
+    /// connects with its notice at once, as for a client's request (the
+    /// reference 10.51, paper, 16/10/2026: "connecting:usbond" 2 ms after
+    /// the connect began, twice of two).
+    fn start_order_quotes(&mut self, now: Instant) {
+        for (instrument, con_id, exchange, deadline) in std::mem::take(&mut self.farm.order_quote_starts) {
+            if self.farm.has_order_quote(con_id) {
+                continue;
+            }
+            let sub = farm::MdSubscribe {
+                con_id, symbol: String::new(), exchange: exchange.clone(), sec_type: "FUND".into(),
+                last_trade_date: String::new(), strike: 0.0, right: String::new(), multiplier: String::new(),
+                instrument, mode_9887: 0, snapshot: false,
+            };
+            // A SMART route needs the contract's aggregate group.
+            if self.needs_agg_group(&sub) {
+                if now < deadline && self.ask_definition(con_id, "SMART") {
+                    self.farm.order_quote_starts.push((instrument, con_id, exchange, deadline));
+                } else {
+                    log::warn!("Order quote of con_id {}: no definition for its route", con_id);
+                }
+                continue;
+            }
+            let Some(id) = self.md_route(&sub) else {
+                log::warn!("Order quote of con_id {}: no route for it", con_id);
+                continue;
+            };
+            if let Some(f) = self.pool.get_mut(id) {
+                f.note_request(now);
+                f.note_client_request();
+            }
+            let wire_exchange = farm::routing_exchange(&exchange, "FUND").to_string();
+            if let Some(msg) = self.farm.order_quote(con_id, &wire_exchange, "FUND", id) {
+                log::info!("Order quote of con_id {}: asked on farm {} for an order on {}", con_id, id, exchange);
+                self.send_md_messages(vec![msg]);
+            }
         }
     }
 
@@ -1016,7 +1065,7 @@ impl HotLoop {
     /// The option models (ibx#502): the starts waiting, the messages made
     /// while reading the farms, the passes that are due.
     fn service_option_models(&mut self, now: Instant) {
-        if !self.context.order_models.is_empty() {
+        if !self.context.order_models.is_empty() || !self.farm.order_quote_starts.is_empty() {
             self.start_order_models(now);
         }
         if !self.farm.optmd.starting.is_empty() {
@@ -2992,8 +3041,11 @@ impl HotLoop {
         let others_up = usize::from(!self.farm.disconnected && self.farm_conn.is_some());
         let farm = &self.farm;
         // An option model's entries keep their farm up, as an order's
-        // model has no request of its own (ibx#693).
-        for id in self.pool.md_activity_check(now, others_up, |id| farm.uses_farm(id) || farm.depth_uses_farm(id) || farm.optmd.uses_farm(id)) {
+        // model has no request of its own (ibx#693); so do a fund order's
+        // top of book entries (ibx#666).
+        for id in self.pool.md_activity_check(now, others_up,
+            |id| farm.uses_farm(id) || farm.depth_uses_farm(id) || farm.optmd.uses_farm(id) || farm.order_quotes_use_farm(id))
+        {
             let event = self.pool.close_idle(id);
             self.pool_notice(&event);
         }

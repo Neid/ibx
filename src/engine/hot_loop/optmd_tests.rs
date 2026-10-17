@@ -776,3 +776,70 @@ fn an_option_order_connects_the_option_farm_with_its_notices() {
     // The model's entries keep the farm up.
     assert!(engine.farm.optmd.uses_farm(usopt));
 }
+
+// ibx#666 (the reference 10.51, paper, regular hours 16/10/2026,
+// `.tmp/666/wire_gw_types3.jsonl` and `wire_gw_types4.jsonl`, VFIAX bought
+// by cash on FUNDSERV): the first fund order of the session asks the fund's
+// bid and ask pair on the order's exchange for the engine, alone, on the
+// fund's farm: the entry marks, no API source; no option model. The farm's
+// connecting notice goes at once at the start of its connect and not again
+// while it connects (one notice, the farm's OK 1.2 s and 2.3 s later); its
+// OK at the logon. The pair is kept and keeps the farm up; a second order
+// of the fund asks nothing.
+#[test]
+fn a_fund_order_asks_the_fund_top_of_book_for_the_engine() {
+    use std::sync::atomic::AtomicBool;
+    const VFIAX: i64 = 48013549;
+    let shared = Arc::new(SharedState::new());
+    shared.reference.set_api_features(crate::control::logon::ApiFeatures::parse("ODDLOTBIDASK,PRCEXTRAPREC"));
+    let mut engine = HotLoop::new(shared.clone(), None, None);
+    engine.set_farm_name("usfarm".into());
+    let (client, mut farm_side) = crate::protocol::connection::mem_pair();
+    engine.farm_conn = Some(crate::protocol::connection::Connection::new_mem(client));
+    engine.set_routing_table(crate::engine::routing::TableKind::MarketData,
+        "BEST,STK,Top,1,*,cdc1.example,4000,usfarm;FUNDSERV,FUND,Top,-1,*,cdc1.example,4000,usbond");
+    let id = engine.context.market.register(VFIAX);
+    engine.context.market.set_routing(id, "FUND", "FUNDSERV");
+    let t0 = Instant::now();
+    engine.context.order_models.push((id, VFIAX, "FUNDSERV".into()));
+    engine.service_option_models(t0);
+    assert!(sent(&mut farm_side).is_empty(), "nothing on the main farm");
+    assert!(engine.farm.optmd.is_empty() && !engine.farm.optmd.has(id), "no option model");
+    let usbond = engine.pool.find("usbond").expect("the fund's farm opened on demand");
+    assert_eq!(engine.pool.get(usbond).unwrap().queued(), 1, "the pair waits for the logon");
+    assert_eq!(engine.pool.due_connects(Instant::now()), [usbond]);
+
+    let (tx, rx) = crossbeam_channel::bounded(1);
+    engine.pool.set_connecting(usbond, rx, Arc::new(AtomicBool::new(true)));
+    let connecting = |engine: &mut HotLoop, at: Instant| engine.pool.poll_connects(at).1.iter()
+        .filter(|e| matches!(e, pool::FarmEvent::Connecting(_))).count();
+    assert_eq!(connecting(&mut engine, t0), 1, "at the start of the connect");
+    assert_eq!(connecting(&mut engine, t0 + Duration::from_millis(600)), 0, "not again for the same pair");
+    assert_eq!(connecting(&mut engine, t0 + Duration::from_millis(1200)), 0);
+
+    let (client, mut bond_side) = crate::protocol::connection::mem_pair();
+    tx.send(Ok(crate::protocol::connection::Connection::new_mem(client))).unwrap();
+    let (done, _) = engine.pool.poll_connects(t0 + Duration::from_millis(1300));
+    let (farm, conn) = done.into_iter().next().unwrap();
+    let event = engine.pool.on_connected(farm, conn.unwrap(), Instant::now());
+    assert_eq!(pool::farm_notice(pool::FarmKind::MarketData, &event, "usbond"),
+        (2104, "Market data farm connection is OK:usbond".to_string()));
+    let flushed = sent(&mut bond_side);
+    assert_eq!(flushed.len(), 1, "{flushed:#?}");
+    assert!(flushed[0].ends_with(concat!("|263=1|146=2|262=1|6008=48013549|207=FUNDSERV|167=FUND|264=442|9839=1",
+        "|262=2|6008=48013549|207=FUNDSERV|167=FUND|264=443|9839=2")), "{}", flushed[0]);
+    assert!(engine.farm.order_quotes_use_farm(usbond), "kept, the farm stays up");
+
+    // Its acknowledgements on the fund's farm keep their tags.
+    engine.farm.rx_farm = usbond;
+    ack(&mut engine, 6510, 1);
+    ack(&mut engine, 6510, 2);
+    engine.farm.rx_farm = PRIMARY_MD;
+    assert!(engine.farm.order_quotes.iter().all(|e| e.tag == Some(6510)));
+
+    // A second order of the fund: nothing.
+    engine.context.order_models.push((id, VFIAX, "FUNDSERV".into()));
+    engine.service_option_models(Instant::now());
+    assert!(sent(&mut bond_side).is_empty() && sent(&mut farm_side).is_empty());
+    assert_eq!(engine.farm.order_quotes.len(), 2);
+}

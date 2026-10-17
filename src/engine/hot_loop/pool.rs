@@ -118,8 +118,8 @@ pub(crate) struct OnDemandFarm {
     next_check: Option<Instant>,
     /// A check waited for the socket connect.
     check_held: bool,
-    /// Subscriptions were queued since the previous check.
-    new_subs: bool,
+    /// Subscription messages queued since the previous check.
+    new_subs: u32,
     queue: VecDeque<Queued>,
     /// A connection is wanted: messages wait, or requests still use it.
     pub(crate) wanted: bool,
@@ -154,7 +154,7 @@ impl OnDemandFarm {
             notice_now: false,
             next_check: None,
             check_held: false,
-            new_subs: false,
+            new_subs: 0,
             queue: VecDeque::new(),
             wanted: false,
             retry_at: None,
@@ -216,18 +216,26 @@ impl OnDemandFarm {
         if self.next_check.is_none() {
             self.next_check = Some(now + CONNECTING_CHECK);
         }
-        self.new_subs = true;
+        self.new_subs += 1;
     }
 
     /// The connecting notice is due: at the start of a connect a client's
     /// request began, then at each check that finds new subscriptions
     /// queued; a check waits while the socket connect runs, and runs as
-    /// soon as it ended (ibx#684).
+    /// soon as it ended (ibx#684). The notice of the start stands for one
+    /// subscription message queued: a request with one message gives one
+    /// notice however long the connect takes (ibx#666; the reference 10.51,
+    /// observed in the recordings of 13-16/10/2026: 14 of 14 connects a
+    /// client's request or a fund order began with one message queued gave
+    /// one notice, logged on 0.68 to 2.28 s later; 2 of 2 with two messages
+    /// queued, a stock's pair and its generic tick, gave a second at the
+    /// check of 0.5 s).
     fn connecting_notice(&mut self, now: Instant) -> bool {
         if self.kind != FarmKind::MarketData || !self.connecting_phase || self.conn.is_some() {
             return false;
         }
         if std::mem::take(&mut self.notice_now) {
+            self.new_subs = self.new_subs.saturating_sub(1);
             return true;
         }
         let Some(at) = self.next_check else { return false };
@@ -240,7 +248,7 @@ impl OnDemandFarm {
         }
         let ran = if std::mem::take(&mut self.check_held) { now } else { at };
         self.next_check = Some(ran + CONNECTING_CHECK);
-        std::mem::take(&mut self.new_subs)
+        std::mem::take(&mut self.new_subs) > 0
     }
 
     /// The farm logged on: the connecting phase ends.
@@ -250,7 +258,7 @@ impl OnDemandFarm {
         self.notice_now = false;
         self.next_check = None;
         self.check_held = false;
-        self.new_subs = false;
+        self.new_subs = 0;
         self.socket_up = None;
     }
 }
@@ -761,6 +769,34 @@ mod tests {
         assert!(pool.get_mut(id).unwrap().send_comp(SUB));
         assert_eq!(notices(&mut pool, t0 + ms(3000)), 0);
         assert_eq!(notices(&mut pool, t0 + ms(3600)), 0);
+    }
+
+    // ibx#666, the reference 10.51 (observed in the recordings of
+    // 13-16/10/2026): the notice at the start stands for one message
+    // queued. A client's request of one message gives one notice however
+    // long the connect takes; of two messages (a pair and a generic tick),
+    // a second notice at the check.
+    #[test]
+    fn the_start_notice_stands_for_one_queued_subscription() {
+        let t0 = Instant::now();
+        let (mut pool, _id, _socket, _tx) = connecting_farm(t0, true);
+        assert_eq!(notices(&mut pool, t0), 1, "at once");
+        assert_eq!(notices(&mut pool, t0 + ms(500)), 0, "the same subscription");
+        assert_eq!(notices(&mut pool, t0 + ms(1000)), 0);
+        assert_eq!(notices(&mut pool, t0 + ms(2500)), 0);
+
+        let mut pool = FarmPool::new(t0);
+        let id = pool.ensure("eufarm", "h", FarmKind::MarketData, t0);
+        let f = pool.get_mut(id).unwrap();
+        f.note_client_request();
+        assert!(f.send_comp(SUB));
+        assert!(f.send_comp(SUB));
+        f.next_check = Some(t0 + CONNECTING_CHECK);
+        let (_tx, rx) = crossbeam_channel::bounded(1);
+        pool.set_connecting(id, rx, Arc::new(AtomicBool::new(true)));
+        assert_eq!(notices(&mut pool, t0), 1, "at once");
+        assert_eq!(notices(&mut pool, t0 + ms(500)), 1, "the second message");
+        assert_eq!(notices(&mut pool, t0 + ms(1000)), 0);
     }
 
     // A connection the engine started (an option model's): no notice at
