@@ -48,6 +48,9 @@ impl EClient {
                     trading_class: contract.trading_class.clone(), ..Default::default()
                 })).map_err(PyRuntimeError::new_err)?
         };
+        // Not known as a parent until the engine has its lookups' answers
+        // (ibx#718): noted before the engine can answer.
+        self.core.note_held_placed(&shared, oid);
         send_cmd(py, &tx, ControlCommand::HoldOrder {
             order_id: oid, instrument,
             qty: (order.total_quantity * crate::types::QTY_SCALE as f64).round() as crate::types::Qty,

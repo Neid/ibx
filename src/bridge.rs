@@ -1186,6 +1186,11 @@ pub struct OrderState {
     /// The flags the engine dropped from an order before sending it, as
     /// `DROPPED_*` bits: the order's openOrder shows them off (ibx#607).
     dropped_flags: Mutex<HashMap<i64, u8>>,
+    /// The orders held with transmit off whose placeOrder's lookups have
+    /// not all answered yet: the session does not know them as parents yet
+    /// (ibx#718). False until the engine took the order.
+    held_unknown: Mutex<HashMap<OrderId, bool>>,
+    held_unknown_changed: Condvar,
     error_tap: ErrorTap,
     pub(crate) what_if_responses: SeqQueue<WhatIfResponse>,
     completed_orders: Mutex<Vec<CompletedOrder>>,
@@ -1229,6 +1234,8 @@ impl OrderState {
             cancel_rejects: Mutex::new(Vec::with_capacity(16)),
             order_errors: SeqQueue::new(&stamp),
             dropped_flags: Mutex::new(HashMap::new()),
+            held_unknown: Mutex::new(HashMap::new()),
+            held_unknown_changed: Condvar::new(),
             error_tap: ErrorTap::default(),
             what_if_responses: SeqQueue::new(&stamp),
             completed_orders: Mutex::new(Vec::with_capacity(64)),
@@ -1380,6 +1387,43 @@ impl OrderState {
     /// The flags dropped from an order before sending (`DROPPED_*` bits).
     pub fn dropped_flags(&self, order_id: i64) -> u8 {
         self.dropped_flags.lock().unwrap().get(&order_id).copied().unwrap_or(0)
+    }
+
+    /// An order just held with transmit off: not known as a parent until
+    /// the lookups of its placeOrder answered (client side, ibx#718).
+    #[doc(hidden)] pub fn mark_held_unknown(&self, order_id: OrderId) {
+        self.held_unknown.lock().unwrap().insert(order_id, false);
+    }
+
+    /// The engine took a held order whose lookups have not all answered
+    /// (engine side, ibx#718).
+    #[doc(hidden)] pub fn held_waiting(&self, order_id: OrderId) {
+        if let Some(taken) = self.held_unknown.lock().unwrap().get_mut(&order_id)
+            && !*taken
+        {
+            *taken = true;
+            self.held_unknown_changed.notify_all();
+        }
+    }
+
+    /// The lookups of a held order's placeOrder answered, or the order left
+    /// the held ones: it is known (engine side, ibx#718).
+    #[doc(hidden)] pub fn held_known(&self, order_id: OrderId) {
+        if self.held_unknown.lock().unwrap().remove(&order_id).is_some() {
+            self.held_unknown_changed.notify_all();
+        }
+    }
+
+    /// Whether a held order still waits for the lookups of its placeOrder
+    /// (ibx#718). An order the engine has not taken yet is waited for (at
+    /// most a second), so that a later request reads what the engine
+    /// decided for it.
+    pub fn is_held_unknown(&self, order_id: OrderId) -> bool {
+        let held = self.held_unknown.lock().unwrap();
+        let (held, _) = self.held_unknown_changed
+            .wait_timeout_while(held, std::time::Duration::from_secs(1), |h| h.get(&order_id) == Some(&false))
+            .unwrap();
+        held.contains_key(&order_id)
     }
 
     /// Order errors raised before anything was sent: (order id, code, message).

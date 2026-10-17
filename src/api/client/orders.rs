@@ -85,6 +85,9 @@ impl EClient {
                 },
             )?
         };
+        // Not known as a parent until the engine has its lookups' answers
+        // (ibx#718): noted before the engine can answer.
+        self.core.note_held_placed(&self.shared, oid);
         self.send(ControlCommand::HoldOrder {
             order_id: oid, instrument,
             qty: (order.total_quantity * crate::types::QTY_SCALE as f64).round() as crate::types::Qty,

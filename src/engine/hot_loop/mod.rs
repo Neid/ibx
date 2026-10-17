@@ -2322,6 +2322,11 @@ impl HotLoop {
                 }
                 ControlCommand::HoldOrder { order_id, instrument, qty, parent_id, oca_group } => {
                     order_builder::hold_order(&mut self.ccp_conn, &mut self.context, &mut self.hb, order_id, instrument, qty, parent_id, &oca_group);
+                    // What it waits for is decided now: the client reads it
+                    // at a later order under it (ibx#718).
+                    if let Some(conn) = self.ccp_conn.as_mut() {
+                        order_builder::advance_held_lookups(&mut self.context, conn, &mut self.hb, &self.shared);
+                    }
                 }
                 ControlCommand::RegisterInstrument { con_id, symbol, sec_type, exchange, reply_tx } => {
                     self.register_or_reject(con_id, symbol, &sec_type, &exchange, &reply_tx);

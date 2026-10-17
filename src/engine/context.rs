@@ -261,6 +261,10 @@ pub struct Context {
     pub(crate) order_record_lookups: Vec<(String, i64, String)>,
     /// Orders whose record lookup was answered: they go on.
     pub(crate) order_records_cleared: std::collections::HashSet<crate::types::OrderId>,
+    /// The orders held with transmit off whose placeOrder's lookups have
+    /// not all answered (ibx#718), with whether the record lookup was sent
+    /// for them.
+    pub(crate) held_lookups: Vec<(crate::types::OrderId, bool)>,
     /// The clearing rule lookups to send, and those on their way, and how
     /// many the session made (ibx#709).
     pub(crate) order_clearing_to_send: Vec<(i64, String)>,
@@ -461,6 +465,7 @@ impl Context {
             order_records_any: std::collections::HashSet::new(),
             order_record_lookups: Vec::new(),
             order_records_cleared: std::collections::HashSet::new(),
+            held_lookups: Vec::new(),
             order_clearing_to_send: Vec::new(),
             order_clearing_lookups: Vec::new(),
             next_clearing_rule: 0,

@@ -651,6 +651,7 @@ fn selling_beta_hedge_without_a_max_size() {
         action: "SELL".into(), parent_id: 6, hedge_type: "B".into(), hedge_param: "1".into(), lmt_price: f64::MAX,
         total_quantity: 0.0, ..order("MKT")
     };
+    engine.wait_held_known(6);
     engine.client.place_order(REFUSED, &aapl(), &hedge).unwrap();
     assert_refused(&mut engine, REFUSED, "10364-1");
     assert!(engine.orders(0).iter().all(|f| field(f, 6121) != Some("6")), "the parent stays held");
@@ -713,6 +714,8 @@ fn hedge(parent_id: i64, kind: &str, param: &str) -> Order {
 fn hedge_refused(rule: &str, contract: &Contract, child: &Order, seen: Option<&str>) {
     let mut engine = Engine::start();
     engine.client.place_order(6, &aapl(), &Order { transmit: false, ..order("LMT") }).unwrap();
+    // The hedge's own rules: its parent is known first (ibx#718).
+    engine.wait_held_known(6);
     engine.client.place_order(REFUSED, contract, child).unwrap();
     assert_refused_text(&mut engine, REFUSED, rule, seen);
     assert!(engine.orders(0).iter().all(|f| field(f, 6121) != Some("6")), "the parent stays held");

@@ -44,6 +44,16 @@ pub struct Engine {
 }
 
 impl Engine {
+    /// Wait until a held order is known as a parent: the lookups of its
+    /// placeOrder answered (ibx#718). A hedge placed before is refused as
+    /// under no parent, as the reference does.
+    pub fn wait_held_known(&self, order_id: i64) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while self.shared.orders.is_held_unknown(order_id.into()) && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+    }
+
     /// The engine with a signed auth link to a scripted server, and an API
     /// client of id 39 on it.
     pub fn start() -> Self {

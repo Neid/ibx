@@ -30,6 +30,10 @@ pub(crate) fn drain_and_send_orders(
         Some(c) => c,
         None => return,
     };
+    // The lookups of the orders held with transmit off (ibx#718).
+    if !context.held_lookups.is_empty() {
+        advance_held_lookups(context, conn, hb, shared);
+    }
     // Several orders of one pass (a bracket, the orders one placeOrder
     // transmits) leave in one write, as the reference writes them
     // (ibx#548).
@@ -3669,6 +3673,94 @@ pub(crate) fn hold_order(
     if context.market.con_id(instrument) == Some(0) && let Some(conn) = conn.as_mut() {
         look_up_order_contract(context, conn, hb, instrument);
     }
+    // Its other lookups follow its contract's answer (ibx#718).
+    if !context.held_lookups.iter().any(|h| h.0 == order_id) {
+        context.held_lookups.push((order_id, false));
+    }
+}
+
+/// Where the lookups of a held order's placeOrder are (ibx#718).
+enum HeldLookup {
+    Wait,
+    Asked,
+    Known,
+}
+
+/// The lookups the reference makes at the placeOrder of an order held with
+/// transmit off, and the moment the order is known as a parent (ibx#718;
+/// the reference 10.51, paper, 16/10/2026, pre-market and regular hours,
+/// the first held AAPL order of the session, three runs): its contract by
+/// symbol; once answered, the trading hours and the order preset of its
+/// type when the session has none; once both answered, its record on the
+/// primary exchange (the lookup of ibx#706); the order is known once that
+/// answered, about 0.57 s after the placeOrder. A later held order of a
+/// contract whose records the session has asks only its contract (eleven
+/// runs). Until then a hedge order under it is refused (see the client's
+/// hedge reading). A held order the client did not note as unknown (placed
+/// again while held) has nothing to wait for.
+pub(crate) fn advance_held_lookups(context: &mut Context, conn: &mut Connection, hb: &mut HeartbeatState, shared: &Arc<SharedState>) {
+    let mut i = 0;
+    while i < context.held_lookups.len() {
+        let (order_id, asked) = context.held_lookups[i];
+        match held_lookup_step(context, conn, hb, shared, order_id, asked) {
+            HeldLookup::Wait => {
+                shared.orders.held_waiting(order_id);
+                i += 1;
+            }
+            HeldLookup::Asked => {
+                shared.orders.held_waiting(order_id);
+                // The other held orders of that contract wait for the same
+                // answer.
+                let con_id = context.unsent.get(&order_id).and_then(|h| context.market.con_id(h.0));
+                for j in 0..context.held_lookups.len() {
+                    let other = context.held_lookups[j].0;
+                    if context.unsent.get(&other).and_then(|h| context.market.con_id(h.0)) == con_id {
+                        context.held_lookups[j].1 = true;
+                    }
+                }
+                i += 1;
+            }
+            HeldLookup::Known => {
+                context.held_lookups.remove(i);
+                shared.orders.held_known(order_id);
+            }
+        }
+    }
+}
+
+fn held_lookup_step(
+    context: &mut Context, conn: &mut Connection, hb: &mut HeartbeatState, shared: &Arc<SharedState>,
+    order_id: OrderId, asked: bool,
+) -> HeldLookup {
+    if !shared.orders.is_held_unknown(order_id) {
+        return HeldLookup::Known;
+    }
+    // Transmitted or cancelled meanwhile: no longer held.
+    let Some(&(slot, ..)) = context.unsent.get(&order_id) else { return HeldLookup::Known };
+    let con_id = match context.market.con_id(slot) {
+        // Its contract's lookup on its way; a lookup refused or with no
+        // single contract leaves the order held as before (not observed).
+        Some(0) if context.order_lookups.iter().any(|(_, s)| *s == slot) => return HeldLookup::Wait,
+        Some(c) if c > 0 => c,
+        _ => return HeldLookup::Known,
+    };
+    if context.order_record_lookups.iter().any(|(_, c, _)| *c == con_id) {
+        return HeldLookup::Wait;
+    }
+    if asked {
+        return HeldLookup::Known;
+    }
+    let Some(exchange) = missing_order_record(context, shared, slot, con_id) else { return HeldLookup::Known };
+    // The trading hours and the preset first, as the reference: its
+    // record lookup left 27 to 41 ms after the preset's answer.
+    if context.zone_pending.contains(&con_id) && !shared.reference.form_10_40() {
+        return HeldLookup::Wait;
+    }
+    if !ask_order_preset(context, conn, hb, "STK") {
+        return HeldLookup::Wait;
+    }
+    ask_order_record(context, conn, hb, con_id, &exchange);
+    HeldLookup::Asked
 }
 
 /// Request numbers of the contract lookups of orders (ibx#486): a range
@@ -9477,6 +9569,106 @@ mod tests {
         assert!(context.order_clearing_to_send.is_empty(), "the answer named the exchange asked");
         let frames = drain_frames(&mut context, &shared, &mut conn, &mut server);
         assert!(frames.iter().all(|f| !tag(f, 320).is_some_and(|n| n.starts_with(crate::control::contracts::SECDEF_ORDER_TYPES_NAME))), "{frames:?}");
+    }
+
+    // ibx#718 (the reference 10.51, paper, 16/10/2026, pre-market and
+    // regular hours): a parent held with transmit off as the first order of
+    // its contract in the session is known once the lookups of its
+    // placeOrder answered (its contract, then the trading hours and the
+    // order preset, then its record on the primary exchange). A beta hedge
+    // placed before (0.5 s after the parent on paper) is refused with 320 as
+    // under no parent, nothing sent, the parent held; placed after (3.5 s),
+    // it goes with its parent. A held parent of a contract whose records the
+    // session has is known at once.
+    #[test]
+    fn a_held_parent_is_known_once_the_lookups_of_its_placing_answered() {
+        use crate::api::types::{Contract as ApiContract, Order as ApiOrder};
+        let (client, mut server) = crate::protocol::connection::mem_pair();
+        let mut conn = Some(Connection::new_mem(client));
+        let shared = Arc::new(SharedState::new());
+        shared.reference.cache_contract(265598, ApiContract {
+            con_id: 265598, symbol: "AAPL".into(), primary_exchange: "NASDAQ".into(), ..Default::default()
+        });
+        let mut context = Context::new();
+        context.market.register(265598);
+        context.set_symbol(0, "AAPL".to_string());
+        context.market.set_routing(0, "STK", "SMART");
+        // The contract's lookup answered on BEST, its trading hours known.
+        context.order_records.insert((265598, "BEST".to_string()));
+        let core = crate::client_core::ClientCore::new();
+        let aapl = ApiContract {
+            con_id: 265598, symbol: "AAPL".into(), sec_type: "STK".into(), exchange: "SMART".into(), currency: "USD".into(),
+            ..Default::default()
+        };
+        let parent = ApiOrder {
+            action: "BUY".into(), order_type: "LMT".into(), lmt_price: 400.0, total_quantity: 10.0, tif: "DAY".into(),
+            transmit: false, ..Default::default()
+        };
+        let hedge = |parent_id: i64| ApiOrder {
+            action: "SELL".into(), order_type: "MKT".into(), total_quantity: 0.0, lmt_price: f64::MAX, tif: "DAY".into(),
+            parent_id, hedge_type: "B".into(), hedge_param: "1".into(), hedge_max_size: 100, transmit: true,
+            ..Default::default()
+        };
+        let hold = |context: &mut Context, conn: &mut Option<Connection>, id: OrderId| {
+            core.note_held_placed(&shared, id);
+            hold_order(conn, context, &mut HeartbeatState::new(), id, 0, 10 * crate::types::QTY_SCALE, 0, "");
+            core.hold_order(id, aapl.clone(), parent.clone(), 0);
+        };
+        let reading = |id: OrderId, parent_id: i64| core.order_read_checks(
+            id, 265598, "STK", "SMART", &hedge(parent_id), &shared, "DU1", false).1;
+        let transmitted = |id: OrderId, parent_id: i64| core.orders_to_transmit_checked(id, &aapl, &hedge(parent_id), &shared, "DU1")
+            .iter().map(|o| o.0).collect::<Vec<_>>();
+        let record = |frames: &[Vec<(u32, String)>]| frames.iter()
+            .find(|f| tag(f, 320).is_some_and(|n| n.starts_with(crate::control::contracts::SECDEF_ORDER_TYPES_NAME)))
+            .map(|f| (tag(f, 320).unwrap().to_string(), tag(f, 6004).unwrap_or("").to_string()));
+
+        // The first held order of the contract: the preset asked, not yet
+        // the record; a hedge now is refused, its parent held.
+        hold(&mut context, &mut conn, 10);
+        let frames = drain_frames(&mut context, &shared, &mut conn, &mut server);
+        assert!(frames.iter().any(|f| tag(f, 6040) == Some("193") && tag(f, 8168) == Some("s=STK")), "the preset: {frames:?}");
+        assert_eq!(record(&frames), None, "the record waits for the preset: {frames:?}");
+        let missing = Some((320, "Error reading request. Missing parent order: server: 0 order: 11 parent: 10 hedge:[B]".to_string()));
+        assert_eq!(reading(11, 10), missing);
+        assert_eq!(transmitted(11, 10), [11], "the hedge alone, refused");
+        assert!(context.unsent.contains_key(&10) && shared.orders.is_held_unknown(10));
+
+        // The preset answered: the record on the primary exchange asked;
+        // still not known.
+        let reply: std::collections::HashMap<u32, String> =
+            [(8166, "G"), (8168, "s=STK"), (8169, "v=1"), (4026, "GTC")].into_iter().map(|(t, v)| (t, v.to_string())).collect();
+        preset_reply(&mut context, &fix::field_view(&reply));
+        let frames = drain_frames(&mut context, &shared, &mut conn, &mut server);
+        let (name, on) = record(&frames).expect("the record asked");
+        assert_eq!(on, "NASDAQ");
+        assert_eq!(reading(11, 10), missing);
+
+        // Its answer: the parent is known, the hedge goes with it.
+        let answer = fix::fix_build(&[(35, "d"), (320, &name), (6008, "265598"), (55, "AAPL"), (167, "STK"), (207, "NASDAQ")], 1);
+        assert!(order_record_reply(&mut context, &name, &answer));
+        let frames = drain_frames(&mut context, &shared, &mut conn, &mut server);
+        assert!(frames.is_empty(), "{frames:?}");
+        assert!(!shared.orders.is_held_unknown(10) && context.held_lookups.is_empty());
+        assert_eq!(reading(11, 10), None);
+        assert_eq!(transmitted(11, 10), [10, 11]);
+
+        // A held order of a contract whose records the session has: known
+        // at once, nothing asked.
+        hold(&mut context, &mut conn, 20);
+        let frames = drain_frames(&mut context, &shared, &mut conn, &mut server);
+        assert!(frames.is_empty(), "{frames:?}");
+        assert!(!shared.orders.is_held_unknown(20));
+        assert_eq!(reading(21, 20), None);
+        assert_eq!(transmitted(21, 20), [20, 21]);
+
+        // Cancelled while it waits: no longer waited for.
+        context.order_records.clear();
+        hold(&mut context, &mut conn, 30);
+        drain_frames(&mut context, &shared, &mut conn, &mut server);
+        assert!(shared.orders.is_held_unknown(30));
+        context.unsent.remove(&30);
+        drain_frames(&mut context, &shared, &mut conn, &mut server);
+        assert!(!shared.orders.is_held_unknown(30) && context.held_lookups.is_empty());
     }
 
     /// A session that allows price management, with the paper exclusion

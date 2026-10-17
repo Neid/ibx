@@ -1585,6 +1585,11 @@ pub struct ClientCore {
     pub deferred_refusals: Mutex<HashMap<OrderId, Vec<i64>>>,
     // Ids of tracked orders that were filled or cancelled: never sent again (ibx#463).
     pub finished_orders: Mutex<HashSet<OrderId>>,
+    /// Hedges refused because their held parent was not known yet, with
+    /// when: a placeOrder reads its order twice (the orders to transmit,
+    /// then the order's checks), and the second reading keeps the first's
+    /// answer even if the parent became known in between (ibx#718).
+    unknown_parent_refused: Mutex<HashMap<OrderId, std::time::Instant>>,
     /// Ids of tracked orders placed again under the same id (a modify):
     /// their openOrder shows no derived trail stop price (ibx#521).
     pub modified_orders: Mutex<HashSet<OrderId>>,
@@ -2146,6 +2151,7 @@ impl ClientCore {
             what_if_orders: Mutex::new(HashMap::new()),
             deferred_refusals: Mutex::new(HashMap::new()),
             finished_orders: Mutex::new(HashSet::new()),
+            unknown_parent_refused: Mutex::new(HashMap::new()),
             modified_orders: Mutex::new(HashSet::new()),
             silent_executions: Mutex::new(HashSet::new()),
             observed_fills: Mutex::new(HashSet::new()),
@@ -6332,7 +6338,14 @@ impl ClientCore {
     /// option, or with a parameter; a beta hedge of a parent or on a
     /// contract that is no stock, or whose beta is no number; a pair hedge
     /// without a ratio, or a ratio of 0.
-    fn hedge_read_refusal(&self, order_id: OrderId, sec_type: &str, order: &ApiOrder) -> Option<(i64, String)> {
+    ///
+    /// A parent held with transmit off is not known before the lookups of
+    /// its placeOrder answered: a hedge under it until then is refused as
+    /// under no parent, and the parent stays held (ibx#718; the reference
+    /// 10.51, paper, 16/10/2026, pre-market and regular hours: a beta hedge
+    /// 0.5 s after the first held order of its contract in the session,
+    /// refused; 3.5 s after, accepted).
+    fn hedge_read_refusal(&self, order_id: OrderId, sec_type: &str, order: &ApiOrder, shared: &SharedState) -> Option<(i64, String)> {
         if order.hedge_type.is_empty() {
             return None;
         }
@@ -6340,7 +6353,17 @@ impl ClientCore {
         let Some(hedge) = order.hedge() else {
             return read("Invalid hedge type. Valid values are D, B, F, or P.".into());
         };
-        let parent = self.hedge_parent(OrderId::from(order.parent_id));
+        let parent_id = OrderId::from(order.parent_id);
+        // Refused for an unknown parent by the first reading of this
+        // placeOrder: the same answer now.
+        let sticky = self.unknown_parent_refused.lock().unwrap().remove(&order_id)
+            .is_some_and(|at| at.elapsed() < std::time::Duration::from_millis(100));
+        let unknown_now = !sticky && shared.orders.is_held_unknown(parent_id);
+        let unknown = sticky || unknown_now;
+        if unknown_now && self.hedge_parent(parent_id).is_some() {
+            self.unknown_parent_refused.lock().unwrap().insert(order_id, std::time::Instant::now());
+        }
+        let parent = self.hedge_parent(parent_id).filter(|_| !unknown);
         let Some((parent_contract, _)) = parent else {
             // A parent that filled or was cancelled is still known: a
             // modify of its filled hedge gets 104 further on (ibx#614; the
@@ -6736,6 +6759,16 @@ impl ClientCore {
         })
     }
 
+    /// Before an order placed with transmit off goes to the engine: a new
+    /// held order is not known as a parent until the engine has the
+    /// answers of its placeOrder's lookups (ibx#718). Placed again while
+    /// held, it keeps its state.
+    pub fn note_held_placed(&self, shared: &SharedState, order_id: OrderId) {
+        if !self.held_orders.lock().unwrap().iter().any(|h| h.0 == order_id) {
+            shared.orders.mark_held_unknown(order_id);
+        }
+    }
+
     /// Keep an order placed with transmit off (ibx#509). The reference
     /// (the bracket recordings of 26/09/2026; paper run of 09/10/2026)
     /// sends nothing for it, answers nothing and lists it in no open-order
@@ -6781,7 +6814,7 @@ impl ClientCore {
         let no_single = shared.reference.logon_features().split(',').any(|f| f == ATTACHED_NOT_IN_ONE_REQUEST_FEATURE);
         Self::attached_orders_read_refusal(order, no_single)
             .or_else(|| Self::volatility_type_refusal(order))
-            .or_else(|| self.hedge_read_refusal(order_id, sec_type, order))
+            .or_else(|| self.hedge_read_refusal(order_id, sec_type, order, shared))
             .or_else(|| Self::refusal_before_sending_for(order, exchange, account_pending, shared.reference.form_10_40()))
             .or_else(|| Self::account_config_refusal(order, shared.reference.account_features().as_deref(), account))
             .or_else(|| Self::open_flags_refusal(order, exchange))
@@ -8372,6 +8405,26 @@ mod tests {
     // ibx#614 (the reference 10.51, paper, 16/10/2026): the reading of a
     // hedge order, the checks once its contract is known, the quantity and
     // max size it is sent with, and the parent kept held when it is refused.
+    // ibx#718: a placeOrder reads its order twice; the second reading
+    // keeps the first's refusal for an unknown parent, even if the parent
+    // became known in between, then the next placeOrder reads afresh.
+    #[test]
+    fn a_hedge_refused_for_an_unknown_parent_stays_refused_within_its_placeorder() {
+        let core = ClientCore::new();
+        let shared = SharedState::new();
+        let parent = ApiOrder { transmit: false, ..ApiOrder::default() };
+        core.held_orders.lock().unwrap().push((OrderId::from(6), ApiContract { sec_type: "STK".into(), ..Default::default() }, parent));
+        // Held, taken by the engine, its lookups not answered yet.
+        shared.orders.mark_held_unknown(OrderId::from(6));
+        shared.orders.held_waiting(OrderId::from(6));
+        let hedge = ApiOrder { parent_id: 6, hedge_type: "B".into(), hedge_param: "1".into(), ..ApiOrder::default() };
+        let first = core.hedge_read_refusal(OrderId::from(7), "STK", &hedge, &shared);
+        assert_eq!(first.as_ref().map(|r| r.0), Some(320), "{first:?}");
+        shared.orders.held_known(OrderId::from(6));
+        assert_eq!(core.hedge_read_refusal(OrderId::from(7), "STK", &hedge, &shared), first, "the same placeOrder");
+        assert_eq!(core.hedge_read_refusal(OrderId::from(7), "STK", &hedge, &shared), None, "a new placeOrder");
+    }
+
     #[test]
     fn hedge_orders_read_checked_and_sent() {
         let core = ClientCore::new();
@@ -8383,7 +8436,7 @@ mod tests {
             action: "SELL".into(), order_type: "MKT".into(), total_quantity: 0.0, lmt_price: f64::MAX,
             parent_id: 10, hedge_type: kind.into(), hedge_param: param.into(), ..Default::default()
         };
-        let read = |o: &ApiOrder| core.hedge_read_refusal(11, "STK", o).map(|r| r.1);
+        let read = |o: &ApiOrder| core.hedge_read_refusal(11, "STK", o, &shared).map(|r| r.1);
         let text = |t: &str| Some(format!("Error reading request. {t}"));
         assert_eq!(read(&hedge("b", "1")), text("Invalid hedge type. Valid values are D, B, F, or P."), "case H");
         assert_eq!(read(&hedge("D", "")).unwrap()[..55], text("Invalid delta hedge order. The parent order has to be option order").unwrap()[..55], "case J");
@@ -8391,7 +8444,7 @@ mod tests {
         assert_eq!(read(&hedge("B", "abc")), text("Invalid beta value."), "case M");
         assert_eq!(read(&ApiOrder { parent_id: 60, ..hedge("B", "1") }),
             text("Missing parent order: server: 0 order: 11 parent: 60 hedge:[B]"), "case N");
-        assert_eq!(core.hedge_read_refusal(11, "OPT", &hedge("B", "1")),
+        assert_eq!(core.hedge_read_refusal(11, "OPT", &hedge("B", "1"), &shared),
             Some((320, "Error reading request. Invalid beta hedge order. Both parent and hedge can only be Stock orders.".into())));
         for ok in [hedge("B", "1"), hedge("B", "0.5"), hedge("S", ""), hedge("P", "2"), hedge("F", "")] {
             assert_eq!(read(&ok), None, "{ok:?}");
