@@ -603,7 +603,7 @@ impl EClient {
             let attrib_last = TickAttribLast { past_limit: trade.past_limit, unreported: trade.unreported };
             wrapper.tick_by_tick_all_last(
                 trade.req_id, trade.tbt_type.api_tick_type(), trade.timestamp as i64,
-                trade.price as f64 / PRICE_SCALE_F, trade.size as f64,
+                trade.price as f64 / PRICE_SCALE_F, trade.size,
                 &attrib_last, &trade.exchange, &trade.conditions,
             );
         }

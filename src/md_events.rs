@@ -618,9 +618,89 @@ impl TestMessage<'_> {
     }
 }
 
+/// Powers of ten an [`Increment`] divides by.
+const POW10: [f64; 16] = [
+    1e0, 1e1, 1e2, 1e3, 1e4, 1e5, 1e6, 1e7, 1e8, 1e9, 1e10, 1e11, 1e12, 1e13, 1e14, 1e15,
+];
+
+/// A price or size increment of a contract's definition (ibx#613): a whole
+/// number of units of ten to the minus `decimals`, so that a value rounded
+/// to it is the nearest double of a decimal with those decimals (0.1 and
+/// not 0.30000000000000004). Packed in one word for the engine to hand to
+/// the API client per instrument, 0 being none.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Increment {
+    units: u64,
+    decimals: u8,
+}
+
+impl Increment {
+    /// The increment of a step such as 0.01 or 0.0001: None when it is not
+    /// above 0, not finite, or not a decimal of at most 15 places.
+    pub fn from_step(step: f64) -> Option<Self> {
+        if !step.is_finite() || step <= 0.0 {
+            return None;
+        }
+        for (decimals, p) in POW10.iter().enumerate() {
+            let x = step * p;
+            let r = x.round();
+            if r >= 1.0 && r < (1u64 << 55) as f64 && (x - r).abs() <= 1e-9 * r {
+                return Some(Self { units: r as u64, decimals: decimals as u8 });
+            }
+        }
+        None
+    }
+
+    /// One word: the units, then the decimals in the low byte; never 0.
+    pub fn pack(self) -> u64 {
+        self.units << 8 | self.decimals as u64
+    }
+
+    /// The increment of a packed word; None for 0.
+    #[inline(always)]
+    pub fn unpack(word: u64) -> Option<Self> {
+        let decimals = (word & 0xff) as usize;
+        (word >> 8 != 0 && decimals < POW10.len()).then_some(Self { units: word >> 8, decimals: decimals as u8 })
+    }
+
+    /// A value in the steps of the increment, the nearest step, with the
+    /// increment's decimals. An unset value (`f64::MAX`) or one that is
+    /// not finite stays as it is. No allocation, a few float operations.
+    #[inline(always)]
+    pub fn round(self, value: f64) -> f64 {
+        if !value.is_finite() || value == f64::MAX {
+            return value;
+        }
+        let (p, units) = (POW10[self.decimals as usize], self.units as f64);
+        (value * p / units).round() * units / p
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ibx#613: an increment rounds to its steps with its decimals.
+    #[test]
+    fn an_increment_rounds_to_its_steps_with_its_decimals() {
+        let cent = Increment::from_step(0.01).unwrap();
+        assert_eq!(Increment::unpack(cent.pack()), Some(cent));
+        assert_eq!(Increment::unpack(0), None);
+        assert_eq!(cent.round(150.256), 150.26);
+        assert_eq!(cent.round(0.1 + 0.2), 0.3);
+        let lot = Increment::from_step(0.0001).unwrap();
+        assert_eq!(lot.round(0.40000000000000002), 0.4);
+        assert_eq!(lot.round(12.34567), 12.3457);
+        let five = Increment::from_step(0.05).unwrap();
+        assert_eq!(five.round(1.12), 1.1);
+        assert_eq!(five.round(1.13), 1.15);
+        let hundred = Increment::from_step(100.0).unwrap();
+        assert_eq!(hundred.round(260.0), 300.0);
+        assert_eq!(cent.round(f64::MAX), f64::MAX);
+        assert_eq!(Increment::from_step(0.0), None);
+        assert_eq!(Increment::from_step(f64::MAX), None);
+        assert_eq!(Increment::from_step(-1.0), None);
+    }
 
     fn ev(id: InstrumentId, n: i64) -> MdEvent {
         MdEvent::new(id, MdStep::Quote).with(field::BID, n)

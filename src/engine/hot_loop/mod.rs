@@ -684,6 +684,7 @@ impl HotLoop {
         if let Some(f) = self.pool.get_mut(id) {
             f.note_request(Instant::now());
         }
+        farm::publish_increments(&self.context, &self.shared, sub.instrument, sub.con_id);
         // A contract asked before in the session: its request parameters
         // are known now, before any acknowledgement; the client gives them
         // now to the requests the reference gives them to (ibx#535).
@@ -6933,7 +6934,7 @@ mod tbt_tests {
         assert_eq!(trades.len(), 2);
         assert_eq!((trades[0].instrument, trades[0].req_id, trades[0].tbt_type), (mnq, trades_req, crate::types::TbtType::AllLast));
         assert_eq!(trades[0].price, 25_000 * PRICE_SCALE);
-        assert_eq!(trades[0].size, 3);
+        assert_eq!(trades[0].size, 3.0);
         assert_eq!(trades[0].exchange, "CME");
         assert_eq!(trades[1].price, 25_000 * PRICE_SCALE - PRICE_SCALE / 4);
         let quotes = shared.market.drain_tbt_quotes();
@@ -6948,6 +6949,30 @@ mod tbt_tests {
         engine.inject_hmds_message(&tbt_frame(&[vlq(1), vlq(1), vlq(1), vlq(1), vlq(0), vlq(1), vlq(1)].concat()));
         engine.hmds.rx_farm = pool::PRIMARY_HMDS;
         assert!(shared.market.drain_tbt_quotes().is_empty());
+    }
+
+    // ibx#613 (the 10.51 rules, not observed yet: no fractional trade on the
+    // paper account): a trade of 0.4 and of 1.6 in steps of 0.0001 is given
+    // as a whole number at the session's level, below 222; from 222 its
+    // fraction is kept (`hmds::trade_size_at`).
+    #[test]
+    fn a_fractional_trade_is_whole_at_the_session_level() {
+        let shared = Arc::new(SharedState::new());
+        let mut engine = HotLoop::new(shared.clone(), None, None);
+        let (conn, _side) = loopback();
+        engine.hmds_conn = Some(conn);
+        let (tx, rx) = crossbeam_channel::bounded(8);
+        let tx = crate::engine::park::ControlSender::from(tx);
+        engine.set_control_rx(rx);
+        subscribe(&mut engine, &tx, 815824267, "MNQ", "CME", "FUT", crate::types::TbtType::AllLast);
+        engine.inject_hmds_message(&ack("rtTicker1;;MNQ@CMEAllLast;;1;;true;;0;;U", 1, "0.25", "0.0001"));
+        let e = [trade_entry(1, 1_790_000_000, 100_000, 0, 4_000, "CME"), trade_entry(1, 1_790_000_001, 0, 0, 16_000, "CME")].concat();
+        engine.inject_hmds_message(&tbt_frame(&e));
+        let sizes: Vec<f64> = shared.market.drain_tbt_trades().iter().map(|t| t.size).collect();
+        assert!(crate::client_core::SERVER_VERSION < crate::client_core::LEVEL_FRACTIONAL_LAST_SIZE);
+        assert_eq!(sizes, [0.0, 2.0]);
+        assert_eq!(hmds::trade_size_at(222, 4_000, Some(0.0001)), 0.4);
+        assert_eq!(hmds::trade_size_at(222, 16_000, Some(0.0001)), 1.6);
     }
 
     // ibx#404 (captured 18/06/2026, seq 11453, ALAB AllLast, minTick 0.01,
@@ -6986,7 +7011,7 @@ mod tbt_tests {
         let trades = shared.market.drain_tbt_trades();
         assert_eq!(trades.len(), 2, "{trades:?}");
         assert_eq!((trades[0].req_id, trades[0].price, trades[0].past_limit, trades[0].unreported), (last, 619 * PRICE_SCALE, true, false));
-        assert_eq!((trades[1].price, trades[1].size, trades[1].timestamp), (619 * PRICE_SCALE, 26, 1_781_783_174));
+        assert_eq!((trades[1].price, trades[1].size, trades[1].timestamp), (619 * PRICE_SCALE, 26.0, 1_781_783_174));
         assert_eq!((trades[1].exchange.as_str(), trades[1].conditions.as_str()), ("FINRA", "TI"));
         assert_eq!((trades[1].past_limit, trades[1].unreported), (false, true));
         let q = shared.market.drain_tbt_quotes();

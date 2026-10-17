@@ -416,7 +416,7 @@ impl EClient {
     /// Push a TBT trade into SharedState.
     #[doc(hidden)]
     fn _test_push_tbt_trade(
-        &self, instrument: u32, price: f64, size: i64, exchange: &str,
+        &self, instrument: u32, price: f64, size: f64, exchange: &str,
     ) -> PyResult<()> {
         let shared = self.shared_state()?;
         let ps = PRICE_SCALE as f64;

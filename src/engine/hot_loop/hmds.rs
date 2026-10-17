@@ -209,7 +209,7 @@ pub(crate) struct TbtSub {
 /// of the stream (ibx#455).
 #[derive(Debug, Clone)]
 pub(crate) enum TbtTick {
-    Trade { price: i64, size: i64, time: u64, exchange: String, conditions: String, past_limit: bool, unreported: bool },
+    Trade { price: i64, size: f64, time: u64, exchange: String, conditions: String, past_limit: bool, unreported: bool },
     Quote { bid: i64, ask: i64, bid_size: i64, ask_size: i64, time: u64, bid_past_low: bool, ask_past_high: bool },
     MidPoint { mid_point: i64, time: u64 },
 }
@@ -248,6 +248,25 @@ impl TbtSub {
             None => raw as i64,
         }
     }
+
+    /// A trade's size in size increments as the client gets it at this
+    /// session's level (ibx#613).
+    fn trade_size(&self, raw: u64) -> f64 {
+        trade_size_at(crate::client_core::SERVER_VERSION, raw, self.size_min_tick)
+    }
+}
+
+/// A tick-by-tick trade's size at session level `level` (ibx#613; the
+/// 10.51 rules, not observed yet: no fractional trade on the paper
+/// account): the size increments times the increment, a whole number below
+/// level 222, with its fractional part from 222, as the historical trade
+/// ticks.
+pub(crate) fn trade_size_at(level: i32, raw: u64, size_min_tick: Option<f64>) -> f64 {
+    let size = match size_min_tick {
+        Some(step) => raw as f64 * step,
+        None => raw as f64,
+    };
+    if level < crate::client_core::LEVEL_FRACTIONAL_LAST_SIZE { size.round() } else { size }
 }
 
 /// How long a tick-by-tick stream with no client left waits before its
@@ -1236,7 +1255,7 @@ impl HmdsState {
                     };
                     (sub.last, sub.last_size) = (last, size);
                     TbtTick::Trade {
-                        price: sub.price(last), size: sub.size(size), time: entry.time, exchange, conditions,
+                        price: sub.price(last), size: sub.trade_size(size), time: entry.time, exchange, conditions,
                         past_limit: attribs & 1 != 0, unreported: attribs & 2 != 0,
                     }
                 }
@@ -2802,6 +2821,22 @@ fn head_ts_key(con_id: i64, sec_type: &str, exchange: &str, what_to_show: &str, 
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    // ibx#613 (the 10.51 rules, not observed yet: no fractional trade on the
+    // paper account): a tick-by-tick trade's fractional size is a whole
+    // number below session level 222 and kept from 222.
+    #[test]
+    fn a_fractional_tick_by_tick_size_is_whole_below_level_222_and_kept_from_it() {
+        let step = Some(0.00000001);
+        assert_eq!(trade_size_at(214, 40_000_000, step), 0.0);
+        assert_eq!(trade_size_at(214, 160_000_000, step), 2.0);
+        assert_eq!(trade_size_at(222, 40_000_000, step), 0.4);
+        assert_eq!(trade_size_at(222, 160_000_000, step), 1.6);
+        assert_eq!(trade_size_at(225, 2_600_000, step), 2_600_000.0 * 0.00000001);
+        // A whole size, or no increment: the same at both levels.
+        assert_eq!(trade_size_at(214, 300, None), 300.0);
+        assert_eq!(trade_size_at(222, 300, None), 300.0);
+    }
 
     fn make_query_error_msg(query_id: &str, error: &str) -> Vec<u8> {
         let xml = format!(

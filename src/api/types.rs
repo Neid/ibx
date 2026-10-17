@@ -1126,6 +1126,12 @@ fn size_fields(def: &crate::control::contracts::ContractDefinition, fund: bool) 
     (min_low, min_inc, min_inc)
 }
 
+/// The size increment of a definition, as its contract details give it
+/// (`f64::MAX` when its market rule has no size set) (ibx#613).
+pub(crate) fn definition_size_increment(def: &crate::control::contracts::ContractDefinition) -> f64 {
+    size_fields(def, def.api_sec_type() == "FUND").1
+}
+
 /// EV rule text of a row, as the reference writes it: `name:value`.
 fn ev_rule_text(raw: &str) -> String {
     if raw.is_empty() {

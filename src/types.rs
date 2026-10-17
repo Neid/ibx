@@ -1813,7 +1813,9 @@ pub struct TbtTrade {
     /// Last or AllLast: the tickType the request reports.
     pub tbt_type: TbtType,
     pub price: Price,
-    pub size: i64,
+    /// The trade's size: a whole number below session level 222, with its
+    /// fractional part from 222 (ibx#613).
+    pub size: f64,
     pub timestamp: u64,
     pub exchange: String,
     pub conditions: String,

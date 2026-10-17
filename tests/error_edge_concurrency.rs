@@ -741,7 +741,7 @@ fn shared_state_all_drains_empty_after_first_call() {
     ss.orders.push_cancel_reject(CancelReject { order_id: 1, instrument: 0,
         reject_type: 1, reason_code: 0, timestamp_ns: 0 });
     ss.market.push_tbt_trade(TbtTrade { instrument: 0, req_id: 1, tbt_type: TbtType::AllLast, price: PRICE_SCALE,
-        size: 1, timestamp: 0, exchange: String::new(), conditions: String::new(), past_limit: false, unreported: false });
+        size: 1.0, timestamp: 0, exchange: String::new(), conditions: String::new(), past_limit: false, unreported: false });
     ss.market.push_tbt_quote(TbtQuote { instrument: 0, req_id: 1, bid: PRICE_SCALE, ask: PRICE_SCALE,
         bid_size: 1, ask_size: 1, timestamp: 0, bid_past_low: false, ask_past_high: false });
 

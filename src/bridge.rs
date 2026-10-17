@@ -749,6 +749,11 @@ pub struct MarketDataState {
     /// code and the whole text (ibx#455).
     pub(crate) tbt_errors: SeqQueue<(ReqId, i32, String)>,
     error_tap: ErrorTap,
+    /// The size and price increments of each slot's contract, from its
+    /// definition, packed (`md_events::Increment`; 0 when not known): the
+    /// API client gives the last size and price in their steps from
+    /// session level 222 (ibx#613). Written when a subscription goes out.
+    last_increments: Box<[[AtomicU64; 2]; MAX_INSTRUMENTS]>,
 }
 
 /// What a client reports as tickReqParams for a subscription, from its
@@ -863,6 +868,7 @@ impl MarketDataState {
             snapshot_acks: Mutex::new(Vec::new()),
             tbt_errors: SeqQueue::new(&stamp),
             error_tap: ErrorTap::default(),
+            last_increments: Box::new(std::array::from_fn(|_| [AtomicU64::new(0), AtomicU64::new(0)])),
         }
     }
 
@@ -1122,6 +1128,26 @@ impl MarketDataState {
 
     #[doc(hidden)] pub fn set_instrument_count(&self, count: u32) {
         self.instrument_count.store(count as u64, Ordering::Relaxed);
+    }
+
+    /// The size and price increments of a slot's contract, packed, 0 when
+    /// not known (ibx#613). Set before its subscription goes out, so before
+    /// any step of it is queued.
+    #[doc(hidden)] pub fn set_last_increments(&self, id: InstrumentId, size: u64, price: u64) {
+        if let Some([s, p]) = self.last_increments.get(id as usize) {
+            s.store(size, Ordering::Relaxed);
+            p.store(price, Ordering::Relaxed);
+        }
+    }
+
+    /// The size and price increments of a slot's contract (ibx#613): two
+    /// loads, no lock.
+    #[inline]
+    pub fn last_increments(&self, id: InstrumentId) -> (u64, u64) {
+        match self.last_increments.get(id as usize) {
+            Some([s, p]) => (s.load(Ordering::Relaxed), p.load(Ordering::Relaxed)),
+            None => (0, 0),
+        }
     }
 }
 

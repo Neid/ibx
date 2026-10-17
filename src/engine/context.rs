@@ -308,6 +308,10 @@ pub struct Context {
     /// slot, for a contract other than a stock (ibx#666).
     pub(crate) order_lookup_filters: HashMap<crate::types::InstrumentId, crate::types::SecDefFilters>,
     pub(crate) round_lots: HashMap<i64, i64>,
+    /// The size and price increments of each definition read, by conId,
+    /// packed (`md_events::Increment`), kept from session level 222, whose
+    /// last size and price are given in their steps (ibx#613).
+    pub(crate) def_increments: HashMap<i64, (u64, u64)>,
     /// The conIds of US stocks and warrants among the definitions read
     /// (ibx#648).
     pub(crate) us_lots: std::collections::HashSet<i64>,
@@ -470,6 +474,7 @@ impl Context {
             price_mgmt_exclusions: None,
             price_mgmt_send: false,
             round_lots: HashMap::new(),
+            def_increments: HashMap::new(),
             order_lookup_filters: HashMap::new(),
             us_lots: std::collections::HashSet::new(),
             agg_groups: HashMap::new(),

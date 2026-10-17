@@ -814,7 +814,7 @@ impl EClient {
                     let tbt_trades = run(&mut ib.tbt_trades, until);
                     for trade in tbt_trades {
                         let price = trade.price as f64 / PRICE_SCALE_F;
-                        let size = qty(py, trade.size as f64)?;
+                        let size = qty(py, trade.size)?;
                         let attrib = super::super::tick_types::TickAttribLast { past_limit: trade.past_limit, unreported: trade.unreported };
                         let attrib_obj = Py::new(py, attrib)?.into_any();
                         call_wrapper!(self.wrapper, py, "tick_by_tick_all_last", (trade.req_id, trade.tbt_type.api_tick_type(), trade.timestamp as i64, price, size,

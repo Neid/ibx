@@ -115,6 +115,40 @@ pub(crate) fn note_definition(context: &mut Context, con_id: i64, msg: &[u8]) {
         if terms.is_option() || crate::control::optcalc::market::has_model(&terms.sec_type) {
             context.option_terms.insert(con_id, terms);
         }
+        // The steps of its last size and price, from session level 222
+        // (ibx#613).
+        if crate::client_core::SERVER_VERSION >= crate::client_core::LEVEL_FRACTIONAL_LAST_SIZE {
+            context.def_increments.insert(con_id, definition_increments(def));
+        }
+    }
+}
+
+/// The size and price increments of a definition, packed
+/// (`md_events::Increment`, 0 when it has none): its contract details'
+/// size increment and its minimum tick (ibx#613).
+pub(crate) fn definition_increments(def: &crate::control::contracts::ContractDefinition) -> (u64, u64) {
+    use crate::md_events::Increment;
+    let pack = |step: f64| Increment::from_step(step).map_or(0, Increment::pack);
+    (pack(crate::api::types::definition_size_increment(def)), pack(def.min_tick))
+}
+
+/// A subscription of `instrument` goes out (ibx#613): its slot takes the
+/// increments of its contract's definition, none when not known, so that
+/// a reused slot keeps none of an earlier contract's. Only from session
+/// level 222, which gives the last size and price in those steps.
+pub(crate) fn publish_increments(context: &Context, shared: &SharedState, instrument: InstrumentId, con_id: i64) {
+    if crate::client_core::SERVER_VERSION >= crate::client_core::LEVEL_FRACTIONAL_LAST_SIZE {
+        let (size, price) = context.def_increments.get(&con_id).copied().unwrap_or((0, 0));
+        shared.market.set_last_increments(instrument, size, price);
+    }
+}
+
+/// The frozen slot of a contract takes the increments of its real-time
+/// slot (ibx#613), from session level 222.
+fn copy_increments(shared: &SharedState, live: InstrumentId, twin: InstrumentId) {
+    if crate::client_core::SERVER_VERSION >= crate::client_core::LEVEL_FRACTIONAL_LAST_SIZE {
+        let (size, price) = shared.market.last_increments(live);
+        shared.market.set_last_increments(twin, size, price);
     }
 }
 
@@ -1664,6 +1698,7 @@ impl FarmState {
                 context.market.set_symbol(twin, symbol.clone());
                 context.market.set_routing(twin, &sec_type, &exchange);
                 context.market.set_round_lot(twin, context.market.round_lot(live));
+                copy_increments(shared, live, twin);
                 shared.market.set_instrument_count(context.market.count());
                 self.status[pos].frozen = Some(twin);
                 let sub = MdSubscribe {
@@ -1727,6 +1762,7 @@ impl FarmState {
         context.market.set_symbol(twin, symbol);
         context.market.set_routing(twin, &sec_type, &exchange);
         context.market.set_round_lot(twin, context.market.round_lot(live));
+        copy_increments(shared, live, twin);
         shared.market.set_instrument_count(context.market.count());
         Some(twin)
     }
@@ -4318,6 +4354,33 @@ mod tests {
         farm.handle_subscription_ack(ack.as_bytes(), &mut None::<Connection>, &mut context, &SharedState::new(), &mut HeartbeatState::new());
         assert_eq!(context.market.instrument_by_server_tag(1101), None);
         assert_eq!(context.market.min_tick(other), 0.0);
+    }
+
+    // ibx#613: the increments a slot takes from its definition are its
+    // contract details' size increment and its minimum tick; none for a
+    // rule with no size set.
+    #[test]
+    fn a_definition_gives_its_size_and_price_increments() {
+        use crate::control::contracts::{ContractDefinition, PriceIncrement};
+        use crate::md_events::Increment;
+        let pack = |step: f64| Increment::from_step(step).unwrap().pack();
+        let fractional = ContractDefinition {
+            min_tick: 0.25, size_increments: vec![PriceIncrement { low_edge: 0.0, increment: 0.0001 }], ..Default::default()
+        };
+        assert_eq!(definition_increments(&fractional), (pack(0.0001), pack(0.25)));
+        let whole = ContractDefinition {
+            min_tick: 0.01, size_increments: vec![PriceIncrement { low_edge: 1.0, increment: 1.0 }], ..Default::default()
+        };
+        assert_eq!(definition_increments(&whole), (pack(1.0), pack(0.01)));
+        let no_sizes = ContractDefinition { min_tick: 0.01, ..Default::default() };
+        assert_eq!(definition_increments(&no_sizes), (0, pack(0.01)));
+        // At the session's level, below 222, nothing is kept or handed on.
+        assert!(crate::client_core::SERVER_VERSION < crate::client_core::LEVEL_FRACTIONAL_LAST_SIZE);
+        let mut context = Context::new();
+        context.def_increments.insert(265598, definition_increments(&fractional));
+        let shared = SharedState::new();
+        publish_increments(&context, &shared, 3, 265598);
+        assert_eq!(shared.market.last_increments(3), (0, 0));
     }
 
     // ibx#287: a definition reply sets the round lot and releases the

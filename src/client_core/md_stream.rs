@@ -285,6 +285,29 @@ struct Out<'a> {
     instrument: InstrumentId,
     /// The queue position of the step.
     seq: u64,
+    /// The session level the ticks are given at (ibx#613).
+    level: i32,
+    /// The size and price increments of the contract's definition, packed
+    /// (`Increment`, 0 when not known), read once per step from session
+    /// level 222 (ibx#613).
+    increments: (u64, u64),
+}
+
+/// The last size or the last price as the client gets it at session level
+/// `level` (ibx#613; the 10.51 rules, not observed yet: no fractional trade
+/// on the paper account): from level 222 in the steps of the increment of
+/// the contract's definition, with the increment's decimals; below 222, or
+/// with no increment known, as it came. The rule's exception, market data
+/// in lots, has no setting in ibx: never on.
+#[inline(always)]
+pub(crate) fn last_at_level(level: i32, value: f64, increment: u64) -> f64 {
+    if level < LEVEL_FRACTIONAL_LAST_SIZE {
+        return value;
+    }
+    match crate::md_events::Increment::unpack(increment) {
+        Some(inc) => inc.round(value),
+        None => value,
+    }
 }
 
 impl Out<'_> {
@@ -297,8 +320,12 @@ impl Out<'_> {
     }
 
     fn price(&mut self, tick_type: i32, idx: usize, can_auto_execute: bool) {
+        let mut value = self.fields[idx] as f64 / PRICE_SCALE_F;
+        if tick_type == TICK_LAST {
+            value = last_at_level(self.level, value, self.increments.1);
+        }
         let tick_type = self.api(tick_type);
-        self.push(MdTick::Price { tick_type, value: self.fields[idx] as f64 / PRICE_SCALE_F, can_auto_execute, pre_open: false });
+        self.push(MdTick::Price { tick_type, value, can_auto_execute, pre_open: false });
     }
 
     /// A price or size the record does not have: unset (`f64::MAX`).
@@ -313,8 +340,12 @@ impl Out<'_> {
     }
 
     fn size(&mut self, tick_type: i32, idx: usize) {
+        let mut value = self.fields[idx] as f64 / QTY_SCALE as f64;
+        if tick_type == TICK_LAST_SIZE {
+            value = last_at_level(self.level, value, self.increments.0);
+        }
         let tick_type = self.api(tick_type);
-        self.push(MdTick::Size { tick_type, value: self.fields[idx] as f64 / QTY_SCALE as f64 });
+        self.push(MdTick::Size { tick_type, value });
     }
 
     fn time(&mut self) {
@@ -901,7 +932,17 @@ fn pass_one(
     }
     let mark = out.len();
     let complete = {
-        let mut o = Out { out: &mut *out, req_id, fields: &m.fields, delayed: st.delayed, shared, instrument, seq };
+        // The increments are read only from the level that uses them
+        // (ibx#613): below it, nothing more per step.
+        let increments = if SERVER_VERSION >= LEVEL_FRACTIONAL_LAST_SIZE {
+            shared.market.last_increments(instrument)
+        } else {
+            (0, 0)
+        };
+        let mut o = Out {
+            out: &mut *out, req_id, fields: &m.fields, delayed: st.delayed, shared, instrument, seq,
+            level: SERVER_VERSION, increments,
+        };
         match snap {
             // A snapshot on the frozen view gives the frozen image as a
             // stream does and ends at its time limit (ibx#494; the
@@ -1425,6 +1466,61 @@ mod tests {
         let q = Quote { last: -PRICE_SCALE, ..Default::default() };
         shared.market.push_test_message(5, &q, &TestMessage { steps: Some(&[MdStep::Last]), sizes_seen: true, ..Default::default() });
         assert_eq!(poll(&core, &shared), ["mdt:1:1", "size:1:5:0"]);
+    }
+
+    /// The last price, the last size and the bid size of a step, written
+    /// at session level `level` with the increments of a definition.
+    fn last_at(level: i32, delayed: bool, size_step: f64, price_step: f64) -> Vec<String> {
+        use crate::md_events::Increment;
+        let shared = SharedState::new();
+        let mut fields = [0i64; field::COUNT];
+        fields[field::LAST] = 113 * PRICE_SCALE / 100;
+        fields[field::LAST_SIZE] = 4_567;
+        fields[field::BID_SIZE] = 4_567;
+        let pack = |step: f64| Increment::from_step(step).map_or(0, Increment::pack);
+        let mut out = Vec::new();
+        let mut o = Out {
+            out: &mut out, req_id: 1, fields: &fields, delayed, shared: &shared, instrument: 5, seq: 0,
+            level, increments: (pack(size_step), pack(price_step)),
+        };
+        o.price(TICK_LAST, field::LAST, false);
+        o.size(TICK_LAST_SIZE, field::LAST_SIZE);
+        o.size(TICK_BID_SIZE, field::BID_SIZE);
+        lines(&out)
+    }
+
+    // ibx#613 (the 10.51 rules, not observed yet: no fractional trade on the
+    // paper account): from session level 222 the last size is given in the
+    // steps of the definition's size increment with its decimals, the last
+    // price in the steps of its price increment, real-time and delayed;
+    // other sizes as they came. Below 222, as today.
+    #[test]
+    fn the_last_size_and_price_take_the_definition_steps_from_level_222() {
+        assert_eq!(last_at(214, false, 0.01, 0.05), ["price:1:4:1.13", "size:1:5:0.4567", "size:1:0:0.4567"]);
+        assert_eq!(last_at(214, true, 0.01, 0.05), ["price:1:68:1.13", "size:1:71:0.4567", "size:1:69:0.4567"]);
+        assert_eq!(last_at(222, false, 0.01, 0.05), ["price:1:4:1.15", "size:1:5:0.46", "size:1:0:0.4567"]);
+        assert_eq!(last_at(222, true, 0.01, 0.05), ["price:1:68:1.15", "size:1:71:0.46", "size:1:69:0.4567"]);
+        // A fractional size in finer steps keeps its fraction.
+        assert_eq!(last_at(222, false, 0.0001, 0.01), ["price:1:4:1.13", "size:1:5:0.4567", "size:1:0:0.4567"]);
+        // A whole-number increment: whole sizes.
+        assert_eq!(last_at(222, false, 1.0, 0.01), ["price:1:4:1.13", "size:1:5:0", "size:1:0:0.4567"]);
+        // No definition known: as it came.
+        assert_eq!(last_at(222, false, 0.0, 0.0), ["price:1:4:1.13", "size:1:5:0.4567", "size:1:0:0.4567"]);
+        assert_eq!(last_at_level(214, 0.4567, crate::md_events::Increment::from_step(0.01).unwrap().pack()), 0.4567);
+    }
+
+    // ibx#613: at the session's level, below 222, a stream gives its last
+    // price and size as today even with the definition's increments set.
+    #[test]
+    fn the_last_size_and_price_are_as_today_at_the_session_level() {
+        use crate::md_events::Increment;
+        assert!(SERVER_VERSION < LEVEL_FRACTIONAL_LAST_SIZE);
+        let (core, shared) = (ClientCore::new(), SharedState::new());
+        shared.market.set_last_increments(5, Increment::from_step(0.01).unwrap().pack(), Increment::from_step(0.05).unwrap().pack());
+        stream(&core, &shared, 1, 5);
+        let q = Quote { last: 113 * PRICE_SCALE / 100, last_size: 4_567, ..Default::default() };
+        shared.market.push_test_message(5, &q, &TestMessage { steps: Some(&[MdStep::Last]), sizes_seen: true, ..Default::default() });
+        assert_eq!(poll(&core, &shared), ["mdt:1:1", "price:1:4:1.13", "size:1:5:0.4567", "size:1:5:0.4567"]);
     }
 
     // ibx#640 (the reference 10.51, SPX on CBOE, 13/10/2026, regular

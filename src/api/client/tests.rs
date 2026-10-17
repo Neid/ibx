@@ -381,7 +381,7 @@ fn req_tick_by_tick_data_types_and_local_refusals() {
 
 fn tbt_trade(req_id: i64, tbt_type: TbtType, past_limit: bool, unreported: bool) -> TbtTrade {
     TbtTrade {
-        instrument: 0, req_id, tbt_type, price: 100 * PRICE_SCALE, size: 3, timestamp: 1,
+        instrument: 0, req_id, tbt_type, price: 100 * PRICE_SCALE, size: 3.0, timestamp: 1,
         exchange: "ARCA".into(), conditions: String::new(), past_limit, unreported,
     }
 }
@@ -3376,7 +3376,7 @@ fn process_msgs_dispatches_tbt_trade() {
     let (client, _rx, shared) = test_client();
     client.core.tbt_reqs.lock().unwrap().insert(10, (0, 756733, TbtType::Last));
     shared.market.push_tbt_trade(TbtTrade {
-        instrument: 0, req_id: 10, tbt_type: TbtType::Last, price: 150 * PRICE_SCALE, size: 100,
+        instrument: 0, req_id: 10, tbt_type: TbtType::Last, price: 150 * PRICE_SCALE, size: 100.0,
         timestamp: 1700000000, exchange: "ARCA".into(), conditions: "".into(), past_limit: false, unreported: false,
     });
     let mut w = RecordingWrapper::default();
@@ -3402,7 +3402,7 @@ fn process_msgs_tbt_goes_to_the_request_the_engine_names() {
     let (client, _rx, shared) = test_client();
     // No market data mapping: the tick names its request.
     shared.market.push_tbt_trade(TbtTrade {
-        instrument: 5, req_id: 42, tbt_type: TbtType::AllLast, price: 150 * PRICE_SCALE, size: 100,
+        instrument: 5, req_id: 42, tbt_type: TbtType::AllLast, price: 150 * PRICE_SCALE, size: 100.0,
         timestamp: 0, exchange: "".into(), conditions: "".into(), past_limit: false, unreported: false,
     });
     let mut w = RecordingWrapper::default();
