@@ -90,12 +90,23 @@ pub(crate) struct Pacer {
     interval: Option<Interval>,
     /// No request waited at the last look.
     was_empty: bool,
+    /// Every request is handled at once, in its order (ibx#564).
+    off: bool,
 }
 
 impl Pacer {
+    /// Handle every request at once (`true`), or pace them again.
+    pub(crate) fn set_off(&mut self, off: bool) {
+        self.off = off;
+        self.interval = None;
+    }
+
     /// Whether the request at the head of the queue is handled now;
     /// `waiting` counts it and the requests behind it.
     pub(crate) fn admit(&mut self, now: Instant, waiting: usize) -> bool {
+        if self.off {
+            return true;
+        }
         let waiting = waiting.max(1);
         // The queue was empty at the last look and the last request is
         // done: the pacer was at rest when this one came.

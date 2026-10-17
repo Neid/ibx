@@ -2741,6 +2741,9 @@ impl Gateway {
         }
         let mut hot_loop = HotLoop::new(shared, event_tx, core_id);
         hot_loop.pace_requests();
+        // The waits copied from the reference are off unless the caller's
+        // settings turn them on (ibx#564).
+        hot_loop.set_copied_waits(false);
         let tx = hot_loop.control_channel();
         hot_loop.set_account_id(self.account_id.clone());
         hot_loop.set_scale_us_lots(self.scale_us_lots);

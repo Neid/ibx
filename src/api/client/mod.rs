@@ -21,6 +21,7 @@
 //!     paper: true,
 //!     core_id: None,
 //!     client_id: 0,
+//!     copied_waits: false,
 //! }).unwrap();
 //!
 //! client.req_mkt_data(1, &Contract { con_id: 756733, symbol: "SPY".into(), sec_type: "STK".into(), exchange: "SMART".into(), currency: "USD".into(), ..Default::default() },
@@ -108,6 +109,14 @@ pub struct EClientConfig {
     /// `orderStatus`, and the order ids of its earlier sessions are kept
     /// per client id. 0 by default (ibx#704).
     pub client_id: i32,
+    /// Copy the reference's own waits, which change nothing the client
+    /// receives nor what the server answers: the market data messages sent
+    /// in passes, the scanner parameters delay and the gaps after it, the
+    /// gaps and the contract records a stock's first order waits for.
+    /// `false` (the default) leaves them out for the lowest latency; `true`
+    /// keeps a session's timing comparable with the reference's (ibx#564).
+    /// The pacing of requests is not one of them: it stays on.
+    pub copied_waits: bool,
 }
 
 /// Give the engine the caller's host and credentials for auto-reconnect. The
@@ -262,6 +271,7 @@ impl EClient {
             shared.clone(), event_tx, farm_conn, ccp_conn, hmds_conn, config.core_id,
         );
         cache_reconnect_credentials(&mut hot_loop, config);
+        hot_loop.set_copied_waits(config.copied_waits);
 
         let handle = thread::Builder::new()
             .name("ib-engine-hotloop".into())

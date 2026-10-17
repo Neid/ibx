@@ -79,6 +79,7 @@ fn main() {
         paper: true,
         core_id: None,
         client_id: 0,
+        copied_waits: false,
     }).unwrap();
 
     // Market data

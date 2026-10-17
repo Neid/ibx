@@ -3885,17 +3885,49 @@ impl HotLoop {
 
     /// Pace the API requests as the reference does (ibx#555). On for a
     /// session opened by a logon; an engine built by hand takes every
-    /// command at once unless this is called.
+    /// command at once unless this is called. The waits copied from the
+    /// reference are a setting of their own (`set_copied_waits`, ibx#564).
     pub fn pace_requests(&mut self) {
         self.pacer = Some(Default::default());
-        // With it, the market data messages leave in passes (ibx#560).
-        self.md_pass.on = true;
-        // And the scanner parameters are asked after their delay (ibx#553).
-        self.hmds.scanner_params_delayed = true;
-        // And a fan-out's requests leave at the reference's pace (ibx#689).
+        // A fan-out's requests leave at the reference's pace (ibx#689):
+        // sent at once, the server lost about one answer in twenty, so this
+        // pace stays with the pacing (ibx#564).
         self.ccp.fanout_paced = true;
-        // And a stock's first order keeps the reference's gaps (ibx#729).
-        self.context.order_gaps = true;
+    }
+
+    /// The paced requests are taken at once (`false`), still in the order
+    /// they were made, the client's own answers at their turn; `true` paces
+    /// them again (ibx#564: for the measurement of what the servers take).
+    #[doc(hidden)]
+    pub fn set_request_pacing(&mut self, on: bool) {
+        if let Some(pacer) = self.pacer.as_mut() {
+            pacer.set_off(!on);
+        }
+    }
+
+    /// The waits copied from the reference that change nothing an API
+    /// client receives nor what the server answers (ibx#564): off for a
+    /// session opened by a logon unless its settings turn them on, to
+    /// compare a session with the reference's timing.
+    /// - the market data messages sent in passes (ibx#560);
+    /// - the delay of the scanner parameters request and the gaps of the
+    ///   requests that waited for it (ibx#553, ibx#572);
+    /// - the gaps of a stock's first order (ibx#729);
+    /// - a transmitted stock order waiting for its contract's records
+    ///   (ibx#706; on by default for an engine built by hand).
+    pub fn set_copied_waits(&mut self, on: bool) {
+        self.md_pass.on = on;
+        self.hmds.scanner_params_delayed = on;
+        self.context.order_gaps = on;
+        self.context.order_records_wait = on;
+    }
+
+    /// Pace the requests and copy the reference's waits, as a session
+    /// opened by a logon with the copied waits setting on: the replays and
+    /// the tests of the reference's timing (ibx#564).
+    pub fn pace_as_reference(&mut self) {
+        self.pace_requests();
+        self.set_copied_waits(true);
     }
 
     /// Send the scanner parameters request when its delay has passed
@@ -5355,7 +5387,7 @@ mod tests {
         let shared = Arc::new(SharedState::new());
         let (mut engine, mut server, tx) = scanner_engine(&shared);
         load_scanner_params(&mut engine, &mut server, "<ScanParameterResponse/>");
-        engine.pace_requests();
+        engine.pace_as_reference();
         // The test's own clock: no real wait (ibx#567).
         let start = Instant::now();
         let ms = std::time::Duration::from_millis;
@@ -5477,7 +5509,7 @@ mod tests {
         let shared = Arc::new(SharedState::new());
         let (mut engine, mut server, _) = scanner_engine(&shared);
         load_scanner_params(&mut engine, &mut server, "<ScanParameterResponse/>");
-        engine.pace_requests();
+        engine.pace_as_reference();
         let clock = shared.command_clock().clone();
         clock.set_paced(None);
         let (raw_tx, rx) = crossbeam_channel::unbounded();
@@ -5779,6 +5811,46 @@ mod tests {
         assert_eq!(order(false), "9002 9001 9008 9007 9006 9005 9004 9003");
     }
 
+    // ibx#564: a session opened by a logon paces its requests and its
+    // fan-outs, and copies none of the reference's other waits unless its
+    // settings turn them on; an engine built by hand asks an order's records.
+    #[test]
+    fn the_copied_waits_are_a_setting_of_their_own() {
+        let shared = Arc::new(SharedState::new());
+        let (mut engine, _server, _tx) = scanner_engine(&shared);
+        assert!(engine.context.order_records_wait, "an engine built by hand");
+        engine.pace_requests();
+        engine.set_copied_waits(false);
+        assert!(engine.pacer.is_some() && engine.ccp.fanout_paced);
+        assert!(!engine.md_pass.on && !engine.hmds.scanner_params_delayed);
+        assert!(!engine.context.order_gaps && !engine.context.order_records_wait);
+        engine.set_copied_waits(true);
+        assert!(engine.md_pass.on && engine.hmds.scanner_params_delayed);
+        assert!(engine.context.order_gaps && engine.context.order_records_wait);
+    }
+
+    // ibx#564: with the pacing set off, requests made at once are all taken
+    // at once, in their order.
+    #[test]
+    fn requests_are_taken_at_once_with_the_pacing_off() {
+        let shared = Arc::new(SharedState::new());
+        let (mut engine, mut server, tx) = scanner_engine(&shared);
+        load_scanner_params(&mut engine, &mut server, "<ScanParameterResponse/>");
+        engine.pace_requests();
+        engine.set_request_pacing(false);
+        let start = Instant::now();
+        engine.set_pace_clock(start);
+        for req_id in [1, 2, 3] {
+            tx.send(scanner_cmd(req_id, 7, "TOP_PERC_GAIN")).unwrap();
+        }
+        engine.poll_once();
+        assert!(engine.cmd_queue.is_empty(), "all at once");
+        assert_eq!(engine.next_pace_time(), None);
+        let sent = plain_messages_sent(&mut server);
+        let ids: Vec<&str> = sent.iter().filter_map(|m| m.find("<id>APISCAN7:").map(|a| &m[a + 13..a + 14])).collect();
+        assert_eq!(ids, ["1", "2", "3"], "in the order of the requests");
+    }
+
     // ibx#729: the copied gaps of a stock's first order are on with the
     // pacing, go by its clock, and their end is due for a replay; off, an
     // order's wake is not reported.
@@ -5791,7 +5863,7 @@ mod tests {
         assert!(!engine.context.order_gaps);
         engine.context.order_wake = Some(start + ms(40));
         assert_eq!(engine.next_pace_time(), None);
-        engine.pace_requests();
+        engine.pace_as_reference();
         engine.set_pace_clock(start);
         assert!(engine.context.order_gaps);
         assert_eq!(engine.context.gap_now(), start);
@@ -5807,7 +5879,7 @@ mod tests {
         let (mut engine, mut server, tx) = scanner_engine(&shared);
         let start = Instant::now();
         let ms = std::time::Duration::from_millis;
-        engine.pace_requests();
+        engine.pace_as_reference();
         engine.set_pace_clock(start);
         tx.send(scanner_cmd(1, 0, "TOP_PERC_GAIN")).unwrap();
         engine.poll_once();

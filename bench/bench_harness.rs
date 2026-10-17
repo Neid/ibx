@@ -99,6 +99,12 @@ impl BenchSession {
         let (event_tx, event_rx) = bounded::<Event>(65536);
         let (mut hot_loop, control_tx) =
             gw.into_hot_loop(shared.clone(), Some(event_tx), farm_conn, ccp_conn, hmds_conn, None);
+        // BENCH_COPIED_WAITS=1: the reference's own waits copied;
+        // BENCH_REQUEST_PACING=0: the requests taken at once (ibx#564).
+        hot_loop.set_copied_waits(BenchConfig::env_bool("BENCH_COPIED_WAITS"));
+        if env::var("BENCH_REQUEST_PACING").is_ok_and(|v| v == "0") {
+            hot_loop.set_request_pacing(false);
+        }
 
         let join = std::thread::spawn(move || {
             hot_loop.run();

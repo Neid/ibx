@@ -407,9 +407,15 @@ pub struct Context {
     /// The order preset kinds to save once the order being written is out
     /// (ibx#729).
     pub(crate) preset_saves_due: Vec<String>,
-    /// The copied waits of a stock's first order (ibx#729): on for a session
-    /// opened by a logon, as the other copied waits.
+    /// The copied waits of a stock's first order (ibx#729): off by default,
+    /// on with the copied waits setting (ibx#564).
     pub(crate) order_gaps: bool,
+    /// A transmitted stock order waits for the records of its contract
+    /// (ibx#706) before it goes: on for an engine built by hand (the
+    /// replays of the reference's recordings); a session opened by a logon
+    /// asks them only with the copied waits setting (ibx#564). A held order
+    /// asks them always: a hedge under it waits for them (ibx#718).
+    pub(crate) order_records_wait: bool,
     /// The time those waits go by when a test sets it (the replays' clock).
     pub(crate) gap_clock: Option<std::time::Instant>,
     /// When the answer of each order preset kind came, for those waits
@@ -619,6 +625,7 @@ impl Context {
             presets_stored: None,
             preset_saves_due: Vec::new(),
             order_gaps: false,
+            order_records_wait: true,
             gap_clock: None,
             preset_answered: HashMap::new(),
             lookup_answered: HashMap::new(),

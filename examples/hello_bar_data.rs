@@ -40,6 +40,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         paper: true,
         core_id: None,
         client_id: 0,
+        copied_waits: false,
     })?;
 
     let state = Arc::new(Mutex::new(State::default()));

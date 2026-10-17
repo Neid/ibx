@@ -209,6 +209,7 @@ fn eclient_delivers_update_portfolio() {
     let client = ibx::api::client::EClient::connect(&ibx::api::client::EClientConfig {
         username, password, host, paper: true, core_id: None,
         client_id: 0,
+        copied_waits: false,
     }).expect("connect to paper failed");
     if !client.account_id.starts_with("DU") {
         client.disconnect();

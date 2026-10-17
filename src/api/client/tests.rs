@@ -45,6 +45,7 @@ fn connect_caches_reconnect_credentials() {
         paper: true,
         core_id: None,
         client_id: 0,
+        copied_waits: false,
     };
     cache_reconnect_credentials(&mut hot_loop, &config);
     assert!(hot_loop.has_reconnect_host());

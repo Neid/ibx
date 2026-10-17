@@ -121,7 +121,7 @@ impl Links {
     /// `at`. The answers the client gives itself take their turn too.
     pub fn pace(&mut self) {
         let start = std::time::Instant::now();
-        self.engine.pace_requests();
+        self.engine.pace_as_reference();
         self.engine.set_pace_clock(start);
         let clock = self.shared.command_clock();
         clock.set_paced(None);

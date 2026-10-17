@@ -13,6 +13,9 @@
 //! discarded by the redirect precaution unless it is bypassed. Run with `IBX_LOG_DIR`
 //! and `IBX_LOG_LEVEL=info` to read the lookups in the engine log.
 //!
+//! The records are asked only with the copied waits setting
+//! (`IBX_COPIED_WAITS=1`, ibx#564); without it the orders go at once.
+//!
 //! Prints every order callback with its time from the start.
 //! It stops unless the account id starts with DU.
 //!
@@ -56,6 +59,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         host: env::var("IB_HOST").unwrap_or_else(|_| "cdc1.ibllc.com".into()),
         paper: true, core_id: None,
         client_id: 0,
+        // The records are asked with the copied waits only (ibx#564).
+        copied_waits: env::var("IBX_COPIED_WAITS").is_ok_and(|v| v == "1"),
     })?;
     if !client.account_id.starts_with("DU") {
         client.disconnect();

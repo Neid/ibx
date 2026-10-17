@@ -24,6 +24,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         host: env::var("IB_HOST").unwrap_or_else(|_| "cdc1.ibllc.com".into()),
         paper: true, core_id: None,
         client_id: 0,
+        // The scanner waits are copied with the setting only (ibx#564).
+        copied_waits: env::var("IBX_COPIED_WAITS").is_ok_and(|v| v == "1"),
     }, 4096)?;
     println!("logged in paper (account {})", client.account_id);
 

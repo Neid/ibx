@@ -4233,7 +4233,9 @@ fn stock_order_lookups(
     }
     send_order_hours(context, conn, hb, con_id);
     // The order's record lookup answered: it goes on, after the preset.
-    let missing = if context.order_records_cleared.contains(&order_id) {
+    // Without the copied waits the order does not wait for the records:
+    // the server takes a first order without them (ibx#564).
+    let missing = if context.order_records_cleared.contains(&order_id) || !context.order_records_wait {
         None
     } else {
         missing_order_record(context, shared, instrument, con_id)
@@ -10721,6 +10723,37 @@ mod tests {
         // NASDAQ: the record is there, nothing asked.
         let frames = place(&mut context, &mut conn, &mut server, "NASDAQ", 5);
         assert_eq!(lookup(&frames), None, "{frames:?}");
+    }
+
+    // ibx#564: without the copied waits a transmitted stock order does not
+    // wait for its contract's records: a SMART order goes at once with
+    // nothing asked (the server took a first order without them, paper,
+    // 17/10/2026, market closed). An order directed to ISLAND still asks
+    // its order rules there, which its checks read, and no record.
+    #[test]
+    fn without_the_copied_waits_an_order_does_not_ask_its_records() {
+        let (client, mut server) = crate::protocol::connection::mem_pair();
+        let mut conn = Some(Connection::new_mem(client));
+        let shared = Arc::new(SharedState::new());
+        shared.reference.cache_contract(265598, crate::api::types::Contract {
+            con_id: 265598, symbol: "AAPL".into(), primary_exchange: "NASDAQ".into(), ..Default::default()
+        });
+        let mut context = order_context();
+        context.order_records_wait = false;
+        context.market.register(265598);
+        context.set_symbol(0, "AAPL".to_string());
+        let place = |context: &mut Context, conn: &mut Option<Connection>, server: &mut crate::protocol::connection::MemTransport,
+                     exchange: &str, id: OrderId| -> Vec<Vec<(u32, String)>> {
+            context.market.set_routing(0, "STK", exchange);
+            context.pending_orders.push(limit_ex(id, Side::Buy, px(100.0), Default::default()));
+            drain_frames(context, &shared, conn, server)
+        };
+        let frames = place(&mut context, &mut conn, &mut server, "SMART", 1);
+        assert!(frames.iter().all(|f| tag(f, 35) != Some("c")), "{frames:?}");
+        assert_eq!(frames.iter().filter(|f| tag(f, 35) == Some("D")).count(), 1, "{frames:?}");
+        place(&mut context, &mut conn, &mut server, "ISLAND", 2);
+        assert!(context.order_record_lookups.is_empty(), "no record asked");
+        assert!(context.rth_lookups.iter().any(|(_, (_, exchange), _)| exchange == "ISLAND"), "the rules on ISLAND asked");
     }
 
     // ibx#709: an order directed to ARCA whose symbol lookup named ARCA

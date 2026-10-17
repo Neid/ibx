@@ -161,7 +161,15 @@ impl EClient {
     /// core busy; without it the engine thread rests while there is nothing
     /// to do and is woken by the first byte received or the first request
     /// (ibx#530).
-    #[pyo3(signature = (host="cdc1.ibllc.com".to_string(), port=0, client_id=0, username="".to_string(), password="".to_string(), paper=true, core_id=None, ib_key_timeout_secs=None, ib_key_token_sub_type=None, code_provider=None))]
+    ///
+    /// ``copied_waits``: copy the reference's own waits, which change
+    /// nothing the client receives nor what the server answers (the market
+    /// data messages sent in passes, the scanner parameters delay and the
+    /// gaps after it, the gaps and the contract records a stock's first
+    /// order waits for). ``False`` (default): left out, for the lowest
+    /// latency; ``True``: a session's timing comparable with the
+    /// reference's. The pacing of requests stays on either way (ibx#564).
+    #[pyo3(signature = (host="cdc1.ibllc.com".to_string(), port=0, client_id=0, username="".to_string(), password="".to_string(), paper=true, core_id=None, ib_key_timeout_secs=None, ib_key_token_sub_type=None, code_provider=None, copied_waits=false))]
     fn connect(
         &self,
         py: Python<'_>,
@@ -175,6 +183,7 @@ impl EClient {
         ib_key_timeout_secs: Option<u64>,
         ib_key_token_sub_type: Option<String>,
         code_provider: Option<Py<PyAny>>,
+        copied_waits: bool,
     ) -> PyResult<()> {
         if self.connected.load(Ordering::Relaxed) {
             return Err(PyRuntimeError::new_err("Already connected"));
@@ -208,6 +217,7 @@ impl EClient {
         let (event_tx, event_rx) = crossbeam_channel::bounded(256);
         let (mut hot_loop, control_tx) = gw.into_hot_loop_with_farms(shared.clone(), Some(event_tx), farm_conn, ccp_conn, hmds_conn, core_id);
         hot_loop.update_reconnect_auth(connect_host, connect_username, connect_password, connect_paper);
+        hot_loop.set_copied_waits(copied_waits);
 
         let handle = thread::Builder::new()
             .name("ib-engine-hotloop".into())
