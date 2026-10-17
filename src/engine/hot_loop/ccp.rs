@@ -556,6 +556,9 @@ pub(crate) struct CcpState {
     /// schedule lists a few days only (how long the reference keeps one
     /// is not known).
     pub(crate) schedules: std::collections::HashMap<String, (jiff::civil::Date, Option<crate::control::contracts::ContractSchedule>)>,
+    /// The trading hours asked for the orders' option models, by schedule
+    /// key (ibx#730): asked once.
+    pub(crate) model_schedules: HashSet<String>,
     /// The contracts of orders waiting for the zone of their trading
     /// hours, by schedule key (ibx#636).
     pub(crate) order_zone_waits: Vec<(String, i64)>,
@@ -1086,6 +1089,7 @@ impl CcpState {
             order_zone_waits: Vec::new(),
             held_cancel_dates: std::collections::HashMap::new(),
             schedules: std::collections::HashMap::new(),
+            model_schedules: HashSet::new(),
             pending_fanout: Vec::new(),
             fanout_queue: std::collections::VecDeque::new(),
             fanout_clock: None,
@@ -3016,6 +3020,23 @@ impl CcpState {
         }
     }
 
+    /// The trading hours of a class an order's option model asks (ibx#730),
+    /// unless they are known for the day or on their way. True when asked.
+    pub(crate) fn ask_model_schedule(&mut self, join_key: &str, ccp_conn: &mut Option<Connection>, hb: &mut HeartbeatState) -> bool {
+        if join_key.is_empty() || self.schedule_known(join_key) || self.model_schedules.contains(join_key) {
+            return false;
+        }
+        self.model_schedules.insert(join_key.to_string());
+        log::info!("Trading hours of {} asked for an order's model", join_key);
+        self.send_schedule_subscribe(join_key, ccp_conn, hb);
+        true
+    }
+
+    /// Whether the trading hours of a schedule key came for the day.
+    pub(crate) fn schedule_known(&self, join_key: &str) -> bool {
+        self.schedules.get(join_key).is_some_and(|(day, _)| *day == utc_day())
+    }
+
     /// Drop the internal lookups of ibx (ids from 0xF000_0000: cache
     /// fill, scanner enrichment) past their deadline, silently: no caller
     /// waits on them. A caller's contract details request, and its
@@ -3546,6 +3567,7 @@ impl CcpState {
                 if let Some(def) = records.first() {
                     self.cache_definition(def, shared);
                 }
+                note_order_option(context, records.first(), msg);
                 keep_zone(shared);
                 if let Some(con_id) = self.defer_order_schedule(records.first(), shared, context) {
                     context.zone_pending.insert(con_id);
@@ -3571,12 +3593,21 @@ impl CcpState {
             if super::order_builder::cfd_check_reply(context, ccp_conn.as_mut(), hb, rid, msg) {
                 return;
             }
+            // A derivative order's lookups of its underlying, and the index
+            // lookups of a futures option order's model (ibx#730).
+            if super::order_builder::underlying_reply(context, ccp_conn.as_mut(), hb, rid, msg) {
+                return;
+            }
+            if super::farm::index_walk_reply(context, ccp_conn.as_mut(), hb, rid, msg) {
+                return;
+            }
             // Asked for the contract of an order given without a conId
             // (ibx#486): its definition is cached, not a user reply.
             if super::order_builder::order_contract_reply(context, shared, rid, msg) {
                 if let Some(def) = records.first() {
                     self.cache_definition(def, shared);
                 }
+                note_order_option(context, records.first(), msg);
                 keep_zone(shared);
                 if let Some(con_id) = self.defer_order_schedule(records.first(), shared, context) {
                     context.zone_pending.insert(con_id);
@@ -4783,6 +4814,16 @@ pub(crate) fn parse_ledger_rows(text: &str) -> Vec<crate::bridge::LedgerRow> {
         }
     }
     rows
+}
+
+/// An option's or a futures option's definition from its order's own
+/// lookup, kept for the order's option model: the reference asks no second
+/// definition of the contract for it (ibx#730; paper, observed in the
+/// recordings of 13-16/10/2026, 4 first option orders of 4).
+fn note_order_option(context: &mut Context, def: Option<&crate::control::contracts::ContractDefinition>, msg: &[u8]) {
+    if let Some(def) = def.filter(|d| d.con_id > 0 && super::optcalc::terms_of(d).is_option()) {
+        super::farm::note_definition(context, def.con_id, msg);
+    }
 }
 
 /// The market rule of each contract of a definition reply (ibx#615): the
@@ -6809,6 +6850,7 @@ mod tests {
             ("order", order_builder::ORDER_LOOKUP_FIRST_ID, order_builder::ORDER_LOOKUP_IDS),
             ("historical data", HIST_LOOKUP_FIRST_ID, HIST_LOOKUP_IDS),
             ("market data", farm::MD_LOOKUP_FIRST_ID, farm::MD_LOOKUP_IDS),
+            ("order's option model", farm::MODEL_LOOKUP_FIRST_ID, farm::MODEL_LOOKUP_IDS),
         ];
         ranges.sort_by_key(|r| r.1);
         // A caller's request id is a positive i32.

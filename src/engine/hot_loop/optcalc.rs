@@ -61,6 +61,9 @@ pub(crate) struct OptCalc {
     next_lookup: u32,
     curves: HashMap<String, Known<inputs::RateCurve>>,
     dividends: HashMap<i64, Known<Vec<inputs::Dividend>>>,
+    /// The contract whose dividends an underlying's model reads, when not
+    /// its own: a future's index (ibx#730).
+    div_source: HashMap<i64, i64>,
     xml_queries: HashMap<String, XmlTarget>,
     next_xml: u32,
     /// A model clock that does not move (tests).
@@ -86,6 +89,7 @@ impl Default for OptCalc {
             next_lookup: 0,
             curves: HashMap::new(),
             dividends: HashMap::new(),
+            div_source: HashMap::new(),
             xml_queries: HashMap::new(),
             next_xml: 1,
             fixed_clock: None,
@@ -95,6 +99,17 @@ impl Default for OptCalc {
 
 fn now_ms() -> i64 {
     jiff::Timestamp::now().as_millisecond()
+}
+
+/// The dividend query of an option's model, on the contract whose
+/// dividends it reads (ibx#730): the underlying's own, as its terms ask
+/// them, or another's (a future's index).
+fn dividend_query(terms: &OptionTerms, div_con: i64) -> String {
+    if div_con == terms.under_con_id {
+        terms.dividend_query()
+    } else {
+        format!("div incSpecial {div_con}")
+    }
 }
 
 /// Terms of an option from its definition.
@@ -292,11 +307,12 @@ impl OptCalc {
                 self.curves.insert(terms.currency.clone(), Known::Asked(now));
                 self.send_xml_query(&terms.rate_query(), XmlTarget::Curve(terms.currency.clone()), conn, hb);
             }
-            if let std::collections::hash_map::Entry::Vacant(e) = self.dividends.entry(terms.under_con_id) {
+            let div_con = self.div_con(terms.under_con_id);
+            if let std::collections::hash_map::Entry::Vacant(e) = self.dividends.entry(div_con) {
                 e.insert(Known::Asked(now));
-                self.send_xml_query(&terms.dividend_query(), XmlTarget::Dividends(terms.under_con_id), conn, hb);
+                self.send_xml_query(&dividend_query(&terms, div_con), XmlTarget::Dividends(div_con), conn, hb);
             }
-            let ready = match (self.curves.get(&terms.currency), self.dividends.get(&terms.under_con_id)) {
+            let ready = match (self.curves.get(&terms.currency), self.dividends.get(&div_con)) {
                 (Some(Known::Ready(curve)), Some(Known::Ready(divs))) => Some((curve, divs)),
                 _ => None,
             };
@@ -349,17 +365,44 @@ impl OptCalc {
             self.curves.insert(terms.currency.clone(), Known::Asked(now));
             self.send_xml_query(&terms.rate_query(), XmlTarget::Curve(terms.currency.clone()), conn, hb);
         }
-        if let std::collections::hash_map::Entry::Vacant(e) = self.dividends.entry(terms.under_con_id) {
+        let div_con = self.div_con(terms.under_con_id);
+        if let std::collections::hash_map::Entry::Vacant(e) = self.dividends.entry(div_con) {
             e.insert(Known::Asked(now));
-            self.send_xml_query(&terms.dividend_query(), XmlTarget::Dividends(terms.under_con_id), conn, hb);
+            self.send_xml_query(&dividend_query(terms, div_con), XmlTarget::Dividends(div_con), conn, hb);
         }
+    }
+
+    /// The model of options on a future reads the dividends of the
+    /// future's index (ibx#730; the reference 10.51, paper, 15/10/2026: an
+    /// ES futures option order's model asked those of the ES index, not
+    /// those of the future).
+    pub(crate) fn set_dividend_source(&mut self, under_con_id: i64, source: i64) {
+        if source > 0 && source != under_con_id {
+            self.div_source.insert(under_con_id, source);
+        }
+    }
+
+    /// The contract whose dividends an underlying's model reads.
+    fn div_con(&self, under_con_id: i64) -> i64 {
+        self.div_source.get(&under_con_id).copied().unwrap_or(under_con_id)
+    }
+
+    pub(crate) fn dividend_contract(&self, under_con_id: i64) -> i64 {
+        self.div_con(under_con_id)
+    }
+
+    /// Whether the rate curve of a currency and the dividends a model
+    /// reads for its underlying came (or gave up).
+    pub(crate) fn inputs_known(&self, currency: &str, under_con_id: i64) -> bool {
+        let done = |k: Option<&Known<_>>| matches!(k, Some(Known::Ready(_) | Known::Missing));
+        done(self.curves.get(currency)) && matches!(self.dividends.get(&self.div_con(under_con_id)), Some(Known::Ready(_) | Known::Missing))
     }
 
     /// `f` with the model inputs of an option at the model clock, None while
     /// they are not known.
     pub(crate) fn with_inputs<R>(&mut self, terms: &OptionTerms, f: impl FnOnce(Option<&optcalc::ModelInputs>) -> R) -> R {
         let clock = self.clock_ms(now_ms());
-        match (self.curves.get(&terms.currency), self.dividends.get(&terms.under_con_id)) {
+        match (self.curves.get(&terms.currency), self.dividends.get(&self.div_con(terms.under_con_id))) {
             (Some(Known::Ready(curve)), Some(Known::Ready(divs))) => {
                 let inp = optcalc::ModelInputs { curve, dividends: divs, clock_ms: clock, local_zone: &self.local_zone };
                 f(Some(&inp))

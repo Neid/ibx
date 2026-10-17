@@ -192,6 +192,9 @@ pub(crate) struct DefLink {
     pub(crate) index_con_id: i64,
     pub(crate) exchange: String,
     pub(crate) sec_type: String,
+    /// The key of the trading hours of its class (ibx#730).
+    pub(crate) join_key: String,
+    pub(crate) currency: String,
 }
 
 pub struct Context {
@@ -416,6 +419,27 @@ pub struct Context {
     /// definition by conId on SMART).
     pub(crate) cfd_checked: std::collections::HashSet<String>,
     pub(crate) cfd_requests: Vec<String>,
+    /// The underlyings the derivative orders of the session looked up
+    /// (ibx#730): by conId, while the lookup is on its way the time its
+    /// order stops waiting for it, None once answered; and the requests on
+    /// their way, by the name ibx gave them, with the underlying's conId.
+    /// The order's underlying first (its company lookup, which its order
+    /// waits for), then its preferred definition past its permission check
+    /// (which the order's option model waits for).
+    pub(crate) order_underlyings: HashMap<i64, Option<std::time::Instant>>,
+    pub(crate) under_preferred: HashMap<i64, Option<std::time::Instant>>,
+    /// The stocks an option order asked as the underlying of index
+    /// options (ibx#730): once per underlying.
+    pub(crate) index_option_unders: std::collections::HashSet<i64>,
+    pub(crate) underlying_requests: Vec<(String, i64)>,
+    /// The lookups of the indexes a futures option order's model makes
+    /// once its index is known (ibx#730), and the number of the model's
+    /// next lookup.
+    pub(crate) index_walks: Vec<crate::engine::hot_loop::farm::IndexWalk>,
+    pub(crate) next_model_lookup: u32,
+    /// The key of the trading hours of a contract's class, by conId, once
+    /// its definition was read (ibx#730).
+    pub(crate) join_keys: HashMap<i64, String>,
     /// Contracts whose trading hours were asked for an order and have not
     /// come: an order with a zone to check waits for them (ibx#668).
     pub(crate) zone_pending: std::collections::HashSet<i64>,
@@ -572,6 +596,13 @@ impl Context {
             next_permission_request: 0,
             cfd_checked: std::collections::HashSet::new(),
             cfd_requests: Vec::new(),
+            order_underlyings: HashMap::new(),
+            under_preferred: HashMap::new(),
+            index_option_unders: std::collections::HashSet::new(),
+            underlying_requests: Vec::new(),
+            index_walks: Vec::new(),
+            next_model_lookup: 0,
+            join_keys: HashMap::new(),
             zone_pending: std::collections::HashSet::new(),
             order_hours_due: Vec::new(),
             depth_unsupported: std::collections::HashSet::new(),

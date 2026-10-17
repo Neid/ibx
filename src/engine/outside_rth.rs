@@ -67,6 +67,10 @@ pub(crate) struct RthTypes {
     /// The security type of the contract's underlying, for a CFD
     /// (ibx#619).
     pub under_sec_type: String,
+    /// The conId of the contract's underlying, 0 when it names none: an
+    /// option's, a futures option's or a warrant's first order asks it
+    /// (ibx#730).
+    pub under_con_id: i64,
     /// What the order message of a contract other than a stock carries
     /// (ibx#666): its local symbol, its contract month, its multiplier
     /// with two decimals (1.00 when the definition has none).

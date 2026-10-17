@@ -594,14 +594,27 @@ impl HotLoop {
     /// Ask the auth connection for a contract's definition, unless a lookup
     /// for it is in flight. False when it cannot be asked.
     fn ask_definition(&mut self, con_id: i64, exchange: &str) -> bool {
+        self.ask_definition_as(con_id, exchange, None)
+    }
+
+    /// [`Self::ask_definition`], named as the reference names the lookup of
+    /// that kind when `kind` is given (an order's option model's, ibx#730).
+    fn ask_definition_as(&mut self, con_id: i64, exchange: &str, kind: Option<&str>) -> bool {
         if self.context.lot_lookups.iter().any(|(_, c, _)| *c == con_id) {
             return true;
         }
-        let Some(conn) = self.ccp_conn.as_mut().filter(|_| !self.ccp.disconnected) else {
+        if self.ccp_conn.is_none() || self.ccp.disconnected {
             return false;
+        }
+        let req_id = match kind {
+            Some(kind) => farm::next_model_lookup(&mut self.context, kind),
+            None => {
+                let id = format!("ibxlot{}", self.context.next_lot_lookup);
+                self.context.next_lot_lookup = self.context.next_lot_lookup.wrapping_add(1);
+                id
+            }
         };
-        let req_id = format!("ibxlot{}", self.context.next_lot_lookup);
-        self.context.next_lot_lookup = self.context.next_lot_lookup.wrapping_add(1);
+        let Some(conn) = self.ccp_conn.as_mut() else { return false };
         let ts = chrono_free_timestamp();
         let con_id_str = con_id.to_string();
         let exchange = match exchange.to_ascii_uppercase().as_str() {
@@ -1021,6 +1034,13 @@ impl HotLoop {
                 log::warn!("Option model of con_id {}: no underlying in its definition, no option computations", s.con_id);
                 continue;
             }
+            // An order's model waits for the preferred definition of its
+            // underlying that the order asked past its permission check
+            // (ibx#730).
+            if s.order.is_some() && matches!(self.context.under_preferred.get(&terms.under_con_id), Some(Some(_))) {
+                self.farm.optmd.starting.push(s);
+                continue;
+            }
             let under_type = if terms.under_sec_type.is_empty() { "STK".to_string() } else { terms.under_sec_type.clone() };
             // An order's model: the option's route on the order's exchange,
             // once the definition its route needs is known (ibx#693).
@@ -1071,15 +1091,81 @@ impl HotLoop {
                 continue;
             }
             // A futures option order's model: its index part next
-            // (ibx#727).
-            if s.order.is_some() && under_type == "FUT" {
+            // (ibx#727); its inputs once the index is known (ibx#730).
+            let by_order = s.order.is_some();
+            let index_part = by_order && under_type == "FUT";
+            if index_part {
                 self.farm.optmd.note_index_start(s.instrument, terms.under_con_id, now);
+            }
+            // An order's model asks its underlying's pair as a client's
+            // request asks it: a farm it starts gives its connecting notice
+            // at once, and the model's later entries the one of the check
+            // (ibx#730; the reference 10.51, paper, 15/10/2026 before the
+            // open, an ES put ordered on CME: "connecting:usfuture" 4 ms
+            // after the futures farm's connect began, with the future's
+            // pair queued, then again 0.56 s later with the model's other
+            // entries queued; an option's own farm, two of two, none at
+            // the start, ibx#693).
+            if s.order.is_some() && let Some(f) = self.pool.get_mut(under_farm) {
+                f.note_client_request();
             }
             let f = &mut self.farm;
             let msgs = f.optmd.launch_with(s.instrument, s.con_id, s.snapshot, terms.clone(), opt_farm, under_farm,
                 &under_exchange, s.order, &mut f.next_md_req_id);
             self.send_md_messages(msgs);
+            if !index_part {
+                self.ccp.optcalc.want_inputs(&terms, &mut self.ccp_conn, &mut self.hb);
+                if by_order {
+                    self.note_input_hours(&terms.currency, terms.under_con_id, now);
+                }
+            }
+        }
+    }
+
+    /// The steps of the futures option order models after their index
+    /// part's definitions (ibx#730, `optmd::IndexFollow`).
+    fn service_index_follows(&mut self, now: Instant) {
+        for f in std::mem::take(&mut self.farm.optmd.index_follows) {
+            if !self.ccp.schedule_known(&f.future_key) && !f.future_key.is_empty() && now < f.deadline {
+                self.farm.optmd.index_follows.push(f);
+                continue;
+            }
+            if let Some(conn) = self.ccp_conn.as_mut().filter(|_| !self.ccp.disconnected) {
+                farm::start_index_walks(&mut self.context, conn, &mut self.hb, f.target, &f.currency);
+            }
+            self.ccp.optcalc.set_dividend_source(f.future, f.index);
+            self.model_inputs(f.instrument, now);
+        }
+    }
+
+    /// The inputs of the order's model of an instrument, asked when not
+    /// known, then the trading hours that follow them.
+    fn model_inputs(&mut self, instrument: InstrumentId, now: Instant) {
+        if let Some(terms) = self.farm.optmd.models.iter().find(|m| m.instrument == instrument).map(|m| m.terms.clone()) {
             self.ccp.optcalc.want_inputs(&terms, &mut self.ccp_conn, &mut self.hb);
+            self.note_input_hours(&terms.currency, terms.under_con_id, now);
+        }
+    }
+
+    /// The trading hours an order's model asks once its inputs came
+    /// (`optmd::InputHours`).
+    fn note_input_hours(&mut self, currency: &str, under_con_id: i64, now: Instant) {
+        let waits = &mut self.farm.optmd.input_hours;
+        if !waits.iter().any(|w| w.under_con_id == under_con_id && w.currency == currency) {
+            waits.push(optmd::InputHours { currency: currency.to_string(), under_con_id, deadline: now + optmd::OptMd::start_wait() });
+        }
+    }
+
+    fn service_input_hours(&mut self, now: Instant) {
+        for w in std::mem::take(&mut self.farm.optmd.input_hours) {
+            if self.ccp.optcalc.inputs_known(&w.currency, w.under_con_id) {
+                let source = self.ccp.optcalc.dividend_contract(w.under_con_id);
+                if let Some(key) = self.context.join_keys.get(&source).cloned() {
+                    self.ccp.ask_model_schedule(&key, &mut self.ccp_conn, &mut self.hb);
+                }
+            } else if now < w.deadline {
+                self.farm.optmd.input_hours.push(w);
+            }
         }
     }
 
@@ -1104,19 +1190,33 @@ impl HotLoop {
                 _ => None,
             };
             if let Some(con_id) = missing {
-                if s.asked != Some(con_id) && self.ask_definition(con_id, "ANYEXCH") {
+                // Named as the reference names them (ibx#730).
+                if s.asked != Some(con_id) && self.ask_definition_as(con_id, "ANYEXCH", Some(crate::control::contracts::SECDEF_PREFERRED_NAME)) {
                     s.asked = Some(con_id);
                 }
                 self.farm.optmd.index_starts.push(s);
                 continue;
             }
             // A definition that names nothing: no index part (not
-            // observed).
-            let (Some(index), Some(target)) = (index, target) else {
+            // observed); the model's inputs from the future.
+            let (Some(future), Some(index), Some(target)) = (future, index, target) else {
                 log::info!("Index part of the model of instrument {}: the definitions of future {} name no index", s.instrument, s.future);
+                self.model_inputs(s.instrument, now);
                 continue;
             };
             let con_id = index.index_con_id;
+            // Its next steps, once per future (ibx#730): the trading hours
+            // of the future's class first.
+            if self.farm.optmd.followed_futures.insert(s.future) {
+                self.ccp.ask_model_schedule(&future.join_key, &mut self.ccp_conn, &mut self.hb);
+                self.farm.optmd.index_follows.push(optmd::IndexFollow {
+                    instrument: s.instrument, future: s.future, index: future.under_con_id, target: con_id,
+                    future_key: future.join_key.clone(),
+                    currency: self.farm.optmd.models.iter().find(|m| m.instrument == s.instrument)
+                        .map(|m| m.terms.currency.clone()).filter(|c| !c.is_empty()).unwrap_or_else(|| future.currency.clone()),
+                    deadline: now + optmd::OptMd::start_wait(),
+                });
+            }
             if self.farm.optmd.has_index(con_id) {
                 continue;
             }
@@ -1151,6 +1251,12 @@ impl HotLoop {
         }
         if !self.farm.optmd.index_starts.is_empty() {
             self.service_index_starts(now);
+        }
+        if !self.farm.optmd.index_follows.is_empty() {
+            self.service_index_follows(now);
+        }
+        if !self.farm.optmd.input_hours.is_empty() {
+            self.service_input_hours(now);
         }
         if !self.farm.optmd.outbox.is_empty() {
             let msgs = std::mem::take(&mut self.farm.optmd.outbox);
@@ -1523,6 +1629,7 @@ impl HotLoop {
         self.ccp.pump_fanout(Instant::now(), &mut self.ccp_conn, &mut self.hb);
         order_builder::sweep_rth_lookups(&mut self.context);
         order_builder::sweep_permission_requests(&mut self.context);
+        order_builder::sweep_underlying_lookups(&mut self.context);
         farm::sweep_md_lookups(&mut self.context, &self.shared);
         self.send_md_resolved();
         farm::sweep_round_lot_lookups(&mut self.context);

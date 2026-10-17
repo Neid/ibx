@@ -115,12 +115,16 @@ pub(crate) fn note_definition(context: &mut Context, con_id: i64, msg: &[u8]) {
         if !def.stock_type.is_empty() {
             context.stock_types.insert(con_id, def.stock_type.clone());
         }
+        if !def.join_key.is_empty() {
+            context.join_keys.insert(con_id, def.join_key.clone());
+        }
         // A future's or an index's links, for the index part of a futures
         // option order's model (ibx#727).
         if matches!(def.sec_type.to_api_str(), "FUT" | "IND") {
             context.def_links.insert(con_id, crate::engine::context::DefLink {
                 under_con_id: def.under_con_id, index_con_id: def.index_con_id,
                 exchange: def.exchange.clone(), sec_type: def.sec_type.to_api_str().to_string(),
+                join_key: def.join_key.clone(), currency: def.currency.clone(),
             });
         }
         if terms.is_option() || crate::control::optcalc::market::has_model(&terms.sec_type) {
@@ -209,6 +213,91 @@ pub(crate) const MD_LOOKUP_TIMEOUT: std::time::Duration = std::time::Duration::f
 /// internal lookups' range and far above caller request ids (ibx#278).
 pub(crate) const MD_LOOKUP_FIRST_ID: u32 = 0xE000_0000;
 pub(crate) const MD_LOOKUP_IDS: u32 = 0x1000_0000;
+
+/// Request numbers of the lookups an order's option model makes (ibx#730):
+/// a range of their own.
+pub(crate) const MODEL_LOOKUP_FIRST_ID: u32 = 0x9000_0000;
+pub(crate) const MODEL_LOOKUP_IDS: u32 = 0x1000_0000;
+
+/// The internal name of the next lookup of an order's option model, as the
+/// reference names its kind (`kind` then a number of the model's range;
+/// the connection gives it the session's number on the wire).
+pub(crate) fn next_model_lookup(context: &mut Context, kind: &str) -> String {
+    let number = MODEL_LOOKUP_FIRST_ID + context.next_model_lookup % MODEL_LOOKUP_IDS;
+    context.next_model_lookup = context.next_model_lookup.wrapping_add(1);
+    format!("{kind}{number}")
+}
+
+/// One of the walks of index lookups a futures option order's model makes
+/// once its index's reference index is known (ibx#730): the indexes that
+/// refer to it, then the futures of each, one lookup at a time.
+#[derive(Debug, Clone)]
+pub(crate) struct IndexWalk {
+    /// The lookup on its way.
+    pub(crate) waiting: String,
+    /// The symbols still to look up, once the indexes came.
+    pub(crate) symbols: Option<std::collections::VecDeque<String>>,
+    pub(crate) currency: String,
+}
+
+/// The two walks of index lookups of a futures option order's model
+/// (ibx#730; the reference 10.51, paper, 15/10/2026 before the open, an ES
+/// put ordered on CME: 5 ms after the answer on the trading hours of the
+/// future's class, two lookups of the indexes whose reference index is
+/// SPX, sent together; once each answered, the futures in that currency of
+/// each index it listed, by symbol, one at a time, each sent within 1 ms of
+/// the previous answer; the two walks the same, 12 pairs in all). Nothing
+/// was seen to wait for them; their answers are read and dropped.
+pub(crate) fn start_index_walks(context: &mut Context, conn: &mut Connection, hb: &mut HeartbeatState, target: i64, currency: &str) {
+    let target = target.to_string();
+    for _ in 0..2 {
+        let name = next_model_lookup(context, crate::control::contracts::SECDEF_BY_SYMBOL_NAME);
+        let ts = crate::config::chrono_free_timestamp();
+        let _ = conn.send_fix(&[(fix::TAG_MSG_TYPE, "c"), (fix::TAG_SENDING_TIME, &ts), (320, &name), (321, "2"),
+            (167, "IND"), (6577, &target)]);
+        hb.last_ccp_sent = Instant::now();
+        log::info!("Indexes referring to {} asked for an order's model ({})", target, name);
+        context.index_walks.push(IndexWalk { waiting: name, symbols: None, currency: currency.to_string() });
+    }
+}
+
+/// An answer to a lookup of a walk (`start_index_walks`): the indexes'
+/// answer gives the symbols, the first listed first, then the others from
+/// the last (the order of the recording); each answer asks the futures of
+/// the next symbol. False when the reply is not for a walk.
+pub(crate) fn index_walk_reply(context: &mut Context, conn: Option<&mut Connection>, hb: &mut HeartbeatState, req_id: &str, msg: &[u8]) -> bool {
+    let Some(at) = context.index_walks.iter().position(|w| w.waiting == req_id) else { return false };
+    let mut walk = context.index_walks.remove(at);
+    if walk.symbols.is_none() {
+        let mut listed: Vec<String> = Vec::new();
+        for def in crate::control::contracts::parse_secdef_records(msg).unwrap_or_default() {
+            if !def.symbol.is_empty() && !listed.contains(&def.symbol) {
+                listed.push(def.symbol.clone());
+            }
+        }
+        let mut order = std::collections::VecDeque::new();
+        if let Some((first, rest)) = listed.split_first() {
+            order.push_back(first.clone());
+            order.extend(rest.iter().rev().cloned());
+        }
+        walk.symbols = Some(order);
+    }
+    let Some(conn) = conn else { return true };
+    let Some(symbol) = walk.symbols.as_mut().and_then(|s| s.pop_front()) else { return true };
+    let name = next_model_lookup(context, crate::control::contracts::SECDEF_BY_SYMBOL_NAME);
+    let ts = crate::config::chrono_free_timestamp();
+    let mut fields: Vec<(u32, &str)> = vec![(fix::TAG_MSG_TYPE, "c"), (fix::TAG_SENDING_TIME, &ts), (320, &name), (321, "2"),
+        (55, &symbol), (167, "FUT")];
+    if !walk.currency.is_empty() {
+        fields.push((15, &walk.currency));
+    }
+    let _ = conn.send_fix(&fields);
+    hb.last_ccp_sent = Instant::now();
+    log::debug!("Futures of {} asked for an order's model ({})", symbol, name);
+    walk.waiting = name;
+    context.index_walks.push(walk);
+    true
+}
 
 /// A definition reply for the conId lookup of a market data request
 /// (ibx#278). Exactly one contract: its conId is set on the instrument

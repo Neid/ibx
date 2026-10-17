@@ -941,11 +941,11 @@ fn definition(engine: &mut HotLoop, con_id: i64, fields: &[(u32, &str)]) {
 fn answer_es_chain(engine: &mut HotLoop, ccp_side: &mut crate::protocol::connection::MemTransport) {
     let asked = lookups(ccp_side);
     assert_eq!(asked.iter().map(|(_, c, x)| (c.as_str(), x.as_str())).collect::<Vec<_>>(), [("515416632", "ANYEXCH")], "{asked:?}");
-    definition(engine, ES_FUT, &[(55, "ES"), (167, "FUT"), (207, "CME"), (15, "USD"), (6346, "11004968"), (310, "IND")]);
+    definition(engine, ES_FUT, &[(55, "ES"), (167, "FUT"), (207, "CME"), (15, "USD"), (6346, "11004968"), (310, "IND"), (6256, FUT_KEY)]);
     engine.service_option_models(Instant::now());
     let asked = lookups(ccp_side);
     assert_eq!(asked.iter().map(|(_, c, x)| (c.as_str(), x.as_str())).collect::<Vec<_>>(), [("11004968", "ANYEXCH")], "{asked:?}");
-    definition(engine, ES_IND, &[(55, "ES"), (167, "IND"), (207, "CME"), (15, "USD"), (6577, "416904"), (6578, "1")]);
+    definition(engine, ES_IND, &[(55, "ES"), (167, "IND"), (207, "CME"), (15, "USD"), (6577, "416904"), (6578, "1"), (6256, IND_KEY)]);
     engine.service_option_models(Instant::now());
     let asked = lookups(ccp_side);
     assert_eq!(asked.iter().map(|(_, c, x)| (c.as_str(), x.as_str())).collect::<Vec<_>>(), [("416904", "ANYEXCH")], "{asked:?}");
@@ -978,7 +978,7 @@ fn a_futures_option_order_asks_the_index_of_its_future() {
     let t1 = Instant::now();
     definition(&mut engine, SPX, &[(55, "SPX"), (167, "IND"), (207, "CBOE"), (15, "USD"), (6921, "CBOE")]);
     engine.service_option_models(t1);
-    assert!(lookups(&mut ccp_side).is_empty(), "nothing more asked");
+    assert!(lookups(&mut ccp_side).is_empty(), "nothing more asked before the future's trading hours (ibx#730)");
     let nj = engine.pool.find("usfarm.nj").expect("the index farm opened on demand");
     assert_eq!(engine.pool.get(nj).unwrap().queued(), 2, "the native top with the pair, then the status");
     assert!(engine.farm.optmd.has_index(SPX));
@@ -1097,4 +1097,170 @@ fn the_index_part_waits_for_a_frozen_status_and_a_named_index() {
     assert!(engine.farm.optmd.has(id));
     assert!(engine.farm.optmd.index_starts.is_empty());
     assert!(lookups(&mut ccp_side).iter().all(|(_, _, exchange)| exchange != "ANYEXCH"), "no lookup of the index part");
+}
+
+// ibx#730 (the reference 10.51, paper, 13/10 and 14/10/2026, two first
+// AAPL option orders, `.tmp/666/wire_gw_probe.jsonl` and
+// `.tmp/rth14/wire_gw_R8.jsonl`): once the order's model has its inputs,
+// the rate curve and the underlying's dividends, it asks the trading hours
+// of the underlying's class, once.
+#[test]
+fn an_option_order_model_asks_the_underlyings_trading_hours_after_its_inputs() {
+    let (mut engine, _shared, _farm_side, id) = order_engine();
+    let (ccp, mut ccp_side) = crate::protocol::connection::mem_pair();
+    engine.ccp_conn = Some(crate::protocol::connection::Connection::new_mem(ccp));
+    engine.context.join_keys.insert(AAPL, "1/STK/NASDAQ#LITE|p115750|p124448".into());
+    engine.context.order_models.push((id, OPTION, "SMART".into()));
+    engine.service_option_models(Instant::now());
+    let sent = ccp_texts(&mut ccp_side);
+    let queries: Vec<String> = sent.iter().filter(|m| field(m, 6040) == "27").map(|m| field(m, 320)).collect();
+    assert_eq!(sent.iter().filter(|m| field(m, 6040) == "27").map(|m| field(m, 58)).collect::<Vec<_>>(), ["div USD", "div incSpecial 265598"]);
+    engine.service_option_models(Instant::now());
+    assert!(ccp_texts(&mut ccp_side).is_empty(), "the hours wait for the inputs");
+    for (name, xml) in [(&queries[0], "<dividends><div><date>20200101</date><curr>USD</curr><amt>3.9</amt></div></dividends>"),
+                        (&queries[1], "<dividends policy=\"regular\"></dividends>")] {
+        let answer = crate::protocol::fix::fix_build(&[(35, "U"), (6040, "20"), (320, name.as_str()), (6118, xml)], 1);
+        engine.inject_ccp_message(&answer);
+    }
+    engine.service_option_models(Instant::now());
+    let sent = ccp_texts(&mut ccp_side);
+    assert_eq!(sent.len(), 1, "{sent:?}");
+    assert!(sent[0].contains("|6040=106|") && sent[0].contains("|6256=1/STK/NASDAQ#LITE|p115750|p124448|"), "{sent:?}");
+    engine.service_option_models(Instant::now());
+    assert!(ccp_texts(&mut ccp_side).is_empty(), "once");
+}
+
+/// Every message the engine sent on the auth connection, as text.
+fn ccp_texts(ccp_side: &mut crate::protocol::connection::MemTransport) -> Vec<String> {
+    use std::io::Read;
+    ccp_side.set_read_timeout(Some(Duration::from_millis(200))).unwrap();
+    let mut buf = Vec::new();
+    let mut chunk = [0u8; 8192];
+    while let Ok(n) = ccp_side.read(&mut chunk) {
+        if n == 0 { break; }
+        buf.extend_from_slice(&chunk[..n]);
+    }
+    let text = String::from_utf8_lossy(&buf).replace('\x01', "|");
+    text.split("8=FIX").filter(|m| !m.is_empty()).map(str::to_string).collect()
+}
+
+/// The value of a field of a message's text.
+fn field(m: &str, t: u32) -> String {
+    let prefix = format!("{t}=");
+    m.split('|').find_map(|f| f.strip_prefix(prefix.as_str())).unwrap_or("").to_string()
+}
+
+const FUT_KEY: &str = "CME/FUT|p123959";
+const IND_KEY: &str = "CME/IND#NOCOND|p120774";
+
+// ibx#730 (the reference 10.51, paper, 15/10/2026 before the open,
+// `.tmp/666/wire_gw_P15.jsonl`: an ES put ordered on CME by conId, refused
+// for the permission). The model waits for the future's preferred
+// definition the order asked; its answer starts it: the future's pair
+// first, as a client's request, so the futures farm's connect gives its
+// connecting notice at once, and the check 0.5 s later another for the
+// model's other entries (the reference: 4 ms after the connect began, then
+// 0.56 s later). The index part's lookups are named as the reference's
+// (preferred definitions by conId on any exchange). Once the reference
+// index is known, the trading hours of the future's class; once they came,
+// two lookups of the indexes referring to it, then the rate curve and the
+// dividends of the future's index (not of the future); once those came,
+// the trading hours of the index's class. Each walk of index lookups asks
+// the futures of the indexes listed, the first then the others from the
+// last, one at a time.
+#[test]
+fn a_futures_option_order_model_asks_what_the_reference_asks() {
+    use std::sync::atomic::AtomicBool;
+    let (mut engine, mut ccp_side, _farm_side, id) = fop_engine();
+    engine.context.under_preferred.insert(ES_FUT, Some(Instant::now() + Duration::from_secs(5)));
+    engine.context.order_models.push((id, ES_PUT, "CME".into()));
+    engine.service_option_models(Instant::now());
+    assert!(engine.pool.find("usfuture").is_none(), "the model waits for the future's preferred definition");
+
+    // Its answer, with the future's index.
+    engine.context.under_preferred.insert(ES_FUT, None);
+    engine.context.def_links.insert(ES_FUT, crate::engine::context::DefLink {
+        under_con_id: ES_IND, index_con_id: 0, exchange: "CME".into(), sec_type: "FUT".into(),
+        join_key: FUT_KEY.into(), currency: "USD".into(),
+    });
+    let t0 = Instant::now();
+    engine.service_option_models(t0);
+    let usfuture = engine.pool.find("usfuture").expect("the futures farm");
+    assert_eq!(engine.pool.get(usfuture).unwrap().queued(), 4);
+    let (_tx, rx) = crossbeam_channel::bounded::<std::io::Result<crate::protocol::connection::Connection>>(1);
+    engine.pool.set_connecting(usfuture, rx, Arc::new(AtomicBool::new(true)));
+    let connecting = |engine: &mut HotLoop, at: Instant| engine.pool.poll_connects(at).1.iter()
+        .filter(|e| matches!(e, pool::FarmEvent::Connecting(f) if *f == usfuture)).count();
+    assert_eq!(connecting(&mut engine, t0), 1, "at the start of the connect");
+    assert_eq!(connecting(&mut engine, t0 + Duration::from_millis(600)), 1, "the model's other entries at the check");
+    assert_eq!(connecting(&mut engine, t0 + Duration::from_millis(1200)), 0);
+    let sent = ccp_texts(&mut ccp_side);
+    assert!(sent.iter().all(|m| field(m, 6040) != "27"), "no inputs before the index: {sent:?}");
+    let asked: Vec<(String, String, String)> = sent.iter().filter(|m| m.contains("|35=c|"))
+        .map(|m| (field(m, 320), field(m, 6008), field(m, 6004))).collect();
+    assert_eq!(asked.len(), 1, "{asked:?}");
+    assert!(asked[0].0.starts_with(crate::control::contracts::SECDEF_PREFERRED_NAME), "{asked:?}");
+    assert_eq!((asked[0].1.as_str(), asked[0].2.as_str()), ("11004968", "ANYEXCH"));
+
+    definition(&mut engine, ES_IND, &[(55, "ES"), (167, "IND"), (207, "CME"), (15, "USD"), (6577, "416904"), (6578, "1"), (6256, IND_KEY)]);
+    engine.service_option_models(Instant::now());
+    let asked = lookups(&mut ccp_side);
+    assert_eq!(asked.len(), 1, "{asked:?}");
+    assert!(asked[0].0.starts_with(crate::control::contracts::SECDEF_PREFERRED_NAME) && asked[0].1 == "416904", "{asked:?}");
+    definition(&mut engine, SPX, &[(55, "SPX"), (167, "IND"), (207, "CBOE"), (15, "USD")]);
+    engine.service_option_models(Instant::now());
+    let sent = ccp_texts(&mut ccp_side);
+    assert_eq!(sent.len(), 1, "{sent:?}");
+    assert_eq!((field(&sent[0], 35), field(&sent[0], 6040), field(&sent[0], 6256)), ("U".to_string(), "106".to_string(), "CME/FUT".to_string()),
+        "the trading hours of the future's class: {sent:?}");
+    assert!(sent[0].contains(&format!("|6256={FUT_KEY}|")), "{sent:?}");
+    engine.service_option_models(Instant::now());
+    assert!(ccp_texts(&mut ccp_side).is_empty(), "the rest waits for them");
+
+    // The trading hours came.
+    let hours = crate::protocol::fix::fix_build(&[(35, "U"), (6040, "107"), (320, "SubMsgXMLQuery1"), (6256, FUT_KEY)], 1);
+    engine.inject_ccp_message(&hours);
+    engine.service_option_models(Instant::now());
+    let sent = ccp_texts(&mut ccp_side);
+    let kinds: Vec<String> = sent.iter().map(|m| match field(m, 35).as_str() {
+        "c" => format!("{}|{}|{}", field(m, 167), field(m, 6577), field(m, 320).trim_end_matches(|c: char| c.is_ascii_digit())),
+        _ => format!("{}|{}", field(m, 6040), field(m, 58)),
+    }).collect();
+    assert_eq!(kinds, ["IND|416904|FixSecDefReqBySymbol", "IND|416904|FixSecDefReqBySymbol", "27|div USD", "27|div incSpecial 11004968"]);
+    let walks: Vec<String> = sent[..2].iter().map(|m| field(m, 320)).collect();
+    let queries: Vec<String> = sent[2..].iter().map(|m| field(m, 320)).collect();
+
+    // A walk: the futures of the indexes listed, one at a time.
+    let listed = crate::protocol::fix::fix_build(&[(35, "d"), (320, walks[0].as_str()), (322, "*"), (323, "4"),
+        (55, "SPX"), (167, "IND"), (207, "CBOE"), (6008, "416904"), (15, "USD"),
+        (55, "ES"), (167, "IND"), (207, "CME"), (6008, "11004968"), (15, "USD"),
+        (55, "NES"), (167, "IND"), (207, "CME"), (6008, "908067029"), (15, "USD")], 1);
+    engine.inject_ccp_message(&listed);
+    let mut symbols = Vec::new();
+    loop {
+        let sent = ccp_texts(&mut ccp_side);
+        let Some(m) = sent.first() else { break };
+        assert_eq!(sent.len(), 1, "{sent:?}");
+        assert_eq!((field(m, 167), field(m, 15)), ("FUT".to_string(), "USD".to_string()), "{m}");
+        symbols.push(field(m, 55));
+        let none = crate::protocol::fix::fix_build(&[(35, "d"), (320, field(m, 320).as_str()), (322, "*"), (323, "4")], 1);
+        engine.inject_ccp_message(&none);
+    }
+    assert_eq!(symbols, ["SPX", "NES", "ES"]);
+    assert!(engine.shared.reference.get_contract(908067029).is_none(), "the walks' answers are dropped");
+
+    // The inputs came: the trading hours of the index's class.
+    for (name, xml) in [(&queries[0], "<dividends><div><date>20200101</date><curr>USD</curr><amt>3.9</amt></div></dividends>"),
+                        (&queries[1], "<dividends policy=\"regular\"></dividends>")] {
+        let answer = crate::protocol::fix::fix_build(&[(35, "U"), (6040, "20"), (320, name.as_str()), (6118, xml)], 1);
+        engine.inject_ccp_message(&answer);
+    }
+    engine.service_option_models(Instant::now());
+    let sent = ccp_texts(&mut ccp_side);
+    assert_eq!(sent.len(), 1, "{sent:?}");
+    assert!(sent[0].contains("|6040=106|") && sent[0].contains(&format!("|6256={IND_KEY}|")), "{sent:?}");
+    assert!(engine.farm.optmd.index_follows.is_empty());
+    assert!(engine.ccp.optcalc.with_inputs(&es_put_terms(ES_PUT), |inputs| inputs.is_some()), "the model reads the index's dividends");
+    engine.service_option_models(Instant::now() + Duration::from_secs(1));
+    assert!(ccp_texts(&mut ccp_side).is_empty(), "nothing more");
 }

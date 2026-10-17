@@ -3076,20 +3076,29 @@ fn definition_on<'a>(
     if !context.rth_types.contains_key(&key) {
         if !context.rth_lookups.iter().any(|(_, k, _)| *k == key) {
             // The reference's name of this lookup (ibx#706); the session's
-            // number is given on the wire.
-            let id = format!("{}{}", crate::control::contracts::SECDEF_ORDER_TYPES_NAME, context.next_rth_lookup);
-            context.next_rth_lookup = context.next_rth_lookup.wrapping_add(1);
+            // number is given on the wire. A contract given by its conId
+            // alone is looked up as a contract not seen yet, from the
+            // client's source (ibx#730; the reference 10.51, paper,
+            // observed in the recordings of 13-16/10/2026: 12 first orders
+            // of 12 given by their conId, every type).
+            let by_con_id = on.is_none() && context.market.blank_symbol(instrument);
+            let id = if by_con_id {
+                let number = ORDER_LOOKUP_FIRST_ID + context.next_order_lookup % ORDER_LOOKUP_IDS;
+                context.next_order_lookup = context.next_order_lookup.wrapping_add(1);
+                format!("{}{}", crate::control::contracts::SECDEF_MSG_NAME, number)
+            } else {
+                let id = format!("{}{}", crate::control::contracts::SECDEF_ORDER_TYPES_NAME, context.next_rth_lookup);
+                context.next_rth_lookup = context.next_rth_lookup.wrapping_add(1);
+                id
+            };
             let ts = chrono_free_timestamp();
             let con_id_str = con_id.to_string();
-            let _ = conn.send_fix(&[
-                (fix::TAG_MSG_TYPE, "c"),
-                (fix::TAG_SENDING_TIME, &ts),
-                (320, &id),
-                (321, "2"),
-                (146, "1"),
-                (6008, &con_id_str),
-                (6004, &key.1),
-            ]);
+            let mut fields: Vec<(u32, &str)> = vec![(fix::TAG_MSG_TYPE, "c"), (fix::TAG_SENDING_TIME, &ts), (320, &id), (321, "2")];
+            if by_con_id {
+                fields.push((6088, "Socket"));
+            }
+            fields.extend([(146, "1"), (6008, con_id_str.as_str()), (6004, key.1.as_str())]);
+            let _ = conn.send_fix(&fields);
             hb.last_ccp_sent = std::time::Instant::now();
             log::info!("Definition of con_id {} on {} asked for the order rules ({})", con_id, key.1, id);
             context.rth_lookups.push((id, key, std::time::Instant::now() + RTH_LOOKUP_TIMEOUT));
@@ -3331,17 +3340,23 @@ fn permission_refusal(
         shared.orders.push_order_error(oid, code, text);
         Some(true)
     };
-    let key = match definition(context, conn, hb, instrument) {
+    let (key, under_con_id) = match definition(context, conn, hb, instrument) {
         Definition::NoContract if own_message => return unwritten(shared),
         Definition::NoContract => return None,
         Definition::Waiting => return Some(false),
-        Definition::Known(types, _) => types.permission_key.clone(),
+        Definition::Known(types, _) => (types.permission_key.clone(), types.under_con_id),
     };
+    // A derivative's underlying is looked up first (ibx#730).
+    let derivative = matches!(sec_type.as_str(), "OPT" | "FOP" | "WAR") && under_con_id > 0;
+    if derivative && !underlying_known(context, conn, hb, under_con_id) {
+        return Some(false);
+    }
     // Past this check, refused or not, an option or futures option order
     // starts the market data of its option, for the engine itself
     // (ibx#693); a fund order its top of book, when it does not wait for
     // the answer too (ibx#666).
-    if key.is_empty() || !waits || context.trading_permissions.contains_key(&key) {
+    let past_check = key.is_empty() || !waits || context.trading_permissions.contains_key(&key);
+    if past_check {
         note_order_model(context, instrument, &sec_type);
     }
     if key.is_empty() {
@@ -3354,6 +3369,17 @@ fn permission_refusal(
     ask_permission(context, conn, hb, &key);
     if let Some(con_id) = context.market.con_id(instrument).filter(|c| *c > 0) {
         send_order_hours(context, conn, hb, con_id);
+    }
+    // An option order's underlying as the underlying of index options
+    // (ibx#730, `ask_index_option_under`).
+    if sec_type == "OPT" && derivative && !is_volatility(req) {
+        ask_index_option_under(context, conn, hb, under_con_id);
+    }
+    // Past the check, the underlying's preferred definition (ibx#730), but
+    // for a volatility order, whose refusal starts the CFD check instead
+    // (ibx#729).
+    if past_check && derivative && !is_volatility(req) {
+        ask_underlying_preferred(context, conn, hb, under_con_id);
     }
     // An order whose type's preset is on its way reads the answer once the
     // preset came (ibx#729; the reference 10.51, paper, a future 13/10/2026,
@@ -3549,6 +3575,146 @@ fn start_cfd_check(context: &mut Context, conn: &mut Connection, hb: &mut Heartb
     context.cfd_requests.push(name);
 }
 
+/// How long a derivative order waits for the lookup of its underlying, and
+/// its option model for the underlying's preferred definition; then they
+/// go on without them.
+const UNDERLYING_LOOKUP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Whether the underlying of a derivative order was looked up in the
+/// session; asked now when not (ibx#730): the reference 10.51 asks the
+/// company lookup of the underlying, by conId on any exchange, once the
+/// order's contract is known, and asks the permission of the order's class
+/// once it answered (paper, observed in the recordings of 13-16/10/2026: 5
+/// first orders of 5 on an option, a futures option or a warrant, the
+/// lookup 1 to 3 ms after the contract's answer, the permission 1 to 3 ms
+/// after the lookup's answer; nothing for the 7 later orders on the same
+/// underlyings, nor for a future, a stock or other types). False while its
+/// answer is on its way.
+fn underlying_known(context: &mut Context, conn: &mut Connection, hb: &mut HeartbeatState, under_con_id: i64) -> bool {
+    match context.order_underlyings.get(&under_con_id) {
+        Some(None) => return true,
+        Some(Some(deadline)) => return Instant::now() >= *deadline,
+        None => {}
+    }
+    let lookup_id = ORDER_LOOKUP_FIRST_ID + context.next_order_lookup % ORDER_LOOKUP_IDS;
+    context.next_order_lookup = context.next_order_lookup.wrapping_add(1);
+    let name = format!("{}{}", crate::control::contracts::SECDEF_UNDERLYING_NAME, lookup_id);
+    let con = under_con_id.to_string();
+    let ts = chrono_free_timestamp();
+    let _ = conn.send_fix(&[(fix::TAG_MSG_TYPE, "c"), (fix::TAG_SENDING_TIME, &ts), (320, &name), (321, "2"), (146, "1"),
+        (6008, &con), (6004, "ANYEXCH")]);
+    hb.last_ccp_sent = Instant::now();
+    log::info!("Underlying {} of an order looked up ({})", under_con_id, name);
+    context.order_underlyings.insert(under_con_id, Some(Instant::now() + UNDERLYING_LOOKUP_TIMEOUT));
+    context.underlying_requests.push((name, under_con_id));
+    false
+}
+
+/// The preferred definition of a derivative order's underlying, past the
+/// order's permission check, once per underlying in the session (ibx#730;
+/// the reference 10.51, paper, observed in the recordings of
+/// 13-16/10/2026: by conId on any exchange, for two option orders and a
+/// futures option order 2 ms after their refusal for the permission, and
+/// for a warrant order 12 ms after the question on its permission; not for
+/// a volatility option order nor for a later order on the same
+/// underlying). The order's option model waits for its answer: the model's
+/// market data was asked 5 to 10 ms after it, three times of three.
+fn ask_underlying_preferred(context: &mut Context, conn: &mut Connection, hb: &mut HeartbeatState, under_con_id: i64) {
+    if context.under_preferred.contains_key(&under_con_id) {
+        return;
+    }
+    let lookup_id = ORDER_LOOKUP_FIRST_ID + context.next_order_lookup % ORDER_LOOKUP_IDS;
+    context.next_order_lookup = context.next_order_lookup.wrapping_add(1);
+    let name = format!("{}{}", crate::control::contracts::SECDEF_PREFERRED_NAME, lookup_id);
+    let con = under_con_id.to_string();
+    let ts = chrono_free_timestamp();
+    let _ = conn.send_fix(&[(fix::TAG_MSG_TYPE, "c"), (fix::TAG_SENDING_TIME, &ts), (320, &name), (321, "2"), (146, "1"),
+        (6008, &con), (6004, "ANYEXCH")]);
+    hb.last_ccp_sent = Instant::now();
+    log::info!("Preferred definition of underlying {} asked for an order ({})", under_con_id, name);
+    context.under_preferred.insert(under_con_id, Some(Instant::now() + UNDERLYING_LOOKUP_TIMEOUT));
+    context.underlying_requests.push((name, under_con_id));
+}
+
+/// The name of the lookup of an option's underlying as the underlying of
+/// index options (ibx#730).
+const INDEX_OPTION_UNDER_NAME: &str = "IndexOptionUnderConidReqByConid";
+
+/// An option order's underlying, by conId on any exchange, under the name
+/// the reference gives the lookup of the underlying of index options, once
+/// per underlying in the session (ibx#730; the reference 10.51, paper,
+/// 13/10 and 14/10/2026: two first AAPL option orders, 61 and 80 ms after
+/// the trading hours asked after the question on the permission, before
+/// its answer; not for a volatility option order nor a futures option
+/// order, nor for a later order on the same underlying). What it is for
+/// was not seen: its answer is read and dropped; nothing waits for it.
+fn ask_index_option_under(context: &mut Context, conn: &mut Connection, hb: &mut HeartbeatState, under_con_id: i64) {
+    if !context.index_option_unders.insert(under_con_id) {
+        return;
+    }
+    let lookup_id = ORDER_LOOKUP_FIRST_ID + context.next_order_lookup % ORDER_LOOKUP_IDS;
+    context.next_order_lookup = context.next_order_lookup.wrapping_add(1);
+    let name = format!("{INDEX_OPTION_UNDER_NAME}{lookup_id}");
+    let con = under_con_id.to_string();
+    let ts = chrono_free_timestamp();
+    let _ = conn.send_fix(&[(fix::TAG_MSG_TYPE, "c"), (fix::TAG_SENDING_TIME, &ts), (320, &name), (321, "2"), (146, "1"),
+        (6008, &con), (6004, "ANYEXCH")]);
+    hb.last_ccp_sent = Instant::now();
+    log::info!("Underlying {} of an option order asked as the underlying of index options ({})", under_con_id, name);
+    context.underlying_requests.push((name, under_con_id));
+}
+
+/// An answer to an order's lookup of its underlying (`underlying_known`,
+/// `ask_underlying_preferred`). The company lookup's answer lets the order
+/// go on. The preferred definition is kept for the order's option model;
+/// a future's asks the permission of its class (ibx#730; the reference
+/// 10.51, paper, 15/10/2026: CME/FUT/GLOBEX 1 ms after the ES future's
+/// answer; nothing for a stock underlying). False when the reply is not
+/// for one.
+pub(crate) fn underlying_reply(context: &mut Context, conn: Option<&mut Connection>, hb: &mut HeartbeatState, req_id: &str, msg: &[u8]) -> bool {
+    let Some(at) = context.underlying_requests.iter().position(|(name, _)| name == req_id) else { return false };
+    let (_, under_con_id) = context.underlying_requests.remove(at);
+    if req_id.starts_with(INDEX_OPTION_UNDER_NAME) {
+        return true;
+    }
+    if req_id.starts_with(crate::control::contracts::SECDEF_PREFERRED_NAME) {
+        super::farm::note_definition(context, under_con_id, msg);
+        context.under_preferred.insert(under_con_id, None);
+        let tags = fix::fix_parse(msg);
+        if let Some(conn) = conn
+            && tags.get(&167).is_some_and(|t| t == "FUT")
+            && let Some(key) = tags.get(&6411).filter(|k| !k.is_empty())
+        {
+            ask_permission(context, conn, hb, key);
+        }
+        return true;
+    }
+    context.order_underlyings.insert(under_con_id, None);
+    release_rth_parked(context);
+    true
+}
+
+/// The underlying lookups with no answer in time: their orders go on
+/// (ibx#730).
+pub(crate) fn sweep_underlying_lookups(context: &mut Context) {
+    let now = Instant::now();
+    let mut released = false;
+    for d in context.order_underlyings.values_mut() {
+        if d.is_some_and(|at| at <= now) {
+            *d = None;
+            released = true;
+        }
+    }
+    for d in context.under_preferred.values_mut() {
+        if d.is_some_and(|at| at <= now) {
+            *d = None;
+        }
+    }
+    if released {
+        release_rth_parked(context);
+    }
+}
+
 /// The name of the CFD's definition by conId (ibx#729).
 const CFD_CLUSTER_NAME: &str = "DirectedSmartClusterReqByConid";
 
@@ -3710,6 +3876,7 @@ fn store_rth_types(context: &mut Context, key: (i64, String), msg: &[u8]) {
             // Its first order keeps shorter gaps (ibx#729).
             context.by_con_id_contracts.insert(key.0);
         }
+        types.under_con_id = d.under_con_id;
         types.local_symbol = d.local_symbol.clone();
         types.contract_month = d.contract_month.clone();
         types.multiplier = format!("{:.2}", if d.multiplier > 0.0 { d.multiplier } else { 1.0 });
@@ -7510,7 +7677,9 @@ mod tests {
             // session's number (ibx#706); its answer comes back under ibx's
             // own, as the connection maps it.
             let v = match (t, conn.as_ref()) {
-                (320, Some(c)) if v.starts_with(crate::control::contracts::SECDEF_ORDER_TYPES_NAME) || v.starts_with("ClearingRule") => c.internal_name(v),
+                (320, Some(c)) if v.starts_with(crate::control::contracts::SECDEF_ORDER_TYPES_NAME) || v.starts_with("ClearingRule")
+                    || v.starts_with(crate::control::contracts::SECDEF_MSG_NAME) || v.starts_with(crate::control::contracts::SECDEF_UNDERLYING_NAME)
+                    || v.starts_with(crate::control::contracts::SECDEF_PREFERRED_NAME) => c.internal_name(v),
                 _ => v.to_string(),
             };
             if let Some(f) = frames.last_mut() { f.push((t, v)); }
@@ -8568,6 +8737,175 @@ mod tests {
             let _ = drain_frames(&mut context, &shared, &mut conn, &mut server);
         }
         assert!(context.order_models.is_empty(), "no model for a stock order");
+    }
+
+    /// The fields of a frame but its framing, sequence and time, joined.
+    fn body(frame: &[(u32, String)]) -> String {
+        frame.iter().filter(|(t, _)| !matches!(t, 8 | 9 | 34 | 52 | 10)).map(|(t, v)| format!("{t}={v}")).collect::<Vec<_>>().join("|")
+    }
+
+    // ibx#730 (the reference 10.51, paper, observed in the recordings of
+    // 13-16/10/2026: 12 first orders of 12 given by their conId, every
+    // type): the definition of a contract given by its conId alone is asked
+    // as a contract not seen yet, from the client's source, on the order's
+    // exchange (BEST for SMART); a contract given by its symbol keeps the
+    // order-type lookup.
+    #[test]
+    fn an_order_given_by_con_id_alone_asks_a_contract_not_seen_yet() {
+        for (con_id, exchange, wire) in [("515974959", "CME", "CME"), ("692806985", "SMART", "BEST")] {
+            let (client, mut server) = crate::protocol::connection::mem_pair();
+            let mut conn = Some(Connection::new_mem(client));
+            let shared = Arc::new(SharedState::new());
+            let mut context = order_context();
+            context.market.register(con_id.parse().unwrap());
+            context.market.set_symbol(0, String::new());
+            context.market.set_routing(0, "", exchange);
+            context.pending_orders.push(OrderRequest::SubmitLimit { order_id: 95, instrument: 0, side: Side::Buy, qty: 1, price: px(0.25) });
+            let frames = drain_frames(&mut context, &shared, &mut conn, &mut server);
+            assert_eq!(frames.len(), 1, "{frames:?}");
+            let id = tag(&frames[0], 320).unwrap().to_string();
+            assert!(id.starts_with(crate::control::contracts::SECDEF_MSG_NAME), "{id}");
+            assert_eq!(body(&frames[0]), format!("35=c|320={id}|321=2|6088=Socket|146=1|6008={con_id}|6004={wire}"));
+        }
+        let (client, mut server) = crate::protocol::connection::mem_pair();
+        let mut conn = Some(Connection::new_mem(client));
+        let shared = Arc::new(SharedState::new());
+        let mut context = order_context();
+        context.market.register(692808239);
+        context.set_symbol(0, "AAPL".to_string());
+        context.market.set_routing(0, "OPT", "SMART");
+        context.pending_orders.push(OrderRequest::SubmitLimit { order_id: 96, instrument: 0, side: Side::Buy, qty: 1, price: px(0.05) });
+        let frames = drain_frames(&mut context, &shared, &mut conn, &mut server);
+        assert!(tag(&frames[0], 320).unwrap().starts_with(crate::control::contracts::SECDEF_ORDER_TYPES_NAME), "{frames:?}");
+        assert_eq!(tag(&frames[0], 6088), None);
+    }
+
+    /// The internal name of the lookup of a frame, and an answer to it with
+    /// `fields` after the name.
+    fn answer(frame: &[(u32, String)], fields: &[(u32, &str)]) -> (String, Vec<u8>) {
+        let id = tag(frame, 320).unwrap().to_string();
+        let mut all = vec![(35, "d"), (320, id.as_str()), (322, "*"), (323, "4")];
+        all.extend_from_slice(fields);
+        let msg = fix::fix_build(&all, 1);
+        (id, msg)
+    }
+
+    // ibx#730 (the reference 10.51, paper, observed in the recordings of
+    // 13-16/10/2026): the first order on an option, a futures option or a
+    // warrant looks up its underlying (by conId on any exchange) once its
+    // contract is known, and asks its class's permission once that answer
+    // came (5 first orders of 5). Past the permission check, the
+    // underlying's preferred definition is asked (two option orders and a
+    // futures option order, after the refusal; a warrant, after the
+    // question on its permission); a future's answer asks the permission of
+    // its class. A later order on the same underlying asks neither (7 of 7).
+    // An option order also asks its underlying as the underlying of index
+    // options after the question on its permission (2 of 2 option orders
+    // but a volatility one; no futures option order).
+    #[test]
+    fn a_derivative_order_looks_up_its_underlying() {
+        const AAPL_CALL: [(u32, &str); 9] = [(55, "AAPL"), (167, "OPT"), (15, "USD"), (207, "BEST"), (6346, "265598"),
+            (310, "STK"), (6411, "2/OPT/R"), (6431, "DAY/3,LMT/3,MKT/1"), (6178, "2")];
+        let option = |id| OrderRequest::SubmitLimit { order_id: id, instrument: 0, side: Side::Buy, qty: 1, price: px(0.05) };
+        let (frames, shared, mut context, mut conn, mut server) = order_by_con_id("692806985", "SMART", option(97), &AAPL_CALL);
+        assert_eq!(frames.len(), 1, "{frames:?}");
+        let lookup = &frames[0];
+        assert!(tag(lookup, 320).unwrap().starts_with(crate::control::contracts::SECDEF_UNDERLYING_NAME));
+        assert_eq!((tag(lookup, 6008), tag(lookup, 6004), tag(lookup, 146), tag(lookup, 6088)),
+            (Some("265598"), Some("ANYEXCH"), Some("1"), None));
+        assert!(drain_frames(&mut context, &shared, &mut conn, &mut server).is_empty(), "the order waits");
+        let aapl = [(55, "AAPL"), (167, "STK"), (207, "BEST"), (6008, "265598"), (15, "USD"), (6178, "1")];
+        let (id, msg) = answer(lookup, &aapl);
+        assert!(underlying_reply(&mut context, conn.as_mut(), &mut HeartbeatState::new(), &id, &msg));
+        let frames = drain_frames(&mut context, &shared, &mut conn, &mut server);
+        assert_eq!(frames.len(), 2, "{frames:?}");
+        assert_eq!((tag(&frames[0], 6040), tag(&frames[0], 6411)), (Some("65"), Some("2/OPT/R")));
+        // Then the underlying as the underlying of index options.
+        assert!(tag(&frames[1], 320).unwrap().starts_with("IndexOptionUnderConidReqByConid"), "{frames:?}");
+        assert_eq!((tag(&frames[1], 6008), tag(&frames[1], 6004)), (Some("265598"), Some("ANYEXCH")));
+        permission_reply(&mut context, &fix::field_view(&permission_answer("2/OPT/R", "0")));
+        let frames = drain_frames(&mut context, &shared, &mut conn, &mut server);
+        assert_eq!(shared.orders.drain_order_errors(), [(97, 460, "No trading permissions.".to_string())]);
+        assert_eq!(frames.len(), 1, "{frames:?}");
+        assert!(tag(&frames[0], 320).unwrap().starts_with(crate::control::contracts::SECDEF_PREFERRED_NAME));
+        assert_eq!((tag(&frames[0], 6008), tag(&frames[0], 6004)), (Some("265598"), Some("ANYEXCH")));
+        assert_eq!(context.order_models, [(0, 692806985, "SMART".to_string())]);
+        assert!(matches!(context.under_preferred.get(&265598), Some(Some(_))), "the model waits for it");
+        let (id, msg) = answer(&frames[0], &aapl);
+        assert!(underlying_reply(&mut context, conn.as_mut(), &mut HeartbeatState::new(), &id, &msg));
+        assert_eq!(context.under_preferred.get(&265598), Some(&None));
+        assert_eq!(context.agg_groups.get(&265598), Some(&1), "kept for the model's route");
+        assert!(drain_frames(&mut context, &shared, &mut conn, &mut server).is_empty(), "no permission for a stock");
+
+        // A later order on another option of the same underlying: neither.
+        context.market.register(692808239);
+        context.market.set_symbol(1, String::new());
+        context.market.set_routing(1, "", "SMART");
+        context.pending_orders.push(OrderRequest::SubmitLimit { order_id: 98, instrument: 1, side: Side::Buy, qty: 1, price: px(0.05) });
+        let frames = drain_frames(&mut context, &shared, &mut conn, &mut server);
+        let mut other = vec![(6008, "692808239")];
+        other.extend_from_slice(&AAPL_CALL);
+        let (id, msg) = answer(&frames[0], &other);
+        assert!(rth_definition_reply(&mut context, &id, &msg));
+        assert!(drain_frames(&mut context, &shared, &mut conn, &mut server).is_empty());
+        assert_eq!(shared.orders.drain_order_errors(), [(98, 460, "No trading permissions.".to_string())]);
+
+        // A futures option: its future's preferred definition asks the
+        // permission of the future's class.
+        let mut es_put = ES_PUT.to_vec();
+        es_put.extend([(6346, "515416632"), (310, "FUT")]);
+        let fop = OrderRequest::SubmitLimit { order_id: 99, instrument: 0, side: Side::Buy, qty: 1, price: px(0.25) };
+        let (frames, shared, mut context, mut conn, mut server) = order_by_con_id("515974959", "CME", fop, &es_put);
+        let future = [(55, "ES"), (167, "FUT"), (207, "CME"), (6008, "515416632"), (15, "USD"), (6411, "CME/FUT/GLOBEX"),
+            (6346, "11004968"), (310, "IND")];
+        let (id, msg) = answer(&frames[0], &future);
+        assert!(underlying_reply(&mut context, conn.as_mut(), &mut HeartbeatState::new(), &id, &msg));
+        let _ = drain_frames(&mut context, &shared, &mut conn, &mut server);
+        permission_reply(&mut context, &fix::field_view(&permission_answer("CME/FOP/GLOBEX", "0")));
+        let frames = drain_frames(&mut context, &shared, &mut conn, &mut server);
+        assert!(tag(&frames[0], 320).unwrap().starts_with(crate::control::contracts::SECDEF_PREFERRED_NAME), "{frames:?}");
+        let (id, msg) = answer(&frames[0], &future);
+        assert!(underlying_reply(&mut context, conn.as_mut(), &mut HeartbeatState::new(), &id, &msg));
+        assert!(context.def_links.get(&515416632).is_some_and(|l| l.under_con_id == 11004968), "the future's index for the model");
+        let frames = drain_frames(&mut context, &shared, &mut conn, &mut server);
+        assert_eq!(frames.len(), 1, "{frames:?}");
+        assert_eq!((tag(&frames[0], 6040), tag(&frames[0], 6411)), (Some("65"), Some("CME/FUT/GLOBEX")));
+
+        // A warrant goes out without waiting for its permission: the
+        // preferred definition after the question.
+        let mut warrant = SAP_WARRANT.to_vec();
+        warrant.extend([(6346, "14204"), (310, "STK")]);
+        let war = OrderRequest::SubmitLimit { order_id: 100, instrument: 0, side: Side::Buy, qty: 1, price: px(0.01) };
+        let (frames, shared, mut context, mut conn, mut server) = order_by_con_id("566386640", "FWB", war, &warrant);
+        assert_eq!(frames.len(), 1, "{frames:?}");
+        let sap = [(55, "SAP"), (167, "STK"), (207, "IBIS"), (6008, "14204"), (15, "EUR")];
+        let (id, msg) = answer(&frames[0], &sap);
+        assert!(underlying_reply(&mut context, conn.as_mut(), &mut HeartbeatState::new(), &id, &msg));
+        let frames = drain_frames(&mut context, &shared, &mut conn, &mut server);
+        let kinds: Vec<String> = frames.iter().map(|f| match (tag(f, 35), tag(f, 6040)) {
+            (Some("U"), Some("65")) => "permission".to_string(),
+            (Some("c"), _) => tag(f, 320).unwrap_or("").trim_end_matches(|c: char| c.is_ascii_digit()).to_string(),
+            (Some(t), _) => t.to_string(),
+            _ => String::new(),
+        }).collect();
+        let at = |k: &str| kinds.iter().position(|x| x == k);
+        assert!(at("permission").is_some() && at("permission") < at(crate::control::contracts::SECDEF_PREFERRED_NAME), "{kinds:?}");
+        assert!(at("D").is_some(), "sent: {kinds:?}");
+    }
+
+    // ibx#730: an underlying lookup with no answer in time lets its order go
+    // on.
+    #[test]
+    fn an_order_goes_on_without_its_underlying_lookup_in_time() {
+        let mut def = ES_PUT.to_vec();
+        def.extend([(6346, "515416632"), (310, "FUT")]);
+        let fop = OrderRequest::SubmitLimit { order_id: 101, instrument: 0, side: Side::Buy, qty: 1, price: px(0.25) };
+        let (frames, shared, mut context, mut conn, mut server) = order_by_con_id("515974959", "CME", fop, &def);
+        assert!(tag(&frames[0], 320).unwrap().starts_with(crate::control::contracts::SECDEF_UNDERLYING_NAME));
+        context.order_underlyings.insert(515416632, Some(Instant::now()));
+        sweep_underlying_lookups(&mut context);
+        let frames = drain_frames(&mut context, &shared, &mut conn, &mut server);
+        assert_eq!(tag(&frames[0], 6411), Some("CME/FOP/GLOBEX"), "{frames:?}");
     }
 
     // ibx#666 (the reference 10.51, paper, pre-market 15/10/2026, `.tmp/666`

@@ -245,6 +245,41 @@ pub(crate) struct IndexStart {
     pub(crate) asked: Option<i64>,
 }
 
+/// What a futures option order's model asks once its index part knows the
+/// index its future names and that index's reference index (ibx#730; the
+/// reference 10.51, paper, 15/10/2026 before the open, an ES put ordered on
+/// CME): the trading hours of the future's class 2 ms after the reference
+/// index's definition; once they came (5 ms), the walks of index lookups
+/// and the model's inputs, the rate curve and the dividends of the future's
+/// index.
+#[derive(Debug, Clone)]
+pub(crate) struct IndexFollow {
+    pub(crate) instrument: InstrumentId,
+    pub(crate) future: i64,
+    /// The future's index, whose dividends the model reads.
+    pub(crate) index: i64,
+    /// The index that one refers to.
+    pub(crate) target: i64,
+    pub(crate) future_key: String,
+    pub(crate) currency: String,
+    /// Past it, the inputs are asked without the trading hours.
+    pub(crate) deadline: Instant,
+}
+
+/// An order's model whose inputs were asked: once they came, the trading
+/// hours of the class of the contract whose dividends it reads (ibx#730;
+/// the reference 10.51, paper, observed in the recordings of 13-16/10/2026:
+/// four first orders of four, three on an AAPL option, the hours of AAPL's
+/// class 5 to 13 ms after the last of the two answers, and an ES futures
+/// option, those of the ES index's class 6 ms after).
+#[derive(Debug, Clone)]
+pub(crate) struct InputHours {
+    pub(crate) currency: String,
+    pub(crate) under_con_id: i64,
+    /// Past it, nothing is asked.
+    pub(crate) deadline: Instant,
+}
+
 /// The option models of the market data requests.
 #[derive(Debug, Default)]
 pub(crate) struct OptMd {
@@ -271,6 +306,13 @@ pub(crate) struct OptMd {
     /// for the session (ibx#727), and those waiting for their definitions.
     pub(crate) indexes: Vec<IndexPart>,
     pub(crate) index_starts: Vec<IndexStart>,
+    /// The futures option order models' steps after their index part's
+    /// definitions (ibx#730).
+    pub(crate) index_follows: Vec<IndexFollow>,
+    pub(crate) input_hours: Vec<InputHours>,
+    /// The futures whose steps were taken: once per future in the
+    /// session, an index part asked again after a farm loss included.
+    pub(crate) followed_futures: std::collections::HashSet<i64>,
 }
 
 /// An instant on an even second of the wall clock, before every instant
