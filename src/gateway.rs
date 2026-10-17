@@ -1099,11 +1099,35 @@ pub fn connect_farm_opts(
     routing: bool,
     link: FarmLink,
 ) -> io::Result<(Connection, Option<String>)> {
+    connect_farm_signal(host, farm_id, username, password, paper, server_session_id, session_key,
+        hw_info, encoded, slot, routing, link, || {})
+}
+
+/// [`connect_farm_opts`], calling `on_socket` once the farm's socket is
+/// connected, before its session starts (ibx#684: the engine's connecting
+/// checks wait for the socket connect).
+#[allow(clippy::too_many_arguments)]
+pub fn connect_farm_signal(
+    host: &str,
+    farm_id: &str,
+    username: &str,
+    password: &str,
+    paper: bool,
+    server_session_id: &str,
+    session_key: &BigUint,
+    hw_info: &str,
+    encoded: &str,
+    slot: u32,
+    routing: bool,
+    link: FarmLink,
+    on_socket: impl FnOnce(),
+) -> io::Result<(Connection, Option<String>)> {
     let port = if link.ssl { ssl_port(misc_port()) } else { misc_port() };
     let farm_host = farm_host_override().unwrap_or_else(|| host.to_string());
     log::info!("Connecting to {} {}:{} (ssl={})", farm_id, farm_host, port, link.ssl);
     let stream = LinkStream::connect(&farm_host, port, link.ssl, Duration::from_secs(TIMEOUT_FARM_CONNECT), false)
         .map_err(|e| io::Error::new(e.kind(), format!("{} connect: {}", farm_id, e)))?;
+    on_socket();
     stream.tcp().set_nodelay(true)?;
     stream.tcp().set_read_timeout(Some(Duration::from_secs(TIMEOUT_FARM_CONNECT)))?;
     farm_session(stream, farm_id, username, password, paper, server_session_id, session_key,

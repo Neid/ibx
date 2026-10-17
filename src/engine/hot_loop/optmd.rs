@@ -20,8 +20,17 @@
 //! - its computations (see `control::optcalc::market`): a first pass about
 //!   a second after the model greeks came, with tick 13 and ticks 10 to 12
 //!   without volatility or greeks (the reference's model not computed
-//!   yet), then a pass a second later and every two seconds after it, each
-//!   sending the ticks whose values changed.
+//!   yet), then the passes of the session's clock, each sending the ticks
+//!   whose values changed.
+//!
+//! The session's clock (ibx#684): after its first pass, every model passes
+//! on one clock for the whole session, shared across requests, cancels and
+//! contracts, that ticks on the even seconds of the machine's wall clock.
+//! Observed in the recordings of 13-16/10/2026 (the reference 10.51,
+//! paper, 10 sessions, 5 to 124 stream passes each): the passes 0.00 to
+//! 0.26 s after the even second; a request's first pass at once when its
+//! data came, off the clock; what it lacked at the next tick. A snapshot
+//! thus ends at the first even second after its first data.
 //!
 //! The underlying price of ticks 10 to 12 is the middle of the underlying's
 //! bid and ask (its last without them): the reference's own differs from
@@ -39,10 +48,11 @@ use crate::types::{InstrumentId, PRICE_SCALE};
 
 use super::pool::FarmId;
 
-/// The first pass after the model greeks came, then the second after it.
+/// The first pass of a stream's new model after the model greeks came.
 const FIRST_PASS: Duration = Duration::from_millis(1000);
-/// The passes after the second.
-const LATER_PASS: Duration = Duration::from_millis(2000);
+/// The period of the session's clock: its ticks fall on the even seconds
+/// of the wall clock (ibx#684).
+const CLOCK: Duration = Duration::from_secs(2);
 /// The pass after the requests moved onto the frozen slot (ibx#494).
 const SWITCH_PASS: Duration = Duration::from_millis(250);
 /// The first pass of a model that starts from the values kept from an
@@ -194,6 +204,27 @@ pub(crate) struct OptMd {
     after_frozen_option: HashMap<i64, i64>,
     /// The values of the stopped models, by the option's conId (ibx#646).
     kept: HashMap<i64, KeptModel>,
+    /// An instant on an even second of the wall clock, the origin of the
+    /// session's clock (ibx#684); set at its first use.
+    clock_origin: Option<Instant>,
+}
+
+/// An instant on an even second of the wall clock, before every instant
+/// the loop will pass.
+fn even_second_origin() -> Instant {
+    let now = Instant::now();
+    let wall = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
+    let phase = Duration::from_nanos((wall.as_nanos() % CLOCK.as_nanos()) as u64);
+    // Far back, so that the instants of the session all come after it.
+    now.checked_sub(phase + CLOCK * 1000).or_else(|| now.checked_sub(phase)).unwrap_or(now)
+}
+
+/// The first tick of the session's clock after `now`.
+#[inline]
+fn tick_after(origin: Instant, now: Instant) -> Instant {
+    let period = CLOCK.as_nanos();
+    let since = now.saturating_duration_since(origin).as_nanos();
+    origin + Duration::from_nanos(((since / period + 1) * period) as u64)
 }
 
 /// A price of `magnitude` ticks: divided by the ticks per unit when the
@@ -685,6 +716,7 @@ impl OptMd {
         &mut self, now: Instant, context: &Context, shared: &SharedState, quote_slot: impl Fn(InstrumentId) -> InstrumentId,
         mut inputs: impl FnMut(&OptionTerms, &mut dyn FnMut(Option<&crate::control::optcalc::ModelInputs>)),
     ) {
+        let origin = *self.clock_origin.get_or_insert_with(even_second_origin);
         for m in &mut self.models {
             // The side prices from the frozen slot when the contract's
             // requests are on it (ibx#494; the reference 10.51, paper, after
@@ -739,9 +771,11 @@ impl OptMd {
             let order = [3usize, 0, 1, 2];
             let (mut sent, mut kept) = (Vec::new(), Vec::new());
             // A snapshot's pass from kept values leaves the last's to the
-            // next pass, which ends the snapshot (ibx#646; the reference
-            // 10.51, paper, regular hours, 14/10 and 15/10/2026: tick 12 0.6
-            // and 1.0 s after 13, 10 and 11, then the end).
+            // next pass, the clock's next tick, which ends the snapshot
+            // (ibx#646, ibx#684; the reference 10.51, paper, regular hours,
+            // observed in the recordings of 13-16/10/2026: tick 12 at the
+            // first even second after 13, 10 and 11, then the end, 10 of
+            // 10 snapshots).
             let last_later = m.seeded && snapshot && m.passes == 0;
             for (k, c) in comps.into_iter().enumerate() {
                 let slot = order[k];
@@ -771,7 +805,8 @@ impl OptMd {
                 }
             }
             m.passes += 1;
-            m.next_pass = Some(now + if m.passes == 1 { FIRST_PASS } else { LATER_PASS });
+            // The next pass on the session's clock (ibx#684).
+            m.next_pass = Some(tick_after(origin, now));
             if std::mem::take(&mut m.own_pending) {
                 m.next_pass = Some(now);
             }
@@ -799,10 +834,163 @@ impl OptMd {
         START_WAIT
     }
 
+    /// The session's clock ticks at `origin` and every two seconds from it.
+    #[cfg(test)]
+    pub(crate) fn set_clock_for_test(&mut self, origin: Instant) {
+        self.clock_origin = Some(origin);
+    }
+
     #[cfg(test)]
     pub(crate) fn force_pass_for_test(&mut self, instrument: InstrumentId, now: Instant) {
         if let Some(m) = self.models.iter_mut().find(|m| m.instrument == instrument) {
             m.next_pass = Some(now);
         }
+    }
+}
+
+/// The session's clock of the computations (ibx#684).
+#[cfg(test)]
+mod clock_tests {
+    use super::*;
+    use crate::control::optcalc::{Right, Style};
+
+    const OPT_A: i64 = 692808239;
+    const OPT_B: i64 = 692808240;
+
+    fn terms(con_id: i64) -> OptionTerms {
+        OptionTerms {
+            con_id, sec_type: "OPT".into(), currency: "USD".into(), right: Some(Right::Call), style: Style::American,
+            strike: 340.0, last_trade_date: "20261218".into(), last_trade_time: String::new(), time_zone: "US/Eastern".into(),
+            under_con_id: 265598, under_sec_type: "STK".into(),
+        }
+    }
+
+    /// The models' computations queued since the last call, by tick type.
+    fn given(shared: &SharedState) -> Vec<(InstrumentId, i32)> {
+        shared.market.take_generic_ticks(u64::MAX).into_iter()
+            .filter(|g| g.code == market::COMPUTATIONS)
+            .flat_map(|g| g.ticks.into_iter().map(move |t| (g.instrument, t)))
+            .filter_map(|(i, t)| if let crate::control::generic_values::GenTick::Option(c) = t { Some((i, c.tick_type)) } else { None })
+            .collect()
+    }
+
+    /// A context with a quote for each option, and an engine of models
+    /// whose clock ticks at `base` and every two seconds from it.
+    fn setup(base: Instant, options: &[(i64, bool)]) -> (OptMd, Context, SharedState, Vec<InstrumentId>) {
+        let mut md = OptMd::default();
+        md.set_clock_for_test(base.checked_sub(CLOCK * 10).expect("an instant 20 s back"));
+        let mut context = Context::new();
+        let shared = SharedState::new();
+        let mut next_id = 1;
+        let mut ids = Vec::new();
+        for &(con_id, snapshot) in options {
+            let id = context.market.register(con_id);
+            let q = context.market.quote_mut(id);
+            q.bid = 1495 * PRICE_SCALE / 100;
+            q.ask = 1520 * PRICE_SCALE / 100;
+            q.last = 1500 * PRICE_SCALE / 100;
+            let _ = md.launch(id, con_id, snapshot, terms(con_id), 2, 0, "BEST", &mut next_id);
+            let m = md.models.last_mut().unwrap();
+            [m.under_bid, m.under_ask] = [Some(339.56), Some(339.61)];
+            ids.push(id);
+        }
+        (md, context, shared, ids)
+    }
+
+    fn run(md: &mut OptMd, context: &Context, shared: &SharedState, now: Instant) {
+        md.passes(now, context, shared, |i| i, |_, f| f(None));
+    }
+
+    fn ms(n: u64) -> Duration {
+        Duration::from_millis(n)
+    }
+
+    // The ticks fall on the even seconds of the wall clock: the origin
+    // found is one, and a tick is the first after the instant asked.
+    #[test]
+    fn the_clock_ticks_on_the_even_seconds() {
+        let wall = std::time::SystemTime::now();
+        let now = Instant::now();
+        let origin = even_second_origin();
+        let next = tick_after(origin, now);
+        let at = wall + (next - now);
+        let ms_of = at.duration_since(std::time::UNIX_EPOCH).unwrap().as_millis();
+        // Within the few microseconds between the two clocks' reads.
+        let phase = ms_of % 2000;
+        assert!(phase <= 2 || phase >= 1998, "next tick {} ms past an even second", phase);
+        assert!(next > now && next - now <= CLOCK);
+        assert_eq!(tick_after(origin, next), next + CLOCK, "a tick asked on a tick: the next one");
+        assert_eq!(tick_after(origin, next - ms(1)), next);
+    }
+
+    // A snapshot's first pass goes at once when its data came, without the
+    // last's computation; the last's at the next even second, which ends
+    // the snapshot (the reference 10.51, observed in the recordings of
+    // 13-16/10/2026: 10 of 10 snapshots).
+    #[test]
+    fn a_snapshot_gives_the_last_at_the_next_tick() {
+        let base = Instant::now();
+        let (mut md, context, shared, ids) = setup(base, &[(OPT_A, true)]);
+        let m = &mut md.models[0];
+        m.seeded = true;
+        // Its first data 0.3 s after a tick: its first pass at once.
+        m.next_pass = Some(base + ms(300));
+        run(&mut md, &context, &shared, base + ms(299));
+        assert!(given(&shared).is_empty());
+        run(&mut md, &context, &shared, base + ms(300));
+        assert_eq!(given(&shared), [(ids[0], 10), (ids[0], 11)], "no last yet");
+        assert_eq!(md.models[0].next_pass, Some(base + CLOCK));
+        run(&mut md, &context, &shared, base + ms(1999));
+        assert!(given(&shared).is_empty(), "not before the tick");
+        run(&mut md, &context, &shared, base + CLOCK);
+        assert_eq!(given(&shared), [(ids[0], 12)], "the last at the tick");
+        assert_eq!(md.models[0].next_pass, Some(base + CLOCK * 2));
+    }
+
+    // Two requests' models pass on the same ticks, whenever their first
+    // data came; a model started later, after a cancel, joins them.
+    #[test]
+    fn two_requests_share_the_ticks() {
+        let base = Instant::now();
+        let (mut md, context, shared, ids) = setup(base, &[(OPT_A, false), (OPT_B, false)]);
+        md.models[0].next_pass = Some(base + ms(150));
+        md.models[1].next_pass = Some(base + ms(1700));
+        run(&mut md, &context, &shared, base + ms(150));
+        assert_eq!(given(&shared).len(), 3, "the first's first pass, at once");
+        run(&mut md, &context, &shared, base + ms(1700));
+        assert_eq!(given(&shared).len(), 3, "the second's first pass, at once");
+        assert_eq!(md.models[0].next_pass, Some(base + CLOCK));
+        assert_eq!(md.models[1].next_pass, Some(base + CLOCK));
+        for k in 1..4 {
+            run(&mut md, &context, &shared, base + CLOCK * k);
+            assert_eq!(md.models.iter().map(|m| m.next_pass).collect::<Vec<_>>(), [Some(base + CLOCK * (k + 1)); 2]);
+        }
+        // The second ends; a request of it again later passes on the
+        // same ticks as the first.
+        let _ = md.stop(ids[1]);
+        let mut next_id = 100;
+        let _ = md.launch(ids[1], OPT_B, false, terms(OPT_B), 2, 0, "BEST", &mut next_id);
+        md.models[1].next_pass = Some(base + CLOCK * 4 + ms(900));
+        run(&mut md, &context, &shared, base + CLOCK * 4 + ms(900));
+        assert_eq!(md.models.iter().map(|m| m.next_pass).collect::<Vec<_>>(), [Some(base + CLOCK * 5); 2]);
+        // A pass done late stays on the clock.
+        run(&mut md, &context, &shared, base + CLOCK * 5 + ms(40));
+        assert_eq!(md.models.iter().map(|m| m.next_pass).collect::<Vec<_>>(), [Some(base + CLOCK * 6); 2]);
+    }
+
+    // A new model's snapshot: its first pass when the model greeks came,
+    // the computed sides at the next tick, which completes it.
+    #[test]
+    fn a_new_snapshot_completes_at_the_next_tick() {
+        let base = Instant::now();
+        let (mut md, context, shared, _) = setup(base, &[(OPT_A, true)]);
+        md.models[0].next_pass = Some(base + ms(1200));
+        run(&mut md, &context, &shared, base + ms(1200));
+        assert_eq!(md.models[0].passes, 1);
+        assert_eq!(md.models[0].next_pass, Some(base + CLOCK));
+        run(&mut md, &context, &shared, base + ms(1990));
+        assert_eq!(md.models[0].passes, 1);
+        run(&mut md, &context, &shared, base + CLOCK);
+        assert_eq!(md.models[0].passes, 2);
     }
 }

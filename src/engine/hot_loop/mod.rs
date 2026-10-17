@@ -683,6 +683,7 @@ impl HotLoop {
         let Some(id) = self.md_route(sub) else { return };
         if let Some(f) = self.pool.get_mut(id) {
             f.note_request(Instant::now());
+            f.note_client_request();
         }
         farm::publish_increments(&self.context, &self.shared, sub.instrument, sub.con_id);
         // A contract asked before in the session: its request parameters
@@ -758,6 +759,9 @@ impl HotLoop {
             strike: 0.0, right: String::new(), multiplier: String::new(), instrument, mode_9887: 0, snapshot: false,
         };
         let Some(id) = self.md_route(&sub) else { return };
+        if let Some(f) = self.pool.get_mut(id) {
+            f.note_client_request();
+        }
         let primary = self.context.listing_exchanges.get(&con_id).cloned().unwrap_or_default();
         let codes = self.etf_codes_for(con_id, &codes);
         let msgs = self.farm.start_generic(instrument, con_id, &exchange, &sec_type, &primary, &codes, id);
@@ -807,6 +811,7 @@ impl HotLoop {
         let Some(id) = self.md_route(&sub) else { return };
         if let Some(f) = self.pool.get_mut(id) {
             f.note_request(Instant::now());
+            f.note_client_request();
         }
         let msgs = self.farm.start_news(instrument, con_id, &sub.sec_type, &providers, id);
         self.send_md_messages(msgs);
@@ -2094,6 +2099,7 @@ impl HotLoop {
                         if let Some(farm_id) = self.md_target(&sub) {
                             if let Some(f) = self.pool.get_mut(farm_id) {
                                 f.note_request(Instant::now());
+                                f.note_client_request();
                             }
                             if self.md_pass.on {
                                 let now = self.pace_now();
@@ -2941,19 +2947,23 @@ impl HotLoop {
         let slot = if farm.kind == FarmKind::MarketData { 18 } else { 17 };
         log::info!("Opening farm {} ({}) on demand", name, host);
         let (tx, rx) = crossbeam_channel::bounded(1);
+        // Set once the socket is connected: the connecting checks wait for
+        // it (ibx#684).
+        let socket_up = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let socket_flag = socket_up.clone();
         let spawned = std::thread::Builder::new()
             .name(format!("{}-connect", name))
             .spawn(move || {
                 let link = auth.farm_link(&name, crate::gateway::FarmService::of_slot(slot));
-                let result = crate::gateway::connect_farm_opts(
+                let result = crate::gateway::connect_farm_signal(
                     &host, &name, &auth.username, &auth.password, auth.paper,
                     &auth.server_session_id, &auth.session_key, &auth.hw_info, &auth.encoded, slot, false,
-                    link,
+                    link, || socket_flag.store(true, std::sync::atomic::Ordering::Release),
                 ).map(|(conn, _)| conn);
                 let _ = tx.send(result);
             });
         if spawned.is_ok() {
-            self.pool.set_connecting(id, rx, now);
+            self.pool.set_connecting(id, rx, socket_up);
         } else {
             self.pool.on_connect_failed(id, now);
         }

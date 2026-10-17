@@ -232,6 +232,8 @@ fn an_option_stream_as_the_reference() {
     };
     let (under_req, greeks_req) = (req_of("442", "265598"), req_of("732", "692808239"));
     let now = Instant::now();
+    // The session's clock ticks 1.7 s after `now` (ibx#684).
+    engine.farm.optmd.set_clock_for_test(now - Duration::from_millis(20_300));
     engine.service_option_models(now);
     engine.service_option_models(now + Duration::from_millis(100));
     assert!(computations(&shared).is_empty());
@@ -251,13 +253,14 @@ fn an_option_stream_as_the_reference() {
     let c = computations(&shared);
     assert_eq!(c.iter().map(|c| c.tick_type).collect::<Vec<_>>(), [10, 11, 12]);
     assert_eq!(c[0].und_price, 339.625);
-    // Then the usual pace: a second later.
+    // Then the session's clock: nothing before its tick.
     engine.service_option_models(now + Duration::from_millis(1300));
     assert!(computations(&shared).is_empty());
 
-    // A snapshot of it then: 13, 10 and 11 from the kept values, 12 at the
-    // next pass (the reference 10.51, 14/10 and 15/10/2026: 0.6 and 1.0 s
-    // later, then the end).
+    // A snapshot of it then: 13, 10 and 11 from the kept values at once,
+    // 12 at the clock's next tick (ibx#646, ibx#684; the reference 10.51,
+    // observed in the recordings of 13-16/10/2026: tick 12 at the first even
+    // second after the first data, then the end).
     engine.route_md_cancel(id);
     let mut snap = sub.clone();
     snap.snapshot = true;
@@ -265,10 +268,13 @@ fn an_option_stream_as_the_reference() {
     let _ = sent(&mut farm_side);
     let _ = computations(&shared);
     let now = Instant::now();
+    engine.farm.optmd.set_clock_for_test(now - Duration::from_millis(20_300));
     engine.service_option_models(now);
     engine.service_option_models(now + Duration::from_millis(160));
     assert_eq!(computations(&shared).iter().map(|c| c.tick_type).collect::<Vec<_>>(), [13, 10, 11]);
     engine.service_option_models(now + Duration::from_millis(1200));
+    assert!(computations(&shared).is_empty(), "the last waits for the tick");
+    engine.service_option_models(now + Duration::from_millis(1700));
     assert_eq!(computations(&shared).iter().map(|c| c.tick_type).collect::<Vec<_>>(), [12]);
 
     // A stream again, whose own greeks come before its first pass: the

@@ -9,6 +9,8 @@
 
 use std::collections::VecDeque;
 use std::io;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crossbeam_channel::Receiver;
@@ -36,9 +38,17 @@ pub(crate) const MD_RECENT_SEND: Duration = Duration::from_secs(5);
 pub(crate) const HMDS_PING_PERIOD: Duration = Duration::from_secs(60);
 /// A historical farm with nothing but heartbeats for longer is dormant.
 pub(crate) const HMDS_DORMANT_AFTER: Duration = Duration::from_secs(360);
-/// A market data farm still connecting this long after the connect began
-/// is reported as connecting.
-pub(crate) const CONNECTING_NOTICE_AFTER: Duration = Duration::from_millis(500);
+/// The period of the check of a market data farm that is connecting: the
+/// "farm is connecting" notice is given again when subscriptions were
+/// queued for it since the previous check (ibx#684; the reference 10.51,
+/// observed in the recordings of 13-16/10/2026: 82 of 82 notices of 42
+/// connections of the option farm).
+pub(crate) const CONNECTING_CHECK: Duration = Duration::from_millis(500);
+
+/// The request type of a market data message, and its value for a
+/// cancel: a queued message of any other type is a subscription.
+const REQUEST_TYPE: u32 = 263;
+const REQUEST_CANCEL: &str = "2";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum FarmKind {
@@ -95,8 +105,21 @@ pub(crate) struct OnDemandFarm {
     pub(crate) kind: FarmKind,
     pub(crate) conn: Option<Connection>,
     connecting: Option<Receiver<io::Result<Connection>>>,
-    connecting_since: Option<Instant>,
-    connecting_reported: bool,
+    /// Set by the connect under way once its socket is connected.
+    socket_up: Option<Arc<AtomicBool>>,
+    /// A connect began and the farm is not logged on yet.
+    connecting_phase: bool,
+    /// A client's market data request waits for a connection not started
+    /// yet: its start gives the connecting notice at once.
+    client_start: bool,
+    /// The connecting notice of a connect start, given at the next poll.
+    notice_now: bool,
+    /// The next connecting check, from the first subscription queued.
+    next_check: Option<Instant>,
+    /// A check waited for the socket connect.
+    check_held: bool,
+    /// Subscriptions were queued since the previous check.
+    new_subs: bool,
     queue: VecDeque<Queued>,
     /// A connection is wanted: messages wait, or requests still use it.
     pub(crate) wanted: bool,
@@ -125,8 +148,13 @@ impl OnDemandFarm {
             kind,
             conn: None,
             connecting: None,
-            connecting_since: None,
-            connecting_reported: false,
+            socket_up: None,
+            connecting_phase: false,
+            client_start: false,
+            notice_now: false,
+            next_check: None,
+            check_held: false,
+            new_subs: false,
             queue: VecDeque::new(),
             wanted: false,
             retry_at: None,
@@ -167,6 +195,69 @@ impl OnDemandFarm {
     pub(crate) fn note_request(&mut self, now: Instant) {
         self.last_request = now;
     }
+
+    /// A client's market data request routed to this farm: when it starts
+    /// the farm's connection, the connecting notice goes at once (ibx#684;
+    /// the reference 10.51, observed in the recordings of 13-16/10/2026;
+    /// a connection started by the engine itself, as an option model's,
+    /// gives none at its start).
+    pub(crate) fn note_client_request(&mut self) {
+        if self.conn.is_none() && !self.connecting_phase {
+            self.client_start = true;
+        }
+    }
+
+    /// A subscription queued for the farm while it is not logged on: the
+    /// checks run every 0.5 s from the first (ibx#684).
+    fn note_queued_subscription(&mut self, now: Instant) {
+        if self.kind != FarmKind::MarketData {
+            return;
+        }
+        if self.next_check.is_none() {
+            self.next_check = Some(now + CONNECTING_CHECK);
+        }
+        self.new_subs = true;
+    }
+
+    /// The connecting notice is due: at the start of a connect a client's
+    /// request began, then at each check that finds new subscriptions
+    /// queued; a check waits while the socket connect runs, and runs as
+    /// soon as it ended (ibx#684).
+    fn connecting_notice(&mut self, now: Instant) -> bool {
+        if self.kind != FarmKind::MarketData || !self.connecting_phase || self.conn.is_some() {
+            return false;
+        }
+        if std::mem::take(&mut self.notice_now) {
+            return true;
+        }
+        let Some(at) = self.next_check else { return false };
+        if now < at {
+            return false;
+        }
+        if self.connecting.is_some() && self.socket_up.as_ref().is_some_and(|s| !s.load(Ordering::Acquire)) {
+            self.check_held = true;
+            return false;
+        }
+        let ran = if std::mem::take(&mut self.check_held) { now } else { at };
+        self.next_check = Some(ran + CONNECTING_CHECK);
+        std::mem::take(&mut self.new_subs)
+    }
+
+    /// The farm logged on: the connecting phase ends.
+    fn end_connecting_phase(&mut self) {
+        self.connecting_phase = false;
+        self.client_start = false;
+        self.notice_now = false;
+        self.next_check = None;
+        self.check_held = false;
+        self.new_subs = false;
+        self.socket_up = None;
+    }
+}
+
+/// A market data message that is not a cancel: a subscription.
+fn is_subscription(fields: &[(u32, &str)]) -> bool {
+    fields.iter().any(|(t, v)| *t == REQUEST_TYPE && *v != REQUEST_CANCEL)
 }
 
 impl FixSink for OnDemandFarm {
@@ -178,10 +269,17 @@ impl FixSink for OnDemandFarm {
         }
     }
     fn send_comp(&mut self, fields: &[(u32, &str)]) -> bool {
-        self.last_send = Instant::now();
+        let now = Instant::now();
+        self.last_send = now;
         match self.conn.as_mut() {
             Some(c) => c.send_fixcomp(fields).is_ok(),
-            None => self.enqueue(Queued::Comp(owned(fields))),
+            None => {
+                let queued = self.enqueue(Queued::Comp(owned(fields)));
+                if queued && is_subscription(fields) {
+                    self.note_queued_subscription(now);
+                }
+                queued
+            }
         }
     }
 }
@@ -309,39 +407,43 @@ impl FarmPool {
             .collect()
     }
 
-    /// A connect began; its result comes on `rx`.
-    pub(crate) fn set_connecting(&mut self, id: FarmId, rx: Receiver<io::Result<Connection>>, now: Instant) {
+    /// A connect began; its result comes on `rx`, and `socket_up` is set
+    /// once its socket is connected. The first of a connecting phase that
+    /// a client's request began gives the connecting notice at once.
+    pub(crate) fn set_connecting(&mut self, id: FarmId, rx: Receiver<io::Result<Connection>>, socket_up: Arc<AtomicBool>) {
         if let Some(f) = self.get_mut(id) {
             f.connecting = Some(rx);
-            f.connecting_since = Some(now);
-            f.connecting_reported = false;
+            f.socket_up = Some(socket_up);
             f.attempts += 1;
+            if !f.connecting_phase {
+                f.connecting_phase = true;
+                f.notice_now = std::mem::take(&mut f.client_start);
+            }
         }
     }
 
-    /// Finished connects, and farms still connecting long enough to be
-    /// reported.
+    /// Finished connects, and the connecting notices due.
     pub(crate) fn poll_connects(&mut self, now: Instant) -> (Vec<(FarmId, io::Result<Connection>)>, Vec<FarmEvent>) {
         let mut done = Vec::new();
         let mut events = Vec::new();
         for f in &mut self.farms {
-            let Some(rx) = f.connecting.as_ref() else { continue };
-            match rx.try_recv() {
-                Ok(result) => {
-                    f.connecting = None;
-                    done.push((f.id, result));
-                }
-                Err(crossbeam_channel::TryRecvError::Empty) => {
-                    let since = f.connecting_since.unwrap_or(now);
-                    if !f.connecting_reported && now.duration_since(since) >= CONNECTING_NOTICE_AFTER {
-                        f.connecting_reported = true;
-                        events.push(FarmEvent::Connecting(f.id));
+            if let Some(rx) = f.connecting.as_ref() {
+                match rx.try_recv() {
+                    Ok(result) => {
+                        f.connecting = None;
+                        done.push((f.id, result));
+                        continue;
+                    }
+                    Err(crossbeam_channel::TryRecvError::Empty) => {}
+                    Err(crossbeam_channel::TryRecvError::Disconnected) => {
+                        f.connecting = None;
+                        done.push((f.id, Err(io::Error::other("connect thread ended without a result"))));
+                        continue;
                     }
                 }
-                Err(crossbeam_channel::TryRecvError::Disconnected) => {
-                    f.connecting = None;
-                    done.push((f.id, Err(io::Error::other("connect thread ended without a result"))));
-                }
+            }
+            if f.connecting_notice(now) {
+                events.push(FarmEvent::Connecting(f.id));
             }
         }
         (done, events)
@@ -353,6 +455,7 @@ impl FarmPool {
         conn.set_queued_writes(true);
         if let Some(f) = self.get_mut(id) {
             f.conn = Some(conn);
+            f.end_connecting_phase();
             f.wanted = false;
             f.retry_at = None;
             f.attempts = 0;
@@ -581,12 +684,146 @@ mod tests {
         let id = pool.ensure("fundfarm", "h", FarmKind::Historical, now);
         pool.get_mut(id).unwrap().send_plain(&[(35, "U")]);
         let (_tx, rx) = crossbeam_channel::bounded(1);
-        pool.set_connecting(id, rx, now);
+        pool.set_connecting(id, rx, Arc::new(AtomicBool::new(false)));
         assert!(pool.due_connects(now).is_empty(), "connect under way");
         pool.get_mut(id).unwrap().connecting = None;
         pool.on_connect_failed(id, now);
         assert!(pool.due_connects(now).is_empty());
         assert_eq!(pool.due_connects(now + Duration::from_secs(4)), vec![id]);
+    }
+
+    fn ms(n: u64) -> Duration {
+        Duration::from_millis(n)
+    }
+
+    /// A market data subscription, and its cancel.
+    const SUB: &[(u32, &str)] = &[(35, "V"), (263, "1"), (262, "7")];
+    const CANCEL: &[(u32, &str)] = &[(35, "V"), (263, "2"), (262, "7")];
+
+    /// The connecting notices of a poll.
+    fn notices(pool: &mut FarmPool, at: Instant) -> usize {
+        pool.poll_connects(at).1.iter().filter(|e| matches!(e, FarmEvent::Connecting(_))).count()
+    }
+
+    /// A market data farm with a first subscription queued at `t0`, its
+    /// connect started (by a client's request when `client`); the socket
+    /// connect's flag.
+    fn connecting_farm(t0: Instant, client: bool) -> (FarmPool, FarmId, Arc<AtomicBool>, crossbeam_channel::Sender<io::Result<Connection>>) {
+        let mut pool = FarmPool::new(t0);
+        let id = pool.ensure("usopt", "h", FarmKind::MarketData, t0);
+        let f = pool.get_mut(id).unwrap();
+        if client {
+            f.note_client_request();
+        }
+        assert!(f.send_comp(SUB));
+        // The first subscription queued at t0.
+        f.next_check = Some(t0 + CONNECTING_CHECK);
+        assert_eq!(pool.due_connects(t0), vec![id]);
+        let (tx, rx) = crossbeam_channel::bounded(1);
+        let socket = Arc::new(AtomicBool::new(true));
+        pool.set_connecting(id, rx, socket.clone());
+        (pool, id, socket, tx)
+    }
+
+    // ibx#684, the reference 10.51 (observed in the recordings of
+    // 13-16/10/2026): a client's request that starts the farm's connection
+    // gives the notice at once; the check every 0.5 s from the first
+    // subscription gives it again when subscriptions were queued since the
+    // previous check, not for a cancel, and not without new ones.
+    #[test]
+    fn a_client_request_gives_the_connecting_notice_at_once_then_on_new_subscriptions() {
+        let t0 = Instant::now();
+        let (mut pool, id, _socket, tx) = connecting_farm(t0, true);
+        assert_eq!(notices(&mut pool, t0), 1, "at once");
+        assert_eq!(notices(&mut pool, t0 + ms(200)), 0);
+        // A second request queued 0.3 s later: the 0.5 s check.
+        assert!(pool.get_mut(id).unwrap().send_comp(SUB));
+        assert_eq!(notices(&mut pool, t0 + ms(499)), 0);
+        assert_eq!(notices(&mut pool, t0 + ms(500)), 1, "new subscriptions since the start");
+        // Nothing new: no repeat.
+        assert_eq!(notices(&mut pool, t0 + ms(1000)), 0);
+        assert_eq!(notices(&mut pool, t0 + ms(1500)), 0);
+        // A cancel does not count.
+        assert!(pool.get_mut(id).unwrap().send_comp(CANCEL));
+        assert_eq!(notices(&mut pool, t0 + ms(2000)), 0);
+        // A subscription queued at 2.2 s: the check of 2.5 s.
+        assert!(pool.get_mut(id).unwrap().send_comp(SUB));
+        assert_eq!(notices(&mut pool, t0 + ms(2400)), 0);
+        assert_eq!(notices(&mut pool, t0 + ms(2501)), 1);
+        // Logged on: no more checks.
+        let (conn, _server) = loopback();
+        tx.send(Ok(conn)).unwrap();
+        let (done, events) = pool.poll_connects(t0 + ms(2700));
+        assert!(events.is_empty());
+        for (id, result) in done {
+            pool.on_connected(id, result.unwrap(), t0 + ms(2700));
+        }
+        assert!(pool.get_mut(id).unwrap().send_comp(SUB));
+        assert_eq!(notices(&mut pool, t0 + ms(3000)), 0);
+        assert_eq!(notices(&mut pool, t0 + ms(3600)), 0);
+    }
+
+    // A connection the engine started (an option model's): no notice at
+    // its start; the check gives it for the subscriptions queued, its own
+    // first, then a client's queued later. A connect tried again after a
+    // failure gives none at its start.
+    #[test]
+    fn an_engine_started_connect_gives_no_notice_at_its_start() {
+        let t0 = Instant::now();
+        let (mut pool, id, _socket, tx) = connecting_farm(t0, false);
+        assert_eq!(notices(&mut pool, t0), 0, "not at its start");
+        assert_eq!(notices(&mut pool, t0 + ms(500)), 1, "the check: its own subscription");
+        assert_eq!(notices(&mut pool, t0 + ms(1000)), 0);
+        // A client's request now: queued, its notice at the next check.
+        let f = pool.get_mut(id).unwrap();
+        f.note_client_request();
+        assert!(f.send_comp(SUB));
+        assert_eq!(notices(&mut pool, t0 + ms(1200)), 0);
+        assert_eq!(notices(&mut pool, t0 + ms(1500)), 1);
+        // The connect fails and is tried again: no notice at the new start.
+        drop(tx);
+        let (done, _) = pool.poll_connects(t0 + ms(1600));
+        assert_eq!(done.len(), 1);
+        pool.on_connect_failed(id, t0 + ms(1600));
+        let (_tx, rx) = crossbeam_channel::bounded(1);
+        pool.set_connecting(id, rx, Arc::new(AtomicBool::new(true)));
+        assert_eq!(notices(&mut pool, t0 + ms(4000)), 0);
+    }
+
+    // A check waits while the socket connect runs and comes as soon as
+    // it ended; the next one 0.5 s after it.
+    #[test]
+    fn a_connecting_check_waits_for_the_socket_connect() {
+        let t0 = Instant::now();
+        let (mut pool, id, socket, _tx) = connecting_farm(t0, true);
+        socket.store(false, Ordering::Release);
+        assert_eq!(notices(&mut pool, t0), 1, "the start's notice does not wait");
+        assert!(pool.get_mut(id).unwrap().send_comp(SUB));
+        assert_eq!(notices(&mut pool, t0 + ms(500)), 0, "held");
+        assert_eq!(notices(&mut pool, t0 + ms(1200)), 0, "held");
+        socket.store(true, Ordering::Release);
+        assert_eq!(notices(&mut pool, t0 + ms(1207)), 1, "right after the socket connect");
+        assert!(pool.get_mut(id).unwrap().send_comp(SUB));
+        assert_eq!(notices(&mut pool, t0 + ms(1700)), 0);
+        assert_eq!(notices(&mut pool, t0 + ms(1707)), 1);
+    }
+
+    // No connecting notice for a historical farm, nor for a farm whose
+    // connect never started.
+    #[test]
+    fn no_connecting_notice_without_a_connect_of_a_market_data_farm() {
+        let t0 = Instant::now();
+        let mut pool = FarmPool::new(t0);
+        let md = pool.ensure("usopt", "h", FarmKind::MarketData, t0);
+        let f = pool.get_mut(md).unwrap();
+        f.note_client_request();
+        assert!(f.send_comp(SUB));
+        assert_eq!(notices(&mut pool, t0 + ms(600)), 0, "no connect began");
+        let hist = pool.ensure("ushmds", "h", FarmKind::Historical, t0);
+        assert!(pool.get_mut(hist).unwrap().send_comp(SUB));
+        let (_tx, rx) = crossbeam_channel::bounded(1);
+        pool.set_connecting(hist, rx, Arc::new(AtomicBool::new(true)));
+        assert_eq!(notices(&mut pool, t0 + ms(2000)), 0);
     }
 
     // The activity check runs every 120 s and closes a market data farm
