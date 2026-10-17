@@ -667,8 +667,10 @@ impl EClient {
     #[doc(hidden)]
     fn _test_set_position(&self, con_id: i64, position: i64, avg_cost: f64) -> PyResult<()> {
         let shared = self.shared_state()?;
+        // With a symbol, as a portfolio row carries one: a row known by its
+        // conId alone waits a little for its contract (ibx#742).
         shared.portfolio.set_position_info(PositionInfo {
-            con_id, position_fixed: position * QTY_SCALE, avg_cost, ..Default::default()
+            con_id, position_fixed: position * QTY_SCALE, avg_cost, symbol: con_id.to_string(), ..Default::default()
         });
         Ok(())
     }

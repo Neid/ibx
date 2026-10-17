@@ -522,12 +522,14 @@ fn account_state_via_eclient() {
 fn account_req_positions_reflects_fills() {
     let (client, _rx, shared) = test_client();
 
-    // Set position info (as engine would after fills)
+    // Set position info (as engine would after fills), with the symbols
+    // of the portfolio list: a row known by its conId alone waits a little
+    // for its contract (ibx#742).
     shared.portfolio.set_position_info(PositionInfo {
-        con_id: 756733, position_fixed: (100) as i64 * ibx::types::QTY_SCALE, avg_cost: 450.0, ..Default::default()
+        con_id: 756733, position_fixed: (100) as i64 * ibx::types::QTY_SCALE, avg_cost: 450.0, symbol: "SPY".into(), ..Default::default()
     });
     shared.portfolio.set_position_info(PositionInfo {
-        con_id: 265598, position_fixed: (-50) as i64 * ibx::types::QTY_SCALE, avg_cost: 150.0, ..Default::default()
+        con_id: 265598, position_fixed: (-50) as i64 * ibx::types::QTY_SCALE, avg_cost: 150.0, symbol: "AAPL".into(), ..Default::default()
     });
 
     // The rows wait for the position store, as the reference: nothing
@@ -1070,6 +1072,10 @@ fn pnl_single_dispatches_position_info() {
     });
 
     let mut w = RecordingWrapper::default();
+    client.process_msgs(&mut w);
+    // None with the first computation; the next, a second later, gives it
+    // (ibx#737).
+    std::thread::sleep(std::time::Duration::from_millis(1050));
     client.process_msgs(&mut w);
     assert!(w.events.iter().any(|e| e.starts_with("pnl_single:20:")), "PnL single callback expected");
     // 100 shares, avg cost 150, mark 155, opened today: daily 500, unrealized

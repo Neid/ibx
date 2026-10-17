@@ -77,8 +77,10 @@ fn rows(line: &str) -> Vec<BTreeMap<u32, String>> {
 /// from a process-wide log.
 static SERIAL: Mutex<()> = Mutex::new(());
 
+/// A row's value in the engine's fixed point, rounded as the engine
+/// rounds it (truncating made 527.03997805 one unit short).
 fn scaled(row: &BTreeMap<u32, String>, tag: u32) -> i64 {
-    row.get(&tag).and_then(|v| v.parse::<f64>().ok()).map(|v| (v * PRICE_SCALE as f64) as i64).unwrap_or(0)
+    row.get(&tag).and_then(|v| v.parse::<f64>().ok()).map(|v| (v * PRICE_SCALE as f64).round() as i64).unwrap_or(0)
 }
 
 #[test]
@@ -146,6 +148,9 @@ fn every_portfolio_row_is_applied() {
             && p.unrealized_pnl == scaled(row, 6100)
             && p.position_fixed == position);
         if !ok {
+            println!("  {con_id}: held {:?}, last row price {:?} cost {:?} unrealized {:?} position {:?}",
+                held.as_ref().map(|p| (p.market_price, p.avg_cost, p.unrealized_pnl, p.position_fixed)),
+                scaled(row, 6065), row.get(&6101), scaled(row, 6100), position);
             wrong.push(*con_id);
         }
     }
@@ -158,7 +163,9 @@ fn every_portfolio_row_is_applied() {
 //
 // The Rust client never called update_portfolio; only the Python client
 // did. Every position req_positions lists must reach update_portfolio with
-// its market price and its symbol.
+// its market price and its symbol, except a size-0 row of a contract closed
+// since midnight that only the server's P&L data still carries: the
+// reference gives it a position row and no portfolio row (ibx#742).
 
 #[derive(Default)]
 struct Seen {
@@ -166,11 +173,17 @@ struct Seen {
     priced: std::collections::BTreeSet<i64>,
     /// con_id -> symbol carried by update_portfolio.
     symbols: BTreeMap<i64, String>,
+    /// con_id -> symbol carried by position.
+    position_symbols: BTreeMap<i64, String>,
     /// Multipliers carried by position and update_portfolio.
     multipliers: Vec<String>,
     /// con_id -> position in shares, from position() and update_portfolio().
     from_positions: BTreeMap<i64, f64>,
     from_portfolio: BTreeMap<i64, f64>,
+    /// The realized P&L of each reqPnL answer.
+    pnl_realized: Vec<f64>,
+    /// req_id -> (position, realized P&L) of each reqPnLSingle answer.
+    singles: Vec<(i64, f64, f64)>,
 }
 
 struct Probe(Arc<Mutex<Seen>>);
@@ -179,6 +192,7 @@ impl ibx::api::wrapper::Wrapper for Probe {
     fn position(&mut self, _account: &str, contract: &ibx::api::client::Contract, pos: f64, _avg: f64) {
         let mut s = self.0.lock().unwrap();
         s.positions.push(contract.con_id);
+        s.position_symbols.insert(contract.con_id, contract.symbol.clone());
         s.multipliers.push(contract.multiplier.clone());
         s.from_positions.insert(contract.con_id, pos);
     }
@@ -194,6 +208,12 @@ impl ibx::api::wrapper::Wrapper for Probe {
         s.symbols.insert(contract.con_id, contract.symbol.clone());
         s.from_portfolio.insert(contract.con_id, position);
         s.multipliers.push(contract.multiplier.clone());
+    }
+    fn pnl(&mut self, _req_id: i64, _daily_pnl: f64, _unrealized_pnl: f64, realized_pnl: f64) {
+        self.0.lock().unwrap().pnl_realized.push(realized_pnl);
+    }
+    fn pnl_single(&mut self, req_id: i64, pos: f64, _daily_pnl: f64, _unrealized_pnl: f64, realized_pnl: f64, _value: f64) {
+        self.0.lock().unwrap().singles.push((req_id, pos, realized_pnl));
     }
 }
 
@@ -217,11 +237,22 @@ fn eclient_delivers_update_portfolio() {
     }
     let seen = Arc::new(Mutex::new(Seen::default()));
     let mut probe = Probe(seen.clone());
+    let asked = Instant::now();
     client.req_positions(&mut probe);
-    client.process_msgs(&mut probe);
+    // The snapshot comes once the position data and the rows' contracts
+    // are in (ibx#742: a short wait for a contract known by its conId).
+    while seen.lock().unwrap().positions.is_empty() && asked.elapsed() < Duration::from_secs(35) {
+        client.process_msgs(&mut probe);
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    println!("  position rows after {} ms", asked.elapsed().as_millis());
     client.req_account_updates(true, "");
     let listed: Vec<i64> = seen.lock().unwrap().positions.clone();
     println!("  {} position(s) listed", listed.len());
+    // Every position row carries its symbol, a P&L-only row included
+    // (ibx#742: from its definition).
+    let position_symbols = seen.lock().unwrap().position_symbols.clone();
+    assert!(position_symbols.values().all(|s| !s.is_empty()), "a position row without its symbol: {:?}", position_symbols);
 
     let deadline = Instant::now() + Duration::from_secs(60);
     while Instant::now() < deadline {
@@ -229,12 +260,46 @@ fn eclient_delivers_update_portfolio() {
         if listed.iter().all(|c| seen.lock().unwrap().priced.contains(c)) { break; }
         std::thread::sleep(Duration::from_millis(50));
     }
+    // The P&L of the account and of each listed contract (ibx#737), a few
+    // seconds: the first value, then the rows.
+    client.req_pnl(9101, &client.account_id, "");
+    for (i, &con_id) in listed.iter().enumerate() {
+        client.req_pnl_single(9200 + i as i64, &client.account_id, "", con_id);
+    }
+    let until = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < until {
+        client.process_msgs(&mut probe);
+        std::thread::sleep(Duration::from_millis(50));
+    }
     client.disconnect();
+    {
+        let s = seen.lock().unwrap();
+        println!("  pnl realized: {:?}", s.pnl_realized);
+        println!("  pnl singles (req, position, realized): {:?}", s.singles);
+        if !listed.is_empty() {
+            assert!(!s.pnl_realized.is_empty(), "no reqPnL answer");
+        }
+        // The account's realized P&L is always given: 0.0 when no row has
+        // one (ibx#737).
+        assert!(s.pnl_realized.iter().all(|r| *r != f64::MAX), "account realized P&L unset: {:?}", s.pnl_realized);
+        // A single's realized P&L is unset when 0, never 0.0 (ibx#737).
+        assert!(s.singles.iter().all(|(_, _, r)| *r != 0.0), "a single with realized 0.0: {:?}", s.singles);
+    }
     if listed.is_empty() {
         println!("  SKIP: no position on this account");
         return;
     }
     let priced = seen.lock().unwrap().priced.clone();
+    // A size-0 row with no portfolio row is the P&L-only row (ibx#742).
+    let (from_positions, from_portfolio) = { let s = seen.lock().unwrap(); (s.from_positions.clone(), s.from_portfolio.clone()) };
+    let pnl_only: Vec<i64> = listed.iter().copied()
+        .filter(|c| from_positions.get(c) == Some(&0.0) && !from_portfolio.contains_key(c)).collect();
+    println!("  size-0 position row(s) with no portfolio row: {:?}", pnl_only);
+    // Such a contract makes no P&L row: no single answer (ibx#737).
+    let answered: Vec<i64> = seen.lock().unwrap().singles.iter()
+        .map(|(req_id, _, _)| listed[(*req_id - 9200) as usize]).collect();
+    assert!(pnl_only.iter().all(|c| !answered.contains(c)), "a single answer for a P&L-only row: {:?}", answered);
+    let listed: Vec<i64> = listed.into_iter().filter(|c| !pnl_only.contains(c)).collect();
     let missing: Vec<&i64> = listed.iter().filter(|c| !priced.contains(c)).collect();
     println!("  {} of {} position(s) delivered with a market price", listed.len() - missing.len(), listed.len());
     assert!(missing.is_empty(), "update_portfolio missing for {:?}", missing);
@@ -254,7 +319,8 @@ fn eclient_delivers_update_portfolio() {
     assert!(!multipliers.iter().any(|m| m.contains('/')), "multiplier holds the row key: {:?}", distinct);
     // Positions are fixed-point inside ibx (ibx#313); both callbacks must
     // report the same number of shares.
-    let (a, b) = { let s = seen.lock().unwrap(); (s.from_positions.clone(), s.from_portfolio.clone()) };
+    let (mut a, b) = (from_positions, from_portfolio);
+    a.retain(|c, _| !pnl_only.contains(c));
     println!("  positions: {:?}", a);
     assert_eq!(a, b, "position() and update_portfolio() disagree");
     println!("  PASS");

@@ -653,6 +653,9 @@ pub(crate) struct CcpState {
     /// The P&L seeds were asked again for the account's "Core" model
     /// (ibx#714).
     core_seeds_asked: bool,
+    /// A portfolio message was read: the P&L seeds' contracts that no
+    /// portfolio row carries can be told apart (ibx#742).
+    portfolio_seen: bool,
     /// Set by a reconnect until the end frame of the order status replay.
     pub(crate) awaiting_status_replay: bool,
     /// Set at the logon until the end frame of its order status replay:
@@ -1169,6 +1172,7 @@ impl CcpState {
             // at 8 for it (observed 15/10/2026); not seen by the API.
             next_partition_request: 8,
             core_seeds_asked: false,
+            portfolio_seen: false,
             awaiting_status_replay: false,
             awaiting_login_replay: false,
             fill_up_pending: None,
@@ -1525,6 +1529,12 @@ impl CcpState {
                         "143" => {
                             // P&L midnight seed — store for client-side daily P&L computation
                             handle_pnl_response(msg, shared);
+                            // A seed's contract no portfolio row carries
+                            // is a reqPositions row (ibx#742): its
+                            // definition, once the rows are known.
+                            if self.portfolio_seen {
+                                self.look_up_portfolio_contracts(None, ccp_conn, shared, hb);
+                            }
                         }
                         // The prices at midnight of the positions, after the
                         // seeds (ibx#511; observed 15/10/2026 on the reference
@@ -1619,7 +1629,8 @@ impl CcpState {
             b"EB" => handle_account_end(msg, shared),
             b"UP" => {
                 handle_portfolio_message(msg, context, shared, event_tx);
-                self.look_up_portfolio_contracts(msg, ccp_conn, shared, hb);
+                self.portfolio_seen = true;
+                self.look_up_portfolio_contracts(Some(msg), ccp_conn, shared, hb);
             }
             _ => return false,
         }
@@ -5341,8 +5352,10 @@ impl CcpState {
     /// (ibx#705; the reference 10.51, paper, 16/10/2026: one
     /// `SmallBatchReqByConid` of the login's five contracts, right after its
     /// first portfolio message). The answer fills the contract cache.
-    fn look_up_portfolio_contracts(&mut self, msg: &[u8], ccp_conn: &mut Option<Connection>, _shared: &SharedState, hb: &mut HeartbeatState) {
-        let Ok(text) = std::str::from_utf8(msg) else { return };
+    /// After them, the contracts of the P&L seeds that no portfolio row
+    /// carries: each is a reqPositions row of size 0 (ibx#742).
+    fn look_up_portfolio_contracts(&mut self, msg: Option<&[u8]>, ccp_conn: &mut Option<Connection>, shared: &SharedState, hb: &mut HeartbeatState) {
+        let text = msg.and_then(|m| std::str::from_utf8(m).ok()).unwrap_or("");
         let mut cold: Vec<i64> = Vec::new();
         for v in text.split('').filter_map(|p| p.strip_prefix("6008=")) {
             let Ok(con_id) = v.parse::<i64>() else { continue };
@@ -5350,6 +5363,16 @@ impl CcpState {
             // from the day's trade reports (the reference asked AAPL and
             // SPY, traded that day).
             if con_id == 0 || cold.contains(&con_id) || self.auto_fetched_conids.contains(&con_id) {
+                continue;
+            }
+            cold.push(con_id);
+        }
+        let mut seeds: Vec<i64> = shared.portfolio.midnight_seeds().iter().map(|s| s.con_id).collect();
+        seeds.sort_unstable();
+        for con_id in seeds {
+            if con_id == 0 || cold.contains(&con_id) || self.auto_fetched_conids.contains(&con_id)
+                || shared.portfolio.position_info(con_id).is_some() || shared.reference.get_contract(con_id).is_some()
+            {
                 continue;
             }
             cold.push(con_id);
@@ -6534,6 +6557,37 @@ mod tests {
         assert!(shared.reference.get_contract(265598).is_some() && shared.reference.get_contract(272093).is_some());
         ccp.process_ccp_message(up.as_bytes(), &mut conn, &mut context, &shared, &None, &mut hb, "DU1");
         assert!(!sent_frames(&mut server).contains("|35=c|"), "nothing asked again");
+    }
+
+    // ibx#742 (the reference 10.51, paper, 17/10/2026): the contract of a
+    // P&L seed that no portfolio row carries is looked up too, after the
+    // message's own, whichever of the seeds and the portfolio comes first;
+    // a seed's contract a portfolio row carries is not asked twice.
+    #[test]
+    fn a_seed_contract_without_a_portfolio_row_is_looked_up() {
+        let up = pipe_frame("35=UP|6529=AR.1|6068=MSFT                  |8001=PositionList|6064=-10|6008=272093|167=STK|");
+        let seeds = pipe_frame("35=U|6040=143|6529=PLR.3|146=2|6008=265598|6064=0|6822=-13.3509|6099=-13.3510601|6008=272093|6064=-10|6822=0|6099=0|");
+        for seeds_first in [true, false] {
+            let (mut ccp, mut context, shared) = u186_test_state();
+            let (client, mut server) = crate::protocol::connection::mem_pair();
+            let mut conn = Some(Connection::new_mem(client));
+            let mut hb = HeartbeatState::new();
+            let order: [&[u8]; 2] = if seeds_first { [&seeds, &up] } else { [&up, &seeds] };
+            for msg in order {
+                ccp.process_ccp_message(msg, &mut conn, &mut context, &shared, &None, &mut hb, "DU1");
+            }
+            let wire = sent_frames(&mut server);
+            if seeds_first {
+                assert_eq!(wire.matches("|35=c|").count(), 1, "{wire}");
+                assert!(wire.contains("|321=2|146=2|6008=272093|6004=ANYEXCH|6008=265598|6004=ANYEXCH|"), "{wire}");
+            } else {
+                assert_eq!(wire.matches("|35=c|").count(), 2, "{wire}");
+                assert!(wire.contains("|321=2|146=1|6008=272093|6004=ANYEXCH|"), "{wire}");
+                assert!(wire.contains("|321=2|146=1|6008=265598|6004=ANYEXCH|"), "{wire}");
+            }
+            ccp.process_ccp_message(&seeds, &mut conn, &mut context, &shared, &None, &mut hb, "DU1");
+            assert!(!sent_frames(&mut server).contains("|35=c|"), "nothing asked again");
+        }
     }
 
     // ibx#411: one portfolio message carries a row per position (ib-agent#192

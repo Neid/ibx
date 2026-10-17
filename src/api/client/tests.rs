@@ -2669,8 +2669,10 @@ fn process_msgs_symbol_samples_carry_the_row_fields() {
 fn req_positions_delivers_via_wrapper() {
     let (client, _rx, shared) = test_client();
     shared.portfolio.set_account_download_complete();
-    shared.portfolio.set_position_info(PositionInfo { con_id: 265598, position_fixed: (100) as i64 * crate::types::QTY_SCALE, avg_cost: 150.0, ..Default::default() });
-    shared.portfolio.set_position_info(PositionInfo { con_id: 756733, position_fixed: (-50) as i64 * crate::types::QTY_SCALE, avg_cost: 400.0, ..Default::default() });
+    // With their symbols, as the portfolio list gives them: a row known by
+    // its conId alone waits a little for its contract (ibx#742).
+    shared.portfolio.set_position_info(PositionInfo { con_id: 265598, position_fixed: (100) as i64 * crate::types::QTY_SCALE, avg_cost: 150.0, symbol: "AAPL".into(), ..Default::default() });
+    shared.portfolio.set_position_info(PositionInfo { con_id: 756733, position_fixed: (-50) as i64 * crate::types::QTY_SCALE, avg_cost: 400.0, symbol: "SPY".into(), ..Default::default() });
     let mut w = RecordingWrapper::default();
     client.req_positions(&mut w);
     client.process_msgs(&mut w);
