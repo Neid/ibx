@@ -183,6 +183,17 @@ pub(crate) struct TrailLimitReported {
     pub stop: Price,
 }
 
+/// What a future's or an index's definition names (ibx#727): its
+/// underlying, the index it names as its reference, the exchange and API
+/// security type of its record.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub(crate) struct DefLink {
+    pub(crate) under_con_id: i64,
+    pub(crate) index_con_id: i64,
+    pub(crate) exchange: String,
+    pub(crate) sec_type: String,
+}
+
 pub struct Context {
     pub(crate) market: MarketState,
     positions: [i64; MAX_INSTRUMENTS],
@@ -332,6 +343,12 @@ pub struct Context {
     /// option's market data the engine starts for itself (ibx#693):
     /// (instrument, conId, the order's exchange).
     pub(crate) order_models: Vec<(crate::types::InstrumentId, i64, String)>,
+    /// What the definitions of futures and indexes name, by conId, for the
+    /// index part of a futures option order's model (ibx#727).
+    pub(crate) def_links: HashMap<i64, DefLink>,
+    /// Contracts whose definition was asked and answered without them: an
+    /// option model waiting for their terms gives up (ibx#727).
+    pub(crate) no_definition: std::collections::HashSet<i64>,
     /// API security type and symbol by conId, once its definition was
     /// read: a market data request that gives the conId alone takes them
     /// from it (ibx#643).
@@ -494,6 +511,8 @@ impl Context {
             listing_exchanges: HashMap::new(),
             option_terms: HashMap::new(),
             order_models: Vec::new(),
+            def_links: HashMap::new(),
+            no_definition: std::collections::HashSet::new(),
             def_kinds: HashMap::new(),
             stock_types: HashMap::new(),
             foreign_stocks: std::collections::HashSet::new(),

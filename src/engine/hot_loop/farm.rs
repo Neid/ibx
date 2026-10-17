@@ -95,6 +95,9 @@ pub(crate) fn note_definition(context: &mut Context, con_id: i64, msg: &[u8]) {
         context.smart_components.insert(con_id, components);
     }
     let records = crate::control::contracts::parse_secdef_records(msg).unwrap_or_default();
+    if !records.iter().any(|d| d.con_id == con_id) {
+        context.no_definition.insert(con_id);
+    }
     if let Some(def) = records.iter().find(|d| d.con_id == con_id) {
         if !def.valid_exchanges.is_empty() {
             context.valid_exchanges.insert(con_id, def.valid_exchanges.clone());
@@ -111,6 +114,14 @@ pub(crate) fn note_definition(context: &mut Context, con_id: i64, msg: &[u8]) {
         }
         if !def.stock_type.is_empty() {
             context.stock_types.insert(con_id, def.stock_type.clone());
+        }
+        // A future's or an index's links, for the index part of a futures
+        // option order's model (ibx#727).
+        if matches!(def.sec_type.to_api_str(), "FUT" | "IND") {
+            context.def_links.insert(con_id, crate::engine::context::DefLink {
+                under_con_id: def.under_con_id, index_con_id: def.index_con_id,
+                exchange: def.exchange.clone(), sec_type: def.sec_type.to_api_str().to_string(),
+            });
         }
         if terms.is_option() || crate::control::optcalc::market::has_model(&terms.sec_type) {
             context.option_terms.insert(con_id, terms);
@@ -1130,6 +1141,12 @@ impl FarmState {
             return;
         }
 
+        // The ack of an entry of the index part of a futures option order's
+        // model (ibx#727): its tag is kept; its data goes to no one.
+        if self.optmd.index_ack(rx_farm, req_id, server_tag, min_tick) {
+            return;
+        }
+
         // An option model entry's ack (ibx#502); the model's own pair of
         // the option carries the option's ticks.
         let size_min_tick = parts.get(8).and_then(|v| v.parse::<f64>().ok());
@@ -1467,8 +1484,9 @@ impl FarmState {
                 Some(626) => self.handle_exchange_map(tag, payload, sink, shared, hb),
                 Some(292) => self.handle_tick_news(tag, payload, shared, event_tx),
                 Some(MARKET_DATA_STATUS) => {
-                    // The option model's status of its option (ibx#502).
-                    if !self.optmd.is_empty() {
+                    // The option model's status of its option (ibx#502),
+                    // and of an order model's index (ibx#727).
+                    if !self.optmd.is_empty() || !self.optmd.indexes.is_empty() {
                         let frozen_mode = self.md_modes.frozen;
                         self.optmd.status(rx_farm, tag, payload, frozen_mode, &mut self.next_md_req_id);
                     }

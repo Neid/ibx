@@ -45,6 +45,18 @@
 //! pair and greeks, queued for the option's farm while it connects; then
 //! the statuses and volatilities as a request's model. It was kept to the
 //! end of each recording (13 to 40 s), with no cancel.
+//!
+//! A futures option order's model has an index part too (ibx#727), on a
+//! farm of its own: the index the future's index names as its reference
+//! (the ES future's index names the SPX index). Observed on paper,
+//! 15/10/2026, before the open (the reference 10.51, an ES put ordered on
+//! CME by conId, the first futures option order of the session): once the
+//! definitions naming it were read, about 0.5 s after the future's
+//! entries, its native top with its bid and ask pair, then its market data
+//! status, on its own exchange, all queued while its farm connected; the
+//! status said frozen, and 2 ms after it its frozen pair went out, then its
+//! entry 613 on the volatility exchange. Kept to the end of the recording,
+//! with no cancel.
 
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
@@ -86,6 +98,10 @@ const RESTART_WAIT: Duration = Duration::from_secs(120);
 const FROZEN_BID: i32 = -442;
 const FROZEN_ASK: i32 = -443;
 const AFTER_FROZEN: i32 = 317;
+/// The index part's entry after its frozen pair (ibx#727).
+const INDEX_AFTER_FROZEN: i32 = 613;
+/// The index part's native top entry (ibx#640, ibx#727).
+const INDEX_NATIVE_TOP: i32 = 403;
 
 /// One entry of a model on the wire.
 #[derive(Debug, Clone)]
@@ -201,6 +217,34 @@ pub(crate) struct Starting {
     pub(crate) order: Option<String>,
 }
 
+/// The index part of a futures option order's model (ibx#727): the
+/// entries of the index on its farm, the engine's own; their data goes to
+/// no one.
+#[derive(Debug, Clone)]
+pub(crate) struct IndexPart {
+    /// The order's option and its future.
+    pub(crate) instrument: InstrumentId,
+    pub(crate) future: i64,
+    /// The index.
+    pub(crate) con_id: i64,
+    pub(crate) farm: FarmId,
+    pub(crate) entries: Vec<ModelEntry>,
+    /// The frozen pair went out.
+    frozen_asked: bool,
+}
+
+/// A futures option order's model waiting for the definitions that name
+/// its index (ibx#727): the future's, the index's it names, the index's
+/// that one names as its reference.
+#[derive(Debug, Clone)]
+pub(crate) struct IndexStart {
+    pub(crate) instrument: InstrumentId,
+    pub(crate) future: i64,
+    pub(crate) deadline: Instant,
+    /// The last definition asked for it.
+    pub(crate) asked: Option<i64>,
+}
+
 /// The option models of the market data requests.
 #[derive(Debug, Default)]
 pub(crate) struct OptMd {
@@ -223,6 +267,10 @@ pub(crate) struct OptMd {
     /// An instant on an even second of the wall clock, the origin of the
     /// session's clock (ibx#684); set at its first use.
     clock_origin: Option<Instant>,
+    /// The index parts of the futures option orders' models, one per index
+    /// for the session (ibx#727), and those waiting for their definitions.
+    pub(crate) indexes: Vec<IndexPart>,
+    pub(crate) index_starts: Vec<IndexStart>,
 }
 
 /// An instant on an even second of the wall clock, before every instant
@@ -320,6 +368,104 @@ impl OptMd {
     /// A model has entries on `farm`: the farm stays up for them.
     pub(crate) fn uses_farm(&self, farm: FarmId) -> bool {
         self.models.iter().any(|m| m.opt_farm == farm || m.under_farm == farm)
+            || self.indexes.iter().any(|p| p.farm == farm)
+    }
+
+    /// A futures option order's model started on the option `instrument`,
+    /// whose future is `future`: its index part waits for the definitions
+    /// that name the index (ibx#727). Once per future.
+    pub(crate) fn note_index_start(&mut self, instrument: InstrumentId, future: i64, now: Instant) {
+        if future <= 0 || self.index_starts.iter().any(|s| s.future == future)
+            || self.indexes.iter().any(|p| p.future == future)
+        {
+            return;
+        }
+        self.index_starts.push(IndexStart { instrument, future, deadline: now + START_WAIT, asked: None });
+    }
+
+    /// The index parts waiting too long for their definitions are dropped.
+    pub(crate) fn sweep_index_starts(&mut self, now: Instant) {
+        self.index_starts.retain(|s| {
+            if s.deadline > now { return true; }
+            log::warn!("Index part of the model of instrument {} (future {}): no definition in time", s.instrument, s.future);
+            false
+        });
+    }
+
+    /// The index has its part already.
+    pub(crate) fn has_index(&self, con_id: i64) -> bool {
+        self.indexes.iter().any(|p| p.con_id == con_id)
+    }
+
+    /// Start the index part of a futures option order's model (ibx#727),
+    /// on `farm`, as the reference asked it (paper, 15/10/2026): the native
+    /// top with the bid and ask pair in one message, the market data
+    /// status in a second, both on the index's own exchange, with the entry
+    /// marks and no API mark. The frozen pair and the entry after it wait
+    /// for the status. Their messages.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn launch_index(
+        &mut self, instrument: InstrumentId, future: i64, con_id: i64, exchange: &str, sec_type: &str, farm: FarmId,
+        next_id: &mut u32,
+    ) -> Messages {
+        if self.has_index(con_id) {
+            return Vec::new();
+        }
+        let sec = super::farm::fix_sec_type(sec_type).to_string();
+        let entry = |code: i32, exchange: &str| ModelEntry {
+            farm_req: 0, farm, con_id: con_id.to_string(), exchange: exchange.to_string(), sec_type: sec.clone(),
+            code, under: true, tag: None, min_tick: 0.0, size_tick: None,
+        };
+        let mut part = IndexPart {
+            instrument, future, con_id, farm,
+            entries: vec![
+                entry(INDEX_NATIVE_TOP, exchange), entry(442, exchange), entry(443, exchange),
+                entry(super::farm::MARKET_DATA_STATUS, exchange),
+                entry(FROZEN_BID, exchange), entry(FROZEN_ASK, exchange), entry(INDEX_AFTER_FROZEN, "IBVOL"),
+            ],
+            frozen_asked: false,
+        };
+        let marks = self.entry_marks.load(std::sync::atomic::Ordering::Relaxed);
+        let out = Self::index_groups(&mut part, &[&[INDEX_NATIVE_TOP, 442, 443], &[super::farm::MARKET_DATA_STATUS]], next_id, marks);
+        log::info!("Index part of the model of instrument {}: index {} on {} (farm {})", instrument, con_id, exchange, farm);
+        self.indexes.push(part);
+        out
+    }
+
+    /// Give request ids to the index part's entries of each group, and
+    /// their messages.
+    fn index_groups(part: &mut IndexPart, groups: &[&[i32]], next_id: &mut u32, marks: u8) -> Messages {
+        let mut out = Vec::new();
+        for g in groups {
+            let mut idx = Vec::new();
+            for &code in g.iter() {
+                if let Some(i) = part.entries.iter().position(|e| e.code == code && e.farm_req == 0) {
+                    part.entries[i].farm_req = *next_id;
+                    *next_id += 1;
+                    idx.push(i);
+                }
+            }
+            if idx.is_empty() {
+                continue;
+            }
+            let es: Vec<&ModelEntry> = idx.iter().map(|&i| &part.entries[i]).collect();
+            out.push((part.farm, message("1", &es, marks, false)));
+        }
+        out
+    }
+
+    /// An acknowledgement of an index part's entry (ibx#727): its tag is
+    /// kept. False when it is not one.
+    pub(crate) fn index_ack(&mut self, farm: FarmId, req_id: u32, tag: u32, min_tick: f64) -> bool {
+        for p in &mut self.indexes {
+            if let Some(e) = p.entries.iter_mut().find(|e| e.farm == farm && e.farm_req == req_id) {
+                e.tag = Some(tag);
+                e.min_tick = min_tick;
+                log::info!("Index part entry {} ack: server_tag {} -> index {}", e.code, tag, p.con_id);
+                return true;
+            }
+        }
+        false
     }
 
     /// Start the model of `instrument` (its top of book went out on
@@ -572,6 +718,20 @@ impl OptMd {
                 deadline: Instant::now() + RESTART_WAIT, order: m.order,
             });
         }
+        // An index part on it is asked again once its farm is back (a
+        // loss was not observed; ibx#727).
+        let mut k = 0;
+        while k < self.indexes.len() {
+            if self.indexes[k].farm != farm {
+                k += 1;
+                continue;
+            }
+            let p = self.indexes.remove(k);
+            log::info!("Index part of index {}: farm {} lost, asked again when it is back", p.con_id, farm);
+            self.index_starts.push(IndexStart {
+                instrument: p.instrument, future: p.future, deadline: Instant::now() + RESTART_WAIT, asked: None,
+            });
+        }
         out
     }
 
@@ -599,7 +759,8 @@ impl OptMd {
     /// block), None when it is none.
     pub(crate) fn code_of(&self, farm: FarmId, tag: u32) -> Option<i32> {
         self.models.iter().flat_map(|m| &m.entries)
-            .find(|e| e.farm == farm && e.tag == Some(tag) && !matches!(e.code.abs(), 442 | 443))
+            .chain(self.indexes.iter().flat_map(|p| &p.entries))
+            .find(|e| e.farm == farm && e.tag == Some(tag) && !matches!(e.code.abs(), 442 | 443 | INDEX_NATIVE_TOP))
             .map(|e| e.code)
     }
 
@@ -755,6 +916,22 @@ impl OptMd {
                         vec![(AFTER_FROZEN, false)],
                     ], next_id, marks));
                 }
+            }
+        }
+        // The index part's status (ibx#727; the reference 10.51, paper,
+        // 15/10/2026 before the open): frozen, its frozen pair, then its
+        // entry after it, alone, once. Not frozen was not observed: nothing
+        // more is asked.
+        for p in &mut self.indexes {
+            if p.frozen_asked
+                || !p.entries.iter().any(|e| e.code == super::farm::MARKET_DATA_STATUS && e.farm == farm && e.tag == Some(tag))
+            {
+                continue;
+            }
+            log::info!("Index part of index {}: market data status {}", p.con_id, value);
+            if value == 1 {
+                p.frozen_asked = true;
+                asked.extend(Self::index_groups(p, &[&[FROZEN_BID, FROZEN_ASK], &[INDEX_AFTER_FROZEN]], next_id, marks));
             }
         }
         self.outbox.extend(asked);

@@ -168,6 +168,9 @@ pub struct ContractDefinition {
     pub join_key: String,
     /// conId of the underlying (the API underConId), 0 when absent.
     pub under_con_id: i64,
+    /// conId of the index a futures index names as its reference (an ES
+    /// index names the SPX index), 0 when absent (ibx#727).
+    pub index_con_id: i64,
     /// Exercise style of an option: 1 American, 2 European, 0 unknown.
     pub exercise_style: u8,
     /// Last trading time of a derivative, `HHMM`, empty when absent.
@@ -294,6 +297,7 @@ impl Default for ContractDefinition {
             time_zone_id: None,
             join_key: String::new(),
             under_con_id: 0,
+            index_con_id: 0,
             exercise_style: 0,
             last_trade_time: String::new(),
             under_sec_type: String::new(),
@@ -715,6 +719,7 @@ fn apply_secdef_fields<'a>(def: &mut ContractDefinition, keys: &mut RecordKeys<'
                 _ => {}
             },
             6346 => def.under_con_id = v.parse().unwrap_or(0),
+            6577 => def.index_con_id = v.parse().unwrap_or(0),
             6855 => def.under_symbol = v.to_string(),
             6178 => def.agg_group = v.trim().parse().ok(),
             6659 => def.exercise_style = v.parse().unwrap_or(0),

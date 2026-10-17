@@ -1004,7 +1004,16 @@ impl HotLoop {
                 continue;
             }
             let Some(terms) = self.context.option_terms.get(&s.con_id).cloned() else {
-                self.ask_definition(s.con_id, "SMART");
+                // Answered without the contract: no model, not asked again
+                // (ibx#727: a futures option asked on the stock route got
+                // an empty answer, asked again at every pass).
+                if self.context.no_definition.remove(&s.con_id) {
+                    log::warn!("Option model of con_id {}: its definition has no record of it, no option computations", s.con_id);
+                    continue;
+                }
+                // An order's model asks it on the order's exchange.
+                let exchange = s.order.clone().unwrap_or_else(|| "SMART".to_string());
+                self.ask_definition(s.con_id, &exchange);
                 self.farm.optmd.starting.push(s);
                 continue;
             };
@@ -1061,11 +1070,73 @@ impl HotLoop {
                 self.farm.optmd.starting.push(s);
                 continue;
             }
+            // A futures option order's model: its index part next
+            // (ibx#727).
+            if s.order.is_some() && under_type == "FUT" {
+                self.farm.optmd.note_index_start(s.instrument, terms.under_con_id, now);
+            }
             let f = &mut self.farm;
             let msgs = f.optmd.launch_with(s.instrument, s.con_id, s.snapshot, terms.clone(), opt_farm, under_farm,
                 &under_exchange, s.order, &mut f.next_md_req_id);
             self.send_md_messages(msgs);
             self.ccp.optcalc.want_inputs(&terms, &mut self.ccp_conn, &mut self.hb);
+        }
+    }
+
+    /// The index part of the futures option orders' models (ibx#727): the
+    /// definitions that name the index asked in turn, on any exchange, as
+    /// the reference asks them (the future's, which names its index; the
+    /// index's, which names the index it refers to; that one's); then the
+    /// index's entries on the farm of its route, the engine's own. The
+    /// farm, when it is not connected yet, connects as for an option
+    /// model's, with no notice at its start.
+    fn service_index_starts(&mut self, now: Instant) {
+        self.farm.optmd.sweep_index_starts(now);
+        for mut s in std::mem::take(&mut self.farm.optmd.index_starts) {
+            let links = &self.context.def_links;
+            let future = links.get(&s.future).cloned();
+            let index = future.as_ref().filter(|f| f.under_con_id > 0).and_then(|f| links.get(&f.under_con_id).cloned());
+            let target = index.as_ref().filter(|i| i.index_con_id > 0).and_then(|i| links.get(&i.index_con_id).cloned());
+            let missing = match (&future, &index, &target) {
+                (None, ..) => Some(s.future),
+                (Some(f), None, _) if f.under_con_id > 0 => Some(f.under_con_id),
+                (Some(_), Some(i), None) if i.index_con_id > 0 => Some(i.index_con_id),
+                _ => None,
+            };
+            if let Some(con_id) = missing {
+                if s.asked != Some(con_id) && self.ask_definition(con_id, "ANYEXCH") {
+                    s.asked = Some(con_id);
+                }
+                self.farm.optmd.index_starts.push(s);
+                continue;
+            }
+            // A definition that names nothing: no index part (not
+            // observed).
+            let (Some(index), Some(target)) = (index, target) else {
+                log::info!("Index part of the model of instrument {}: the definitions of future {} name no index", s.instrument, s.future);
+                continue;
+            };
+            let con_id = index.index_con_id;
+            if self.farm.optmd.has_index(con_id) {
+                continue;
+            }
+            let sub = farm::MdSubscribe {
+                con_id, symbol: String::new(), exchange: target.exchange.clone(), sec_type: target.sec_type.clone(),
+                last_trade_date: String::new(), strike: 0.0, right: String::new(), multiplier: String::new(),
+                instrument: s.instrument, mode_9887: 0, snapshot: false,
+            };
+            let Some(farm_id) = self.md_route(&sub) else {
+                log::warn!("Index part of the model of instrument {}: no route for index {}", s.instrument, con_id);
+                continue;
+            };
+            if !self.md_farm_up(farm_id) {
+                self.farm.optmd.index_starts.push(s);
+                continue;
+            }
+            let exchange = farm::routing_exchange(&target.exchange, &target.sec_type).to_string();
+            let f = &mut self.farm;
+            let msgs = f.optmd.launch_index(s.instrument, s.future, con_id, &exchange, &target.sec_type, farm_id, &mut f.next_md_req_id);
+            self.send_md_messages(msgs);
         }
     }
 
@@ -1077,6 +1148,9 @@ impl HotLoop {
         }
         if !self.farm.optmd.starting.is_empty() {
             self.service_option_starts(now);
+        }
+        if !self.farm.optmd.index_starts.is_empty() {
+            self.service_index_starts(now);
         }
         if !self.farm.optmd.outbox.is_empty() {
             let msgs = std::mem::take(&mut self.farm.optmd.outbox);

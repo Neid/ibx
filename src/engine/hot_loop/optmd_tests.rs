@@ -656,6 +656,7 @@ fn an_option_order_starts_the_option_model_for_the_engine() {
     assert!(msgs[2].ends_with("|263=1|146=2|262=4|6008=692808239|207=BEST|167=OPT|264=442|9839=1|262=5|6008=692808239|207=BEST|167=OPT|264=443|9839=2"), "{}", msgs[2]);
     assert!(msgs[3].ends_with("|263=1|146=2|262=6|6008=692808239|207=IBVOL|167=OPT|264=732|262=7|6008=692808239|207=IBVOL|167=OPT|264=733"), "{}", msgs[3]);
     assert!(engine.farm.optmd.is_order_model(id));
+    assert!(engine.farm.optmd.index_starts.is_empty(), "no index part for a stock's option (ibx#727)");
 
     for (tag, req) in [(179, 1), (179, 2), (7178, 3), (494084, 4), (494084, 5), (494098, 6), (494099, 7)] {
         ack(&mut engine, tag, req);
@@ -726,6 +727,33 @@ fn an_order_model_waits_for_the_option_definition() {
     engine.context.option_terms.insert(OPTION, terms());
     engine.service_option_models(Instant::now());
     assert_eq!(sent(&mut farm_side).len(), 4);
+}
+
+// ibx#727 (paper, 17/10/2026): an order's model asks the option's
+// definition on the order's exchange; an answer without the contract ends
+// the start, it is not asked again at every pass.
+#[test]
+fn an_order_model_asks_its_definition_on_the_order_exchange_once() {
+    let (mut engine, _shared, mut farm_side, id) = order_engine();
+    engine.context.option_terms.clear();
+    let (ccp, mut ccp_side) = crate::protocol::connection::mem_pair();
+    engine.ccp_conn = Some(crate::protocol::connection::Connection::new_mem(ccp));
+    engine.context.order_models.push((id, OPTION, "CME".into()));
+    engine.service_option_models(Instant::now());
+    use std::io::Read;
+    ccp_side.set_read_timeout(Some(Duration::from_millis(300))).unwrap();
+    let mut buf = [0u8; 4096];
+    let n = ccp_side.read(&mut buf).unwrap();
+    let asked = String::from_utf8_lossy(&buf[..n]).replace('', "|");
+    assert!(asked.contains("|6004=CME|"), "on the order's exchange: {asked}");
+    // Its answer had no record of the contract.
+    engine.context.lot_lookups.clear();
+    engine.context.no_definition.insert(OPTION);
+    engine.service_option_models(Instant::now());
+    assert!(engine.farm.optmd.starting.is_empty(), "the start ends");
+    ccp_side.set_read_timeout(Some(Duration::from_millis(100))).unwrap();
+    assert!(ccp_side.read(&mut buf).is_err(), "not asked again");
+    assert!(sent(&mut farm_side).is_empty());
 }
 
 // ibx#693 (the reference 10.51, paper, 16/10/2026 regular hours: 2119
@@ -842,4 +870,231 @@ fn a_fund_order_asks_the_fund_top_of_book_for_the_engine() {
     engine.service_option_models(Instant::now());
     assert!(sent(&mut bond_side).is_empty() && sent(&mut farm_side).is_empty());
     assert_eq!(engine.farm.order_quotes.len(), 2);
+}
+
+const ES_PUT: i64 = 515974959;
+const ES_FUT: i64 = 515416632;
+const ES_IND: i64 = 11004968;
+const SPX: i64 = 416904;
+
+fn es_put_terms(con_id: i64) -> OptionTerms {
+    OptionTerms {
+        con_id, sec_type: "FOP".into(), currency: "USD".into(), right: Some(Right::Put), style: Style::American,
+        strike: 5000.0, last_trade_date: "20261218".into(), last_trade_time: String::new(), time_zone: "US/Central".into(),
+        under_con_id: ES_FUT, under_sec_type: "FUT".into(),
+    }
+}
+
+/// An engine with the farms of the recording of 15/10/2026: the futures
+/// farm, the index farm and the primary farm; the auth connection's side,
+/// the primary farm's side and the ES put's slot.
+fn fop_engine() -> (HotLoop, crate::protocol::connection::MemTransport, crate::protocol::connection::MemTransport, InstrumentId) {
+    let shared = Arc::new(SharedState::new());
+    shared.reference.set_api_features(crate::control::logon::ApiFeatures::parse("ODDLOTBIDASK,PRCEXTRAPREC"));
+    let mut engine = HotLoop::new(shared, None, None);
+    engine.set_farm_name("usfarm".into());
+    let (client, farm_side) = crate::protocol::connection::mem_pair();
+    engine.farm_conn = Some(crate::protocol::connection::Connection::new_mem(client));
+    let (ccp, ccp_side) = crate::protocol::connection::mem_pair();
+    engine.ccp_conn = Some(crate::protocol::connection::Connection::new_mem(ccp));
+    engine.set_routing_table(crate::engine::routing::TableKind::MarketData, concat!(
+        "BEST,STK,Top,1,*,cdc1.example,4000,usfarm;CME,FUT,Top,-1,*,cdc1.example,4000,usfuture;",
+        "CME,FOP,Top,-1,*,cdc1.example,4000,usfuture;CBOE,IND,Top,-1,*,ndc1.example,4000,usfarm.nj"));
+    engine.context.option_terms.insert(ES_PUT, es_put_terms(ES_PUT));
+    let id = engine.context.market.register(ES_PUT);
+    engine.context.market.set_routing(id, "FOP", "CME");
+    (engine, ccp_side, farm_side, id)
+}
+
+/// The definition lookups the engine asked on the auth connection: (the
+/// lookup's name, conId, exchange).
+fn lookups(ccp_side: &mut crate::protocol::connection::MemTransport) -> Vec<(String, String, String)> {
+    use std::io::Read;
+    ccp_side.set_read_timeout(Some(Duration::from_millis(200))).unwrap();
+    let mut buf = Vec::new();
+    let mut chunk = [0u8; 8192];
+    while let Ok(n) = ccp_side.read(&mut chunk) {
+        if n == 0 { break; }
+        buf.extend_from_slice(&chunk[..n]);
+    }
+    let text = String::from_utf8_lossy(&buf).replace('\x01', "|");
+    text.split("8=FIX").filter(|m| m.contains("|35=c|")).map(|m| {
+        let get = |t: &str| m.split('|').find_map(|f| f.strip_prefix(t)).unwrap_or("").to_string();
+        (get("320="), get("6008="), get("6004="))
+    }).collect()
+}
+
+/// The answer to a definition lookup, with the fields the index part reads
+/// from the recorded answers of 15/10/2026.
+fn definition(engine: &mut HotLoop, con_id: i64, fields: &[(u32, &str)]) {
+    let lookup = engine.context.lot_lookups.iter().find(|(_, c, _)| *c == con_id).expect("its lookup").0.clone();
+    let con = con_id.to_string();
+    let mut all: Vec<(u32, &str)> = vec![(35, "d"), (320, lookup.as_str()), (322, "*"), (323, "4")];
+    all.extend_from_slice(&fields[..2]);
+    all.extend([(6008, con.as_str())]);
+    all.extend_from_slice(&fields[2..]);
+    engine.inject_ccp_message(&crate::protocol::fix::fix_build(&all, 1));
+}
+
+/// The three definitions of the recording: the future names its index, the
+/// index names the index it refers to.
+fn answer_es_chain(engine: &mut HotLoop, ccp_side: &mut crate::protocol::connection::MemTransport) {
+    let asked = lookups(ccp_side);
+    assert_eq!(asked.iter().map(|(_, c, x)| (c.as_str(), x.as_str())).collect::<Vec<_>>(), [("515416632", "ANYEXCH")], "{asked:?}");
+    definition(engine, ES_FUT, &[(55, "ES"), (167, "FUT"), (207, "CME"), (15, "USD"), (6346, "11004968"), (310, "IND")]);
+    engine.service_option_models(Instant::now());
+    let asked = lookups(ccp_side);
+    assert_eq!(asked.iter().map(|(_, c, x)| (c.as_str(), x.as_str())).collect::<Vec<_>>(), [("11004968", "ANYEXCH")], "{asked:?}");
+    definition(engine, ES_IND, &[(55, "ES"), (167, "IND"), (207, "CME"), (15, "USD"), (6577, "416904"), (6578, "1")]);
+    engine.service_option_models(Instant::now());
+    let asked = lookups(ccp_side);
+    assert_eq!(asked.iter().map(|(_, c, x)| (c.as_str(), x.as_str())).collect::<Vec<_>>(), [("416904", "ANYEXCH")], "{asked:?}");
+}
+
+// ibx#727 (the reference 10.51, paper, 15/10/2026 before the open,
+// `.tmp/666/wire_gw_P15.jsonl`: an ES put of December 2026 ordered on CME by
+// conId, refused for the permission): the futures option order's model has
+// an index part. The future's definition names its index, whose definition
+// names the SPX index on CBOE; once that one's definition was read, its
+// native top with its pair, then its status, go to the index farm, queued
+// while it connects (the reference: 0.5 s after the future's entries; one
+// "connecting:usfarm.nj" notice 1.8 s after the order, its OK 1.0 s later,
+// when the queue went out). The status says frozen: 2 ms later its frozen
+// pair, then its entry 613 on the volatility exchange. Nothing goes to the
+// client but the farm's notices; nothing is cancelled.
+#[test]
+fn a_futures_option_order_asks_the_index_of_its_future() {
+    use std::sync::atomic::AtomicBool;
+    let (mut engine, mut ccp_side, mut farm_side, id) = fop_engine();
+    engine.context.order_models.push((id, ES_PUT, "CME".into()));
+    engine.service_option_models(Instant::now());
+    let usfuture = engine.pool.find("usfuture").expect("the futures farm");
+    assert_eq!(engine.pool.get(usfuture).unwrap().queued(), 4, "the model's future and option entries");
+    assert!(engine.pool.find("usfarm.nj").is_none(), "nothing for the index before its definitions");
+    assert!(sent(&mut farm_side).is_empty());
+
+    answer_es_chain(&mut engine, &mut ccp_side);
+    assert!(engine.pool.find("usfarm.nj").is_none());
+    let t1 = Instant::now();
+    definition(&mut engine, SPX, &[(55, "SPX"), (167, "IND"), (207, "CBOE"), (15, "USD"), (6921, "CBOE")]);
+    engine.service_option_models(t1);
+    assert!(lookups(&mut ccp_side).is_empty(), "nothing more asked");
+    let nj = engine.pool.find("usfarm.nj").expect("the index farm opened on demand");
+    assert_eq!(engine.pool.get(nj).unwrap().queued(), 2, "the native top with the pair, then the status");
+    assert!(engine.farm.optmd.has_index(SPX));
+    assert!(engine.farm.optmd.uses_farm(nj), "its entries keep the farm up");
+    assert!(sent(&mut farm_side).is_empty(), "nothing on the primary farm");
+
+    // The farm's notices: none at the start of the connect the engine
+    // began, one at the check, its OK at the logon.
+    assert!(engine.pool.due_connects(Instant::now()).contains(&nj));
+    let (tx, rx) = crossbeam_channel::bounded(1);
+    engine.pool.set_connecting(nj, rx, Arc::new(AtomicBool::new(true)));
+    let connecting = |engine: &mut HotLoop, at: Instant| engine.pool.poll_connects(at).1.iter()
+        .filter(|e| matches!(e, pool::FarmEvent::Connecting(f) if *f == nj)).count();
+    assert_eq!(connecting(&mut engine, t1), 0, "none at the start of a connection the engine began");
+    assert_eq!(connecting(&mut engine, t1 + Duration::from_millis(600)), 1, "the check");
+    assert_eq!(connecting(&mut engine, t1 + Duration::from_millis(1200)), 0, "nothing new queued");
+    assert_eq!(pool::farm_notice(pool::FarmKind::MarketData, &pool::FarmEvent::Connecting(nj), "usfarm.nj"),
+        (2119, "Market data farm is connecting:usfarm.nj".to_string()));
+    let (client, mut nj_side) = crate::protocol::connection::mem_pair();
+    tx.send(Ok(crate::protocol::connection::Connection::new_mem(client))).unwrap();
+    let (done, _) = engine.pool.poll_connects(t1 + Duration::from_millis(1300));
+    let (farm, conn) = done.into_iter().find(|(f, _)| *f == nj).expect("the index farm's logon");
+    let event = engine.pool.on_connected(farm, conn.unwrap(), Instant::now());
+    assert_eq!(pool::farm_notice(pool::FarmKind::MarketData, &event, "usfarm.nj"),
+        (2104, "Market data farm connection is OK:usfarm.nj".to_string()));
+    let flushed = sent(&mut nj_side);
+    assert_eq!(flushed.len(), 2, "{flushed:#?}");
+    assert!(flushed[0].ends_with(concat!("|263=1|146=3|262=8|6008=416904|207=CBOE|167=IND|264=403",
+        "|262=9|6008=416904|207=CBOE|167=IND|264=442|9839=1|262=10|6008=416904|207=CBOE|167=IND|264=443|9839=2")), "{}", flushed[0]);
+    assert!(flushed[1].ends_with("|263=1|146=1|262=11|6008=416904|207=CBOE|167=IND|264=398"), "{}", flushed[1]);
+
+    // The acknowledgements of the recording, then the status: frozen.
+    engine.farm.rx_farm = nj;
+    for (tag, req) in [(10, 8), (11, 9), (11, 10), (15, 11)] {
+        ack(&mut engine, tag, req);
+    }
+    assert!(engine.farm.optmd.indexes[0].entries.iter().filter(|e| e.farm_req != 0).all(|e| e.tag.is_some()));
+    generic(&mut engine, &[0x00, 0x48, 0, 0, 0, 0x0f, 0x04, 0, 0, 0, 1]);
+    engine.farm.rx_farm = PRIMARY_MD;
+    engine.service_option_models(Instant::now());
+    let asked = sent(&mut nj_side);
+    assert_eq!(asked.len(), 2, "{asked:#?}");
+    assert!(asked[0].ends_with(concat!("|263=1|146=2|262=12|6008=416904|207=CBOE|167=IND|264=442|9887=2|9839=1",
+        "|262=13|6008=416904|207=CBOE|167=IND|264=443|9887=2|9839=2")), "{}", asked[0]);
+    assert!(asked[1].ends_with("|263=1|146=1|262=14|6008=416904|207=IBVOL|167=IND|264=613"), "{}", asked[1]);
+
+    // The status again: nothing more; the entry after the frozen pair is
+    // read and dropped; kept, no cancel.
+    engine.farm.rx_farm = nj;
+    ack(&mut engine, 34, 14);
+    generic(&mut engine, &[0x00, 0x48, 0, 0, 0, 0x0f, 0x04, 0, 0, 0, 1]);
+    engine.farm.rx_farm = PRIMARY_MD;
+    engine.service_option_models(Instant::now() + Duration::from_secs(3));
+    assert!(sent(&mut nj_side).is_empty());
+    assert!(engine.shared.market.take_generic_ticks(u64::MAX).is_empty(), "nothing for a client");
+
+    // A second futures option order on the same future: no second index
+    // part, nothing asked.
+    engine.context.option_terms.insert(ES_PUT + 1, es_put_terms(ES_PUT + 1));
+    let other = engine.context.market.register(ES_PUT + 1);
+    engine.context.market.set_routing(other, "FOP", "CME");
+    engine.context.order_models.push((other, ES_PUT + 1, "CME".into()));
+    engine.service_option_models(Instant::now());
+    assert!(lookups(&mut ccp_side).is_empty());
+    assert!(sent(&mut nj_side).is_empty());
+    assert_eq!(engine.farm.optmd.indexes.len(), 1);
+    assert!(engine.farm.optmd.index_starts.is_empty());
+}
+
+// ibx#727: an index part whose status is not frozen asks nothing more (not
+// observed: the recording was before the open); a future whose index names
+// no other index has no index part (not observed either); a client's
+// request of a futures option starts none.
+#[test]
+fn the_index_part_waits_for_a_frozen_status_and_a_named_index() {
+    let (mut engine, mut ccp_side, _farm_side, id) = fop_engine();
+    engine.context.order_models.push((id, ES_PUT, "CME".into()));
+    engine.service_option_models(Instant::now());
+    answer_es_chain(&mut engine, &mut ccp_side);
+    definition(&mut engine, SPX, &[(55, "SPX"), (167, "IND"), (207, "CBOE"), (15, "USD")]);
+    engine.service_option_models(Instant::now());
+    let nj = engine.pool.find("usfarm.nj").expect("the index farm");
+    let (client, mut nj_side) = crate::protocol::connection::mem_pair();
+    let _ = engine.pool.on_connected(nj, crate::protocol::connection::Connection::new_mem(client), Instant::now());
+    assert_eq!(sent(&mut nj_side).len(), 2);
+    engine.farm.rx_farm = nj;
+    ack(&mut engine, 15, 11);
+    generic(&mut engine, &[0x00, 0x48, 0, 0, 0, 0x0f, 0x04, 0, 0, 0, 0]);
+    engine.farm.rx_farm = PRIMARY_MD;
+    engine.service_option_models(Instant::now());
+    assert!(sent(&mut nj_side).is_empty(), "not frozen: nothing more");
+
+    // An index that names no other index.
+    let (mut engine, mut ccp_side, _farm_side, id) = fop_engine();
+    engine.context.order_models.push((id, ES_PUT, "CME".into()));
+    engine.service_option_models(Instant::now());
+    let _ = lookups(&mut ccp_side);
+    definition(&mut engine, ES_FUT, &[(55, "ES"), (167, "FUT"), (207, "CME"), (15, "USD"), (6346, "11004968"), (310, "IND")]);
+    engine.service_option_models(Instant::now());
+    let _ = lookups(&mut ccp_side);
+    definition(&mut engine, ES_IND, &[(55, "ES"), (167, "IND"), (207, "CME"), (15, "USD")]);
+    engine.service_option_models(Instant::now());
+    assert!(lookups(&mut ccp_side).is_empty());
+    assert!(engine.farm.optmd.index_starts.is_empty() && engine.farm.optmd.indexes.is_empty());
+    assert!(engine.pool.find("usfarm.nj").is_none());
+
+    // A client's request of the put: its model, no index part.
+    let (mut engine, mut ccp_side, _farm_side, id) = fop_engine();
+    let sub = farm::MdSubscribe {
+        con_id: ES_PUT, symbol: "ES".into(), exchange: "CME".into(), sec_type: "FOP".into(),
+        last_trade_date: "20261218".into(), strike: 5000.0, right: "P".into(), multiplier: "50".into(),
+        instrument: id, mode_9887: 0, snapshot: false,
+    };
+    engine.route_md_subscribe(&sub);
+    engine.service_option_models(Instant::now());
+    assert!(engine.farm.optmd.has(id));
+    assert!(engine.farm.optmd.index_starts.is_empty());
+    assert!(lookups(&mut ccp_side).iter().all(|(_, _, exchange)| exchange != "ANYEXCH"), "no lookup of the index part");
 }
