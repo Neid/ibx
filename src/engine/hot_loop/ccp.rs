@@ -3566,6 +3566,11 @@ impl CcpState {
             if super::order_builder::order_clearing_reply(context, rid) {
                 return;
             }
+            // A step of the CFD check after a volatility option order's
+            // refusal (ibx#729).
+            if super::order_builder::cfd_check_reply(context, ccp_conn.as_mut(), hb, rid, msg) {
+                return;
+            }
             // Asked for the contract of an order given without a conId
             // (ibx#486): its definition is cached, not a user reply.
             if super::order_builder::order_contract_reply(context, shared, rid, msg) {

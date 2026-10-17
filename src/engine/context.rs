@@ -383,8 +383,16 @@ pub struct Context {
     pub(crate) order_gaps: bool,
     /// The time those waits go by when a test sets it (the replays' clock).
     pub(crate) gap_clock: Option<std::time::Instant>,
-    /// When the answer of the stock order preset came, for those waits.
-    pub(crate) stock_preset_answered: Option<std::time::Instant>,
+    /// When the answer of each order preset kind came, for those waits
+    /// (a stock's, a forex pair's, the presets an order waits for before
+    /// its refusal).
+    pub(crate) preset_answered: HashMap<String, std::time::Instant>,
+    /// When the symbol lookup of an order's contract answered, by conId,
+    /// for the wait before its first step (ibx#729).
+    pub(crate) lookup_answered: HashMap<i64, std::time::Instant>,
+    /// The contracts an order gave by their conId alone, named by their
+    /// definition: their first order keeps shorter waits (ibx#729).
+    pub(crate) by_con_id_contracts: std::collections::HashSet<i64>,
     /// When the record an order asked of its contract came, by conId.
     pub(crate) record_answered: HashMap<i64, std::time::Instant>,
     /// The orders that waited for the stock order preset.
@@ -402,6 +410,12 @@ pub struct Context {
     /// 100.00).
     pub(crate) cash_orders: HashMap<crate::types::OrderId, i64>,
     pub(crate) next_permission_request: u32,
+    /// The CFD checks a refused volatility option order starts (ibx#729):
+    /// the underlying symbols checked in the session, and the requests on
+    /// their way, by the name ibx gave them (the symbol lookup, then the
+    /// definition by conId on SMART).
+    pub(crate) cfd_checked: std::collections::HashSet<String>,
+    pub(crate) cfd_requests: Vec<String>,
     /// Contracts whose trading hours were asked for an order and have not
     /// come: an order with a zone to check waits for them (ibx#668).
     pub(crate) zone_pending: std::collections::HashSet<i64>,
@@ -546,7 +560,9 @@ impl Context {
             preset_saves_due: Vec::new(),
             order_gaps: false,
             gap_clock: None,
-            stock_preset_answered: None,
+            preset_answered: HashMap::new(),
+            lookup_answered: HashMap::new(),
+            by_con_id_contracts: std::collections::HashSet::new(),
             record_answered: HashMap::new(),
             preset_waiters: std::collections::HashSet::new(),
             order_wake: None,
@@ -554,6 +570,8 @@ impl Context {
             permissions_asked: HashMap::new(),
             cash_orders: HashMap::new(),
             next_permission_request: 0,
+            cfd_checked: std::collections::HashSet::new(),
+            cfd_requests: Vec::new(),
             zone_pending: std::collections::HashSet::new(),
             order_hours_due: Vec::new(),
             depth_unsupported: std::collections::HashSet::new(),

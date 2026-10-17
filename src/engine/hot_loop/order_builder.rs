@@ -3351,17 +3351,7 @@ fn permission_refusal(
     // contract (ibx#728): the reference 10.51 asks them in that order
     // (paper, 13-16/10/2026: fourteen first orders of eight types, the
     // hours 1 to 17 ms after the question).
-    if !context.trading_permissions.contains_key(&key) && !context.permissions_asked.contains_key(&key) {
-        let seq = context.next_permission_request.to_string();
-        context.next_permission_request += 1;
-        let now = chrono_free_timestamp();
-        match conn.send_fix(&[(35, "U"), (52, &now), (6040, "65"), (6410, &seq), (6411, &key)]) {
-            Ok(()) => hb.last_ccp_sent = Instant::now(),
-            Err(e) => log::error!("Trading permission request not sent: {}", e),
-        }
-        log::info!("Trading permission of {} asked ({})", key, seq);
-        context.permissions_asked.insert(key.clone(), Instant::now() + RTH_LOOKUP_TIMEOUT);
-    }
+    ask_permission(context, conn, hb, &key);
     if let Some(con_id) = context.market.con_id(instrument).filter(|c| *c > 0) {
         send_order_hours(context, conn, hb, con_id);
     }
@@ -3369,9 +3359,11 @@ fn permission_refusal(
     // preset came (ibx#729; the reference 10.51, paper, a future 13/10/2026,
     // a metal and a fund 16/10/2026: the permission's answer first, 460 after
     // the preset's).
-    if TYPE_PRESETS.contains(&sec_type.as_str())
-        && preset_kinds(&sec_type, context.market.symbol(instrument)).iter().any(|k| context.presets_asked.contains(k))
-    {
+    let kinds = preset_kinds(&sec_type, context.market.symbol(instrument));
+    if TYPE_PRESETS.contains(&sec_type.as_str()) && kinds.iter().any(|k| context.presets_asked.contains(k)) {
+        if context.order_gaps {
+            context.preset_waiters.insert(req.order_id());
+        }
         return Some(false);
     }
     match context.trading_permissions.get(&key) {
@@ -3400,8 +3392,22 @@ fn permission_refusal(
         }
         Some(false) => {
             let oid = req.order_id();
+            // After the preset it waited for, the refusal keeps the
+            // reference's gap (ibx#729, `REFUSAL_AFTER_PRESET`).
+            if context.preset_waiters.contains(&oid) {
+                let answered = kinds.iter().filter_map(|k| context.preset_answered.get(k).copied()).max();
+                if !wait_until(context, answered.map(|at| at + REFUSAL_AFTER_PRESET)) {
+                    return Some(false);
+                }
+                context.preset_waiters.remove(&oid);
+            }
             log::warn!("Order {} refused: no trading permission for {} (460)", oid, key);
             shared.orders.push_order_error(oid, 460, NO_TRADING_PERMISSIONS.to_string());
+            // A volatility option order: the CFD of its underlying is
+            // checked after the refusal (ibx#729, `start_cfd_check`).
+            if sec_type == "OPT" && is_volatility(req) {
+                start_cfd_check(context, conn, hb, instrument);
+            }
             let qty = match req.new_order_qty().unwrap_or(0) {
                 0 => context.cash_orders.get(&oid).copied().unwrap_or(0),
                 q => q,
@@ -3491,6 +3497,86 @@ pub(crate) fn sweep_permission_requests(context: &mut Context) {
         context.trading_permissions.insert(key, true);
     }
     release_rth_parked(context);
+}
+
+/// The question on the trading permission of a class, once per session
+/// until its answer (ibx#666).
+fn ask_permission(context: &mut Context, conn: &mut Connection, hb: &mut HeartbeatState, key: &str) {
+    if context.trading_permissions.contains_key(key) || context.permissions_asked.contains_key(key) {
+        return;
+    }
+    let seq = context.next_permission_request.to_string();
+    context.next_permission_request += 1;
+    let now = chrono_free_timestamp();
+    match conn.send_fix(&[(35, "U"), (52, &now), (6040, "65"), (6410, &seq), (6411, key)]) {
+        Ok(()) => hb.last_ccp_sent = Instant::now(),
+        Err(e) => log::error!("Trading permission request not sent: {}", e),
+    }
+    log::info!("Trading permission of {} asked ({})", key, seq);
+    context.permissions_asked.insert(key.to_string(), Instant::now() + RTH_LOOKUP_TIMEOUT);
+}
+
+/// The check of the CFD on an option's underlying that the reference 10.51
+/// makes after refusing a volatility option order for its permission
+/// (ibx#729; paper, 13/10/2026 regular hours and 16/10/2026, two AAPL
+/// option VOL orders, the first of their session, each refused with 460):
+/// the CFD looked up by the underlying's symbol and currency 1 to 2 ms after
+/// the refusal; once answered, its definition by conId on SMART (1 and 37
+/// ms after); once that answered, the question on the permission of the
+/// class it names (CFD on stocks), within 1 ms. The answer, no permission,
+/// changed nothing seen. Once per underlying in the session (a second VOL
+/// order of the session: nothing). Not seen for an option order of another
+/// type (three orders refused with 460, 13-14/10/2026) nor for a futures
+/// option order.
+fn start_cfd_check(context: &mut Context, conn: &mut Connection, hb: &mut HeartbeatState, instrument: crate::types::InstrumentId) {
+    let symbol = context.market.symbol(instrument).to_string();
+    if symbol.is_empty() || symbol == "?" || !context.cfd_checked.insert(symbol.clone()) {
+        return;
+    }
+    let lookup_id = ORDER_LOOKUP_FIRST_ID + context.next_order_lookup % ORDER_LOOKUP_IDS;
+    context.next_order_lookup = context.next_order_lookup.wrapping_add(1);
+    let name = format!("{}{}", crate::control::contracts::SECDEF_BY_SYMBOL_NAME, lookup_id);
+    let currency = context.market.currency(instrument).to_string();
+    let ts = chrono_free_timestamp();
+    let mut fields: Vec<(u32, &str)> = vec![(fix::TAG_MSG_TYPE, "c"), (fix::TAG_SENDING_TIME, &ts), (320, &name), (321, "2"),
+        (55, &symbol), (167, "CFD")];
+    if !currency.is_empty() {
+        fields.push((15, &currency));
+    }
+    let _ = conn.send_fix(&fields);
+    hb.last_ccp_sent = Instant::now();
+    log::info!("CFD of {} looked up after a volatility order's refusal ({})", symbol, name);
+    context.cfd_requests.push(name);
+}
+
+/// The name of the CFD's definition by conId (ibx#729).
+const CFD_CLUSTER_NAME: &str = "DirectedSmartClusterReqByConid";
+
+/// An answer to a step of a CFD check (`start_cfd_check`): the lookup's
+/// answer asks the CFD's definition on SMART, the definition's answer the
+/// permission of the class it names. False when the reply is not for one.
+pub(crate) fn cfd_check_reply(context: &mut Context, conn: Option<&mut Connection>, hb: &mut HeartbeatState, req_id: &str, msg: &[u8]) -> bool {
+    let Some(at) = context.cfd_requests.iter().position(|name| name == req_id) else { return false };
+    context.cfd_requests.remove(at);
+    let Some(conn) = conn else { return true };
+    let tags = fix::fix_parse(msg);
+    if req_id.starts_with(CFD_CLUSTER_NAME) {
+        if let Some(key) = tags.get(&6411).filter(|k| !k.is_empty()) {
+            ask_permission(context, conn, hb, key);
+        }
+        return true;
+    }
+    let Some(con_id) = tags.get(&6008).filter(|c| c.parse::<i64>().is_ok_and(|c| c > 0)) else { return true };
+    let lookup_id = ORDER_LOOKUP_FIRST_ID + context.next_order_lookup % ORDER_LOOKUP_IDS;
+    context.next_order_lookup = context.next_order_lookup.wrapping_add(1);
+    let name = format!("{CFD_CLUSTER_NAME}{lookup_id}");
+    let ts = chrono_free_timestamp();
+    let _ = conn.send_fix(&[(fix::TAG_MSG_TYPE, "c"), (fix::TAG_SENDING_TIME, &ts), (320, &name), (321, "2"), (146, "1"),
+        (6008, con_id), (6004, "BEST")]);
+    hb.last_ccp_sent = Instant::now();
+    log::info!("CFD {} definition asked ({})", con_id, name);
+    context.cfd_requests.push(name);
+    true
 }
 
 /// Text of error 460 (paper 14/10/2026).
@@ -3621,6 +3707,8 @@ fn store_rth_types(context: &mut Context, key: (i64, String), msg: &[u8]) {
             context.market.set_symbol(id, d.symbol.clone());
             context.market.set_routing(id, &d.api_type_name(), if exchange.is_empty() { "SMART" } else { &exchange });
             context.market.set_currency(id, &d.currency);
+            // Its first order keeps shorter gaps (ibx#729).
+            context.by_con_id_contracts.insert(key.0);
         }
         types.local_symbol = d.local_symbol.clone();
         types.contract_month = d.contract_month.clone();
@@ -3823,6 +3911,10 @@ fn held_lookup_step(
         Some(c) if c > 0 => c,
         _ => return HeldLookup::Known,
     };
+    // The first step a while after the lookup's answer (ibx#729).
+    if !first_step_gap(context, con_id) {
+        return HeldLookup::Wait;
+    }
     // The trading hours its contract's answer called for (ibx#728).
     send_order_hours(context, conn, hb, con_id);
     if context.order_record_lookups.iter().any(|(_, c, _)| *c == con_id) {
@@ -3909,10 +4001,11 @@ fn missing_order_record(context: &Context, shared: &SharedState, instrument: cra
 /// hours and the record leave together and the order 4 to 11 ms after the
 /// record's answer (five orders, 13-15/10/2026). Without a record to ask,
 /// the order goes after the preset's answer (three orders, 13/10/2026). On a
-/// session opened by a logon, the record and the order keep the reference's
-/// gaps (ibx#729, `first_order_gap`). Other types and a contract given by
-/// its conId alone (until its definition named it): nothing here. The
-/// preset as the logon's list says (`ask_order_presets`).
+/// session opened by a logon, the first step, the record and the order keep
+/// the reference's gaps (ibx#729, `first_step_gap`, `first_order_gap`).
+/// A contract given by its conId alone goes through the same steps once its
+/// definition named it, with shorter gaps (ibx#729). Other types: nothing
+/// here. The preset as the logon's list says (`ask_order_presets`).
 /// False while the order waits for an answer or a gap.
 fn stock_order_lookups(
     context: &mut Context, conn: &mut Connection, hb: &mut HeartbeatState, shared: &Arc<SharedState>,
@@ -3921,6 +4014,10 @@ fn stock_order_lookups(
     let sec_type = context.market.order_routing(instrument).0;
     if !matches!(sec_type.as_str(), "STK" | "CS") || context.market.blank_symbol(instrument) {
         return true;
+    }
+    // The first step a while after the lookup's answer (ibx#729).
+    if !first_step_gap(context, con_id) {
+        return false;
     }
     send_order_hours(context, conn, hb, con_id);
     // The order's record lookup answered: it goes on, after the preset.
@@ -3953,6 +4050,7 @@ fn stock_order_lookups(
     context.order_records_cleared.remove(&order_id);
     context.preset_waiters.remove(&order_id);
     context.record_answered.remove(&con_id);
+    context.lookup_answered.remove(&con_id);
     true
 }
 
@@ -3970,8 +4068,58 @@ const ORDER_AFTER_RECORD_FIRST: std::time::Duration = std::time::Duration::from_
 /// - 5 ms after it with the preset known (4 to 11 ms, 5 orders);
 const ORDER_AFTER_RECORD: std::time::Duration = std::time::Duration::from_millis(5);
 /// - 130 ms after the preset's answer when no record was asked (121 to
-///   197 ms, 3 orders).
+///   197 ms, 3 orders);
 const ORDER_AFTER_PRESET: std::time::Duration = std::time::Duration::from_millis(130);
+/// - its first step (the trading hours, or the record of its own exchange,
+///   the stock order preset 1 to 5 ms after) 10 ms after the symbol
+///   lookup's answer, when that step asks the preset (3 to 17 ms in 27 of
+///   28 orders, one at 53 ms; with the preset known, 1 to 2 ms, 6 orders).
+///   A contract given by its conId: 2 ms after its definition's answer (one
+///   order), so no wait.
+const FIRST_STEP_AFTER_LOOKUP: std::time::Duration = std::time::Duration::from_millis(10);
+/// For a stock given by its conId alone, the first of its contract in the
+/// session (13/10/2026 and 16/10/2026, two orders, the second a volatility
+/// order on the stock): its record 4 ms after the preset's answer (3.5 and
+/// 4.0 ms), the order 31 ms after the record's answer (30.8 and 31.5 ms).
+const RECORD_AFTER_PRESET_BY_CON_ID: std::time::Duration = std::time::Duration::from_millis(4);
+const ORDER_AFTER_RECORD_BY_CON_ID: std::time::Duration = std::time::Duration::from_millis(31);
+/// Other orders' gaps after a preset they waited for (ibx#729; the
+/// reference 10.51, paper, 13-16/10/2026, the first order of its type in the
+/// session, its preset stored):
+/// - a refusal for the permission 93 ms after the preset's answer (a future
+///   and a metal limit order 111 and 93 ms, a fund bought at market 11 ms;
+///   the trading hours had answered 0.5 to 3.5 ms before the preset in all
+///   three, nothing else seen in between);
+const REFUSAL_AFTER_PRESET: std::time::Duration = std::time::Duration::from_millis(93);
+/// - a forex pair's order 17 ms after its second preset's answer (EUR.USD,
+///   13/10/2026, one order).
+const PAIR_ORDER_AFTER_PRESET: std::time::Duration = std::time::Duration::from_millis(17);
+
+/// Whether a copied wait ending at `due` is over (always with no wait, or
+/// on a session not opened by a logon); when not, the time it ends is noted
+/// for the loop (ibx#729).
+fn wait_until(context: &mut Context, due: Option<Instant>) -> bool {
+    let Some(due) = due.filter(|_| context.order_gaps) else { return true };
+    if context.gap_now() >= due {
+        return true;
+    }
+    context.order_wake = Some(context.order_wake.map_or(due, |wake| wake.min(due)));
+    false
+}
+
+/// Whether a stock's first order is past the copied wait before its first
+/// step (`FIRST_STEP_AFTER_LOOKUP`): only when that step asks the stock
+/// order preset.
+fn first_step_gap(context: &mut Context, con_id: i64) -> bool {
+    let Some(&answered) = context.lookup_answered.get(&con_id) else { return true };
+    let asks_preset = !context.order_presets.contains_key("STK") && !context.presets_asked.contains("STK")
+        && context.presets_stored.as_ref().is_none_or(|stored| stored.contains("STK"));
+    if asks_preset && !wait_until(context, Some(answered + FIRST_STEP_AFTER_LOOKUP)) {
+        return false;
+    }
+    context.lookup_answered.remove(&con_id);
+    true
+}
 
 /// Whether a stock's first order is past the copied gap before its record
 /// (`record_next`) or before its message (see `RECORD_AFTER_PRESET`); when
@@ -3981,23 +4129,23 @@ fn first_order_gap(context: &mut Context, order_id: OrderId, con_id: i64, record
     if !context.order_gaps {
         return true;
     }
-    let preset = context.stock_preset_answered.filter(|_| context.preset_waiters.contains(&order_id));
+    let preset = context.preset_answered.get("STK").copied().filter(|_| context.preset_waiters.contains(&order_id));
+    let (record_after_preset, order_after_record) = if context.by_con_id_contracts.contains(&con_id) {
+        (RECORD_AFTER_PRESET_BY_CON_ID, ORDER_AFTER_RECORD_BY_CON_ID)
+    } else {
+        (RECORD_AFTER_PRESET, ORDER_AFTER_RECORD_FIRST)
+    };
     let due = if record_next {
-        preset.map(|at| at + RECORD_AFTER_PRESET)
+        preset.map(|at| at + record_after_preset)
     } else {
         match (context.record_answered.get(&con_id).copied(), preset) {
-            (Some(record), Some(preset)) if record >= preset => Some(record + ORDER_AFTER_RECORD_FIRST),
+            (Some(record), Some(preset)) if record >= preset => Some(record + order_after_record),
             (Some(record), None) => Some(record + ORDER_AFTER_RECORD),
             (_, Some(preset)) => Some(preset + ORDER_AFTER_PRESET),
             (None, None) => None,
         }
     };
-    let Some(due) = due else { return true };
-    if context.gap_now() >= due {
-        return true;
-    }
-    context.order_wake = Some(context.order_wake.map_or(due, |wake| wake.min(due)));
-    false
+    wait_until(context, due)
 }
 
 /// A contract's record on an exchange for its orders, unless already on its
@@ -4253,6 +4401,11 @@ pub(crate) fn order_contract_reply(context: &mut Context, shared: &SharedState, 
                     context.market.unregister(slot);
                 }
                 None => context.market.resolve_con_id(slot, con_id),
+            }
+            // For the gap before a stock's first step (ibx#729).
+            if context.order_gaps {
+                let now = context.gap_now();
+                context.lookup_answered.insert(con_id, now);
             }
             // The reply holds the contract's record on the order's
             // exchange: its order rules are taken from it, no second
@@ -4668,10 +4821,22 @@ fn type_preset(
     {
         send_order_hours(context, conn, hb, con_id);
     }
+    let oid = req.order_id();
     if !ask_order_presets(context, conn, hb, &kinds) {
+        if context.order_gaps {
+            context.preset_waiters.insert(oid);
+        }
         return false;
     }
-    let oid = req.order_id();
+    // A forex pair's order a while after the preset it waited for
+    // (ibx#729, `PAIR_ORDER_AFTER_PRESET`).
+    if context.preset_waiters.contains(&oid) {
+        let answered = kinds.iter().filter_map(|k| context.preset_answered.get(k).copied()).max();
+        if sec_type == "CASH" && !wait_until(context, answered.map(|at| at + PAIR_ORDER_AFTER_PRESET)) {
+            return false;
+        }
+        context.preset_waiters.remove(&oid);
+    }
     if let Some(tif) = req.preset_tif_mut() {
         let name = kinds.iter().find_map(|k| context.order_presets.get(k).cloned().flatten());
         set_tif_from_preset(tif, name.as_deref(), oid, shared);
@@ -4744,9 +4909,10 @@ pub(crate) fn preset_reply(context: &mut Context, parsed: &fix::FieldMap<'_>) {
     let kind = kind.to_string();
     let tif = parsed.get(&4026).map(|s| s.to_string());
     log::info!("Order preset of {}: time in force {:?}", kind, tif);
-    // For the gaps of the first stock order (ibx#729).
-    if kind == "STK" && context.order_gaps {
-        context.stock_preset_answered = Some(context.gap_now());
+    // For the gaps of the orders that waited for it (ibx#729).
+    if context.order_gaps {
+        let now = context.gap_now();
+        context.preset_answered.insert(kind.clone(), now);
     }
     context.presets_asked.remove(&kind);
     context.order_presets.insert(kind, tif);
@@ -10587,6 +10753,259 @@ mod tests {
         assert!(drain_frames(&mut context, &shared, &mut conn, &mut server).is_empty(), "the record waits");
         context.gap_clock = Some(start + ms(40));
         assert_eq!(asked_kinds(&drain_frames(&mut context, &shared, &mut conn, &mut server)), ["record NASDAQ"]);
+    }
+
+    // ibx#729 (the reference 10.51, paper, 13/10/2026 and 16/10/2026, two
+    // AAPL orders given by conId, the first of the contract in the session):
+    // the definition, the hours and the preset at once after its answer, the
+    // record 4 ms after the preset's answer, the order 31 ms after the
+    // record's answer.
+    #[test]
+    fn a_first_stock_order_by_con_id_keeps_its_shorter_gaps() {
+        let ms = std::time::Duration::from_millis;
+        let start = Instant::now();
+        let (client, mut server) = crate::protocol::connection::mem_pair();
+        let mut conn = Some(Connection::new_mem(client));
+        let shared = Arc::new(SharedState::new());
+        let mut context = Context::new();
+        context.presets_stored = Some(PAPER_PRESETS.iter().map(|k| k.to_string()).collect());
+        context.order_ids.start_at(FIRST as i32);
+        gapped(&mut context, start);
+        context.market.register(265598);
+        context.market.set_symbol(0, String::new());
+        context.market.set_routing(0, "", "SMART");
+        context.pending_orders.push(day_order(FIRST));
+        let frames = drain_frames(&mut context, &shared, &mut conn, &mut server);
+        assert_eq!(frames.len(), 1, "the definition first: {frames:?}");
+        let id = tag(&frames[0], 320).unwrap().to_string();
+        // The engine caches the answer's contract, its primary exchange too.
+        shared.reference.cache_contract(265598, crate::api::types::Contract {
+            con_id: 265598, symbol: "AAPL".into(), primary_exchange: "NASDAQ".into(), ..Default::default()
+        });
+        let reply = fix::fix_build(&[(35, "d"), (320, id.as_str()), (6008, "265598"), (55, "AAPL"), (167, "STK"), (15, "USD"), (207, "BEST")], 1);
+        assert!(rth_definition_reply(&mut context, &id, &reply));
+        assert!(context.by_con_id_contracts.contains(&265598));
+        context.order_hours_due.push((265598, "1/STK/NASDAQ#LITE".to_string(), "SubMsgXMLQuery15".to_string()));
+        let frames = drain_frames(&mut context, &shared, &mut conn, &mut server);
+        assert_eq!(asked_kinds(&frames), ["hours", "preset s=STK"], "no wait after a definition's answer");
+        stock_preset_answer(&mut context);
+        assert!(drain_frames(&mut context, &shared, &mut conn, &mut server).is_empty(), "the record waits");
+        assert_eq!(context.order_wake, Some(start + ms(4)));
+        context.gap_clock = Some(start + ms(4));
+        let frames = drain_frames(&mut context, &shared, &mut conn, &mut server);
+        assert_eq!(asked_kinds(&frames), ["record NASDAQ"]);
+        context.gap_clock = Some(start + ms(114));
+        record_answer(&mut context, &frames[0], "NASDAQ");
+        assert!(drain_frames(&mut context, &shared, &mut conn, &mut server).is_empty(), "the order waits");
+        assert_eq!(context.order_wake, Some(start + ms(145)));
+        context.gap_clock = Some(start + ms(145));
+        assert_eq!(asked_kinds(&drain_frames(&mut context, &shared, &mut conn, &mut server)), ["D"]);
+    }
+
+    /// A session at its first stock order by symbol, AAPL with no conId
+    /// yet: the order's lookup is out.
+    fn stock_order_by_symbol(context: &mut Context, shared: &Arc<SharedState>, conn: &mut Option<Connection>,
+                             server: &mut crate::protocol::connection::MemTransport) {
+        let slot = context.market.try_register_unresolved().unwrap();
+        context.market.set_symbol(slot, "AAPL".into());
+        context.market.set_routing(slot, "STK", "SMART");
+        context.market.set_currency(slot, "USD");
+        context.pending_orders.push(OrderRequest::SubmitLimitEx {
+            order_id: FIRST, instrument: slot, side: Side::Buy, qty: 1, price: 100 * P, tif: b'0', attrs: Default::default(),
+        });
+        let frames = drain_frames(context, shared, conn, server);
+        assert_eq!(frames.len(), 1, "the lookup: {frames:?}");
+    }
+
+    fn stock_lookup_answer(context: &mut Context, shared: &SharedState) {
+        let id = format!("FixSecDefReqBySymbol{}", ORDER_LOOKUP_FIRST_ID);
+        let reply = "8=FIX.4.1|35=d|320=x|322=*|323=4|55=AAPL|167=STK|207=BEST|6008=265598|15=USD|146=1|10=000|".replace('|', "\x01");
+        assert!(order_contract_reply(context, shared, &id, reply.as_bytes()));
+        // The answer called for the contract's hours (the engine's part).
+        context.order_hours_due.push((265598, "1/STK/NASDAQ#LITE".to_string(), "SubMsgXMLQuery15".to_string()));
+    }
+
+    // ibx#729 (the reference 10.51, paper, 12-16/10/2026, 28 first stock
+    // orders by symbol): the first step, here the trading hours with the
+    // preset after them, 10 ms after the lookup's answer when the stock
+    // preset is asked; with the preset known, at once (6 orders). Off a
+    // logon's session: at once.
+    #[test]
+    fn a_first_stock_orders_first_step_waits_after_the_lookup() {
+        let ms = std::time::Duration::from_millis;
+        let start = Instant::now();
+        for (gaps, preset_known) in [(true, false), (true, true), (false, false)] {
+            let (client, mut server) = crate::protocol::connection::mem_pair();
+            let mut conn = Some(Connection::new_mem(client));
+            let shared = Arc::new(SharedState::new());
+            let mut context = Context::new();
+            context.presets_stored = Some(PAPER_PRESETS.iter().map(|k| k.to_string()).collect());
+            context.order_ids.start_at(FIRST as i32);
+            if gaps {
+                gapped(&mut context, start);
+            }
+            if preset_known {
+                context.order_presets.insert("STK".to_string(), None);
+            }
+            stock_order_by_symbol(&mut context, &shared, &mut conn, &mut server);
+            stock_lookup_answer(&mut context, &shared);
+            let frames = drain_frames(&mut context, &shared, &mut conn, &mut server);
+            if !gaps || preset_known {
+                assert_eq!(asked_kinds(&frames)[0], "hours", "{gaps} {preset_known}: at once");
+                continue;
+            }
+            assert!(frames.is_empty(), "{frames:?}");
+            assert_eq!(context.order_wake, Some(start + ms(10)));
+            context.gap_clock = Some(start + ms(9));
+            assert!(drain_frames(&mut context, &shared, &mut conn, &mut server).is_empty());
+            context.gap_clock = Some(start + ms(10));
+            let frames = drain_frames(&mut context, &shared, &mut conn, &mut server);
+            assert_eq!(asked_kinds(&frames), ["hours", "preset s=STK"]);
+            assert!(context.lookup_answered.is_empty());
+        }
+    }
+
+    // ibx#729: a held first order by symbol keeps the same wait before its
+    // first step (held ones among the 28 orders, 16/10/2026).
+    #[test]
+    fn a_held_first_orders_first_step_waits_after_the_lookup() {
+        let ms = std::time::Duration::from_millis;
+        let start = Instant::now();
+        let (client, mut server) = crate::protocol::connection::mem_pair();
+        let mut conn = Some(Connection::new_mem(client));
+        let shared = Arc::new(SharedState::new());
+        let mut context = Context::new();
+        context.presets_stored = Some(PAPER_PRESETS.iter().map(|k| k.to_string()).collect());
+        gapped(&mut context, start);
+        let slot = context.market.try_register_unresolved().unwrap();
+        context.market.set_symbol(slot, "AAPL".into());
+        context.market.set_routing(slot, "STK", "SMART");
+        context.market.set_currency(slot, "USD");
+        shared.reference.cache_contract(265598, crate::api::types::Contract {
+            con_id: 265598, symbol: "AAPL".into(), primary_exchange: "NASDAQ".into(), ..Default::default()
+        });
+        shared.orders.mark_held_unknown(10);
+        hold_order(&mut conn, &mut context, &mut HeartbeatState::new(), 10, slot, crate::types::QTY_SCALE, 0, "");
+        assert_eq!(drain_frames(&mut context, &shared, &mut conn, &mut server).len(), 1, "the lookup");
+        stock_lookup_answer(&mut context, &shared);
+        assert!(drain_frames(&mut context, &shared, &mut conn, &mut server).is_empty());
+        assert_eq!(context.order_wake, Some(start + ms(10)));
+        context.gap_clock = Some(start + ms(10));
+        assert_eq!(asked_kinds(&drain_frames(&mut context, &shared, &mut conn, &mut server)), ["hours", "preset s=STK"]);
+    }
+
+    // ibx#729 (the reference 10.51, paper, 13/10/2026 and 16/10/2026, a
+    // future and a metal limit order, their preset stored, no permission):
+    // the refusal 93 ms after the preset's answer; nothing sent.
+    #[test]
+    fn a_refusal_after_a_stored_preset_keeps_the_references_gap() {
+        let ms = std::time::Duration::from_millis;
+        let start = Instant::now();
+        let (mut context, shared, mut conn, mut server) = first_order_of("FUT");
+        context.presets_stored.as_mut().unwrap().insert("FUT".to_string());
+        gapped(&mut context, start);
+        context.pending_orders.push(day_order(FIRST));
+        let frames = drain_frames(&mut context, &shared, &mut conn, &mut server);
+        assert_eq!(asked_kinds(&frames), ["permission CME/FUT/GLOBEX", "hours", "preset s=FUT"]);
+        permission_reply(&mut context, &fix::field_view(&permission_answer("CME/FUT/GLOBEX", "0")));
+        assert!(drain_frames(&mut context, &shared, &mut conn, &mut server).is_empty());
+        preset_answer(&mut context, "s=FUT", None);
+        assert!(drain_frames(&mut context, &shared, &mut conn, &mut server).is_empty());
+        assert!(shared.orders.drain_order_errors().is_empty(), "not yet");
+        assert_eq!(context.order_wake, Some(start + ms(93)));
+        context.gap_clock = Some(start + ms(93));
+        assert!(drain_frames(&mut context, &shared, &mut conn, &mut server).is_empty(), "nothing sent");
+        assert_eq!(shared.orders.drain_order_errors(), [(FIRST, 460, "No trading permissions.".to_string())]);
+        assert!(context.preset_waiters.is_empty());
+    }
+
+    // ibx#729 (the reference 10.51, paper, 13/10/2026, EUR.USD, both
+    // presets stored): the order 17 ms after the second preset's answer.
+    #[test]
+    fn a_forex_order_goes_17_ms_after_its_second_preset() {
+        let ms = std::time::Duration::from_millis;
+        let start = Instant::now();
+        let (client, mut server) = crate::protocol::connection::mem_pair();
+        let mut conn = Some(Connection::new_mem(client));
+        let shared = Arc::new(SharedState::new());
+        let mut context = order_context();
+        context.order_ids.start_at(FIRST as i32);
+        gapped(&mut context, start);
+        context.market.register(12087792);
+        context.set_symbol(0, "EUR".to_string());
+        context.market.set_routing(0, "CASH", "IDEALPRO");
+        context.rth_types.insert((12087792, "IDEALPRO".to_string()), crate::engine::outside_rth::RthTypes {
+            rth: true, sec_type: "CASH".into(), local_symbol: "EUR.USD".into(), multiplier: "1".into(), ..Default::default()
+        });
+        context.pending_orders.push(OrderRequest::SubmitLimitEx { order_id: FIRST, instrument: 0, side: Side::Buy, qty: 20000, price: P,
+            tif: b'0', attrs: Default::default() });
+        assert_eq!(asked_kinds(&drain_frames(&mut context, &shared, &mut conn, &mut server)), ["preset s=CASH&tc=EUR"]);
+        preset_answer(&mut context, "s=CASH&tc=EUR", None);
+        assert_eq!(asked_kinds(&drain_frames(&mut context, &shared, &mut conn, &mut server)), ["preset s=CASH"], "no wait between them");
+        context.gap_clock = Some(start + ms(100));
+        preset_answer(&mut context, "s=CASH", None);
+        assert!(drain_frames(&mut context, &shared, &mut conn, &mut server).is_empty());
+        assert_eq!(context.order_wake, Some(start + ms(117)));
+        context.gap_clock = Some(start + ms(117));
+        assert_eq!(asked_kinds(&drain_frames(&mut context, &shared, &mut conn, &mut server)), ["D"]);
+        assert!(context.preset_waiters.is_empty());
+    }
+
+    const AAPL_CALL: [(u32, &str); 12] = [(55, "AAPL"), (167, "OPT"), (15, "USD"), (207, "BEST"), (200, "202612"), (541, "20261218"),
+        (201, "1"), (202, "230"), (231, "100"), (6035, "AAPL  261218C00230000"), (6411, "2/OPT/R"), (6431, "DAY/3,LMT/3,VOL/3")];
+
+    // ibx#729 (the reference 10.51, paper, 13/10/2026 regular hours and
+    // 16/10/2026, two AAPL option volatility orders refused with 460): after
+    // the refusal, the CFD of the underlying by symbol and currency, its
+    // definition by conId on SMART once answered, then the permission of
+    // the class it names; once per underlying, and not for an option order
+    // of another type.
+    #[test]
+    fn a_refused_volatility_option_order_checks_the_underlyings_cfd() {
+        let vol = |id| OrderRequest::SubmitEx { order_id: id, instrument: 0, side: Side::Buy, qty: 1,
+            kind: crate::types::OrderKind::Volatility { volatility: px(30.0), vol_type: 2 }, tif: b'0',
+            attrs: crate::types::OrderAttrs::default() };
+        let (frames, shared, mut context, mut conn, mut server) = order_by_con_id("692808239", "SMART", vol(91), &AAPL_CALL);
+        assert_eq!(asked_kinds(&frames), ["permission 2/OPT/R"]);
+        permission_reply(&mut context, &fix::field_view(&permission_answer("2/OPT/R", "0")));
+        let frames = drain_frames(&mut context, &shared, &mut conn, &mut server);
+        assert_eq!(shared.orders.drain_order_errors(), [(91, 460, "No trading permissions.".to_string())]);
+        assert_eq!(frames.len(), 1, "{frames:?}");
+        let lookup: Vec<(u32, &str)> = frames[0].iter().filter(|(t, _)| !matches!(*t, 8 | 9 | 34 | 52 | 10))
+            .map(|(t, v)| (*t, v.as_str())).collect();
+        assert_eq!(lookup, [(35, "c"), (320, "FixSecDefReqBySymbol1"), (321, "2"), (55, "AAPL"), (167, "CFD"), (15, "USD")]);
+        // Its answer: the CFD's definition by conId on SMART.
+        let name = context.cfd_requests[0].clone();
+        let answer = fix::fix_build(&[(35, "d"), (320, name.as_str()), (55, "AAPL"), (167, "CFD"), (207, "BEST"), (6008, "120549942"),
+            (6411, "20/CFD/STK")], 1);
+        let mut hb = HeartbeatState::new();
+        assert!(cfd_check_reply(&mut context, conn.as_mut(), &mut hb, &name, &answer));
+        let frames = drain_frames(&mut context, &shared, &mut conn, &mut server);
+        assert_eq!(frames.len(), 1, "{frames:?}");
+        assert!(tag(&frames[0], 320).is_some_and(|n| n.starts_with("DirectedSmartClusterReqByConid")), "{frames:?}");
+        assert_eq!((tag(&frames[0], 6008), tag(&frames[0], 6004), tag(&frames[0], 146)), (Some("120549942"), Some("BEST"), Some("1")));
+        // Its answer: the permission of the class it names.
+        let name = context.cfd_requests[0].clone();
+        let answer = fix::fix_build(&[(35, "d"), (320, name.as_str()), (55, "AAPL"), (167, "CFD"), (207, "BEST"), (6008, "120549942"),
+            (6411, "20/CFD/STK")], 1);
+        assert!(cfd_check_reply(&mut context, conn.as_mut(), &mut hb, &name, &answer));
+        let frames = drain_frames(&mut context, &shared, &mut conn, &mut server);
+        assert_eq!(asked_kinds(&frames), ["permission 20/CFD/STK"]);
+        assert!(context.cfd_requests.is_empty());
+        assert!(!cfd_check_reply(&mut context, conn.as_mut(), &mut hb, &name, &answer), "answered once");
+        permission_reply(&mut context, &fix::field_view(&permission_answer("20/CFD/STK", "0")));
+        // A second volatility order of the underlying: 460, no check.
+        context.pending_orders.push(vol(92));
+        assert!(drain_frames(&mut context, &shared, &mut conn, &mut server).is_empty());
+        assert_eq!(shared.orders.drain_order_errors(), [(92, 460, "No trading permissions.".to_string())]);
+
+        // A limit option order: 460, no check.
+        let limit = OrderRequest::SubmitLimit { order_id: 93, instrument: 0, side: Side::Buy, qty: 1, price: px(1.0) };
+        let (_, shared, mut context, mut conn, mut server) = order_by_con_id("692808239", "SMART", limit, &AAPL_CALL);
+        permission_reply(&mut context, &fix::field_view(&permission_answer("2/OPT/R", "0")));
+        assert!(drain_frames(&mut context, &shared, &mut conn, &mut server).is_empty());
+        assert_eq!(shared.orders.drain_order_errors(), [(93, 460, "No trading permissions.".to_string())]);
+        assert!(context.cfd_checked.is_empty());
     }
 
     /// A session that allows price management, with the paper exclusion
