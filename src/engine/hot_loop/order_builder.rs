@@ -2621,9 +2621,12 @@ pub(crate) fn reference_rank(tag: u32) -> u16 {
         6091 => 136,
         6107 => 137,
         6128 => 138,
-        6151 => 139,
+        // The conditions' overnight flag, between the two other flags
+        // (ibx#726, the reference 10.51, paper, 17/10/2026).
+        8612 => 139,
+        6151 => 140,
         // The condition group.
-        6136 | 6222 | 6137 | 6126 | 6123 | 6124 | 6127 | 6125 | 6223 | 6245 | 6263 | 6246 | 6947 => 140,
+        6136 | 6222 | 6137 | 6126 | 6123 | 6124 | 6127 | 6125 | 6223 | 6245 | 6263 | 6246 | 6947 => 141,
         15 => 150,
         6211 => 152,
         6238 => 153,
@@ -2992,6 +2995,13 @@ fn modify_fields(
     f.push((59, tif_str));
     push_dtc_flag(&mut f, tif);
     f.push((6008, con_id.to_string()));
+    // The conditions of the order, after its conId (ibx#726, the reference
+    // 10.51 on paper, 17/10/2026): the overnight flag, then the conditions
+    // in the replace's own form. A replace without them was not tried.
+    if !attrs.conditions.is_empty() {
+        f.push((8612, "0".to_string()));
+        f.extend(replace_condition_tags(&attrs.conditions));
+    }
     f.push((6088, "Socket".to_string()));
     f.push((6211, String::new()));
     f.push((6238, String::new()));
@@ -3029,6 +3039,9 @@ fn combo_modify_fields(fields: &mut Vec<(u32, String)>, combo: &crate::engine::c
         }
     }
     if let Some(at) = fields.iter().position(|(t, _)| *t == 6008) {
+        // After the order's conditions, which follow the conId (the
+        // reference's replace table; a combo with conditions not observed).
+        let at = at + fields[at + 1..].iter().take_while(|(t, _)| REPLACE_CONDITION_TAGS.contains(t)).count();
         for (i, f) in combo.combo.order_block().into_iter().enumerate() {
             fields.insert(at + 1 + i, f);
         }
@@ -5283,10 +5296,14 @@ fn push_extended_attrs(
     // Condition fields. The reference always sends both
     // flags, 0 or 1, before the count: ignore-RTH and cancel-order each ride
     // their own field. ibx had the two fields the other way round and sent them only when set
-    // (ib-agent#192 B2, ibx#327).
+    // (ib-agent#192 B2, ibx#327). The reference 10.51 writes a third flag
+    // between them, whether the conditions include the overnight session:
+    // 0 unless the order asks for it, which an order at session level 214
+    // cannot (ibx#726, observed on paper, 17/10/2026).
     if !attrs.conditions.is_empty() {
         let flag = |on: bool| if on { "1" } else { "0" }.to_string();
         fields.push((6128, flag(attrs.conditions_ignore_rth)));
+        fields.push((8612, flag(false)));
         fields.push((6151, flag(attrs.conditions_cancel_order)));
         fields.extend(condition_tags(&attrs.conditions));
     }
@@ -5749,6 +5766,38 @@ fn condition_exchange(exchange: &str) -> String {
 /// condition.
 const CONDITION_PADDING: [u32; 10] = [6123, 6124, 6127, 6126, 6125, 6223, 6245, 6263, 6246, 6947];
 
+/// The operator of a condition that has one: at least or at most.
+fn condition_operator(cond: &OrderCondition) -> Option<String> {
+    let is_more = match cond {
+        OrderCondition::Price { is_more, .. }
+        | OrderCondition::Time { is_more, .. }
+        | OrderCondition::Margin { is_more, .. }
+        | OrderCondition::Volume { is_more, .. }
+        | OrderCondition::PercentChange { is_more, .. } => *is_more,
+        OrderCondition::Execution { .. } => return None,
+    };
+    Some(if is_more { ">=" } else { "<=" }.to_string())
+}
+
+/// The field that carries a condition's value, and the value as the
+/// reference writes it: numbers with two decimals at least, an execution
+/// as its symbol, exchange (SMART as any) and security type.
+fn condition_value(cond: &OrderCondition) -> (u32, String) {
+    match cond {
+        OrderCondition::Price { price, .. } => (6125, format_price_ref(*price).to_string()),
+        OrderCondition::Time { time, .. } => (6223, time.clone()),
+        OrderCondition::Margin { percent, .. } => (6245, percent.to_string()),
+        OrderCondition::Execution { symbol, exchange, sec_type } => {
+            let exch = if exchange == "SMART" { "*" } else { exchange.as_str() };
+            (6246, format!("symbol={};exchange={};securityType={};", symbol, exch, sec_type))
+        }
+        OrderCondition::Volume { volume, .. } => (6263, volume.to_string()),
+        OrderCondition::PercentChange { percent, .. } => {
+            (6245, format_price_ref((percent * crate::types::PRICE_SCALE as f64).round() as crate::types::Price).to_string())
+        }
+    }
+}
+
 /// The condition block after the two flags, as the reference writes it
 /// (ib-agent ORDER-SUBMIT.md 4.2, 4.3; ibx#416): the count, then per
 /// condition its type, conjunction and own tags in the reference's order,
@@ -5758,40 +5807,20 @@ fn condition_tags(conditions: &[OrderCondition]) -> Vec<(u32, String)> {
     let mut out = vec![(6136, conditions.len().to_string())];
     for (i, cond) in conditions.iter().enumerate() {
         let conj = if i == conditions.len() - 1 { "n" } else { "a" };
-        let op = |is_more: bool| if is_more { ">=" } else { "<=" }.to_string();
-        let own: Vec<(u32, String)> = match cond {
-            OrderCondition::Price { con_id, exchange, price, is_more, trigger_method } => vec![
-                (6126, op(*is_more)),
-                (6123, con_id.to_string()),
-                (6124, condition_exchange(exchange)),
-                (6127, trigger_method.to_string()),
-                (6125, format_price_ref(*price).to_string()),
-            ],
-            OrderCondition::Time { time, is_more } => vec![
-                (6126, op(*is_more)),
-                (6223, time.clone()),
-            ],
-            OrderCondition::Margin { percent, is_more } => vec![
-                (6126, op(*is_more)),
-                (6245, percent.to_string()),
-            ],
-            OrderCondition::Execution { symbol, exchange, sec_type } => {
-                let exch = if exchange == "SMART" { "*" } else { exchange.as_str() };
-                vec![(6246, format!("symbol={};exchange={};securityType={};", symbol, exch, sec_type))]
+        let mut own: Vec<(u32, String)> = condition_operator(cond).map(|op| (6126, op)).into_iter().collect();
+        match cond {
+            OrderCondition::Price { con_id, exchange, trigger_method, .. } => {
+                own.push((6123, con_id.to_string()));
+                own.push((6124, condition_exchange(exchange)));
+                own.push((6127, trigger_method.to_string()));
             }
-            OrderCondition::Volume { con_id, exchange, volume, is_more } => vec![
-                (6126, op(*is_more)),
-                (6123, con_id.to_string()),
-                (6124, condition_exchange(exchange)),
-                (6263, volume.to_string()),
-            ],
-            OrderCondition::PercentChange { con_id, exchange, percent, is_more } => vec![
-                (6126, op(*is_more)),
-                (6123, con_id.to_string()),
-                (6124, condition_exchange(exchange)),
-                (6245, format_price_ref((percent * crate::types::PRICE_SCALE as f64).round() as crate::types::Price).to_string()),
-            ],
-        };
+            OrderCondition::Volume { con_id, exchange, .. } | OrderCondition::PercentChange { con_id, exchange, .. } => {
+                own.push((6123, con_id.to_string()));
+                own.push((6124, condition_exchange(exchange)));
+            }
+            _ => {}
+        }
+        own.push(condition_value(cond));
         let kind = match cond {
             OrderCondition::Price { .. } => "1",
             OrderCondition::Time { .. } => "3",
@@ -5802,6 +5831,34 @@ fn condition_tags(conditions: &[OrderCondition]) -> Vec<(u32, String)> {
         };
         out.push((6222, kind.to_string()));
         out.push((6137, conj.to_string()));
+        let written: Vec<u32> = own.iter().map(|(t, _)| *t).collect();
+        out.extend(own);
+        out.extend(CONDITION_PADDING.iter().filter(|t| !written.contains(t)).map(|&t| (t, String::new())));
+    }
+    out
+}
+
+/// The fields of the conditions in a replace, after the overnight flag;
+/// the combo block of a combo's replace comes after them.
+const REPLACE_CONDITION_TAGS: [u32; 14] = [8612, 6136, 6222, 6137, 6126, 6123, 6124, 6127, 6125, 6223, 6245, 6263, 6246, 6947];
+
+/// The conditions of an order in its replace (ibx#726): the count, then
+/// per condition a marker 2 in the type field, its value, its operator
+/// and, for a price condition, its trigger method, then the padding in the
+/// list order of the new order, the contract id and exchange left empty.
+/// No conjunction. Observed on paper, 17/10/2026, for one price condition
+/// only (the reference 10.51, an order with one price condition, its
+/// limit price modified); the other kinds are written in the same form,
+/// not observed yet.
+fn replace_condition_tags(conditions: &[OrderCondition]) -> Vec<(u32, String)> {
+    let mut out = vec![(6136, conditions.len().to_string())];
+    for cond in conditions {
+        let mut own = vec![condition_value(cond)];
+        if let Some(op) = condition_operator(cond) { own.push((6126, op)); }
+        if let OrderCondition::Price { trigger_method, .. } = cond {
+            own.push((6127, trigger_method.to_string()));
+        }
+        out.push((6222, "2".to_string()));
         let written: Vec<u32> = own.iter().map(|(t, _)| *t).collect();
         out.extend(own);
         out.extend(CONDITION_PADDING.iter().filter(|t| !written.contains(t)).map(|&t| (t, String::new())));
@@ -6816,16 +6873,18 @@ mod tests {
     }
 
     // ibx#327: the two condition flags were swapped and sent only when set.
-    // Reference (ib-agent#192 B2b/B2c, one price condition, account removed).
+    // Reference (ib-agent#192 B2b/B2c, one price condition, account removed),
+    // with the overnight flag the reference 10.51 writes between the two
+    // (ibx#726, observed on paper, 17/10/2026).
     #[test]
     fn condition_block_with_cancel_order_matches_reference() {
-        let want = parse_frame("6128=0|6151=1|6136=1|6222=1|6137=n|6126=>=|6123=265598|6124=BEST|6127=0|6125=509.62|6223=|6245=|6263=|6246=|6947=");
+        let want = parse_frame("6128=0|8612=0|6151=1|6136=1|6222=1|6137=n|6126=>=|6123=265598|6124=BEST|6127=0|6125=509.62|6223=|6245=|6263=|6246=|6947=");
         assert_eq!(condition_block(true, false), want);
     }
 
     #[test]
     fn condition_block_with_ignore_rth_matches_reference() {
-        let want = parse_frame("6128=1|6151=0|6136=1|6222=1|6137=n|6126=>=|6123=265598|6124=BEST|6127=0|6125=509.62|6223=|6245=|6263=|6246=|6947=");
+        let want = parse_frame("6128=1|8612=0|6151=0|6136=1|6222=1|6137=n|6126=>=|6123=265598|6124=BEST|6127=0|6125=509.62|6223=|6245=|6263=|6246=|6947=");
         assert_eq!(condition_block(false, true), want);
     }
 
@@ -6868,6 +6927,116 @@ mod tests {
             "|6222=5|6137=n|6246=symbol=SPY;exchange=*;securityType=STK;|6123=|6124=|6127=|6126=|6125=|6223=|6245=|6263=|6947=",
         ));
         assert_eq!(got, want);
+    }
+
+    // ibx#726: the reference 10.51 on paper, 17/10/2026, market closed, an
+    // official client at session level 214: an AAPL limit order, good till
+    // cancelled, with one price condition, placed, its limit price
+    // modified with the conditions unchanged, then cancelled. The three
+    // messages it sent (account masked), compared field by field with
+    // ibx's: the new order has the overnight flag between the two other
+    // flags, the replace the flag and the conditions in the replace's form
+    // after the conId, the cancel nothing about the conditions.
+    const CONDITION_NEW_1051: &str = "35=D|11=496786905.0|44=50.00|1=DUXXXXXXX|8339=1|6122=c|6121=58118|6119=198|38=1|40=2|55=AAPL|167=STK|231=1.00|54=1|59=1|100=BEST|6210=BEST|6008=265598|6088=Socket|6128=0|8612=0|6151=0|6136=1|6222=1|6137=n|6126=>=|6123=265598|6124=BEST|6127=0|6125=900.00|6223=|6245=|6263=|6246=|6947=|15=USD|6211=|6238=";
+    const CONDITION_REPLACE_1051: &str = "35=G|11=496786905.1|41=496786905.0|44=51.00|1=DUXXXXXXX|6205=1|8339=1|6122=c|38=1|54=1|40=2|55=AAPL|167=STK|6035=AAPL|59=1|6008=265598|8612=0|6136=1|6222=2|6125=900.00|6126=>=|6127=0|6123=|6124=|6223=|6245=|6263=|6246=|6947=|6088=Socket|6211=|6238=";
+    const CONDITION_CANCEL_1051: &str = "35=F|11=496786905.2|41=496786905.1|38=1|54=1|1=DUXXXXXXX|6008=265598|6088=Socket|6944=SEL";
+
+    /// The messages ibx sends for these requests, one after the other on
+    /// one engine state, each as its fields.
+    fn messages_of(requests: Vec<OrderRequest>) -> Vec<Vec<(u32, String)>> {
+        let mut context = order_context();
+        context.order_ids.start_at(FIRST as i32);
+        context.market.register(265598);
+        // With price management, as the paper session of the recording.
+        session(&mut context, true);
+        let shared = Arc::new(SharedState::new());
+        let (conn, mut peer) = crate::test_support::Peer::pair();
+        let mut conn = Some(conn);
+        let mut out = Vec::new();
+        for req in requests {
+            context.pending_orders.push(req);
+            drain_and_send_orders(&mut conn, &mut context, "DU1", &mut HeartbeatState::new(), false, &shared);
+            out.extend(peer.messages().iter().map(|m| crate::test_support::parse_fields(m)));
+        }
+        out
+    }
+
+    #[test]
+    fn an_order_with_a_price_condition_placed_modified_and_cancelled_as_the_reference_10_51() {
+        use crate::test_support::normalise::{assert_same_fields, Normaliser};
+        use crate::types::OrderKind as K;
+        let attrs = crate::types::OrderAttrs {
+            conditions: vec![OrderCondition::Price { con_id: 265598, exchange: "SMART".into(), price: px(900.0), is_more: true, trigger_method: 0 }],
+            ..Default::default()
+        };
+        let messages = messages_of(vec![
+            OrderRequest::SubmitEx { order_id: 58118, instrument: 0, side: Side::Buy, qty: 1, kind: K::Limit { price: px(50.0) }, tif: b'1', attrs: attrs.clone() },
+            OrderRequest::Modify { new_order_id: 58118, order_id: 58118, qty: 1, kind: K::Limit { price: px(51.0) }, tif: b'1', attrs },
+            OrderRequest::Cancel { order_id: 58118 },
+        ]);
+        let of_type = |t: &str| messages.iter().filter(|m| m.iter().any(|(tag, v)| *tag == 35 && v == t)).cloned().collect::<Vec<_>>();
+        let (new, replace, cancel) = (of_type("D"), of_type("G"), of_type("F"));
+        assert_eq!((new.len(), replace.len(), cancel.len()), (1, 1, 1), "{messages:?}");
+        // The client id is the session's; the order ids are masked and the
+        // attribute left out of every replace comparison is dropped.
+        let n = Normaliser::session().drop(&[6119]);
+        assert_same_fields(&n.apply(&new[0]), &n.pipe(CONDITION_NEW_1051));
+        // The order attributes of a replace come in no fixed order (here the
+        // price management flag before the origin field, after it in the
+        // replaces recorded on 28/09/2026): compared as a set, the other
+        // fields in their order.
+        let split = |f: Vec<(u32, String)>| {
+            let (mut attributes, rest): (Vec<_>, Vec<_>) = f.into_iter().partition(|(t, _)| is_attribute(*t) || matches!(*t, 6122 | 8339));
+            attributes.sort();
+            (attributes, rest)
+        };
+        let (ours, theirs) = (split(n.apply(&replace[0])), split(n.pipe(CONDITION_REPLACE_1051)));
+        assert_eq!(ours.0, theirs.0, "the attributes");
+        assert_same_fields(&ours.1, &theirs.1);
+        assert_same_fields(&n.apply(&cancel[0]), &n.pipe(CONDITION_CANCEL_1051));
+    }
+
+    /// The condition fields of a limit order's replace with these conditions.
+    fn replace_conditions_of(conditions: Vec<OrderCondition>) -> Vec<(u32, String)> {
+        let attrs = crate::types::OrderAttrs { conditions, ..Default::default() };
+        let tags = replace_fields(9000000600, Side::Buy, 1, crate::types::OrderKind::Limit { price: px(51.0) }, b'1', attrs);
+        let start = pos(&tags, 8612);
+        let end = tags.iter().rposition(|(t, _)| *t == 6947).unwrap();
+        assert_eq!(tags[start - 1].0, 6008, "after the conId");
+        assert_eq!(tags[end + 1].0, 6088, "before the source");
+        tags[start..=end].to_vec()
+    }
+
+    // ibx#726: the other kinds in the replace's form of the price condition
+    // (a marker 2, the value, the operator, then the padding with empty
+    // contract fields): not observed yet, only the price kind was.
+    #[test]
+    fn replace_conditions_of_the_other_kinds_take_the_price_form() {
+        let got = replace_conditions_of(vec![
+            OrderCondition::Time { time: "20991231-23:59:59".into(), is_more: false },
+            OrderCondition::Margin { percent: 30, is_more: true },
+            OrderCondition::Execution { symbol: "SPY".into(), exchange: "SMART".into(), sec_type: "STK".into() },
+            OrderCondition::Volume { con_id: 756733, exchange: "SMART".into(), volume: 1000, is_more: true },
+            OrderCondition::PercentChange { con_id: 756733, exchange: "SMART".into(), percent: 5.0, is_more: false },
+            OrderCondition::Price { con_id: 265598, exchange: "SMART".into(), price: px(900.0), is_more: false, trigger_method: 2 },
+        ]);
+        let want = parse_frame(concat!(
+            "8612=0|6136=6",
+            "|6222=2|6223=20991231-23:59:59|6126=<=|6123=|6124=|6127=|6125=|6245=|6263=|6246=|6947=",
+            "|6222=2|6245=30|6126=>=|6123=|6124=|6127=|6125=|6223=|6263=|6246=|6947=",
+            "|6222=2|6246=symbol=SPY;exchange=*;securityType=STK;|6123=|6124=|6127=|6126=|6125=|6223=|6245=|6263=|6947=",
+            "|6222=2|6263=1000|6126=>=|6123=|6124=|6127=|6125=|6223=|6245=|6246=|6947=",
+            "|6222=2|6245=5.00|6126=<=|6123=|6124=|6127=|6125=|6223=|6263=|6246=|6947=",
+            "|6222=2|6125=900.00|6126=<=|6127=2|6123=|6124=|6223=|6245=|6263=|6246=|6947=",
+        ));
+        assert_eq!(got, want);
+    }
+
+    // A replace of an order without conditions writes none of their fields.
+    #[test]
+    fn a_replace_without_conditions_writes_no_condition_field() {
+        let tags = replace_fields(9000000601, Side::Buy, 1, crate::types::OrderKind::Limit { price: px(51.0) }, b'1', Default::default());
+        assert!(tags.iter().all(|(t, _)| !REPLACE_CONDITION_TAGS.contains(t)), "{tags:?}");
     }
 
     #[test]

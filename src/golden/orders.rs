@@ -186,6 +186,17 @@ pub(crate) fn replay_orders(fx: &Fixture) -> OrderReplay {
             }
         }
     }
+    // A recording of 10.40 read in the 10.51 form: the conditions'
+    // overnight flag, which 10.51 writes after the first condition flag of
+    // a new order (ibx#726), until the recordings are made again on 10.51
+    // (ibx#604).
+    if s.shared.reference.form_10_40() {
+        for (_, f) in theirs.iter_mut() {
+            if !f.iter().any(|(t, _)| *t == 8612) && let Some(i) = f.iter().position(|(t, _)| *t == 6128) {
+                f.insert(i + 1, (8612, "0".to_string()));
+            }
+        }
+    }
     let their_frames: Vec<Fields> = theirs.iter().map(|(_, f)| f.clone()).collect();
     let (kt, ko) = (keys(&their_frames), keys(&ours));
     let mut pairs: Vec<Pair> = Vec::new();

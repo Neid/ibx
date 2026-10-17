@@ -197,6 +197,8 @@ fn cases() -> Vec<Case> {
     use OrderRequest::*;
     let (i, s, q) = (0, Side::Buy, 1);
     let case = |name, requests, expect| Case { name, requests, expect, open: None };
+    let price_condition = OrderCondition::Price {
+        con_id: 265598, exchange: "SMART".into(), price: 900 * P, is_more: true, trigger_method: 0 };
     let vwap = AlgoParams::Vwap {
         max_pct_vol: 0.1, no_take_liq: false, allow_past_end_time: true,
         start_time: String::new(), end_time: String::new(),
@@ -332,6 +334,13 @@ fn cases() -> Vec<Case> {
                 ..attrs()
             } }],
             vec![d("LMT", &["lmt_price", "oca", "gtd_date", "conditions", "attr:583"])]),
+        // The replace restates the conditions (ibx#726).
+        case("Modify with conditions", vec![
+            SubmitEx { order_id: 150, instrument: i, side: s, qty: q, kind: OrderKind::Limit { price: 50 * P }, tif: b'1',
+                attrs: OrderAttrs { conditions: vec![price_condition.clone()], ..attrs() } },
+            Modify { new_order_id: 150, order_id: 150, qty: q, kind: OrderKind::Limit { price: 51 * P }, tif: b'1',
+                attrs: OrderAttrs { conditions: vec![price_condition], ..attrs() } }],
+            vec![d("LMT", &["lmt_price", "conditions"]), g("LMT", &["lmt_price", "conditions"])]),
         // The order attributes ibx writes: each with the value kind of the
         // attribute table.
         case("SubmitLimitEx with attributes", vec![SubmitLimitEx {
@@ -366,12 +375,7 @@ fn cases() -> Vec<Case> {
 }
 
 /// Cases with a known difference from the gateway, and the open issue.
-const OPEN: &[(&str, &str)] = &[
-    // The 10.51 new order writes, with the conditions, a third flag (the
-    // conditions include the overnight session, 0 or 1) between the two
-    // condition flags; ibx writes the two flags only.
-    ("SubmitEx with OCA, GTD and conditions", "ibx#726: the conditions' overnight flag of the 10.51 new order"),
-];
+const OPEN: &[(&str, &str)] = &[];
 
 /// The order id of each expected message of a case's requests: the ids
 /// of a bracket, the order a cancel-all or a cancel or replace is for.
