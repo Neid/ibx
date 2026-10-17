@@ -34,6 +34,9 @@ macro_rules! answer_kinds {
         #[derive(Default)]
         pub(crate) struct Inbox {
             $(pub(crate) $kind: VecDeque<(u64, $ty)>,)*
+            /// The clock read at the last take of every queue: while it
+            /// has not moved, no queue holds an answer not taken yet.
+            taken_at: u64,
         }
 
         impl Inbox {
@@ -46,16 +49,33 @@ macro_rules! answer_kinds {
             /// its counts. When this one is empty (no pass ran meanwhile),
             /// `other` takes its place with its buffers.
             pub(crate) fn merge(&mut self, other: Inbox) {
+                let taken_at = self.taken_at.min(other.taken_at);
                 if $(self.$kind.is_empty())&&* {
                     *self = other;
-                    return;
+                } else {
+                    $(merge_queue(&mut self.$kind, other.$kind);)*
                 }
-                $(merge_queue(&mut self.$kind, other.$kind);)*
+                self.taken_at = taken_at;
             }
 
-            /// The first count of each kind that has answers.
-            fn heads(&self) -> [Option<(Kind, u64)>; [$(Kind::$kind),*].len()] {
-                [$(self.$kind.front().map(|(at, _)| (Kind::$kind, *at))),*]
+            /// The kind with the smallest first count and that count, and
+            /// the smallest first count of the other kinds (`u64::MAX` when
+            /// none), in one look at each queue (ibx#661).
+            fn first_two(&self) -> (Option<(Kind, u64)>, u64) {
+                let mut first: Option<(Kind, u64)> = None;
+                let mut second = u64::MAX;
+                $(
+                    if let Some(&(at, _)) = self.$kind.front() {
+                        match first {
+                            Some((_, f)) if at >= f => second = second.min(at),
+                            _ => {
+                                second = first.map_or(second, |(_, f)| f);
+                                first = Some((Kind::$kind, at));
+                            }
+                        }
+                    }
+                )*
+                (first, second)
             }
         }
     };
@@ -102,7 +122,13 @@ impl Inbox {
     pub(crate) fn take(&mut self, shared: &SharedState) -> u64 {
         // Read first: an answer counted before it is in its queue by then.
         let written = shared.answers_written();
-        self.take_queues(shared);
+        // Every answer takes its count under its queue's lock: a clock that
+        // has not moved since the last take means no queue has anything new
+        // (ibx#661), and the locks of the 31 queues are spared.
+        if written != self.taken_at {
+            self.take_queues(shared);
+            self.taken_at = written;
+        }
         written
     }
 
@@ -120,8 +146,7 @@ impl Inbox {
     /// [`next_run`](Self::next_run) with the client's own answers, whose
     /// first count is `client`.
     pub(crate) fn next(&self, written: u64, client: Option<u64>) -> Option<Run> {
-        let heads = self.heads();
-        let queue = heads.iter().flatten().copied().min_by_key(|(_, at)| *at);
+        let (queue, others) = self.first_two();
         let first = match (queue, client) {
             (Some((_, q)), Some(c)) => q.min(c),
             (Some((_, q)), None) => q,
@@ -133,8 +158,7 @@ impl Inbox {
         }
         match queue {
             Some((kind, at)) if at == first => {
-                let other = heads.iter().flatten().filter(|(k, _)| *k != kind).map(|(_, at)| *at)
-                    .chain(client).min().unwrap_or(u64::MAX);
+                let other = client.map_or(others, |c| c.min(others));
                 Some(Run::Queue(kind, other.min(written)))
             }
             _ => Some(Run::Client(queue.map_or(u64::MAX, |(_, at)| at).min(written))),
@@ -187,6 +211,40 @@ mod tests {
         assert_eq!(got, ["end 1", "error 2", "error 3", "end 4"]);
     }
 
+    // ibx#661: the next run is found in one look at the queues; three kinds
+    // and the client's own answers interleaved keep their order, and a pass
+    // with no answer written since the last one takes nothing.
+    #[test]
+    fn three_kinds_and_the_clients_answers_keep_their_order() {
+        let shared = SharedState::new();
+        shared.reference.push_contract_details_end(1);
+        shared.orders.push_order_error(2, 200, "a".into());
+        let client = shared.answer_stamp();
+        shared.orders.push_forgotten_order(3);
+        shared.reference.push_contract_details_end(4);
+        shared.orders.push_order_error(5, 200, "b".into());
+        let mut inbox = Inbox::default();
+        let written = inbox.take(&shared);
+        let mut got = Vec::new();
+        let mut client_left = Some(client);
+        while let Some(next) = inbox.next(written, client_left) {
+            match next {
+                Run::Client(until) => {
+                    assert!(client < until);
+                    got.push("client".to_string());
+                    client_left = None;
+                }
+                Run::Queue(Kind::contract_details_end, until) => got.extend(run(&mut inbox.contract_details_end, until).map(|r| format!("end {r}"))),
+                Run::Queue(Kind::order_errors, until) => got.extend(run(&mut inbox.order_errors, until).map(|(id, ..)| format!("error {id}"))),
+                Run::Queue(Kind::forgotten_orders, until) => got.extend(run(&mut inbox.forgotten_orders, until).map(|id| format!("forgotten {id}"))),
+                Run::Queue(other, _) => panic!("{other:?}"),
+            }
+        }
+        assert_eq!(got, ["end 1", "error 2", "client", "forgotten 3", "end 4", "error 5"]);
+        assert_eq!(inbox.take(&shared), written, "nothing written since");
+        assert!(inbox.next(written, None).is_none());
+    }
+
     #[test]
     fn an_answer_counted_after_the_reading_waits_for_the_next_pass() {
         let shared = SharedState::new();
@@ -204,3 +262,4 @@ mod tests {
         assert_eq!(inbox.next_run(written).map(|(k, _)| k), Some(Kind::order_errors));
     }
 }
+
