@@ -177,7 +177,8 @@ fn auto_execution_from_farm(sec_type: &str, exchange: &str) -> bool {
 /// - daily: position × price − position at midnight × price at midnight +
 ///   today's traded cash; not valid without the price at midnight of a
 ///   position held at midnight;
-/// - unrealized: position × (price − average cost); exactly 0 is not valid
+/// - unrealized: position × price − the position's cost ([`cost_basis`]);
+///   exactly 0 is not valid
 ///   (a closed position); unknown without an average cost;
 /// - realized: the seed's realized P&L plus this session's fills;
 /// - value: position × price.
@@ -216,7 +217,7 @@ fn pnl_rows(shared: &SharedState) -> Vec<PnlRow> {
         let unrealized = match price {
             None => PnlValue::Unset,
             Some(_) if qty != 0.0 && avg_cost == 0.0 => PnlValue::Unset,
-            Some(p) => match qty * (p - avg_cost) {
+            Some(p) => match qty * p - cost_basis(qty_fixed, avg_cost) {
                 0.0 => PnlValue::Invalid,
                 u => PnlValue::Valid(u),
             },
@@ -229,6 +230,37 @@ fn pnl_rows(shared: &SharedState) -> Vec<PnlRow> {
         PnlRow { con_id, qty_fixed, daily, unrealized, realized, value }
     }).collect()
 }
+
+/// The cost of a position: its quantity times its average cost, taken as
+/// the exact decimal product and then as the nearest double. The reference
+/// gives the unrealized P&L as the position's value less this cost, which
+/// differs in the last digits from the quantity times the price less the
+/// average cost (ibx#713; paper, 15/10/2026: 42.405964000000495 for a short
+/// 20 at 277.144285, and an account of five rows, equal to the last digit).
+/// Run once per row and P&L pass, not per tick.
+fn cost_basis(qty_fixed: i64, avg_cost: f64) -> f64 {
+    if qty_fixed == 0 || avg_cost == 0.0 || !avg_cost.is_finite() {
+        return qty_fixed as f64 / QTY_SCALE_F * avg_cost;
+    }
+    // The average cost as the decimal the server wrote: the shortest text
+    // that reads back as the same double.
+    let text = format!("{}", avg_cost.abs());
+    let (whole, frac) = text.split_once('.').unwrap_or((text.as_str(), ""));
+    let Ok(digits) = format!("{whole}{frac}").parse::<i128>() else {
+        return qty_fixed as f64 / QTY_SCALE_F * avg_cost;
+    };
+    let Some(product) = digits.checked_mul(qty_fixed as i128) else {
+        return qty_fixed as f64 / QTY_SCALE_F * avg_cost;
+    };
+    let scale = frac.len() + QTY_DECIMALS;
+    let sign = if (product < 0) != (avg_cost < 0.0) { "-" } else { "" };
+    let magnitude = format!("{:0>width$}", product.unsigned_abs(), width = scale + 1);
+    let (int_part, frac_part) = magnitude.split_at(magnitude.len() - scale);
+    format!("{sign}{int_part}.{frac_part}").parse().unwrap_or(qty_fixed as f64 / QTY_SCALE_F * avg_cost)
+}
+
+/// The decimals of a fixed-point quantity (`QTY_SCALE` is ten to this).
+const QTY_DECIMALS: usize = 4;
 
 /// Net cash traded today on a position, for the daily P&L.
 /// moneyTradedSinceMidnight (its wire field) is signed net cash: SELL positive,
@@ -8160,7 +8192,8 @@ mod tests {
         core.pnl_quotes.lock().unwrap().started = true;
         let first = core.poll_pnl(&shared).pop().expect("the first value at once");
         assert_eq!((first.daily_pnl, first.realized_pnl), (-73.07973599999968, 0.0), "the reference's, to the last digit");
-        assert!((first.unrealized_pnl - 42.405964).abs() < 1e-9, "{}", first.unrealized_pnl);
+        // The value less the exact cost, to the last digit (ibx#713).
+        assert_eq!(first.unrealized_pnl, 42.405964000000495);
         assert_eq!(first.errors, 0);
 
         for (con_id, price) in [(272093, 538.25), (756733, 771.5800170898438), (265598, 341.6099853515625),
@@ -8171,7 +8204,7 @@ mod tests {
         *core.pnl_quotes.lock().unwrap().computed_at_mut().unwrap() -= PNL_RECALC;
         let full = core.poll_pnl(&shared).pop().expect("all rows");
         assert_eq!(full.daily_pnl, 0.9497729858385355);
-        assert!((full.unrealized_pnl - -990.9473989141641).abs() < 1e-9, "{}", full.unrealized_pnl);
+        assert_eq!(full.unrealized_pnl, -990.9473989141641);
         assert!((full.realized_pnl - -716.9810584).abs() < 1e-9, "{}", full.realized_pnl);
     }
 
@@ -9218,5 +9251,26 @@ mod session_tests {
         assert!(date.len() == 8 && date.bytes().all(|b| b.is_ascii_digit()), "{}", now);
         assert!(time.len() == 8 && time.as_bytes()[2] == b':' && time.as_bytes()[5] == b':', "{}", now);
         assert!(!zone.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod cost_basis_tests {
+    use super::*;
+
+    // ibx#713: the exact decimal product, as the nearest double.
+    #[test]
+    fn the_cost_is_the_exact_product_of_quantity_and_average_cost() {
+        let q = |n: i64| n * crate::types::QTY_SCALE;
+        assert_eq!(cost_basis(q(-20), 277.144285), -5542.8857);
+        assert_ne!(-20.0 * 277.144285, -5542.8857, "the float product is off in the last digit");
+        assert_eq!(cost_basis(q(79), 775.3726666), 61254.4406614);
+        assert_eq!(cost_basis(q(-10), 463.55861895), -4635.5861895);
+        assert_eq!(cost_basis(q(1), 44.8), 44.8);
+        assert_eq!(cost_basis(0, 44.8), 0.0);
+        assert_eq!(cost_basis(q(5), 0.0), 0.0);
+        // A fractional quantity (four decimals) and a negative cost.
+        assert_eq!(cost_basis(15_000, 0.1), 0.15);
+        assert_eq!(cost_basis(q(3), -2.5), -7.5);
     }
 }

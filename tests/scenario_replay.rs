@@ -704,13 +704,11 @@ fn pnl_first_request_of_the_session() {
     }
     assert_eq!(o.frame_error, None);
     assert_eq!(o.frames_compared, 5, "the quotes, two exchange maps and their cancels");
-    // The first value: one row, the server's mark; its daily and realized
-    // P&L to the last digit. Its unrealized P&L differs in its last digits
-    // (the reference's average cost has more digits than the server's
-    // rows, ibx#713). The values of the next seconds need the time of
-    // the recording, which the replay does not give the client.
+    // The first value: one row, the server's mark; its daily, unrealized
+    // and realized P&L to the last digit (the unrealized one is the value
+    // less the exact cost, ibx#713). The values of the next seconds need
+    // the time of the recording, which the replay does not give the client.
     let fields = |l: &str| l.split('|').map(str::to_string).collect::<Vec<_>>();
     let (ours, theirs) = (fields(&o.ours[0]), fields(&o.theirs[0].1));
-    assert_eq!((&ours[..3], &ours[4]), (&theirs[..3], &theirs[4]));
-    assert!((ours[3].parse::<f64>().unwrap() - theirs[3].parse::<f64>().unwrap()).abs() < 1e-9);
+    assert_eq!(&ours[..5], &theirs[..5]);
 }
