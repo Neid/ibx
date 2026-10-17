@@ -1167,6 +1167,16 @@ pub struct OrderReport {
     pub why_held: String,
 }
 
+/// The openOrder of a report shows the report's permId, as its
+/// orderStatus: an order given once more under a new permId after a reject
+/// read as a missing permission shows it in both (ibx#666).
+pub fn with_report_perm_id(mut view: OrderView, perm_id: i64) -> OrderView {
+    if perm_id != 0 {
+        view.order.perm_id = perm_id;
+    }
+    view
+}
+
 /// A locally tracked order for `req_open_orders` / dispatch status updates.
 #[derive(Clone)]
 pub struct TrackedOrder {
@@ -5861,26 +5871,39 @@ impl ClientCore {
         (out, ok)
     }
 
-    /// Refuse orders on the security types whose order message ibx does not
-    /// write yet. Written: stocks (an empty type is a stock), combos
-    /// (ibx#470), futures, CFDs and forex pairs (ibx#666, the reference's
-    /// messages of 13/10/2026), warrants (the reference's message of
-    /// 15/10/2026), options and futures options (written as a warrant's;
-    /// checked against the account's trading permission first). A fund
-    /// goes to the engine for its rule (10203). The others would otherwise
-    /// go out without the fields their message needs (ibx#202).
-    pub fn validate_order_contract(sec_type: &str) -> Result<(), String> {
-        // A metal (ibx#666, 16/10/2026) is written; a bond goes to the
-        // engine for its permission (460) and is refused there after it; a
-        // crypto order too (without the permission it stays pending).
-        const WRITTEN: [&str; 12] = ["STK", "BAG", "FUT", "CFD", "CASH", "OPT", "FOP", "WAR", "FUND", "CMDTY", "BOND", "CRYPTO"];
-        if sec_type.is_empty() || WRITTEN.iter().any(|t| sec_type.eq_ignore_ascii_case(t)) {
-            return Ok(());
+    /// The reference's refusals of an order for its contract's security
+    /// type, at its reading, before any lookup (ibx#666; the reference
+    /// 10.51, paper, 17/10/2026, market closed, each 2 to 3 ms after the
+    /// placeOrder, nothing sent, the order not kept: its cancel 10147):
+    /// - a type the reference does not know: "Please enter a valid security
+    ///   type" (an order on AAPL as type XYZ); the type is read without
+    ///   regard to case (an order on AAPL as "stk" went out as a stock);
+    /// - a news contract: "Missing order exchange." though the order names
+    ///   one (BRF);
+    /// - a forward given without conId, local symbol and expiry: "Please
+    ///   enter a local symbol or an expiry" (EUR on SMART).
+    ///
+    /// Every other type goes on: its order is written, or refused after its
+    /// lookup as the reference refuses it (an index 10345, a type the
+    /// server finds no contract for 200, ibx#666). An empty type is a stock.
+    pub fn order_contract_refusal(contract: &ApiContract) -> Option<(i64, String)> {
+        let refuse = |cause: &str| Some((321, format!("Error validating request.-'PlaceOrder(3)' : cause - {cause}")));
+        let sec_type = contract.sec_type.as_str();
+        if sec_type.is_empty() {
+            return None;
         }
-        Err(format!(
-            "Unsupported contract sec_type '{}': orders are written for STK, BAG, FUT, CFD, CASH, OPT, FOP, WAR, FUND and CMDTY only.              See https://github.com/deepentropy/ibx/issues/666",
-            sec_type
-        ))
+        if crate::types::sec_type_id(&sec_type.to_ascii_uppercase()).is_none() {
+            return refuse("Please enter a valid security type");
+        }
+        if sec_type.eq_ignore_ascii_case("NEWS") {
+            return refuse("Missing order exchange.");
+        }
+        if sec_type.eq_ignore_ascii_case("FWD") && contract.con_id == 0 && contract.local_symbol.is_empty()
+            && contract.last_trade_date_or_contract_month.is_empty()
+        {
+            return refuse("Please enter a local symbol or an expiry");
+        }
+        None
     }
 
     /// The combo of a BAG order, read and checked as the reference reads a

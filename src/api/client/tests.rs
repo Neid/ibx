@@ -2007,23 +2007,33 @@ fn place_order_unknown_type_is_refused_by_callback() {
 }
 
 #[test]
-fn place_order_non_stk_contract_rejected() {
-    // A contract whose order message is not written must be rejected, not
-    // silently sent as a stock order on the underlying (ibx#202). Options,
-    // futures options, warrants, metals and funds are written since ibx#666
-    // (bonds go to the engine for their permission); structured products
-    // are not.
+fn place_order_refusals_of_the_security_type() {
+    // ibx#666 (the reference 10.51, paper, 17/10/2026, market closed): a
+    // type the reference does not know, a news contract and a forward
+    // without local symbol or expiry are refused with 321 at once, nothing
+    // sent; a structured product goes on to the engine (its message is
+    // written), and a type is read without regard to case.
     let (client, rx, shared) = test_client();
     shared.market.set_instrument_count(1);
-    let iopt = Contract { con_id: 999001, symbol: "DAX".into(), sec_type: "IOPT".into(), ..Default::default() };
-    let order = Order { action: "BUY".into(), total_quantity: 1.0, order_type: "MKT".into(), ..Default::default() };
-    let result = client.place_order(1, &iopt, &order);
-    assert!(result.is_err());
-    let err = result.unwrap_err();
-    assert!(err.contains("IOPT"));
-    assert!(err.contains("STK"));
-    // No order must have been queued to the engine.
-    assert!(rx.try_recv().is_err());
+    let order = Order { action: "BUY".into(), total_quantity: 1.0, order_type: "LMT".into(), lmt_price: 1.0, ..Default::default() };
+    let cases = [
+        ("XYZ", "AAPL", "SMART", "Please enter a valid security type"),
+        ("NEWS", "BRF:BRF_ALL", "BRF", "Missing order exchange."),
+        ("FWD", "EUR", "SMART", "Please enter a local symbol or an expiry"),
+    ];
+    for (i, (sec_type, symbol, exchange, cause)) in cases.into_iter().enumerate() {
+        let contract = Contract { symbol: symbol.into(), sec_type: sec_type.into(), exchange: exchange.into(), currency: "USD".into(), ..Default::default() };
+        client.place_order(i as i64 + 1, &contract, &order).unwrap();
+        assert!(rx.try_recv().is_err(), "nothing sent for {sec_type}");
+        assert_eq!(shared.orders.drain_order_errors(),
+            [(i as i64 + 1, 321, format!("Error validating request.-'PlaceOrder(3)' : cause - {cause}"))]);
+    }
+    let iopt = Contract { con_id: 411098772, symbol: "DAX".into(), sec_type: "IOPT".into(), exchange: "SBF".into(), ..Default::default() };
+    assert_eq!(ClientCore::order_contract_refusal(&iopt), None);
+    let lower = Contract { symbol: "AAPL".into(), sec_type: "stk".into(), exchange: "SMART".into(), ..Default::default() };
+    assert_eq!(ClientCore::order_contract_refusal(&lower), None);
+    let fwd = Contract { symbol: "EUR".into(), sec_type: "FWD".into(), exchange: "SMART".into(), local_symbol: "EUR.USD 1M".into(), ..Default::default() };
+    assert_eq!(ClientCore::order_contract_refusal(&fwd), None);
 }
 
 #[test]

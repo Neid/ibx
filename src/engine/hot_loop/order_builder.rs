@@ -307,7 +307,9 @@ fn send_orders(
         // message carries (ibx#666).
         if let Some(instrument) = order_req.new_order_qty().and(order_req.instrument()).filter(|_| order_req.combo().is_none()) {
             let (sec_type, _) = context.market.order_routing(instrument);
-            if (!matches!(sec_type.as_str(), "" | "STK" | "BAG") || context.market.blank_symbol(instrument))
+            // An index is refused on its type, known from its lookup
+            // (ibx#666).
+            if (!matches!(sec_type.as_str(), "" | "STK" | "BAG" | "IND") || context.market.blank_symbol(instrument))
                 && matches!(definition(context, conn, hb, instrument), Definition::Waiting)
             {
                 context.rth_parked.push(rewrap(order_req));
@@ -2371,8 +2373,11 @@ fn send_new_order(
     // futures option's message is written as the warrant's: not observed,
     // the paper account has no permission for them.
     let sec_type = field(fields, 167).unwrap_or("");
-    let option_like = matches!(sec_type, "OPT" | "FOP" | "WAR");
-    let terms = (matches!(sec_type, "FUT" | "CFD" | "CASH" | "CMDTY" | "FUND") || option_like).then(|| {
+    // A structured product is written as a warrant, a treasury bill as a
+    // metal (the reference 10.51, paper, 17/10/2026: a DAX turbo on SBF,
+    // a bill on SMART).
+    let option_like = matches!(sec_type, "OPT" | "FOP" | "WAR" | "IOPT");
+    let terms = (matches!(sec_type, "FUT" | "CFD" | "CASH" | "CMDTY" | "FUND" | "BILL") || option_like).then(|| {
         let (_, destination) = context.market.order_routing(instrument);
         context.rth_types.get(&(con_id, destination))
     }).flatten();
@@ -3337,12 +3342,15 @@ fn permission_refusal(
     if req.combo().is_some() { return None; }
     let instrument = req.instrument()?;
     let sec_type = context.market.order_routing(instrument).0;
-    if !matches!(sec_type.as_str(), "OPT" | "FOP" | "WAR" | "CMDTY" | "FUND" | "BOND" | "CRYPTO" | "FUT" | "CFD") { return None; }
+    if !matches!(sec_type.as_str(), "OPT" | "FOP" | "WAR" | "IOPT" | "CMDTY" | "FUND" | "BOND" | "BILL" | "CRYPTO" | "FUT" | "CFD") { return None; }
     // A warrant, a metal and a fund go out with the question on its way
     // (paper, 16/10/2026: XAUUSD and a VFIAX buy by cash sent at once, the
     // server refusing them; the next fund order then refused with 460); a
-    // future and a CFD too (ibx#729, paper 13/10/2026).
-    let waits = !matches!(sec_type.as_str(), "WAR" | "CMDTY" | "FUND" | "FUT" | "CFD");
+    // future and a CFD too (ibx#729, paper 13/10/2026); a structured
+    // product and a treasury bill too (paper, 17/10/2026: a DAX turbo on
+    // SBF and a bill by conId sent, the server refusing them; the next
+    // turbo order, by description, refused with 460).
+    let waits = !matches!(sec_type.as_str(), "WAR" | "IOPT" | "CMDTY" | "FUND" | "BILL" | "FUT" | "CFD");
     // A bond or a crypto order not stopped for its permission is refused
     // for its message, which ibx does not write yet.
     let own_message = matches!(sec_type.as_str(), "BOND" | "CRYPTO");
@@ -3360,7 +3368,7 @@ fn permission_refusal(
         Definition::Known(types, _) => (types.permission_key.clone(), types.under_con_id),
     };
     // A derivative's underlying is looked up first (ibx#730).
-    let derivative = matches!(sec_type.as_str(), "OPT" | "FOP" | "WAR") && under_con_id > 0;
+    let derivative = matches!(sec_type.as_str(), "OPT" | "FOP" | "WAR" | "IOPT") && under_con_id > 0;
     if derivative && !underlying_known(context, conn, hb, under_con_id) {
         return Some(false);
     }
@@ -3490,12 +3498,20 @@ fn note_order_model(context: &mut Context, instrument: crate::types::InstrumentI
 /// - a fund bought without a cash quantity, or with a quantity: 10203, at
 ///   once after the lookup, the order not kept (its cancel: 10147), as the
 ///   reference 10.51 (paper, pre-market 15/10/2026, VFIAX by conId);
-/// - a type whose order message ibx does not write yet (the other fund
-///   orders, bonds and the rest): refused with this text of ibx's own
-///   rather than sent without the fields it needs.
+/// - an index: 10345 "You cannot trade a Index." once its definition is
+///   known, the order not kept (its cancel: 10147), as the reference 10.51
+///   (paper, 17/10/2026, market closed: SPX on CBOE by conId and by
+///   description, +115 ms);
+/// - a type whose order message ibx does not write yet (bonds and crypto
+///   with their permission; a forward, a stock loan and the other types
+///   the server found no contract for on paper): refused with this text
+///   of ibx's own rather than sent without the fields it needs.
 fn unwritten_type_refusal(req: &OrderRequest, sec_type: &str) -> Option<(i64, String)> {
-    const WRITTEN: [&str; 9] = ["STK", "BAG", "FUT", "CFD", "CASH", "OPT", "FOP", "WAR", "CMDTY"];
+    const WRITTEN: [&str; 11] = ["STK", "BAG", "FUT", "CFD", "CASH", "OPT", "FOP", "WAR", "IOPT", "CMDTY", "BILL"];
     if WRITTEN.contains(&sec_type) { return None; }
+    if sec_type == "IND" {
+        return Some((10345, "You cannot trade a Index.".to_string()));
+    }
     if sec_type == "FUND"
         && let Some((crate::types::Side::Buy, attrs)) = req.new_order_side()
         && (attrs.is_none_or(|a| a.cash_qty == 0) || req.new_order_qty().is_some_and(|q| q != 0))
@@ -3901,12 +3917,47 @@ fn store_rth_types(context: &mut Context, key: (i64, String), msg: &[u8]) {
             types.right = if matches!(right, crate::control::contracts::OptionRight::Call) { "1" } else { "0" }.to_string();
             types.strike = format!("{}", d.strike);
         }
+        (types.order_text, types.face_value) = order_text(&tags, d);
     }
     types.valid_exchanges = tags.get(&6046).map(|v| v.split(',')
         .map(|e| if e == "BEST" { "SMART".to_string() } else { e.to_string() }).collect());
     log::info!("Outside RTH definition for con_id {} on {}: {:?}", key.0, key.1, types);
     log::debug!("Order-type list for con_id {} on {}: {:?}", key.0, key.1, tokens);
     context.rth_types.insert(key, types);
+}
+
+/// How the reference names a structured product or a treasury bill in an
+/// order message's text (399), from its definition, and a bill's face
+/// value (ibx#666; the reference 10.51, paper, 17/10/2026, market closed):
+/// - a perpetual turbo without rebate: "DAX Perpetual 11088.4204 Call
+///   (CBK,0.01,11088.4204 EUR,No Rebate) (24W1Z) ", after "BUY 1": the
+///   symbol, the strike, the right, then the issuer, the multiplier, the
+///   barrier with the currency, and the local symbol;
+/// - a treasury bill: "US-T Govt Oct01'26 912797SA6", after "BUY $1K"
+///   (one bill of face value 1000): the symbol, the kind, the maturity
+///   and the CUSIP.
+///
+/// Other shapes (a dated product, one with a rebate, a put) are not
+/// observed yet: they keep the symbol and listing form.
+fn order_text(tags: &std::collections::HashMap<u32, String>, d: &crate::control::contracts::ContractDefinition) -> (String, Option<u64>) {
+    let tag = |t: u32| tags.get(&t).map(String::as_str).unwrap_or("");
+    match d.api_type_name().as_str() {
+        "IOPT" if tag(541) == "NOEXP" && tag(6805) == "F" && tag(201) == "1" && !tag(106).is_empty() => (format!(
+            "{} Perpetual {} Call ({},{},{} {},No Rebate) ({}) ",
+            d.symbol, tag(202), tag(106), d.multiplier_text, tag(6804), d.currency, d.local_symbol), None),
+        "BILL" if tag(541).len() == 8 && !d.cusip.is_empty() && !tag(6503).is_empty() => {
+            const MONTHS: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+            let date = tag(541);
+            let Some(month) = date[4..6].parse::<usize>().ok().and_then(|m| MONTHS.get(m.wrapping_sub(1))) else {
+                return (String::new(), None);
+            };
+            let mut kind = tag(6503).to_ascii_lowercase();
+            if let Some(first) = kind.get_mut(..1) { first.make_ascii_uppercase(); }
+            let face = tag(6504).parse::<u64>().ok().filter(|f| *f > 0);
+            (format!("{} {} {}{}'{} {}", d.symbol, kind, month, &date[6..8], &date[2..4], d.cusip), face)
+        }
+        _ => (String::new(), None),
+    }
 }
 
 /// Lookups with no reply in time: the empty list, as the reference when it
@@ -4967,7 +5018,7 @@ fn set_tif_from_preset(tif: &mut u8, name: Option<&str>, oid: OrderId, shared: &
 
 /// The types whose first order asks its preset after its permission
 /// question (`type_preset`, ibx#729).
-const TYPE_PRESETS: [&str; 6] = ["FUT", "CFD", "WAR", "CMDTY", "FUND", "CASH"];
+const TYPE_PRESETS: [&str; 8] = ["FUT", "CFD", "WAR", "IOPT", "CMDTY", "FUND", "BILL", "CASH"];
 
 /// The order preset kinds of an order's type, in the order the reference
 /// asks them: a forex pair's currency, then the forex one (ibx#729; the
@@ -9137,6 +9188,55 @@ mod tests {
         context.pending_orders.push(order(84));
         assert!(drain_frames(&mut context, &shared, &mut conn, &mut server).is_empty(), "nothing sent");
         assert_eq!(shared.orders.drain_order_errors(), [(84, 460, "No trading permissions.".to_string())]);
+    }
+
+    const DAX_TURBO: [(u32, &str); 16] = [(55, "DAX"), (167, "IOPT"), (15, "EUR"), (207, "SBF"), (200, "NOEXP"), (541, "NOEXP"),
+        (201, "1"), (202, "11088.4204"), (231, "0.01"), (6035, "24W1Z"), (106, "CBK"), (6804, "11088.4204"), (6805, "F"),
+        (6411, "SBF/IOPT/IND"), (8179, "FR/IOPT"), (6431, "DAY/3,LMT/3,MKT/1")];
+    const US_BILL: [(u32, &str); 13] = [(55, "US-T"), (167, "BILL"), (15, "USD"), (207, "BEST"), (6035, "IBCID819166829"),
+        (541, "20261001"), (6504, "1000"), (6503, "GOVT"), (454, "1"), (455, "912797SA6"), (456, "1"),
+        (6411, "12/BILL/USA_DEBT"), (6431, "DAY/3,LMT/3")];
+
+    // ibx#666 (the reference 10.51, paper, 17/10/2026, market closed,
+    // `.tmp/666/t5/case5.py` cases I, J and L): a structured product order
+    // and a treasury bill order go out with the permission of their class
+    // asked at the same time, in the reference's messages (the product's
+    // as a warrant's, the bill's as a metal's); once the answer says no
+    // permission, the next product order is refused with 460, nothing
+    // sent. Their order message texts come from their definitions.
+    #[test]
+    fn structured_product_and_bill_orders_as_the_reference() {
+        let order = |id, price| OrderRequest::SubmitLimit { order_id: id, instrument: 0, side: Side::Buy, qty: 1, price: px(price) };
+        let (frames, shared, mut context, mut conn, mut server) = order_by_con_id("411098772", "SBF", order(96, 0.01), &DAX_TURBO);
+        assert_eq!(asked_kinds(&frames), ["permission SBF/IOPT/IND", "D", "save s=IOPT"], "{frames:?}");
+        assert_eq!(message_of(&frames[1]), concat!("35=D|44=0.01|6122=c|38=1|40=2|55=DAX|200=NOEXP|201=1|202=11088.4204|167=IOPT|",
+            "48=24W1Z|22=101|231=0.01|54=1|59=0|100=SBF|6210=SBF|6008=411098772|6088=Socket|15=EUR|6211=|6238="));
+        let types = context.rth_types.values().next().unwrap();
+        assert_eq!((types.order_text.as_str(), types.face_value), ("DAX Perpetual 11088.4204 Call (CBK,0.01,11088.4204 EUR,No Rebate) (24W1Z) ", None));
+        permission_reply(&mut context, &fix::field_view(&permission_answer("SBF/IOPT/IND", "0")));
+        context.pending_orders.push(order(97, 0.01));
+        assert!(drain_frames(&mut context, &shared, &mut conn, &mut server).is_empty(), "nothing sent");
+        assert_eq!(shared.orders.drain_order_errors(), [(97, 460, "No trading permissions.".to_string())]);
+
+        let (frames, _, context, ..) = order_by_con_id("819166829", "SMART", order(98, 50.0), &US_BILL);
+        assert_eq!(asked_kinds(&frames), ["permission 12/BILL/USA_DEBT", "D", "save s=BILL"], "{frames:?}");
+        assert_eq!(message_of(&frames[1]), concat!("35=D|44=50.00|6122=c|38=1|40=2|55=US-T|167=BILL|48=IBCID819166829|22=101|",
+            "231=1.00|54=1|59=0|100=BEST|6210=BEST|6008=819166829|6088=Socket|15=USD|6211=|6238="));
+        let types = context.rth_types.values().next().unwrap();
+        assert_eq!((types.order_text.as_str(), types.face_value), ("US-T Govt Oct01'26 912797SA6", Some(1000)));
+    }
+
+    // ibx#666 (the reference 10.51, paper, 17/10/2026, market closed,
+    // `.tmp/666/t5/case5.py` case X): an index order is refused with 10345
+    // once its definition is known, nothing sent, the order not kept.
+    #[test]
+    fn an_index_order_is_refused_with_10345() {
+        let spx = [(55, "SPX"), (167, "IND"), (15, "USD"), (207, "CBOE"), (6411, "CBOE/IND/NONE"), (6431, "DAY/3,LMT/3")];
+        let (frames, shared, context, ..) = order_by_con_id("416904", "CBOE",
+            OrderRequest::SubmitLimit { order_id: 99, instrument: 0, side: Side::Buy, qty: 1, price: px(100.0) }, &spx);
+        assert!(frames.is_empty(), "nothing sent: {frames:?}");
+        assert_eq!(shared.orders.drain_order_errors(), [(99, 10345, "You cannot trade a Index.".to_string())]);
+        assert!(!context.unsent.contains_key(&99), "not kept");
     }
 
     // ibx#666 (the reference 10.51, paper, pre-market 15/10/2026, `.tmp/666`

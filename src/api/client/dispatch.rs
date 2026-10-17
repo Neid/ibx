@@ -460,7 +460,8 @@ impl EClient {
         let (last_fill_price, client_id) = view.as_ref().map(|v| (v.last_fill_price, v.client_id)).unwrap_or((0.0, 0));
         let why_held = self.core.why_held(status, view.as_ref().map_or("", |v| v.order.order_type.as_str()), update.parent_id);
         // A cancel, and an order that never left, give the status only.
-        let view = view.filter(|_| !matches!(status, "Cancelled" | "ApiCancelled"));
+        let view = view.filter(|_| !matches!(status, "Cancelled" | "ApiCancelled"))
+            .map(|v| crate::client_core::with_report_perm_id(v, update.perm_id));
         let report = crate::client_core::OrderReport {
             view, status: status.into(), filled: filled_f, remaining: remaining_f,
             avg_fill_price: update.avg_fill_price as f64 / PRICE_SCALE_F,

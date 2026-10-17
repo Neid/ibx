@@ -20,7 +20,11 @@ impl EClient {
         let order = &*ClientCore::with_canonical_order_type(order);
         // Validate order params and contract before registering instrument (fail fast).
         ClientCore::validate_order(order)?;
-        ClientCore::validate_order_contract(&contract.sec_type)?;
+        // The refusals of the contract's security type (ibx#666).
+        if let Some((code, message)) = ClientCore::order_contract_refusal(contract) {
+            self.shared.orders.push_order_error(order_id, code, message);
+            return Ok(());
+        }
         // Transmit off: the order is held (ibx#509). A what-if with
         // transmit off is refused with 321 below.
         if !order.transmit && !order.what_if {

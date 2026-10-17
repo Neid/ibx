@@ -218,12 +218,15 @@ impl EClient {
         }
         ClientCore::validate_order(&api_order)
             .map_err(|e| PyRuntimeError::new_err(e))?;
-        ClientCore::validate_order_contract(&contract.sec_type)
-            .map_err(|e| PyRuntimeError::new_err(e))?;
         // After the checks above, which refuse an invalid order even with no
         // connection (ibx#115).
         if let Some(r) = self.not_connected(order_id) { return r; }
         if !ClientCore::ids_fit("place_order", &[order_id, contract.con_id]) { return Ok(()); }
+        // The refusals of the contract's security type (ibx#666).
+        if let Some((code, message)) = ClientCore::order_contract_refusal(&full_contract) {
+            self.shared_state()?.orders.push_order_error(order_id, code, message);
+            return Ok(());
+        }
 
         // Transmit off: the order is held (ibx#509). A what-if with
         // transmit off is refused with 321 by the checks of an order.

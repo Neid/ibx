@@ -85,6 +85,14 @@ pub(crate) struct RthTypes {
     /// The key of the contract's trading permission class (an option's
     /// "2/OPT/R"), empty for a stock (ibx#666).
     pub permission_key: String,
+    /// How the reference names a structured product or a treasury bill in
+    /// the text of an order message (399), after the side and, for a
+    /// structured product, the quantity; empty for the other contracts,
+    /// named by symbol and listing (ibx#666).
+    pub order_text: String,
+    /// A treasury bill's face value: its order message gives the order's
+    /// amount (quantity times face value) in place of the quantity.
+    pub face_value: Option<u64>,
 }
 
 impl RthTypes {

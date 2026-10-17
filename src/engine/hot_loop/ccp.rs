@@ -149,6 +149,21 @@ fn order_message_399(
 {}", action, quantity, c.symbol, text);
     }
     let con_id: i64 = parsed.get(&6008).and_then(|s| s.parse().ok()).unwrap_or(0);
+    // A structured product or a treasury bill by the reference's own
+    // text from its definition (ibx#666); a bill gives the order's amount
+    // in place of its quantity.
+    if let Some(t) = context.rth_types.iter().find(|((c, _), t)| *c == con_id && con_id > 0 && !t.order_text.is_empty()).map(|(_, t)| t) {
+        let amount = match t.face_value {
+            Some(face) => {
+                let total = parsed.get(&38).and_then(|q| q.parse::<f64>().ok()).unwrap_or(0.0) * face as f64;
+                if total > 0.0 && total % 1000.0 == 0.0 { format!("${}K", total / 1000.0) } else { format!("${}", total) }
+            }
+            None => quantity,
+        };
+        return format!("Order Message:
+{} {} {}
+{}", action, amount, t.order_text, text);
+    }
     let cached = shared.reference.get_contract(con_id);
     let symbol = parsed.get(&55).map(|s| s.to_string())
         .or_else(|| cached.as_ref().map(|c| c.symbol.clone()))
@@ -370,6 +385,15 @@ fn perm_id_of(parsed: &fix::FieldMap<'_>) -> i64 {
         .and_then(|s| s.split('.').next())
         .and_then(|s| s.parse().ok())
         .unwrap_or(0)
+}
+
+/// Whether the answer known for the trading permission of an order's
+/// contract class says no permission (ibx#666).
+fn no_class_permission(context: &Context, order_id: OrderId) -> bool {
+    let Some(con_id) = context.order(order_id).and_then(|o| context.market.con_id(o.instrument)) else { return false };
+    context.rth_types.iter()
+        .filter(|((c, _), t)| *c == con_id && !t.permission_key.is_empty())
+        .any(|(_, t)| context.trading_permissions.get(&t.permission_key) == Some(&false))
 }
 
 /// The API order id a report gives (6121), 0 when it gives none
@@ -2211,9 +2235,23 @@ impl CcpState {
         // of an order already gone are not shown by the reference (C2).
         // The notice is queued after this report's status, below.
         let mut notice_out: Option<(i64, String)> = None;
+        // The permId of the order given once more after a reject the
+        // reference reads as a missing permission (below).
+        let mut perm_again: Option<i64> = None;
         if status == crate::types::OrderStatus::Rejected && status_changed {
             let reason = parsed.get(&58).copied().unwrap_or("");
             notice_out = Some((201, format!("Order rejected - reason:{}", reason)));
+            // A reject of reason 901 for an order whose class the account
+            // has no permission for, by the answer known by then: 460 in
+            // place of 201, and the order once more Inactive under a new
+            // permId (ibx#666; the reference 10.51, paper, 17/10/2026,
+            // market closed: a treasury bill by conId sent with its
+            // permission asked, the answer no permission, then the server's
+            // reject of reason 901 with its own text, a negative yield).
+            if parsed.get(&103).copied() == Some("901") && no_class_permission(context, clord_id) {
+                notice_out = Some((460, crate::engine::hot_loop::order_builder::NO_TRADING_PERMISSIONS.to_string()));
+                perm_again = Some(context.new_server_id());
+            }
         }
         // The limit offset, limit price and stop price the server reports
         // for a TRAIL LIMIT (6370, 44, 6117): the offset is restated on its
@@ -2705,6 +2743,9 @@ impl CcpState {
         }
         if let Some((code, text)) = notice_out.filter(|_| owned) {
             shared.orders.push_order_notice(clord_id, code, text);
+            if let (Some(perm_id), Some(update)) = (perm_again, update_out.filter(|_| delivered)) {
+                shared.orders.push_order_update(crate::types::OrderUpdate { perm_id, ..update });
+            }
         }
 
         if matches!(status,
@@ -4297,7 +4338,13 @@ impl CcpState {
                 Some(crate::control::contracts::OptionRight::Put) => "P".into(),
                 None => String::new(),
             },
-            multiplier: if derivative && def.multiplier > 0.0 { format!("{}", def.multiplier) } else { String::new() },
+            // A definition with no multiplier shows none (the reference
+            // 10.51, paper, 17/10/2026: a treasury bill's openOrder).
+            multiplier: if derivative && def.multiplier > 0.0 && !def.multiplier_text.is_empty() {
+                format!("{}", def.multiplier)
+            } else {
+                String::new()
+            },
             sec_type,
             ..Default::default()
         });
@@ -7343,6 +7390,30 @@ mod tests {
             ("SAP", "WAR", "20261215", 85.0, "C", "0.1", "HE0DGD", "EUR"));
     }
 
+    // ibx#666 (the reference 10.51, paper, 17/10/2026, market closed,
+    // `.tmp/666/t5/case5.py` cases I and L): the openOrder contract of a
+    // structured product given by its conId shows its perpetual date,
+    // strike, right and multiplier; a treasury bill's its maturity and no
+    // multiplier.
+    #[test]
+    fn a_definition_gives_a_product_and_a_bill_their_terms() {
+        let (mut ccp, _context, shared) = u186_test_state();
+        let msg = pipe_msg("35=d|43=N|320=SecDefReqMsgReqByConid2|322=*|323=4|55=DAX|167=IOPT|207=SBF|6008=411098772|15=EUR|58=DAX|6035=24W1Z|6058=DAX|541=NOEXP|200=NOEXP|201=1|202=11088.4204|231=0.01|146=1|6344=1|6008=411098772");
+        let defs = crate::control::contracts::parse_secdef_records(&msg).unwrap();
+        ccp.cache_definition(&defs[0], &shared);
+        let c = shared.reference.get_contract(411098772).unwrap();
+        assert_eq!((c.symbol.as_str(), c.sec_type.as_str(), c.last_trade_date_or_contract_month.as_str(), c.strike, c.right.as_str(),
+            c.multiplier.as_str(), c.local_symbol.as_str(), c.trading_class.as_str()),
+            ("DAX", "IOPT", "NOEXP", 11088.4204, "C", "0.01", "24W1Z", "DAX"));
+        let msg = pipe_msg("35=d|43=N|320=SecDefReqMsgReqByConid5|322=*|323=4|55=US-T|167=BILL|207=BEST|6008=819166829|15=USD|58=TBILL|6035=IBCID819166829|6058=TBILL|146=1|6344=1|6008=819166829|541=20261001|6504=1000|6503=GOVT");
+        let defs = crate::control::contracts::parse_secdef_records(&msg).unwrap();
+        ccp.cache_definition(&defs[0], &shared);
+        let c = shared.reference.get_contract(819166829).unwrap();
+        assert_eq!((c.symbol.as_str(), c.sec_type.as_str(), c.last_trade_date_or_contract_month.as_str(), c.right.as_str(),
+            c.multiplier.as_str(), c.local_symbol.as_str(), c.trading_class.as_str()),
+            ("US-T", "BILL", "20261001", "", "", "IBCID819166829", "TBILL"));
+    }
+
     // ibx#700: what is kept per order goes when the order is gone for good
     // (out of the ring of ended orders), not before: an ended parent's
     // ClOrdID is still read for its children's reports.
@@ -9083,6 +9154,57 @@ mod tests {
             format!("Order Message:
 BUY 1 QQQ,SPY Combo
 {}", text));
+    }
+
+    // ibx#666 (the reference 10.51, paper, 17/10/2026, market closed,
+    // `.tmp/666/t5/case5.py` cases I and L): the order message of a
+    // structured product and of a treasury bill names them by the
+    // reference's own text from their definition; a bill gives the order's
+    // amount in place of its quantity.
+    #[test]
+    fn a_structured_product_and_a_bill_order_message_name_them() {
+        let (_, mut context, shared) = ord_status_test_state();
+        let text = "Warning: your order will not be placed at the exchange until 2026-10-19 08:00:00 MET";
+        context.rth_types.insert((411098772, "SBF".into()), crate::engine::outside_rth::RthTypes {
+            order_text: "DAX Perpetual 11088.4204 Call (CBK,0.01,11088.4204 EUR,No Rebate) (24W1Z) ".into(), ..Default::default() });
+        let report = exec_report_frame(&[(54, "1"), (38, "1"), (55, "DAX"), (167, "IOPT"), (6008, "411098772"), (207, "SBF")]);
+        assert_eq!(order_message_399(&fix::field_view(&report), text, &context, 42, &shared, None),
+            format!("Order Message:\nBUY 1 DAX Perpetual 11088.4204 Call (CBK,0.01,11088.4204 EUR,No Rebate) (24W1Z) \n{text}"));
+        context.rth_types.insert((819166829, "BEST".into()), crate::engine::outside_rth::RthTypes {
+            order_text: "US-T Govt Oct01'26 912797SA6".into(), face_value: Some(1000), ..Default::default() });
+        let report = exec_report_frame(&[(54, "1"), (38, "1"), (55, "US-T"), (167, "BILL"), (6008, "819166829"), (6004, "BEST")]);
+        assert_eq!(order_message_399(&fix::field_view(&report), text, &context, 42, &shared, None),
+            format!("Order Message:\nBUY $1K US-T Govt Oct01'26 912797SA6\n{text}"));
+    }
+
+    // ibx#666 (the reference 10.51, paper, 17/10/2026, market closed,
+    // `.tmp/666/t5/case5.py` case L): a treasury bill order sent with its
+    // class's permission asked; the answer, no permission, came before the
+    // server's reject of reason 901. The reference gave the Inactive
+    // status, 460 in place of 201, then the order Inactive once more under
+    // the next permId. A reject of another reason keeps 201.
+    #[test]
+    fn a_reject_of_reason_901_without_the_permission_gives_460() {
+        for (reason, allowed, code) in [("901", false, 460), ("901", true, 201), ("0", false, 201)] {
+            let (mut ccp, mut context, shared) = ord_status_test_state();
+            context.rth_types.insert((756733, "BEST".into()), crate::engine::outside_rth::RthTypes {
+                permission_key: "12/BILL/USA_DEBT".into(), ..Default::default() });
+            context.trading_permissions.insert("12/BILL/USA_DEBT".into(), allowed);
+            let reject = exec_report_frame(&[(39, "8"), (150, "8"), (103, reason), (58, "Calculated yield to worst is negative")]);
+            ccp.handle_exec_report(&fix::field_view(&reject), &mut context, &shared, &None, "");
+            let reports = shared.orders.drain_order_reports();
+            let shown: Vec<String> = reports.iter().map(|r| match r {
+                crate::bridge::OrderReport::Update(u) => format!("{:?} {}", u.status, u.perm_id),
+                crate::bridge::OrderReport::Notice(_, code, _) => code.to_string(),
+            }).collect();
+            if code == 460 {
+                assert_eq!(shown.len(), 3, "{shown:?}");
+                assert_eq!((shown[0].as_str(), shown[1].as_str()), ("Rejected 42", "460"));
+                assert!(shown[2].starts_with("Rejected ") && shown[2] != "Rejected 42", "a new permId: {shown:?}");
+            } else {
+                assert_eq!(shown, ["Rejected 42", "201"], "{reason} {allowed}");
+            }
+        }
     }
 
     // ibx#465: the captured order message of an OPG order before the open.
