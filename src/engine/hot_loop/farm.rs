@@ -1124,7 +1124,9 @@ impl FarmState {
             // acknowledgement, as for a contract asked by the API (ibx#664;
             // observed 13/10/2026, regular hours, a fresh reference 10.51:
             // the AAPL call's model asks AAPL's map before AAPL is asked).
-            if under && code == 442 {
+            // So is the option's, at its own pair's, for a model an order
+            // started (ibx#693; observed in the recordings of 13-16/10/2026).
+            if code == 442 && (under || self.optmd.is_order_model(instrument)) {
                 let map = self.observe_under_exchange_map(instrument, req_id, parts.get(5).copied(), shared);
                 self.send_after_ack(&[], map, sink, hb);
             }

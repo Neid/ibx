@@ -324,6 +324,10 @@ pub struct Context {
     /// The terms of the options whose definition was read, for the option
     /// model of their market data (ibx#502).
     pub(crate) option_terms: HashMap<i64, crate::control::optcalc::OptionTerms>,
+    /// Option and futures option orders past their permission check, whose
+    /// option's market data the engine starts for itself (ibx#693):
+    /// (instrument, conId, the order's exchange).
+    pub(crate) order_models: Vec<(crate::types::InstrumentId, i64, String)>,
     /// API security type and symbol by conId, once its definition was
     /// read: a market data request that gives the conId alone takes them
     /// from it (ibx#643).
@@ -480,6 +484,7 @@ impl Context {
             agg_groups: HashMap::new(),
             listing_exchanges: HashMap::new(),
             option_terms: HashMap::new(),
+            order_models: Vec::new(),
             def_kinds: HashMap::new(),
             stock_types: HashMap::new(),
             foreign_stocks: std::collections::HashSet::new(),

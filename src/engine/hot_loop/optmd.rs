@@ -35,6 +35,16 @@
 //! The underlying price of ticks 10 to 12 is the middle of the underlying's
 //! bid and ask (its last without them): the reference's own differs from
 //! it by up to half a cent at times (see the issue tracker).
+//!
+//! An order on an option or a futures option starts a model too (ibx#693),
+//! the engine's own: the option's top of book is one of its entries, with
+//! no API mark, and its computations go to no one. Observed in the
+//! recordings of 13-16/10/2026 (the reference 10.51, paper, 5 option
+//! orders and 1 futures option order, the first of their contract in the
+//! session): the underlying's pair and model parameters, then the option's
+//! pair and greeks, queued for the option's farm while it connects; then
+//! the statuses and volatilities as a request's model. It was kept to the
+//! end of each recording (13 to 40 s), with no cancel.
 
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
@@ -140,6 +150,9 @@ pub(crate) struct OptionModel {
     own_pending: bool,
     /// The price tick of the underlying's kept quote.
     kept_tick: f64,
+    /// Started by an order on that exchange (ibx#693): the engine's own
+    /// model, whose computations go to no one.
+    pub(crate) order: Option<String>,
 }
 
 /// What a stopped model leaves for the next request of its option
@@ -183,6 +196,9 @@ pub(crate) struct Starting {
     pub(crate) snapshot: bool,
     pub(crate) opt_farm: FarmId,
     pub(crate) deadline: Instant,
+    /// Started by an order on that exchange (ibx#693): its option's route
+    /// is found once its definition is known.
+    pub(crate) order: Option<String>,
 }
 
 /// The option models of the market data requests.
@@ -253,8 +269,9 @@ fn head(action: &str, n: usize) -> Vec<(u32, String)> {
 
 /// A message of entries, as the reference writes the model's: no API
 /// source; the frozen mode on the frozen pair; the API mark only on the
-/// option's pairs; the entry mark on every pair (ibx#648).
-fn message(action: &str, entries: &[&ModelEntry], marks: u8) -> Vec<(u32, String)> {
+/// option's pairs of a request's model (`api`); the entry mark on every
+/// pair (ibx#648).
+fn message(action: &str, entries: &[&ModelEntry], marks: u8, api: bool) -> Vec<(u32, String)> {
     let mut msg = head(action, entries.len());
     for e in entries {
         let code = e.code.abs();
@@ -268,7 +285,7 @@ fn message(action: &str, entries: &[&ModelEntry], marks: u8) -> Vec<(u32, String
         if e.code < 0 {
             msg.push((9887, crate::types::MarketDataModes::entry_mode(true, false).to_string()));
         }
-        if !e.under && matches!(code, 442 | 443) {
+        if api && !e.under && matches!(code, 442 | 443) {
             msg.push((9830, "1".into()));
         }
         if matches!(code, 442 | 443) {
@@ -289,13 +306,43 @@ impl OptMd {
         self.models.iter().any(|m| m.instrument == instrument) || self.starting.iter().any(|s| s.instrument == instrument)
     }
 
+    /// A model of the contract runs or waits for its definitions.
+    pub(crate) fn has_contract(&self, con_id: i64) -> bool {
+        self.models.iter().any(|m| m.terms.con_id == con_id) || self.starting.iter().any(|s| s.con_id == con_id)
+    }
+
+    /// The model of `instrument` is one an order started (ibx#693).
+    pub(crate) fn is_order_model(&self, instrument: InstrumentId) -> bool {
+        self.models.iter().any(|m| m.instrument == instrument && m.order.is_some())
+            || self.starting.iter().any(|s| s.instrument == instrument && s.order.is_some())
+    }
+
+    /// A model has entries on `farm`: the farm stays up for them.
+    pub(crate) fn uses_farm(&self, farm: FarmId) -> bool {
+        self.models.iter().any(|m| m.opt_farm == farm || m.under_farm == farm)
+    }
+
     /// Start the model of `instrument` (its top of book went out on
     /// `opt_farm`): its entries, and their messages in the order they go
     /// out.
+    #[cfg(test)]
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn launch(
         &mut self, instrument: InstrumentId, con_id: i64, snapshot: bool, terms: OptionTerms, opt_farm: FarmId,
         under_farm: FarmId, under_exchange: &str, next_id: &mut u32,
+    ) -> Vec<(FarmId, Vec<(u32, String)>)> {
+        self.launch_with(instrument, con_id, snapshot, terms, opt_farm, under_farm, under_exchange, None, next_id)
+    }
+
+    /// [`launch`](Self::launch), for a request (`order` None) or for an
+    /// order on that exchange (ibx#693): the option's own pair on the
+    /// order's exchange is one of its entries, asked after the
+    /// underlying's parameters (the reference 10.51, observed in the
+    /// recordings of 13-16/10/2026), or first when they are known (13/10).
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn launch_with(
+        &mut self, instrument: InstrumentId, con_id: i64, snapshot: bool, terms: OptionTerms, opt_farm: FarmId,
+        under_farm: FarmId, under_exchange: &str, order: Option<String>, next_id: &mut u32,
     ) -> Vec<(FarmId, Vec<(u32, String)>)> {
         let opt_sec = super::farm::fix_sec_type(&terms.sec_type).to_string();
         let under_type = if terms.under_sec_type.is_empty() { "STK" } else { terms.under_sec_type.as_str() };
@@ -309,7 +356,11 @@ impl OptMd {
                 code, under, tag: None, min_tick: 0.0, size_tick: None,
             });
         };
-        if snapshot {
+        if let Some(exchange) = &order {
+            let exchange = super::farm::routing_exchange(exchange, &terms.sec_type);
+            add(&mut entries, 442, false, exchange);
+            add(&mut entries, 443, false, exchange);
+        } else if snapshot {
             add(&mut entries, 442, false, "BEST");
             add(&mut entries, 443, false, "BEST");
         }
@@ -331,6 +382,7 @@ impl OptMd {
             under_bid: None, under_ask: None, under_last: None, under_wire: [None; 4], under_auto: None, under_trade: None,
             state: market::ModelState::default(), next_pass: None, passes: 0, sent: [None; 4], frozen: false,
             frozen_asked: false, again: false, seeded: false, kept_wait: false, own_wait: false, own_pending: false, kept_tick: 0.0,
+            order,
         };
         // An option whose model ran earlier in the session: the new model
         // starts from the values kept, and computes with them a moment
@@ -350,7 +402,8 @@ impl OptMd {
             log::info!("Option model of instrument {}: starts from the values kept", instrument);
         }
         let mut groups: Vec<Vec<(i32, bool)>> = Vec::new();
-        if snapshot {
+        let by_order = model.order.is_some();
+        if snapshot || (by_order && known.is_some()) {
             groups.push(vec![(442, false), (443, false)]);
         }
         groups.push(vec![(442, true), (443, true)]);
@@ -366,11 +419,15 @@ impl OptMd {
             groups.push(vec![(market::MODEL_PARAMS, true), (super::farm::MARKET_DATA_STATUS, true)]);
         } else {
             groups.push(vec![(market::MODEL_PARAMS, true)]);
+            if by_order {
+                groups.push(vec![(442, false), (443, false)]);
+            }
             groups.push(vec![(market::GREEKS, false), (market::GREEKS_CLOSE, false)]);
         }
         let out = Self::send_groups(&mut model, &groups, next_id, self.entry_marks.load(std::sync::atomic::Ordering::Relaxed));
         log::info!("Option model of instrument {} (con_id {}): started on farms {} and {}{}",
-            instrument, con_id, opt_farm, under_farm, if snapshot { ", for a snapshot" } else { "" });
+            instrument, con_id, opt_farm, under_farm,
+            if by_order { ", for an order" } else if snapshot { ", for a snapshot" } else { "" });
         self.models.push(model);
         out
     }
@@ -393,7 +450,7 @@ impl OptMd {
             }
             let farm = model.entries[idx[0]].farm;
             let es: Vec<&ModelEntry> = idx.iter().map(|&i| &model.entries[i]).collect();
-            out.push((farm, message("1", &es, marks)));
+            out.push((farm, message("1", &es, marks, model.order.is_none())));
         }
         out
     }
@@ -406,7 +463,7 @@ impl OptMd {
                 .filter_map(|&(code, under)| model.entry(code, under).filter(|e| e.farm_req != 0))
                 .collect();
             if let Some(first) = es.first() {
-                out.push((first.farm, message("2", &es, marks)));
+                out.push((first.farm, message("2", &es, marks, model.order.is_none())));
             }
         }
         out
@@ -463,6 +520,17 @@ impl OptMd {
         let foreign = m.entry(AFTER_FROZEN, false).is_some_and(|e| e.con_id != own);
         let after: Vec<(i32, bool)> = if foreign { Vec::new() } else { vec![(AFTER_FROZEN, false)] };
         let last_alone = if foreign { vec![(AFTER_FROZEN, false)] } else { Vec::new() };
+        if m.order.is_some() {
+            // An order's model: no cancel of it was observed (it was kept
+            // to the end of the recordings); all of its entries, in one
+            // pass, the option's pair first.
+            let mut opt = vols_desc;
+            opt.extend([(market::GREEKS_CLOSE, false), (market::GREEKS, false), (status, false)]);
+            opt.extend(&after);
+            let all = Self::cancel_groups(&m, &[vec![(442, false), (443, false)], frozen, vec![(status, true)],
+                vec![(442, true), (443, true)], opt, vec![(market::MODEL_PARAMS, true)], last_alone], marks);
+            return (Vec::new(), all, Vec::new());
+        }
         if m.snapshot {
             let mut greeks = vec![(market::GREEKS_CLOSE, false), (market::GREEKS, false)];
             greeks.extend(&after);
@@ -496,12 +564,12 @@ impl OptMd {
             let m = self.models.remove(i);
             let live: Vec<&ModelEntry> = m.entries.iter().filter(|e| e.farm != farm && e.farm_req != 0).collect();
             if let Some(first) = live.first() {
-                out.push((first.farm, message("2", &live, self.entry_marks.load(std::sync::atomic::Ordering::Relaxed))));
+                out.push((first.farm, message("2", &live, self.entry_marks.load(std::sync::atomic::Ordering::Relaxed), m.order.is_none())));
             }
             log::info!("Option model of instrument {}: farm {} lost, stopped until it is back", m.instrument, farm);
             self.starting.push(Starting {
                 instrument: m.instrument, con_id: m.terms.con_id, snapshot: m.snapshot, opt_farm: m.opt_farm,
-                deadline: Instant::now() + RESTART_WAIT,
+                deadline: Instant::now() + RESTART_WAIT, order: m.order,
             });
         }
         out
@@ -550,7 +618,7 @@ impl OptMd {
         // A trade on the frozen pair: the frozen view of the option repeats
         // its last trade (ibx#647).
         if t.tick_type == td::O_LAST_SIZE {
-            for m in self.models.iter_mut().filter(|m| m.frozen_asked) {
+            for m in self.models.iter_mut().filter(|m| m.frozen_asked && m.order.is_none()) {
                 if m.entries.iter().any(|e| e.code == FROZEN_BID && e.farm == farm && e.tag == Some(t.server_tag)) {
                     m.again = true;
                 }
@@ -718,6 +786,10 @@ impl OptMd {
     ) {
         let origin = *self.clock_origin.get_or_insert_with(even_second_origin);
         for m in &mut self.models {
+            // An order's model computes for no one (ibx#693).
+            if m.order.is_some() {
+                continue;
+            }
             // The side prices from the frozen slot when the contract's
             // requests are on it (ibx#494; the reference 10.51, paper, after
             // hours 14/10/2026: ticks 11 and 12 of a snapshot in frozen mode

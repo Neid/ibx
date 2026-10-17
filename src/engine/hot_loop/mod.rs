@@ -826,8 +826,13 @@ impl HotLoop {
             let lot = self.context.market.size_lot(self.context.round_lots.get(&con_id).copied().unwrap_or(1));
             self.context.market.keep_quote(crate::engine::market_state::KeptQuote::from_wire(con_id, wire, min_tick, size_tick, lot, auto));
         }
-        // The option model's cancels around the top of book's (ibx#502).
-        let (model_first, model_pre, model_post) = self.farm.optmd.stop(instrument);
+        // The option model's cancels around the top of book's (ibx#502);
+        // a model an order started stays (ibx#693).
+        let (model_first, model_pre, model_post) = if self.farm.optmd.is_order_model(instrument) {
+            (Vec::new(), Vec::new(), Vec::new())
+        } else {
+            self.farm.optmd.stop(instrument)
+        };
         // The frozen slot its frozen pair fed goes with it (ibx#494).
         if let Some(pos) = self.farm.model_twins.iter().position(|t| t.0 == instrument) {
             let (_, twin, _) = self.farm.model_twins.remove(pos);
@@ -888,17 +893,42 @@ impl HotLoop {
     /// out on `opt_farm` (ibx#502): real-time data only; once the option's
     /// terms and its underlying's route are known.
     fn start_option_model(&mut self, sub: &farm::MdSubscribe, opt_farm: pool::FarmId) {
-        if sub.mode_9887 != 0 || sub.con_id <= 0 || !crate::control::optcalc::market::has_model(&sub.sec_type)
-            || self.farm.optmd.has(sub.instrument)
-        {
+        if sub.mode_9887 != 0 || sub.con_id <= 0 || !crate::control::optcalc::market::has_model(&sub.sec_type) {
+            return;
+        }
+        // The model an order started gives way to the request's, which
+        // starts from its values (ibx#693, ibx#646). Not observed on the
+        // reference: its order's model was never followed by a request.
+        if self.farm.optmd.is_order_model(sub.instrument) {
+            let (first, pre, post) = self.farm.optmd.stop(sub.instrument);
+            for msgs in [first, pre, post] {
+                self.send_md_messages(msgs);
+            }
+        }
+        if self.farm.optmd.has(sub.instrument) {
             return;
         }
         let now = Instant::now();
         self.farm.optmd.starting.push(optmd::Starting {
             instrument: sub.instrument, con_id: sub.con_id, snapshot: sub.snapshot, opt_farm,
-            deadline: now + optmd::OptMd::start_wait(),
+            deadline: now + optmd::OptMd::start_wait(), order: None,
         });
         self.service_option_starts(now);
+    }
+
+    /// The option models the orders started (ibx#693): one per contract,
+    /// kept for the session; none for a contract whose model runs.
+    fn start_order_models(&mut self, now: Instant) {
+        for (instrument, con_id, exchange) in std::mem::take(&mut self.context.order_models) {
+            if self.farm.optmd.has_contract(con_id) || self.farm.optmd.has(instrument) {
+                continue;
+            }
+            log::info!("Option model of con_id {}: started by an order on {}", con_id, exchange);
+            self.farm.optmd.starting.push(optmd::Starting {
+                instrument, con_id, snapshot: false, opt_farm: PRIMARY_MD,
+                deadline: now + optmd::OptMd::start_wait(), order: Some(exchange),
+            });
+        }
     }
 
     /// Whether a farm can take a message now: the primary market data
@@ -914,7 +944,7 @@ impl HotLoop {
         self.farm.optmd.sweep_starting(now);
         for s in std::mem::take(&mut self.farm.optmd.starting) {
             // The request ended meanwhile.
-            if !self.farm.has_md_subscription(s.instrument) {
+            if s.order.is_none() && !self.farm.has_md_subscription(s.instrument) {
                 continue;
             }
             let Some(terms) = self.context.option_terms.get(&s.con_id).cloned() else {
@@ -927,8 +957,38 @@ impl HotLoop {
                 continue;
             }
             let under_type = if terms.under_sec_type.is_empty() { "STK".to_string() } else { terms.under_sec_type.clone() };
+            // An order's model: the option's route on the order's exchange,
+            // once the definition its route needs is known (ibx#693).
+            let opt_farm = match &s.order {
+                None => s.opt_farm,
+                Some(exchange) => {
+                    let opt_sub = farm::MdSubscribe {
+                        con_id: s.con_id, symbol: String::new(), exchange: exchange.clone(), sec_type: terms.sec_type.clone(),
+                        last_trade_date: String::new(), strike: 0.0, right: String::new(), multiplier: String::new(),
+                        instrument: s.instrument, mode_9887: 0, snapshot: false,
+                    };
+                    if self.needs_agg_group(&opt_sub) {
+                        self.ask_definition(s.con_id, "SMART");
+                        self.farm.optmd.starting.push(s);
+                        continue;
+                    }
+                    let Some(id) = self.md_route(&opt_sub) else {
+                        log::warn!("Option model of con_id {}: no route for it", s.con_id);
+                        continue;
+                    };
+                    id
+                }
+            };
+            // A futures option ordered on its exchange: its future there
+            // too (the reference 10.51, paper, 15/10/2026: an ES option
+            // ordered on CME, the future's entries on CME).
+            let under_exchange = match s.order.as_deref().map(|x| farm::routing_exchange(x, &terms.sec_type)) {
+                Some(x) if x != "BEST" && under_type == "FUT" => x.to_string(),
+                _ => farm::routing_exchange("SMART", &under_type).to_string(),
+            };
             let under_sub = farm::MdSubscribe {
-                con_id: terms.under_con_id, symbol: String::new(), exchange: "SMART".into(), sec_type: under_type.clone(),
+                con_id: terms.under_con_id, symbol: String::new(),
+                exchange: if under_exchange == "BEST" { "SMART".into() } else { under_exchange.clone() }, sec_type: under_type.clone(),
                 last_trade_date: String::new(), strike: 0.0, right: String::new(), multiplier: String::new(),
                 instrument: s.instrument, mode_9887: 0, snapshot: false,
             };
@@ -941,14 +1001,13 @@ impl HotLoop {
                 log::warn!("Option model of con_id {}: no route for its underlying {}", s.con_id, terms.under_con_id);
                 continue;
             };
-            if !self.md_farm_up(s.opt_farm) || !self.md_farm_up(under_farm) {
+            if !self.md_farm_up(opt_farm) || !self.md_farm_up(under_farm) {
                 self.farm.optmd.starting.push(s);
                 continue;
             }
-            let under_exchange = farm::routing_exchange("SMART", &under_type).to_string();
             let f = &mut self.farm;
-            let msgs = f.optmd.launch(s.instrument, s.con_id, s.snapshot, terms.clone(), s.opt_farm, under_farm,
-                &under_exchange, &mut f.next_md_req_id);
+            let msgs = f.optmd.launch_with(s.instrument, s.con_id, s.snapshot, terms.clone(), opt_farm, under_farm,
+                &under_exchange, s.order, &mut f.next_md_req_id);
             self.send_md_messages(msgs);
             self.ccp.optcalc.want_inputs(&terms, &mut self.ccp_conn, &mut self.hb);
         }
@@ -957,6 +1016,9 @@ impl HotLoop {
     /// The option models (ibx#502): the starts waiting, the messages made
     /// while reading the farms, the passes that are due.
     fn service_option_models(&mut self, now: Instant) {
+        if !self.context.order_models.is_empty() {
+            self.start_order_models(now);
+        }
         if !self.farm.optmd.starting.is_empty() {
             self.service_option_starts(now);
         }
@@ -1566,6 +1628,10 @@ impl HotLoop {
         }
         // Fed by an option model's frozen pair (ibx#494).
         if self.farm.model_twins.iter().any(|t| t.1 == instrument) {
+            return;
+        }
+        // The contract of an option model an order started (ibx#693).
+        if self.farm.optmd.has(instrument) {
             return;
         }
         if self.farm.has_md_subscription(instrument)
@@ -2920,7 +2986,9 @@ impl HotLoop {
         }
         let others_up = usize::from(!self.farm.disconnected && self.farm_conn.is_some());
         let farm = &self.farm;
-        for id in self.pool.md_activity_check(now, others_up, |id| farm.uses_farm(id) || farm.depth_uses_farm(id)) {
+        // An option model's entries keep their farm up, as an order's
+        // model has no request of its own (ibx#693).
+        for id in self.pool.md_activity_check(now, others_up, |id| farm.uses_farm(id) || farm.depth_uses_farm(id) || farm.optmd.uses_farm(id)) {
             let event = self.pool.close_idle(id);
             self.pool_notice(&event);
         }

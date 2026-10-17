@@ -621,3 +621,158 @@ fn the_entry_after_the_frozen_pair_stays_on_the_first_option() {
     assert!(last_after.ends_with(&format!("|263=2|146=1|262={}|6008={OPTION}|207=BEST|167=OPT|264=317", engine.farm.next_md_req_id - 1)),
         "{last_after}");
 }
+
+/// An engine on the primary farm with the AAPL call's terms, its slot
+/// registered; the farm's side.
+fn order_engine() -> (HotLoop, Arc<SharedState>, crate::protocol::connection::MemTransport, InstrumentId) {
+    let shared = Arc::new(SharedState::new());
+    shared.reference.set_api_features(crate::control::logon::ApiFeatures::parse("ODDLOTBIDASK,PRCEXTRAPREC"));
+    let mut engine = HotLoop::new(shared.clone(), None, None);
+    engine.set_farm_name("usfarm".into());
+    let (client, farm_side) = crate::protocol::connection::mem_pair();
+    engine.farm_conn = Some(crate::protocol::connection::Connection::new_mem(client));
+    engine.context.option_terms.insert(OPTION, terms());
+    let id = engine.context.market.register(OPTION);
+    engine.context.market.set_routing(id, "OPT", "SMART");
+    (engine, shared, farm_side, id)
+}
+
+// ibx#693 (the reference 10.51, paper, 16/10/2026 regular hours, a fresh
+// session, `.tmp/673/wire_gw_vol.jsonl`): an order on an AAPL call starts
+// the option's market data for the engine: the underlying's pair and model
+// parameters, then the option's own pair with no API mark and its greeks;
+// once the parameters came, the statuses and the volatilities. Its
+// computations go to no one. A second order of the call starts nothing; a
+// client's request of the call then takes its place.
+#[test]
+fn an_option_order_starts_the_option_model_for_the_engine() {
+    let (mut engine, shared, mut farm_side, id) = order_engine();
+    engine.context.order_models.push((id, OPTION, "SMART".into()));
+    engine.service_option_models(Instant::now());
+    let msgs = sent(&mut farm_side);
+    assert_eq!(msgs.len(), 4, "{msgs:#?}");
+    assert!(msgs[0].ends_with("|263=1|146=2|262=1|6008=265598|207=BEST|167=CS|264=442|9839=1|262=2|6008=265598|207=BEST|167=CS|264=443|9839=2"), "{}", msgs[0]);
+    assert!(msgs[1].ends_with("|263=1|146=1|262=3|6008=265598|207=IBVOL|167=CS|264=687"), "{}", msgs[1]);
+    assert!(msgs[2].ends_with("|263=1|146=2|262=4|6008=692808239|207=BEST|167=OPT|264=442|9839=1|262=5|6008=692808239|207=BEST|167=OPT|264=443|9839=2"), "{}", msgs[2]);
+    assert!(msgs[3].ends_with("|263=1|146=2|262=6|6008=692808239|207=IBVOL|167=OPT|264=732|262=7|6008=692808239|207=IBVOL|167=OPT|264=733"), "{}", msgs[3]);
+    assert!(engine.farm.optmd.is_order_model(id));
+
+    for (tag, req) in [(179, 1), (179, 2), (7178, 3), (494084, 4), (494084, 5), (494098, 6), (494099, 7)] {
+        ack(&mut engine, tag, req);
+    }
+    let f = frames();
+    generic(&mut engine, &f["params"]);
+    engine.service_option_models(Instant::now());
+    let msgs = sent(&mut farm_side);
+    assert_eq!(msgs.len(), 2, "{msgs:#?}");
+    assert!(msgs[0].ends_with("|263=1|146=1|262=8|6008=265598|207=BEST|167=CS|264=398"), "{}", msgs[0]);
+    let codes: Vec<&str> = msgs[1].split('|').filter_map(|f| f.strip_prefix("264=")).collect();
+    assert_eq!(codes, ["398", "734", "735", "736", "737"]);
+    for (tag, req) in [(187, 8), (494136, 9), (30586, 10), (494137, 11), (494138, 12), (494139, 13)] {
+        ack(&mut engine, tag, req);
+    }
+    generic(&mut engine, &f["greeks"]);
+    generic(&mut engine, &f["vols"]);
+    ticks(&mut engine, &[(179, &[(0, 33956), (1, 33961)]), (494084, &[(0, 1495), (1, 1520), (2, 1500)])]);
+    // The option's own pair feeds the quote of its slot.
+    assert_eq!(engine.context.quote(id).bid, 1495 * crate::types::PRICE_SCALE / 100);
+    let now = Instant::now();
+    engine.farm.optmd.force_pass_for_test(id, now);
+    engine.service_option_models(now);
+    engine.service_option_models(now + Duration::from_secs(3));
+    assert!(shared.market.take_generic_ticks(u64::MAX).is_empty(), "no computations for a client");
+    assert!(sent(&mut farm_side).is_empty(), "kept, no cancel");
+
+    // A second order of the call: nothing more.
+    engine.context.order_models.push((id, OPTION, "SMART".into()));
+    engine.service_option_models(Instant::now());
+    assert!(sent(&mut farm_side).is_empty());
+    assert_eq!(engine.farm.optmd.models.len(), 1);
+
+    // A client's request of the call: the order's model gives way to the
+    // request's.
+    let sub = farm::MdSubscribe {
+        con_id: OPTION, symbol: "AAPL".into(), exchange: "SMART".into(), sec_type: "OPT".into(),
+        last_trade_date: "20261218".into(), strike: 340.0, right: "C".into(), multiplier: "100".into(),
+        instrument: id, mode_9887: 0, snapshot: false,
+    };
+    engine.route_md_subscribe(&sub);
+    let msgs = sent(&mut farm_side);
+    assert!(msgs.iter().any(|m| m.contains("|263=2|146=2|262=4|6008=692808239|207=BEST|167=OPT|264=442|9839=1|262=5|")), "{msgs:#?}");
+    assert!(msgs.iter().any(|m| m.contains("|263=1|") && m.contains("|167=OPT|264=442|6088=Socket|9830=1|")), "{msgs:#?}");
+    assert_eq!(engine.farm.optmd.models.len(), 1);
+    assert!(!engine.farm.optmd.is_order_model(id));
+}
+
+// ibx#693: an order's model whose option's definition is not known asks
+// it, and starts once it came.
+#[test]
+fn an_order_model_waits_for_the_option_definition() {
+    let (mut engine, _shared, mut farm_side, id) = order_engine();
+    engine.context.option_terms.clear();
+    let (ccp, mut ccp_side) = crate::protocol::connection::mem_pair();
+    engine.ccp_conn = Some(crate::protocol::connection::Connection::new_mem(ccp));
+    engine.context.order_models.push((id, OPTION, "SMART".into()));
+    engine.service_option_models(Instant::now());
+    assert!(sent(&mut farm_side).is_empty());
+    use std::io::Read;
+    ccp_side.set_read_timeout(Some(Duration::from_millis(300))).unwrap();
+    let mut buf = [0u8; 4096];
+    let n = ccp_side.read(&mut buf).unwrap();
+    let asked = String::from_utf8_lossy(&buf[..n]).replace('\x01', "|");
+    assert!(asked.contains("|35=c|") && asked.contains(&format!("|6008={OPTION}|")), "{asked}");
+    engine.service_option_models(Instant::now());
+    assert!(sent(&mut farm_side).is_empty(), "still waiting");
+    engine.context.option_terms.insert(OPTION, terms());
+    engine.service_option_models(Instant::now());
+    assert_eq!(sent(&mut farm_side).len(), 4);
+}
+
+// ibx#693 (the reference 10.51, paper, 16/10/2026 regular hours: 2119
+// "connecting:usopt" 1.09 s after the order, 2104 at 1.59 s): the order's
+// model connects the option farm; the engine started that connection, so
+// no notice at its start; the check 0.5 s after its first queued
+// subscription gives it (ibx#684); the logon gives the farm's OK and the
+// queued entries go out.
+#[test]
+fn an_option_order_connects_the_option_farm_with_its_notices() {
+    use std::sync::atomic::AtomicBool;
+    let (mut engine, _shared, mut farm_side, id) = order_engine();
+    engine.set_routing_table(crate::engine::routing::TableKind::MarketData,
+        "BEST,STK,Top,1,*,cdc1.example,4000,usfarm;BEST,OPT,Top,1,*,cdc1.example,4000,usopt");
+    engine.context.agg_groups.insert(AAPL, 1);
+    engine.context.agg_groups.insert(OPTION, 1);
+    let t0 = Instant::now();
+    engine.context.order_models.push((id, OPTION, "SMART".into()));
+    engine.service_option_models(t0);
+    let msgs = sent(&mut farm_side);
+    assert_eq!(msgs.len(), 2, "the underlying's entries on the primary farm: {msgs:#?}");
+    let usopt = engine.pool.find("usopt").expect("the option farm opened on demand");
+    assert_eq!(engine.pool.get(usopt).unwrap().queued(), 2, "the option's pair and greeks wait for the logon");
+    assert_eq!(engine.pool.due_connects(Instant::now()), [usopt]);
+
+    let (tx, rx) = crossbeam_channel::bounded(1);
+    engine.pool.set_connecting(usopt, rx, Arc::new(AtomicBool::new(true)));
+    let connecting = |engine: &mut HotLoop, at: Instant| engine.pool.poll_connects(at).1.iter()
+        .filter(|e| matches!(e, pool::FarmEvent::Connecting(_))).count();
+    assert_eq!(connecting(&mut engine, t0), 0, "none at the start of a connection the engine began");
+    assert_eq!(connecting(&mut engine, t0 + Duration::from_millis(600)), 1, "the check");
+    assert_eq!(connecting(&mut engine, t0 + Duration::from_millis(1200)), 0, "nothing new queued");
+    assert_eq!(pool::farm_notice(pool::FarmKind::MarketData, &pool::FarmEvent::Connecting(usopt), "usopt"),
+        (2119, "Market data farm is connecting:usopt".to_string()));
+
+    let (client, mut opt_side) = crate::protocol::connection::mem_pair();
+    tx.send(Ok(crate::protocol::connection::Connection::new_mem(client))).unwrap();
+    let (done, _) = engine.pool.poll_connects(t0 + Duration::from_millis(1300));
+    assert_eq!(done.len(), 1);
+    let (farm, conn) = done.into_iter().next().unwrap();
+    let event = engine.pool.on_connected(farm, conn.unwrap(), Instant::now());
+    assert_eq!(pool::farm_notice(pool::FarmKind::MarketData, &event, "usopt"),
+        (2104, "Market data farm connection is OK:usopt".to_string()));
+    let flushed = sent(&mut opt_side);
+    assert_eq!(flushed.len(), 2, "{flushed:#?}");
+    assert!(flushed[0].contains("|167=OPT|264=442|9839=1|") && !flushed[0].contains("9830"), "{}", flushed[0]);
+    assert!(flushed[1].contains("|167=OPT|264=732|"), "{}", flushed[1]);
+    // The model's entries keep the farm up.
+    assert!(engine.farm.optmd.uses_farm(usopt));
+}

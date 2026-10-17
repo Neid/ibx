@@ -3292,6 +3292,12 @@ fn permission_refusal(
         Definition::Waiting => return Some(false),
         Definition::Known(types, _) => types.permission_key.clone(),
     };
+    // Past this check, refused or not, an option or futures option order
+    // starts the market data of its option, for the engine itself
+    // (ibx#693).
+    if key.is_empty() || context.trading_permissions.contains_key(&key) {
+        note_order_model(context, instrument, &sec_type);
+    }
     if key.is_empty() {
         return if sec_type == "BOND" { bond_unwritten(shared) } else { None };
     }
@@ -3334,6 +3340,22 @@ fn permission_refusal(
             waits.then_some(false)
         }
     }
+}
+
+/// An option or futures option order past its permission check: the
+/// engine starts the option's market data and its model, as the reference
+/// does whether the order is then refused or sent (ibx#693; observed in
+/// the recordings of 13-16/10/2026, paper: 5 option orders and 1 futures
+/// option order, each the first of its contract in the session, all
+/// refused for the permission; none for stocks, warrants and funds, nor for
+/// an option order refused before this check). Kept for the session; the
+/// engine drops a second start of a contract already started.
+fn note_order_model(context: &mut Context, instrument: crate::types::InstrumentId, sec_type: &str) {
+    if !matches!(sec_type, "OPT" | "FOP") { return; }
+    let Some(con_id) = context.market.con_id(instrument).filter(|c| *c > 0) else { return };
+    if context.order_models.iter().any(|(_, c, _)| *c == con_id) { return; }
+    let exchange = context.market.exchange(instrument).to_string();
+    context.order_models.push((instrument, con_id, exchange));
 }
 
 /// An order on a type the definition named (a contract given by its
@@ -7822,6 +7844,69 @@ mod tests {
         let terms: Vec<String> = sent.iter().filter(|(t, _)| matches!(t, 55 | 200 | 201 | 202 | 167 | 48 | 22 | 231 | 100 | 15))
             .map(|(t, v)| format!("{t}={v}")).collect();
         assert_eq!(terms.join("|"), "55=ES|200=202612|201=0|202=5000|167=FOP|48=ESZ6 P5000|22=101|231=50.00|100=CME|15=USD");
+    }
+
+    // ibx#693 (the reference 10.51, paper, observed in the recordings of
+    // 13-16/10/2026): an option or futures option order past its
+    // permission check, refused or sent, starts the market data of its
+    // option for the engine, once per contract; not while the answer is on
+    // its way, and not for a warrant or a stock order.
+    #[test]
+    fn an_option_order_starts_the_market_data_of_its_option() {
+        let option = |id| OrderRequest::SubmitLimit { order_id: id, instrument: 0, side: Side::Buy, qty: 1, price: px(0.05) };
+        for allowed in ["0", "1"] {
+            let (client, mut server) = crate::protocol::connection::mem_pair();
+            let mut conn = Some(Connection::new_mem(client));
+            let shared = Arc::new(SharedState::new());
+            let mut context = Context::new();
+            context.market.register(692808239);
+            context.set_symbol(0, "AAPL".to_string());
+            context.market.set_routing(0, "OPT", "SMART");
+            context.pending_orders.push(option(90));
+            let frames = drain_frames(&mut context, &shared, &mut conn, &mut server);
+            let id = tag(&frames[0], 320).unwrap().to_string();
+            let fields = vec![(35, "d"), (320, id.as_str()), (6008, "692808239"), (55, "AAPL"), (167, "OPT"),
+                (15, "USD"), (207, "BEST"), (6411, "2/OPT/R"), (6431, "DAY/3,LMT/3,MKT/1")];
+            assert!(rth_definition_reply(&mut context, &id, &fix::fix_build(&fields, 1)));
+            let _ = drain_frames(&mut context, &shared, &mut conn, &mut server);
+            assert!(context.order_models.is_empty(), "the permission's answer is on its way");
+            permission_reply(&mut context, &fix::field_view(&permission_answer("2/OPT/R", allowed)));
+            let _ = drain_frames(&mut context, &shared, &mut conn, &mut server);
+            assert_eq!(context.order_models, [(0, 692808239, "SMART".to_string())], "permission {allowed}");
+            context.pending_orders.push(option(91));
+            let _ = drain_frames(&mut context, &shared, &mut conn, &mut server);
+            assert_eq!(context.order_models.len(), 1, "once per contract");
+        }
+
+        let fop = OrderRequest::SubmitLimit { order_id: 92, instrument: 0, side: Side::Buy, qty: 1, price: px(0.25) };
+        let (_, shared, mut context, mut conn, mut server) = order_by_con_id("515974959", "CME", fop, &ES_PUT);
+        assert!(context.order_models.is_empty());
+        permission_reply(&mut context, &fix::field_view(&permission_answer("CME/FOP/GLOBEX", "0")));
+        let _ = drain_frames(&mut context, &shared, &mut conn, &mut server);
+        assert_eq!(context.order_models, [(0, 515974959, "CME".to_string())]);
+
+        let warrant = OrderRequest::SubmitLimit { order_id: 93, instrument: 0, side: Side::Buy, qty: 1, price: px(0.01) };
+        let (frames, _, context, ..) = order_by_con_id("566386640", "FWB", warrant, &SAP_WARRANT);
+        assert!(frames.iter().any(|f| tag(f, 35) == Some("D")), "sent: {frames:?}");
+        assert!(context.order_models.is_empty(), "no model for a warrant order");
+
+        let (client, mut server) = crate::protocol::connection::mem_pair();
+        let mut conn = Some(Connection::new_mem(client));
+        let shared = Arc::new(SharedState::new());
+        let mut context = Context::new();
+        context.market.register(265598);
+        context.order_records_any.insert(265598);
+        context.set_symbol(0, "AAPL".to_string());
+        context.market.set_routing(0, "STK", "SMART");
+        context.pending_orders.push(OrderRequest::SubmitLimit { order_id: 94, instrument: 0, side: Side::Buy, qty: 1, price: px(100.0) });
+        let frames = drain_frames(&mut context, &shared, &mut conn, &mut server);
+        if let Some(id) = frames.first().and_then(|f| tag(f, 320)).map(str::to_string) {
+            let fields = vec![(35, "d"), (320, id.as_str()), (6008, "265598"), (55, "AAPL"), (167, "STK"),
+                (15, "USD"), (207, "BEST"), (6523, "USSTK"), (6431, "DAY/3,LMT/3,MKT/1,RTH/1")];
+            assert!(rth_definition_reply(&mut context, &id, &fix::fix_build(&fields, 1)));
+            let _ = drain_frames(&mut context, &shared, &mut conn, &mut server);
+        }
+        assert!(context.order_models.is_empty(), "no model for a stock order");
     }
 
     // ibx#666 (the reference 10.51, paper, pre-market 15/10/2026, `.tmp/666`
