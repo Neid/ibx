@@ -632,6 +632,35 @@ impl HotLoop {
         true
     }
 
+    /// A client's request given by an option's conId alone, once its
+    /// definition came: the company lookup of the option's underlying when
+    /// neither known nor asked, and the request waits for its answer, as
+    /// the reference (ibx#733; observed on paper, 13/10/2026, two sessions:
+    /// 2 real-time bar requests of 2 on an option, the company asked 1 to
+    /// 2 ms after the option's definition answered, the query 13 ms after
+    /// the company's answer; 2 of 2 on a future asked none, the query 1 ms
+    /// after the definition). True when the request waits: it comes back
+    /// to the command loop once the company answered and goes on then,
+    /// without asking the definition again.
+    fn wait_for_option_company(&mut self, kind: DefAsk, req_id: ReqId, con_id: i64,
+        request: impl FnOnce() -> ControlCommand) -> bool
+    {
+        let Some(terms) = self.context.option_terms.get(&con_id) else { return false };
+        let under = terms.under_con_id;
+        if terms.sec_type != "OPT" || under <= 0 || self.ccp.company_by_underlying.contains_key(&under) {
+            return false;
+        }
+        if !self.ccp.company_pending(under) {
+            self.ccp.send_company_lookup(under, &mut self.ccp_conn, &mut self.hb);
+            if !self.ccp.company_pending(under) {
+                return false;
+            }
+        }
+        self.context.def_asked.insert((kind, req_id));
+        self.context.company_parked.push((under, request()));
+        true
+    }
+
     /// Drop a request of `kind` waiting for its definition (its cancel came
     /// first). True when one waited.
     fn drop_parked(&mut self, kind: DefAsk, req_id: ReqId) -> bool {
@@ -641,10 +670,12 @@ impl HotLoop {
             | (DefAsk::Depth, ControlCommand::SubscribeDepth { req_id: r, .. }) => *r == req_id,
             _ => false,
         };
-        let before = self.context.def_parked.len();
+        let before = self.context.def_parked.len() + self.context.company_parked.len();
         self.context.def_parked.retain(|(_, c)| !of_kind(c));
+        // Or for its option's company (ibx#733).
+        self.context.company_parked.retain(|(_, c)| !of_kind(c));
         self.context.def_asked.remove(&(kind, req_id));
-        self.context.def_parked.len() != before
+        self.context.def_parked.len() + self.context.company_parked.len() != before
     }
 
     /// [`Self::ask_definition`] for the engine's own need, with no client
@@ -2942,6 +2973,16 @@ impl HotLoop {
                     let alone = sec_type.is_empty();
                     if alone && self.hmds_conn.is_some() && crate::control::historical::realtime_bar_data(&what_to_show).is_some()
                         && self.ask_definition_each_time(DefAsk::RealTimeBars, req_id, con_id, &exchange, || ControlCommand::SubscribeRealTimeBar {
+                            req_id, con_id, symbol: symbol.clone(), sec_type: String::new(), exchange: exchange.clone(),
+                            what_to_show: what_to_show.clone(), use_rth,
+                        })
+                    {
+                        continue;
+                    }
+                    // An option's: the company lookup of its underlying
+                    // too, and the query waits for its answer (ibx#733).
+                    if alone && self.hmds_conn.is_some() && crate::control::historical::realtime_bar_data(&what_to_show).is_some()
+                        && self.wait_for_option_company(DefAsk::RealTimeBars, req_id, con_id, || ControlCommand::SubscribeRealTimeBar {
                             req_id, con_id, symbol: symbol.clone(), sec_type: String::new(), exchange: exchange.clone(),
                             what_to_show: what_to_show.clone(), use_rth,
                         })
@@ -8243,6 +8284,75 @@ mod bars_routing_tests {
         tx.send(request(2)).unwrap();
         engine.poll_once();
         assert_eq!(definition_names(&written(&mut ccp_side)), ["SecDefReqMsgReqByConid2"]);
+        assert!(shared.reference.drain_historical_errors().is_empty());
+    }
+
+    // ibx#733 (observed on paper, 13/10/2026, two sessions: 2 real-time bar
+    // requests of 2 on an AAPL option given by conId alone): once the
+    // option's definition came, the company lookup of its underlying; the
+    // query once the company answered. A request once the company is
+    // known asks the definition again but no company. A cancel drops a
+    // waiting request.
+    #[test]
+    fn real_time_bars_of_an_option_alone_wait_for_its_company() {
+        let shared = Arc::new(SharedState::new());
+        let mut engine = HotLoop::new(shared.clone(), None, None);
+        let (client, mut hmds_side) = crate::protocol::connection::mem_pair();
+        engine.hmds_conn = Some(Connection::new_mem(client));
+        let (ccp, mut ccp_side) = crate::protocol::connection::mem_pair();
+        engine.ccp_conn = Some(Connection::new_mem(ccp));
+        let (tx, rx) = crossbeam_channel::bounded(8);
+        engine.set_control_rx(rx);
+        let request = |req_id: ReqId| ControlCommand::SubscribeRealTimeBar {
+            req_id, con_id: 692806985, symbol: String::new(), sec_type: String::new(), exchange: "SMART".into(),
+            what_to_show: "MIDPOINT".into(), use_rth: true,
+        };
+        let definition = |name: &str| fix::fix_build(&[(35, "d"), (320, name), (55, "AAPL"), (167, "OPT"), (207, "BEST"),
+            (6008, "692806985"), (541, "20261218"), (201, "1"), (202, "100"), (231, "100"), (15, "USD"), (6346, "265598")], 1);
+        // A first request, cancelled while it waits for the company.
+        tx.send(request(1)).unwrap();
+        engine.poll_once();
+        assert_eq!(definition_names(&written(&mut ccp_side)), ["SecDefReqMsgReqByConid1"]);
+        engine.inject_ccp_message(&definition("SecDefReqMsgReqByConid1"));
+        engine.send_lot_ready();
+        engine.poll_once();
+        let asked = written(&mut ccp_side);
+        let names = definition_names(&asked);
+        assert_eq!(names.len(), 1, "{asked}");
+        assert!(names[0].starts_with("UnderlyingECNoDupsNDReqByConid") && asked.contains("|146=1|6008=265598|6004=ANYEXCH|"), "{asked}");
+        assert!(!written(&mut hmds_side).contains("realTime"), "no query before the company's answer");
+        assert_eq!(engine.context.company_parked.len(), 1);
+        tx.send(ControlCommand::CancelRealTimeBar { req_id: 1 }).unwrap();
+        engine.poll_once();
+        assert!(engine.context.company_parked.is_empty() && engine.context.def_asked.is_empty());
+
+        // A second request while the company is on its way: no second
+        // company lookup; the query once it answered.
+        tx.send(request(2)).unwrap();
+        engine.poll_once();
+        assert_eq!(definition_names(&written(&mut ccp_side)), ["SecDefReqMsgReqByConid3"]);
+        engine.inject_ccp_message(&definition("SecDefReqMsgReqByConid3"));
+        engine.send_lot_ready();
+        engine.poll_once();
+        assert!(definition_names(&written(&mut ccp_side)).is_empty(), "the company is on its way");
+        assert!(!written(&mut hmds_side).contains("realTime"));
+        let company = fix::fix_build(&[(35, "d"), (320, &names[0]), (55, "AAPL"), (167, "STK"), (207, "BEST"), (6008, "265598")], 1);
+        engine.inject_ccp_message(&company);
+        engine.send_lot_ready();
+        engine.poll_once();
+        let query = written(&mut hmds_side);
+        assert!(query.contains(";;AAPL@SMART Midpoint;;") && query.contains("<secType>OPT</secType>"), "{query}");
+        assert!(engine.context.company_parked.is_empty() && engine.context.def_asked.is_empty());
+
+        // The company known: the definition only, then the query.
+        tx.send(request(3)).unwrap();
+        engine.poll_once();
+        assert_eq!(definition_names(&written(&mut ccp_side)), ["SecDefReqMsgReqByConid4"]);
+        engine.inject_ccp_message(&definition("SecDefReqMsgReqByConid4"));
+        engine.send_lot_ready();
+        engine.poll_once();
+        assert!(definition_names(&written(&mut ccp_side)).is_empty(), "no company lookup");
+        assert!(written(&mut hmds_side).contains(";;AAPL@SMART Midpoint;;"));
         assert!(shared.reference.drain_historical_errors().is_empty());
     }
 }

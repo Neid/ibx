@@ -514,6 +514,16 @@ pub(crate) struct CcpState {
     pub(crate) company_by_underlying: std::collections::HashMap<i64, (String, String, String)>,
     /// Company lookups in flight: request id sent, underlying conId.
     pub(crate) pending_company: Vec<(String, i64)>,
+    /// Underlyings of contract details rows not known when their company
+    /// lookup was sent: its answer asks their preferred definition next
+    /// (ibx#733).
+    pub(crate) preferred_after_company: HashSet<i64>,
+    /// Those preferred definition lookups in flight: request id sent,
+    /// underlying conId (ibx#733).
+    pub(crate) pending_preferred: Vec<(String, i64)>,
+    /// Contract details answers waiting for the company lookup of their
+    /// underlying and, when asked, its preferred definition (ibx#733).
+    pub(crate) held_details: Vec<HeldDetails>,
     /// Matching-symbols requests sent and not answered: (own request id
     /// sent, API reqId). No deadline, as in the reference; cleared without
     /// an answer when the auth link drops (ibx#369).
@@ -688,6 +698,26 @@ pub(crate) struct PendingSchedulePair {
     /// Its schedule came (or its time ran out); it leaves once no earlier
     /// row of its lookup waits (ibx#527).
     pub ready: bool,
+}
+
+/// The requests that waited for the company lookup of `under` go back to
+/// the command loop (ibx#733).
+fn release_company_parked(context: &mut Context, under: i64) {
+    if context.company_parked.is_empty() {
+        return;
+    }
+    let (ready, parked): (Vec<_>, Vec<_>) = std::mem::take(&mut context.company_parked).into_iter().partition(|(u, _)| *u == under);
+    context.company_parked = parked;
+    context.def_ready.extend(ready.into_iter().map(|(_, request)| request));
+}
+
+/// A contract details answer whose rows wait for the company lookup of
+/// their underlying and, when asked, its preferred definition (ibx#733):
+/// its records as read, and whether its per-exchange lookups follow.
+pub(crate) struct HeldDetails {
+    pub req_id: ReqId,
+    pub records: Vec<crate::control::contracts::ContractDefinition>,
+    pub by_symbol: bool,
 }
 
 /// In-flight by-symbol fan-out: the per-exchange requests sent for the
@@ -1074,6 +1104,9 @@ impl CcpState {
             market_rule_by_exchange: std::collections::HashMap::new(),
             company_by_underlying: std::collections::HashMap::new(),
             pending_company: Vec::new(),
+            preferred_after_company: HashSet::new(),
+            pending_preferred: Vec::new(),
+            held_details: Vec::new(),
             pending_matching_symbols: Vec::new(),
             next_matching_symbols_id: 1,
             matching_waiting: None,
@@ -3633,6 +3666,30 @@ impl CcpState {
                     self.cache_definition(def, shared);
                 }
             }
+            // A contract details row's underlying not known when the
+            // company was asked: its preferred definition now, unless an
+            // answer gave it meanwhile (ibx#733).
+            if self.preferred_after_company.remove(&under) && !context.agg_groups.contains_key(&under) {
+                self.send_underlying_preferred(under, context, ccp_conn, hb);
+            }
+            // The real-time bar requests that waited for it go on
+            // (ibx#733).
+            release_company_parked(context, under);
+            self.release_held_details(shared, event_tx, ccp_conn, hb);
+            return;
+        }
+        // The preferred definition of an underlying (ibx#733): known from
+        // now on, as every answer; the contract details that waited for it
+        // go on.
+        if let Some(i) = response_req_id.as_deref().and_then(|rid| self.pending_preferred.iter().position(|(id, _)| id == rid)) {
+            self.pending_preferred.swap_remove(i);
+            super::farm::note_answer(context, &records, msg);
+            for (i, def) in records.iter().enumerate() {
+                if !records[..i].iter().any(|d| d.con_id == def.con_id) {
+                    self.cache_definition(def, shared);
+                }
+            }
+            self.release_held_details(shared, event_tx, ccp_conn, hb);
             return;
         }
         // A reply can list one conId once per exchange: the contract cache
@@ -3780,6 +3837,8 @@ impl CcpState {
         // A derivative without an industry takes the one of its
         // underlying's company when known; else the company is looked up
         // and only the later rows get it, as the reference (ibx#436).
+        // An underlying not known yet has its preferred definition asked
+        // once the company answered (ibx#733).
         for def in records.iter_mut().filter(|d| d.under_con_id > 0 && d.industry.is_empty()) {
             match self.company_by_underlying.get(&def.under_con_id) {
                 Some(company) => crate::control::contracts::apply_company(def, company),
@@ -3787,13 +3846,105 @@ impl CcpState {
                     let under = def.under_con_id;
                     if !self.pending_company.iter().any(|(_, u)| *u == under) {
                         self.send_company_lookup(under, ccp_conn, hb);
+                        if !context.agg_groups.contains_key(&under) {
+                            self.preferred_after_company.insert(under);
+                        }
                     }
                 }
             }
         }
+        let by_symbol = !single_shot && !contracts::secdef_response_is_last(msg);
+        // The rest of the request (its per-exchange lookups, its trading
+        // hours, its rows) waits for the company's answer and, when asked,
+        // for the underlying's preferred definition, as the reference
+        // (ibx#733; observed on paper, recordings of 11-15/10/2026: 11
+        // contract details requests of 11 that asked a company, by
+        // description or by conId; the preferred definition asked 0 to 6
+        // ms after the company's answer for the 3 whose underlying was not
+        // known before, none for the 8 whose underlying was known; the
+        // per-exchange lookups 1 to 26 ms after the last of those answers,
+        // 7 of 7).
+        if self.waits_for_underlying(&records) {
+            log::info!("Contract details req_id={} wait for their underlying's company", req_id);
+            self.held_details.push(HeldDetails { req_id, records, by_symbol });
+            return;
+        }
+        self.continue_details(req_id, records, by_symbol, shared, event_tx, ccp_conn, hb);
+    }
+
+    /// Whether a row of an answer waits for the company lookup or the
+    /// preferred definition of its underlying (ibx#733).
+    fn waits_for_underlying(&self, records: &[crate::control::contracts::ContractDefinition]) -> bool {
+        records.iter().any(|d| {
+            let under = d.under_con_id;
+            under > 0 && d.industry.is_empty()
+                && (self.pending_company.iter().any(|(_, u)| *u == under)
+                    || self.pending_preferred.iter().any(|(_, u)| *u == under))
+        })
+    }
+
+    /// The contract details answers that no longer wait for an
+    /// underlying go on, in the order they came (ibx#733).
+    fn release_held_details(
+        &mut self,
+        shared: &SharedState,
+        event_tx: &Option<Sender<Event>>,
+        ccp_conn: &mut Option<Connection>,
+        hb: &mut HeartbeatState,
+    ) {
+        let mut i = 0;
+        while i < self.held_details.len() {
+            if self.waits_for_underlying(&self.held_details[i].records) {
+                i += 1;
+                continue;
+            }
+            let held = self.held_details.remove(i);
+            self.continue_details(held.req_id, held.records, held.by_symbol, shared, event_tx, ccp_conn, hb);
+        }
+    }
+
+    /// The preferred definition of a contract details row's underlying,
+    /// asked once its company answered when the underlying was not known
+    /// (ibx#733), as the API's lookup of a preferred contract: the request
+    /// id `PreferredReqByConid{N}`, the security request type the code
+    /// sends, one related symbol, the underlying's contract id and the
+    /// exchange `ANYEXCH`. Its number is one of the range of the lookups
+    /// a request waits for, never a caller's id.
+    fn send_underlying_preferred(&mut self, under_con_id: i64, context: &mut Context, ccp_conn: &mut Option<Connection>, hb: &mut HeartbeatState) {
+        let Some(conn) = ccp_conn.as_mut().filter(|_| !self.disconnected) else { return };
+        let rid = super::farm::next_definition_lookup(context, crate::control::contracts::SECDEF_PREFERRED_NAME);
+        let con_id_str = under_con_id.to_string();
+        let ts = chrono_free_timestamp();
+        let _ = conn.send_fix(&[
+            (fix::TAG_MSG_TYPE, "c"),
+            (fix::TAG_SENDING_TIME, &ts),
+            (crate::control::contracts::TAG_SECURITY_REQ_ID, &rid),
+            (crate::control::contracts::TAG_SECURITY_REQ_TYPE, "2"),
+            (146, "1"),
+            (crate::control::contracts::TAG_IB_CON_ID, &con_id_str),
+            (6004, "ANYEXCH"),
+        ]);
+        hb.last_ccp_sent = Instant::now();
+        log::info!("Preferred definition of underlying {} asked ({})", under_con_id, rid);
+        self.pending_preferred.push((rid, under_con_id));
+    }
+
+    /// The rest of a contract details answer, once nothing holds it: the
+    /// per-exchange lookups of a by-symbol answer, else its rows.
+    #[allow(clippy::too_many_arguments)]
+    fn continue_details(
+        &mut self,
+        req_id: ReqId,
+        records: Vec<crate::control::contracts::ContractDefinition>,
+        by_symbol: bool,
+        shared: &SharedState,
+        event_tx: &Option<Sender<Event>>,
+        ccp_conn: &mut Option<Connection>,
+        hb: &mut HeartbeatState,
+    ) {
+        use crate::control::contracts;
         // By-symbol lookup: each record asks for its unknown per-exchange
         // market rules before it becomes a row.
-        let by_symbol = !single_shot && !contracts::secdef_response_is_last(msg);
         let mut outstanding: Vec<(String, i64, String)> = Vec::new();
         if by_symbol {
             // Asked once per conId and exchange (ibx#689: a chain has tens
@@ -4218,7 +4369,7 @@ impl CcpState {
         self.pending_company.iter().any(|(_, u)| *u == under_con_id)
     }
 
-    fn send_company_lookup(&mut self, under_con_id: i64, ccp_conn: &mut Option<Connection>, hb: &mut HeartbeatState) {
+    pub(crate) fn send_company_lookup(&mut self, under_con_id: i64, ccp_conn: &mut Option<Connection>, hb: &mut HeartbeatState) {
         let rid = format!("{}{}", crate::control::contracts::SECDEF_UNDERLYING_NAME, self.next_fanout_id);
         self.next_fanout_id = self.next_fanout_id.wrapping_add(1);
         if let Some(conn) = ccp_conn.as_mut().filter(|_| !self.disconnected) {
@@ -4425,8 +4576,15 @@ impl CcpState {
         self.fill_up_pending = None;
         self.status_replay_end_at = None;
         // A company lookup lost with the link is made again by the next
-        // derivative row (ibx#436).
+        // derivative row (ibx#436); so is an underlying's preferred
+        // definition. The real-time bar requests that waited for a company
+        // go on without it (ibx#733).
         self.pending_company.clear();
+        self.preferred_after_company.clear();
+        self.pending_preferred.clear();
+        for (_, request) in std::mem::take(&mut context.company_parked) {
+            context.def_ready.push(request);
+        }
         // A combo set-up in flight starts again after the new logon
         // (ibx#470): its orders are handled again.
         if context.combos.connection_lost() {
@@ -6783,9 +6941,8 @@ mod tests {
         ccp.send_secdef_request_by_symbol(31, "AAPL", "OPT", "SMART", "USD", &Default::default(), &mut conn, &mut hb);
         let _ = ccp_messages_sent(&mut server);
         ccp.process_ccp_message(&option("31"), &mut conn, &mut context, &shared, &None, &mut hb, "DU1");
-        let rows = shared.reference.drain_contract_details();
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].1.industry, "", "the first row has no industry");
+        // The row waits for the company (ibx#733).
+        assert!(shared.reference.drain_contract_details().is_empty());
         let sent = ccp_messages_sent(&mut server);
         assert_eq!(sent.len(), 1, "{sent:?}");
         assert!(sent[0].contains("|146=1|6008=265598|6004=ANYEXCH"), "{}", sent[0]);
@@ -6799,6 +6956,17 @@ mod tests {
         company.splice(at..at, b"|Computers|Computers".iter().copied());
         ccp.process_ccp_message(&company, &mut conn, &mut context, &shared, &None, &mut hb, "DU1");
         assert!(shared.reference.drain_contract_details().is_empty());
+        // The underlying was not known: its preferred definition, and the
+        // row waits for it (ibx#733).
+        let sent = ccp_messages_sent(&mut server);
+        assert_eq!(sent.len(), 1, "{sent:?}");
+        let pid = sent[0].split('|').find_map(|f| f.strip_prefix("320=")).unwrap().to_string();
+        assert!(pid.starts_with("PreferredReqByConid"), "{pid}");
+        let preferred = pipe_msg(&format!("35=d|320={pid}|323=4|55=AAPL|167=STK|207=BEST|6008=265598|146=0|6344=1|6008=265598"));
+        ccp.process_ccp_message(&preferred, &mut conn, &mut context, &shared, &None, &mut hb, "DU1");
+        let rows = shared.reference.drain_contract_details();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].1.industry, "", "the first row has no industry");
         assert_eq!(shared.reference.drain_contract_details_end(), vec![31]);
 
         ccp.send_secdef_request_by_symbol(32, "AAPL", "OPT", "SMART", "USD", &Default::default(), &mut conn, &mut hb);
@@ -6808,6 +6976,122 @@ mod tests {
         let d = &rows[0].1;
         assert_eq!((d.industry.as_str(), d.category.as_str(), d.subcategory.as_str()), ("Technology", "Computers", "Computers"));
         assert!(ccp_messages_sent(&mut server).is_empty(), "no second company lookup");
+    }
+
+    /// An option's answer with two valid exchanges and its underlying, and
+    /// the answers of the underlying's lookups (ibx#733 tests).
+    fn option_with_underlying(rid: &str) -> Vec<u8> {
+        let record = "146=0|6344=1|6008=692807782|6046=BEST,AMEX,CBOE,|6346=265598";
+        pipe_msg(&format!("35=d|320={rid}|323=4|55=AAPL|167=OPT|207=BEST|6008=692807782|6031=32|{record}"))
+    }
+
+    fn underlying_answer(rid: &str) -> Vec<u8> {
+        pipe_msg(&format!("35=d|320={rid}|323=4|55=AAPL|167=STK|207=BEST|6008=265598|146=0|6344=1|6008=265598|6624=Technology"))
+    }
+
+    fn sent_name(m: &str) -> String {
+        m.split('|').find_map(|f| f.strip_prefix("320=")).unwrap_or("").to_string()
+    }
+
+    // ibx#733 (observed on paper, recordings of 11-15/10/2026: 11 contract
+    // details requests of 11 that asked a company; 3 of 3 whose underlying
+    // was not known asked its preferred definition 0 to 6 ms after the
+    // company's answer; the per-exchange lookups after the last answer):
+    // the company alone, then the underlying's preferred definition alone,
+    // then the per-exchange lookups, then the row.
+    #[test]
+    fn an_unknown_underlying_has_its_preferred_definition_asked_after_its_company() {
+        let (mut ccp, mut context, shared) = u186_test_state();
+        let (client, mut server) = socket_pair();
+        let mut conn = Some(Connection::new_mem(client));
+        let mut hb = HeartbeatState::new();
+        ccp.send_secdef_request_by_symbol(51, "AAPL", "OPT", "SMART", "USD", &Default::default(), &mut conn, &mut hb);
+        let _ = ccp_messages_sent(&mut server);
+        ccp.process_ccp_message(&option_with_underlying("51"), &mut conn, &mut context, &shared, &None, &mut hb, "DU1");
+        let sent = ccp_messages_sent(&mut server);
+        assert_eq!(sent.len(), 1, "the company alone: {sent:?}");
+        assert!(sent_name(&sent[0]).starts_with("UnderlyingECNoDupsNDReqByConid"), "{sent:?}");
+        ccp.process_ccp_message(&underlying_answer(&sent_name(&sent[0])), &mut conn, &mut context, &shared, &None, &mut hb, "DU1");
+        let sent = ccp_messages_sent(&mut server);
+        assert_eq!(sent.len(), 1, "the preferred definition alone: {sent:?}");
+        let pid = sent_name(&sent[0]);
+        assert_eq!(sent[0], format!("35=c|320={pid}|321=2|146=1|6008=265598|6004=ANYEXCH"));
+        assert!(pid.starts_with("PreferredReqByConid"), "{pid}");
+        assert!(shared.reference.drain_contract_details().is_empty(), "the row waits");
+        assert!(!context.agg_groups.contains_key(&265598));
+        ccp.process_ccp_message(&underlying_answer(&pid), &mut conn, &mut context, &shared, &None, &mut hb, "DU1");
+        assert!(context.agg_groups.contains_key(&265598), "known from its answer");
+        assert!(ccp.pending_preferred.is_empty() && ccp.held_details.is_empty());
+        let sent = ccp_messages_sent(&mut server);
+        let asked: Vec<(String, String)> = sent.iter().map(|m| (sent_name(m), m.split('|').find_map(|f| f.strip_prefix("6004=")).unwrap_or("").to_string())).collect();
+        assert_eq!(asked.len(), 2, "{sent:?}");
+        assert!(asked.iter().all(|(n, _)| n.starts_with("getECsForConidExchangePairsReqByConid")), "{asked:?}");
+        assert_eq!(asked.iter().map(|(_, e)| e.as_str()).collect::<Vec<_>>(), ["AMEX", "CBOE"]);
+        for (rid, exch) in &asked {
+            let answer = pipe_msg(&format!("35=d|320={rid}|323=4|55=AAPL|167=OPT|207={exch}|6008=692807782|6031=100|146=0|6344=0"));
+            ccp.process_ccp_message(&answer, &mut conn, &mut context, &shared, &None, &mut hb, "DU1");
+        }
+        let rows = shared.reference.drain_contract_details();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].1.industry, "", "the row as read before the company");
+        assert_eq!(shared.reference.drain_contract_details_end(), vec![51]);
+    }
+
+    // ibx#733 (observed on paper, recordings of 12-15/10/2026: 8 contract
+    // details requests of 8 whose underlying was known asked no preferred
+    // definition; their per-exchange lookups or trading hours came 1 to 35
+    // ms after the company's answer): with the underlying known, the
+    // per-exchange lookups follow the company's answer.
+    #[test]
+    fn a_known_underlying_asks_no_preferred_definition_after_its_company() {
+        let (mut ccp, mut context, shared) = u186_test_state();
+        let (client, mut server) = socket_pair();
+        let mut conn = Some(Connection::new_mem(client));
+        let mut hb = HeartbeatState::new();
+        context.agg_groups.insert(265598, 1);
+        ccp.send_secdef_request_by_symbol(52, "AAPL", "OPT", "SMART", "USD", &Default::default(), &mut conn, &mut hb);
+        let _ = ccp_messages_sent(&mut server);
+        ccp.process_ccp_message(&option_with_underlying("52"), &mut conn, &mut context, &shared, &None, &mut hb, "DU1");
+        let sent = ccp_messages_sent(&mut server);
+        assert_eq!(sent.len(), 1, "the company alone: {sent:?}");
+        ccp.process_ccp_message(&underlying_answer(&sent_name(&sent[0])), &mut conn, &mut context, &shared, &None, &mut hb, "DU1");
+        let sent = ccp_messages_sent(&mut server);
+        assert_eq!(sent.len(), 2, "{sent:?}");
+        assert!(sent.iter().all(|m| sent_name(m).starts_with("getECsForConidExchangePairsReqByConid")), "{sent:?}");
+        assert!(ccp.preferred_after_company.is_empty() && ccp.held_details.is_empty());
+    }
+
+    // ibx#733 (observed on paper, 14/10/2026: two contract details requests
+    // of the same option 12 ms apart; one company lookup, one preferred
+    // definition, both rows after them): every request on the underlying
+    // waits for the same answers and they leave in their order.
+    #[test]
+    fn requests_on_one_underlying_wait_for_one_company_and_one_preferred() {
+        let (mut ccp, mut context, shared) = u186_test_state();
+        let (client, mut server) = socket_pair();
+        let mut conn = Some(Connection::new_mem(client));
+        let mut hb = HeartbeatState::new();
+        let option = |rid: &str| pipe_msg(&format!(
+            "35=d|320={rid}|323=4|55=AAPL|167=OPT|207=BEST|6008=692808239|6031=32|146=0|6344=1|6008=692808239|6346=265598"));
+        for req_id in [61, 62] {
+            ccp.send_secdef_request_by_symbol(req_id, "AAPL", "OPT", "SMART", "USD", &Default::default(), &mut conn, &mut hb);
+        }
+        let _ = ccp_messages_sent(&mut server);
+        for req_id in ["61", "62"] {
+            ccp.process_ccp_message(&option(req_id), &mut conn, &mut context, &shared, &None, &mut hb, "DU1");
+        }
+        let sent = ccp_messages_sent(&mut server);
+        assert_eq!(sent.len(), 1, "one company lookup: {sent:?}");
+        assert_eq!(ccp.held_details.len(), 2);
+        ccp.process_ccp_message(&underlying_answer(&sent_name(&sent[0])), &mut conn, &mut context, &shared, &None, &mut hb, "DU1");
+        let sent = ccp_messages_sent(&mut server);
+        assert_eq!(sent.len(), 1, "one preferred definition: {sent:?}");
+        assert!(shared.reference.drain_contract_details().is_empty());
+        ccp.process_ccp_message(&underlying_answer(&sent_name(&sent[0])), &mut conn, &mut context, &shared, &None, &mut hb, "DU1");
+        let rows: Vec<ReqId> = shared.reference.drain_contract_details().iter().map(|(id, _)| *id).collect();
+        assert_eq!(rows, [61, 62]);
+        assert_eq!(shared.reference.drain_contract_details_end(), vec![61, 62]);
+        assert!(ccp_messages_sent(&mut server).is_empty());
     }
 
     // ibx#589 (paper 11/10/2026, market closed, first request of the
@@ -6963,14 +7247,28 @@ mod tests {
 
         ccp.process_ccp_message(&five_future_records("22", "CME/FUT"), &mut conn, &mut context, &shared, &None,
             &mut hb, "DU1");
+        // One company lookup of the underlying (ibx#436), and the rest
+        // waits for it and for the underlying's preferred definition
+        // (ibx#733).
+        let sent = ccp_messages_sent(&mut server);
+        assert_eq!(sent.len(), 1, "{sent:?}");
+        assert!(sent[0].contains("320=UnderlyingECNoDupsNDReqByConid") && sent[0].contains("6008=362687422")
+            && sent[0].contains("6004=ANYEXCH"), "{sent:?}");
+        let name = |m: &str| m.split('|').find_map(|f| f.strip_prefix("320=")).unwrap_or("").to_string();
+        let company = pipe_msg(&format!("35=d|320={}|323=4|55=NQ|167=IND|207=CME|6008=362687422|146=0|6344=1|6008=362687422",
+            name(&sent[0])));
+        ccp.process_ccp_message(&company, &mut conn, &mut context, &shared, &None, &mut hb, "DU1");
+        let sent = ccp_messages_sent(&mut server);
+        assert_eq!(sent.len(), 1, "{sent:?}");
+        assert!(sent[0].contains("320=PreferredReqByConid") && sent[0].contains("6008=362687422"), "{sent:?}");
+        let preferred = pipe_msg(&format!("35=d|320={}|323=4|55=NQ|167=IND|207=CME|6008=362687422|146=0|6344=1|6008=362687422",
+            name(&sent[0])));
+        ccp.process_ccp_message(&preferred, &mut conn, &mut context, &shared, &None, &mut hb, "DU1");
         let sent = ccp_messages_sent(&mut server);
         let schedules: Vec<&String> = sent.iter().filter(|m| m.contains("6040=106")).collect();
         assert_eq!(schedules.len(), 1, "one schedule request for the shared key: {sent:?}");
         assert!(schedules[0].contains("6256=CME/FUT"), "{}", schedules[0]);
-        // And one company lookup of the underlying (ibx#436).
-        assert_eq!(sent.len(), 2, "{sent:?}");
-        assert!(sent.iter().any(|m| m.contains("320=UnderlyingECNoDupsNDReqByConid") && m.contains("6008=362687422")
-            && m.contains("6004=ANYEXCH")), "{sent:?}");
+        assert_eq!(sent.len(), 1, "{sent:?}");
         assert!(shared.reference.drain_contract_details().is_empty(), "rows wait for the schedule");
         assert!(shared.reference.drain_contract_details_end().is_empty());
 

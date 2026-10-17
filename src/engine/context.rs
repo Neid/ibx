@@ -350,6 +350,10 @@ pub struct Context {
     /// asked for them, by kind of request and request id: handled again
     /// once it came, they go on without asking it again (ibx#732).
     pub(crate) def_asked: std::collections::HashSet<(crate::engine::context::DefAsk, crate::types::ReqId)>,
+    /// The client's requests waiting for the company lookup of their
+    /// option's underlying, by the underlying's conId; handled again once
+    /// it answered (ibx#733).
+    pub(crate) company_parked: Vec<(i64, crate::types::ControlCommand)>,
     /// Listing exchange by conId, once its definition was read (#452).
     pub(crate) listing_exchanges: HashMap<i64, String>,
     /// The terms of the options whose definition was read, for the option
@@ -624,6 +628,7 @@ impl Context {
             def_parked: Vec::new(),
             def_ready: Vec::new(),
             def_asked: std::collections::HashSet::new(),
+            company_parked: Vec::new(),
             smart_components: HashMap::new(),
             valid_exchanges: HashMap::new(),
             depth_descriptions: HashMap::new(),
