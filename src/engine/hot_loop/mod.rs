@@ -1323,6 +1323,7 @@ impl HotLoop {
         self.ccp.sweep_contract_details_and_completed(&self.shared, &self.event_tx, &mut self.ccp_conn, &mut self.hb);
         self.ccp.optcalc.progress(&mut self.ccp_conn, &mut self.hb, &self.shared);
         self.ccp.pump_matching_symbols(Instant::now(), &mut self.ccp_conn, &mut self.hb, &self.shared);
+        self.ccp.pump_fanout(Instant::now(), &mut self.ccp_conn, &mut self.hb);
         order_builder::sweep_rth_lookups(&mut self.context);
         order_builder::sweep_permission_requests(&mut self.context);
         farm::sweep_md_lookups(&mut self.context, &self.shared);
@@ -3375,6 +3376,8 @@ impl HotLoop {
         self.md_pass.on = true;
         // And the scanner parameters are asked after their delay (ibx#553).
         self.hmds.scanner_params_delayed = true;
+        // And a fan-out's requests leave at the reference's pace (ibx#689).
+        self.ccp.fanout_paced = true;
     }
 
     /// Send the scanner parameters request when its delay has passed

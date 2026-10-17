@@ -34,6 +34,10 @@ const MATCHING_SYMBOLS_SEND_GAP: std::time::Duration = std::time::Duration::from
 /// (ibx#485).
 const SECDEF_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
+/// The gap between two fan-out requests, as the reference sends them
+/// (ibx#689; about 2,670 a second).
+const FANOUT_SEND_GAP: std::time::Duration = std::time::Duration::from_micros(375);
+
 /// Whether a lookup is an internal one of ibx, not a caller's request.
 fn internal_lookup(req_id: ReqId) -> bool {
     req_id >= 0xF000_0000
@@ -562,6 +566,14 @@ pub(crate) struct CcpState {
     /// Fan-out state for by-symbol lookups: the records wait for the
     /// per-exchange replies, then become the rows (ibx#435).
     pub(crate) pending_fanout: Vec<PendingFanout>,
+    /// The per-exchange requests of the fan-outs waiting for their turn
+    /// (ibx#689): (lookup's request id, request id, conId, exchange).
+    fanout_queue: std::collections::VecDeque<(ReqId, String, i64, String)>,
+    /// When the queue started to drain and how many have left since.
+    fanout_clock: Option<(Instant, u64)>,
+    /// The fan-out's requests leave at the reference's pace (on for a
+    /// session opened by a logon, as the other copied waits).
+    pub(crate) fanout_paced: bool,
     /// reqCompletedOrders (ibx#695).
     pub(crate) completed: CompletedOrders,
     /// Counter for internal fan-out req IDs (the security request id of the
@@ -677,8 +689,10 @@ pub(crate) struct PendingSchedulePair {
 
 /// In-flight by-symbol fan-out: the per-exchange requests sent for the
 /// records of a lookup whose market rule on that exchange is not known.
-/// Their replies only fill the market rules; the records wait here and
-/// become the rows once every request is answered (ibx#435).
+/// Their replies only fill the market rules (ibx#435). The records wait
+/// here and leave as rows in the lookup's order, each once its own
+/// requests are answered and the rows before it are given, as the
+/// reference 10.51 gives a whole option chain (ibx#689).
 pub(crate) struct PendingFanout {
     pub api_req_id: ReqId,
     /// Requests not answered yet: (request id, conId, exchange).
@@ -688,8 +702,13 @@ pub(crate) struct PendingFanout {
     index: HashMap<String, usize>,
     /// Number of requests sent.
     pub total: usize,
-    /// The records of the lookup, in reply order.
-    pub records: Vec<crate::control::contracts::ContractDefinition>,
+    /// Its requests still waiting for their turn: no row leaves before
+    /// the last is sent, as the reference (ibx#689).
+    unsent: usize,
+    /// The records of the lookup not given yet, in reply order.
+    pub records: std::collections::VecDeque<crate::control::contracts::ContractDefinition>,
+    /// The requests not answered yet of each conId.
+    left: HashMap<i64, u32>,
     /// Idle deadline of an internal lookup, refreshed on every
     /// per-exchange reply; a caller's lookup waits for every reply, as in
     /// the reference (ibx#485).
@@ -702,7 +721,24 @@ impl PendingFanout {
         records: Vec<crate::control::contracts::ContractDefinition>, deadline: Instant,
     ) -> Self {
         let index = outstanding.iter().enumerate().map(|(i, (id, _, _))| (id.clone(), i)).collect();
-        Self { api_req_id, total: outstanding.len(), outstanding, index, records, deadline }
+        let mut left: HashMap<i64, u32> = HashMap::new();
+        for (_, con_id, _) in &outstanding {
+            *left.entry(*con_id).or_default() += 1;
+        }
+        Self { api_req_id, total: outstanding.len(), outstanding, index, records: records.into(), left, deadline, unsent: 0 }
+    }
+
+    /// The records at the front whose requests are all answered, taken
+    /// out in order: the rows that can be given now (ibx#689).
+    fn ready_rows(&mut self) -> Vec<crate::control::contracts::ContractDefinition> {
+        let mut out = Vec::new();
+        if self.unsent > 0 {
+            return out;
+        }
+        while self.records.front().is_some_and(|d| self.left.get(&d.con_id).is_none_or(|n| *n == 0)) {
+            out.extend(self.records.pop_front());
+        }
+        out
     }
 
     fn waits_for(&self, id: &str) -> bool {
@@ -715,6 +751,9 @@ impl PendingFanout {
         let (_, con_id, exchange) = self.outstanding.swap_remove(pos);
         if let Some((moved, _, _)) = self.outstanding.get(pos) {
             self.index.insert(moved.clone(), pos);
+        }
+        if let Some(n) = self.left.get_mut(&con_id) {
+            *n = n.saturating_sub(1);
         }
         Some((con_id, exchange))
     }
@@ -1048,6 +1087,9 @@ impl CcpState {
             held_cancel_dates: std::collections::HashMap::new(),
             schedules: std::collections::HashMap::new(),
             pending_fanout: Vec::new(),
+            fanout_queue: std::collections::VecDeque::new(),
+            fanout_clock: None,
+            fanout_paced: false,
             completed: CompletedOrders::default(),
             next_fanout_id: 1,
             next_internal_secdef_id: 0xF000_0000,
@@ -3016,7 +3058,7 @@ impl CcpState {
             );
             if !fanout.records.is_empty() {
                 // The rows go to the cache with the market rules known so far.
-                self.deliver_contract_rows(fanout.api_req_id, fanout.records, shared, event_tx, ccp_conn, hb);
+                self.deliver_contract_rows(fanout.api_req_id, fanout.records.into(), shared, event_tx, ccp_conn, hb);
             }
         }
     }
@@ -3560,9 +3602,16 @@ impl CcpState {
             if let Some(rule) = records.iter().find(|d| d.con_id == con_id).and_then(|d| d.market_rule_id) {
                 self.market_rule_by_exchange.insert((con_id, exchange), rule);
             }
+            // The rows ready at the front leave now; the end comes with
+            // the last of them (ibx#689).
+            let ready = self.pending_fanout[idx].ready_rows();
+            let api_req_id = self.pending_fanout[idx].api_req_id;
             if done {
                 let fanout = self.pending_fanout.swap_remove(idx);
-                self.deliver_contract_rows(fanout.api_req_id, fanout.records, shared, event_tx, ccp_conn, hb);
+                let rows: Vec<_> = ready.into_iter().chain(fanout.records).collect();
+                self.deliver_contract_rows(api_req_id, rows, shared, event_tx, ccp_conn, hb);
+            } else if !ready.is_empty() {
+                self.deliver_contract_rows(api_req_id, ready, shared, event_tx, ccp_conn, hb);
             }
             return;
         }
@@ -3692,7 +3741,11 @@ impl CcpState {
                     }
                     let fid = format!("{}{}", contracts::SECDEF_EXCHANGE_RULE_NAME, self.next_fanout_id);
                     self.next_fanout_id = self.next_fanout_id.wrapping_add(1);
-                    self.send_fanout_secdef_request(&fid, def.con_id, exch, ccp_conn, hb);
+                    if self.fanout_paced {
+                        self.fanout_queue.push_back((req_id, fid.clone(), def.con_id, exch.clone()));
+                    } else {
+                        self.send_fanout_secdef_request(&fid, def.con_id, exch, ccp_conn, hb);
+                    }
                     outstanding.push((fid, def.con_id, exch.clone()));
                 }
             }
@@ -3704,7 +3757,9 @@ impl CcpState {
                 "Secdef by-symbol fan-out: api_req_id={} records={} requests={}",
                 req_id, records.len(), outstanding.len(),
             );
-            self.pending_fanout.push(PendingFanout::new(req_id, outstanding, records, Instant::now() + SECDEF_TIMEOUT));
+            let mut fanout = PendingFanout::new(req_id, outstanding, records, Instant::now() + SECDEF_TIMEOUT);
+            fanout.unsent = if self.fanout_paced { fanout.total } else { 0 };
+            self.pending_fanout.push(fanout);
         }
     }
 
@@ -4043,7 +4098,10 @@ impl CcpState {
 
     /// contract_details_end once no row of the lookup waits for its schedule.
     fn end_if_complete(&self, req_id: ReqId, shared: &SharedState, event_tx: &Option<Sender<Event>>) {
-        if !self.pending_schedule_pair.iter().any(|p| p.api_req_id == req_id) {
+        // Not while a fan-out still holds rows of the request (ibx#689).
+        if !self.pending_schedule_pair.iter().any(|p| p.api_req_id == req_id)
+            && !self.pending_fanout.iter().any(|p| p.api_req_id == req_id)
+        {
             shared.reference.push_contract_details_end(req_id);
             emit(event_tx, Event::ContractDetailsEnd(req_id));
         }
@@ -4084,6 +4142,36 @@ impl CcpState {
     /// Wire: a security definition request with the request id `{fanout_id}`,
     /// the security request type the code sends, one related symbol, the
     /// contract id and the exchange.
+    /// Send the fan-out requests whose turn has come (ibx#689): the
+    /// reference sends a whole option chain's per-exchange requests about
+    /// 2,670 a second (paper, 14/10/2026: 70,354 in 26.3 s, 0.17 ms
+    /// apart at the median). Sent at once, a chain's 71,000 requests lost
+    /// about one answer in twenty (paper, 17/10/2026), and the request
+    /// never ended.
+    pub(crate) fn pump_fanout(&mut self, now: Instant, ccp_conn: &mut Option<Connection>, hb: &mut HeartbeatState) {
+        if self.fanout_queue.is_empty() {
+            self.fanout_clock = None;
+            return;
+        }
+        if ccp_conn.is_none() || self.disconnected {
+            return;
+        }
+        let (start, sent) = *self.fanout_clock.get_or_insert((now, 0));
+        let due = (now.duration_since(start).as_nanos() / FANOUT_SEND_GAP.as_nanos()) as u64 + 1;
+        let mut n = due.saturating_sub(sent);
+        while n > 0 {
+            let Some((api_req_id, fid, con_id, exchange)) = self.fanout_queue.pop_front() else { break };
+            self.send_fanout_secdef_request(&fid, con_id, &exchange, ccp_conn, hb);
+            if let Some(f) = self.pending_fanout.iter_mut().find(|f| f.api_req_id == api_req_id) {
+                f.unsent = f.unsent.saturating_sub(1);
+            }
+            if let Some(clock) = self.fanout_clock.as_mut() {
+                clock.1 += 1;
+            }
+            n -= 1;
+        }
+    }
+
     pub(crate) fn send_fanout_secdef_request(
         &mut self,
         fanout_req_id: &str,
@@ -6519,6 +6607,86 @@ mod tests {
         ccp.process_ccp_message(&reply("42"), &mut conn, &mut context, &shared, &None, &mut hb, "DU1");
         assert!(ccp_messages_sent(&mut server).is_empty());
         assert_eq!(shared.reference.drain_contract_details().len(), 2);
+    }
+
+    // ibx#689 (the reference 10.51's recording of a whole option chain,
+    // paper 14/10/2026: 2229 rows in the lookup's order, each after its own
+    // answers): the rows leave in the lookup's order as their answers come,
+    // a row waits for the rows before it, and the end comes with the last.
+    #[test]
+    fn fan_out_rows_leave_in_order_as_their_answers_come() {
+        let (mut ccp, mut context, shared) = u186_test_state();
+        let (client, mut server) = socket_pair();
+        let mut conn = Some(Connection::new_mem(client));
+        let mut hb = HeartbeatState::new();
+        let reply = pipe_msg("35=d|320=43|323=4|55=AAPL|167=OPT|207=BEST|6008=1|6031=32|55=AAPL|167=OPT|207=BEST|6008=2|6031=32|55=AAPL|167=OPT|207=BEST|6008=3|6031=32|146=0|6344=3|6008=1|6046=BEST,AMEX,|6008=2|6046=BEST,AMEX,|6008=3|6046=BEST,AMEX,");
+        ccp.send_secdef_request_by_symbol(43, "AAPL", "OPT", "SMART", "USD", &Default::default(), &mut conn, &mut hb);
+        let _ = ccp_messages_sent(&mut server);
+        ccp.process_ccp_message(&reply, &mut conn, &mut context, &shared, &None, &mut hb, "DU1");
+        let asked: Vec<(String, String)> = ccp_messages_sent(&mut server).iter().map(|m| {
+            let field = |tag: &str| m.split('|').find_map(|f| f.strip_prefix(tag)).unwrap_or("").to_string();
+            (field("320="), field("6008="))
+        }).collect();
+        assert_eq!(asked.iter().map(|(_, c)| c.as_str()).collect::<Vec<_>>(), ["1", "2", "3"]);
+        let mut answer = |i: usize| {
+            let (rid, con_id) = &asked[i];
+            let m = pipe_msg(&format!("35=d|320={rid}|323=4|55=AAPL|167=OPT|207=AMEX|6008={con_id}|6031=100|146=0|6344=0"));
+            ccp.process_ccp_message(&m, &mut conn, &mut context, &shared, &None, &mut hb, "DU1");
+        };
+        let rows = |shared: &SharedState| shared.reference.drain_contract_details().iter().map(|(_, d)| d.con_id).collect::<Vec<_>>();
+        // The second contract's answer: it waits for the first.
+        answer(1);
+        assert!(rows(&shared).is_empty());
+        // The first's: the first two leave, in order, with no end yet.
+        answer(0);
+        assert_eq!(rows(&shared), [1, 2]);
+        assert!(shared.reference.drain_contract_details_end().is_empty(), "the third row still waits");
+        answer(2);
+        assert_eq!(rows(&shared), [3]);
+        assert_eq!(shared.reference.drain_contract_details_end(), vec![43]);
+    }
+
+    // ibx#689: on a paced session the fan-out's requests leave at the
+    // reference's pace (about 2,670 a second), and no row leaves before the
+    // last of them is sent, as the reference.
+    #[test]
+    fn paced_fan_out_requests_leave_at_the_reference_pace() {
+        let (mut ccp, mut context, shared) = u186_test_state();
+        ccp.fanout_paced = true;
+        let (client, mut server) = socket_pair();
+        let mut conn = Some(Connection::new_mem(client));
+        let mut hb = HeartbeatState::new();
+        let reply = pipe_msg("35=d|320=44|323=4|55=AAPL|167=OPT|207=BEST|6008=1|6031=32|55=AAPL|167=OPT|207=BEST|6008=2|6031=32|146=0|6344=2|6008=1|6046=BEST,AMEX,CBOE,ISE,|6008=2|6046=BEST,AMEX,");
+        ccp.send_secdef_request_by_symbol(44, "AAPL", "OPT", "SMART", "USD", &Default::default(), &mut conn, &mut hb);
+        let _ = ccp_messages_sent(&mut server);
+        ccp.process_ccp_message(&reply, &mut conn, &mut context, &shared, &None, &mut hb, "DU1");
+        assert!(ccp_messages_sent(&mut server).is_empty(), "nothing before its turn");
+        let t0 = Instant::now();
+        ccp.pump_fanout(t0, &mut conn, &mut hb);
+        let first = ccp_messages_sent(&mut server);
+        assert_eq!(first.len(), 1, "the first at once");
+        ccp.pump_fanout(t0 + FANOUT_SEND_GAP, &mut conn, &mut hb);
+        let second = ccp_messages_sent(&mut server);
+        assert_eq!(second.len(), 1, "the next one gap later");
+        let field = |m: &str, tag: &str| m.split('|').find_map(|f| f.strip_prefix(tag)).unwrap_or("").to_string();
+        // Answer the first two: contract 1 still has requests to send, so
+        // no row leaves yet.
+        for m in first.iter().chain(&second) {
+            let a = pipe_msg(&format!("35=d|320={}|323=4|55=AAPL|167=OPT|207={}|6008={}|6031=100|146=0|6344=0",
+                field(m, "320="), field(m, "6004="), field(m, "6008=")));
+            ccp.process_ccp_message(&a, &mut conn, &mut context, &shared, &None, &mut hb, "DU1");
+        }
+        assert!(shared.reference.drain_contract_details().is_empty());
+        ccp.pump_fanout(t0 + FANOUT_SEND_GAP * 10, &mut conn, &mut hb);
+        let rest = ccp_messages_sent(&mut server);
+        assert_eq!(rest.len(), 2, "the two left");
+        for m in &rest {
+            let a = pipe_msg(&format!("35=d|320={}|323=4|55=AAPL|167=OPT|207={}|6008={}|6031=100|146=0|6344=0",
+                field(m, "320="), field(m, "6004="), field(m, "6008=")));
+            ccp.process_ccp_message(&a, &mut conn, &mut context, &shared, &None, &mut hb, "DU1");
+        }
+        assert_eq!(shared.reference.drain_contract_details().len(), 2);
+        assert_eq!(shared.reference.drain_contract_details_end(), vec![44]);
     }
 
     #[test]
