@@ -4391,6 +4391,12 @@ impl ClientCore {
             if restated {
                 order.tif = std::mem::take(&mut o.order.tif);
             }
+            // A modify does not move the order to another parent: it keeps
+            // its own (ibx#688; the reference 10.51, paper, 17/10/2026,
+            // market closed: a working order placed again under another
+            // working order went out without a parent and its openOrder
+            // kept parent 0).
+            order.parent_id = o.order.parent_id;
             o.contract = contract;
             o.order = order;
             o.instrument = instrument;
@@ -4778,9 +4784,9 @@ impl ClientCore {
     /// The reference looks each order's contract up on the server before
     /// it puts the order in its book, so an order just placed is not there
     /// for about one server round trip: a what-if sent right after a live
-    /// order with the same id got 103 (ibx#462, captured 02/10/2026). ibx
-    /// counts a tracked order as not in the book until the server answered
-    /// it, for a what-if; a modify of such an order goes on as before.
+    /// order with the same id got 103 (ibx#462, captured 02/10/2026), a
+    /// modify too (ibx#688, paper 17/10/2026). ibx counts a tracked order
+    /// as not in the book until the server answered it.
     ///
     /// An order this client tracked that is filled or cancelled: error
     /// 104 and nothing sent (ibx#463); a what-if is not a modify and
@@ -4795,9 +4801,13 @@ impl ClientCore {
             let (code, message) = MODIFY_OF_FINISHED_ORDER;
             return Some((code, message.into()));
         }
+        // Placed again before the server answered it: 103, the order
+        // stays as it was placed (a what-if, ibx#462; a modify too, ibx#688:
+        // the reference 10.51, paper, 17/10/2026, market closed, an AAPL
+        // order placed again 3 ms after with another price).
         let pending = self.open_orders.lock().unwrap().get(&order_id).map(|t| t.status == "PendingSubmit");
         if let Some(pending) = pending {
-            return if order.what_if && pending { duplicate() } else { None };
+            return if pending { duplicate() } else { None };
         }
         // A new id: above the highest placed one, unless the server knows
         // the order (one of an earlier session).
@@ -5929,6 +5939,13 @@ impl ClientCore {
     /// server finds no contract for 200, ibx#666). An empty type is a stock.
     pub fn order_contract_refusal(contract: &ApiContract) -> Option<(i64, String)> {
         let refuse = |cause: &str| Some((321, format!("Error validating request.-'PlaceOrder(3)' : cause - {cause}")));
+        // A delta-neutral contract on an order with no combo legs, read
+        // first (ibx#688; the reference 10.51, paper, 17/10/2026, market
+        // closed: an AAPL order with one, refused at once with this text,
+        // nothing sent, its cancel 10147).
+        if contract.delta_neutral_contract.is_some() && contract.combo_legs.is_empty() {
+            return Some((320, "Error reading request. Delta neutral orders are only supported for combos (BAG security type).".into()));
+        }
         let sec_type = contract.sec_type.as_str();
         if sec_type.is_empty() {
             return None;
@@ -5984,8 +6001,11 @@ impl ClientCore {
         let mut routing_attrs = Vec::with_capacity(order.smart_combo_routing_params.len());
         let mut non_guaranteed = false;
         for tv in &order.smart_combo_routing_params {
+            // Read with the request, refused at the first checks: 321
+            // (ibx#688; the reference 10.51, paper, 17/10/2026, market
+            // closed: a two-leg stock combo with the tag "Foo").
             let Some(tag) = combo_routing_tag(&tv.tag) else {
-                return Err(read_error(INVALID_COMBO_ROUTING_TAG));
+                return Err(refuse(INVALID_COMBO_ROUTING_TAG));
             };
             if tag == 6248 { non_guaranteed = tv.value.trim() == "1"; }
             routing_attrs.push((tag, tv.value.clone()));
@@ -6170,7 +6190,7 @@ impl ClientCore {
     pub fn refusal_before_sending_for(order: &ApiOrder, exchange: &str, contract_month: &str, account_pending: bool, form_10_40: bool) -> Option<(i64, String)> {
         Self::read_refusal(order)
             .or_else(|| Self::exchange_refusal(exchange))
-            .or_else(|| Self::order_rule_refusal(order, contract_month, account_pending, form_10_40))
+            .or_else(|| Self::order_rule_refusal(order, exchange, contract_month, account_pending, form_10_40))
             .or_else(|| Self::fractional_quantity_refusal(order))
             .or_else(|| Self::good_till_date_unreadable(order, form_10_40))
             .or_else(|| Self::good_after_time_unreadable(order, form_10_40))
@@ -6273,10 +6293,26 @@ impl ClientCore {
         if set(order.trailing_percent) && set(order.aux_price) {
             last = read_error("Cannot specify Trailing Amount and Trailing Percent at the same time");
         }
+        // A manual order time that is not a date and time (10300), an
+        // active start or stop time not in the hh:mm:ss form (10315), each
+        // with its own label (ibx#688; the reference 10.51, paper,
+        // 17/10/2026, market closed: "garbage" for each, refused at once,
+        // nothing sent, its cancel 10147; the stop time not observed yet).
+        if !order.manual_order_time.trim().is_empty()
+            && crate::config::parse_ib_expiry_zoned(&order.manual_order_time).is_err()
+        {
+            last = Some((10300, INVALID_DATE_TIME.replace("%s", "Manual Order Time")));
+        }
+        for (label, time) in [("Active Start Time", &order.active_start_time), ("Active Stop Time", &order.active_stop_time)] {
+            if !time.trim().is_empty() && !active_time_valid(time.trim()) {
+                last = Some((10315, format!("{label}: The time entered is invalid. The correct format is hh:mm:ss. E.g.: 15:00:00 in UTC. No date should be specified, current date is assumed.")));
+            }
+        }
         // The conditions are read last: a time it cannot read is 10314
-        // with the label "Time" (ibx#416, captured 02/10/2026).
+        // with the label "Time" (ibx#416, captured 02/10/2026), an empty
+        // time too (ibx#688; the reference 10.51, paper, 17/10/2026).
         let machine = crate::gateway::machine_time_zone();
-        if Self::condition_times(order).any(|t| !t.is_empty() && parse_condition_time(t, &machine).is_none()) {
+        if Self::condition_times(order).any(|t| t.trim().is_empty() || parse_condition_time(t, &machine).is_none()) {
             last = Some((10314, INVALID_DATE_TIME.replace("%s", "Time")));
         }
         last
@@ -6403,6 +6439,35 @@ impl ClientCore {
             .iter().any(|a| a.eq_ignore_ascii_case(action))
     }
 
+    /// A child order whose parent this client does not have: 135 with
+    /// the parent's id, nothing sent, the id not used (ibx#688; the
+    /// reference 10.51, paper, 17/10/2026, market closed: an AAPL order
+    /// under parent 1, its cancel 10147). The parent is an order of this
+    /// client placed before it, sent, held or ended, or one of its
+    /// earlier sessions the server reported. A hedge order's parent is
+    /// read with the hedge (`hedge_read_refusal`).
+    fn parent_refusal(&self, order: &ApiOrder, shared: &SharedState) -> Option<(i64, String)> {
+        if order.parent_id <= 0 || !order.hedge_type.is_empty() {
+            return None;
+        }
+        let parent = order.parent_id;
+        let me = self.client_id.load(Ordering::Relaxed);
+        let known = self.hedge_parent(parent).is_some()
+            || self.finished_orders.lock().unwrap().contains(&parent)
+            || shared.orders.get_order_info(parent).is_some_and(|info| i64::from(info.order.client_id) == me);
+        (!known).then(|| (135, format!("Can't find order with id = {}", parent)))
+    }
+
+    /// A scale order whose first component is larger than the order
+    /// (ibx#688; the reference 10.51, paper, 17/10/2026, market closed: a
+    /// first component of 10 on an order of 1, refused at once, nothing
+    /// sent). A first component equal to the order passes (not observed
+    /// yet).
+    fn scale_size_refusal(order: &ApiOrder) -> Option<(i64, String)> {
+        (order.scale_init_level_size != i32::MAX && order.total_quantity < f64::from(order.scale_init_level_size)).then(|| (321,
+            "Error validating request.-'PlaceOrder(3)' : cause - Scale order component sizes must be smaller than the Maximum Position.".to_string()))
+    }
+
     /// The parent of a hedge order: an order of this client placed
     /// before it, sent or held (ibx#614).
     fn hedge_parent(&self, parent_id: OrderId) -> Option<(ApiContract, ApiOrder)> {
@@ -6475,7 +6540,55 @@ impl ClientCore {
             4 if !stock(&parent_contract.sec_type) || !stock(sec_type) => read("Invalid beta hedge order. Both parent and hedge can only be Stock orders.".into()),
             4 if !param.is_empty() && hedge.beta.is_none() => read("Invalid beta value.".into()),
             3 if hedge.ratio.is_none_or(|r| r == 0.0) => read("Invalid hedge ratio".into()),
+            // A forex hedge on a contract that is no currency pair: its own
+            // code, nothing sent, the id not used, the parent held as before
+            // (ibx#688; the reference 10.51, paper, 17/10/2026, market
+            // closed: an AAPL hedge under a held AAPL order). The currencies
+            // of a pair are not checked against the parent's (not observed).
+            1 if !sec_type.eq_ignore_ascii_case("CASH") => Some((10063,
+                "Invalid FX hedge order. Hedging contract can only be a currency pair where one of the currencies is the same as in parent order.".into())),
             _ => None,
+        }
+    }
+
+    /// The rules the reference checks on a new order once its contract is
+    /// known, which refuse it and keep it for its cancel (Cancelled, 202
+    /// "Order was discarded", 161): the engine gives the refusal (ibx#688;
+    /// the reference 10.51, paper, 17/10/2026, market closed, each within
+    /// 20 ms, nothing sent):
+    /// - conditions on an order type other than LMT, MKT, MIDPRICE, REL and
+    ///   the snap types, or conditions that cancel the order on one other
+    ///   than LMT and MIDPRICE (148; STP, STP with cancel, REL with cancel);
+    /// - a trailing stop under a parent that is not LMT or STP LMT (328; a
+    ///   TRAIL under a held STP; TRAIL LIMIT not observed yet);
+    /// - an OCA group name longer than 64 characters (401, "OCA Group").
+    ///
+    /// A held parent of such an order stays held.
+    pub fn kept_refusal(&self, order: &ApiOrder) -> Option<(i64, String)> {
+        let order_type = order.order_type.to_uppercase();
+        if !order.conditions.is_empty() {
+            let submit = matches!(order_type.as_str(), "LMT" | "MKT" | "MIDPRICE" | "MIDPX" | "REL"
+                | "SNAP MKT" | "SNAP MID" | "SNAP MIDPT" | "SNAP PRI" | "SNAP PRIM");
+            let cancel = matches!(order_type.as_str(), "LMT" | "MIDPRICE" | "MIDPX");
+            if !submit || (order.conditions_cancel_order && !cancel) {
+                return Some((148, "Conditional submission of orders is supported for Limit, Market, MidPrice, Relative and Snap order types only. Conditional cancellation of orders is supported for Limit, MidPrice, IBAlgo - Limit order types only.".into()));
+            }
+        }
+        if order_type == "TRAIL" && order.parent_id > 0
+            && let Some((_, parent)) = self.hedge_parent(order.parent_id)
+            && !matches!(parent.order_type.to_uppercase().as_str(), "LMT" | "STP LMT")
+        {
+            return Some((328, "Trailing stop orders can be attached to limit or stop-limit orders only.".into()));
+        }
+        (order.oca_group.chars().count() > 64).then(|| (401, "OCA Group".into()))
+    }
+
+    /// Carry [`Self::kept_refusal`] with a new order to the engine.
+    pub fn carry_kept_refusal(&self, cmd: &mut ControlCommand, order: &ApiOrder) {
+        if let ControlCommand::Order(req) = cmd
+            && let Some(attrs) = req.new_order_attrs_mut()
+        {
+            attrs.kept_refusal = self.kept_refusal(order);
         }
     }
 
@@ -6602,7 +6715,7 @@ impl ClientCore {
     /// 321 with the rule text (ibx#468), in the reference's order
     /// (it stops at the first). The text after "cause - " is
     /// the rule's; for the TRAIL LIMIT rule only its end is known.
-    fn order_rule_refusal(order: &ApiOrder, contract_month: &str, account_pending: bool, form_10_40: bool) -> Option<(i64, String)> {
+    fn order_rule_refusal(order: &ApiOrder, exchange: &str, contract_month: &str, account_pending: bool, form_10_40: bool) -> Option<(i64, String)> {
         let refuse = |cause: &str| Some((321, format!("Error validating request.-'PlaceOrder(3)' : cause - {}", cause)));
         let order_type = order.order_type.to_uppercase();
         // An action the reference does not know reads as side 0, refused
@@ -6624,11 +6737,40 @@ impl ClientCore {
         if !TIF_TEXTS.contains(&order.tif.as_str()) || (order.include_overnight && !day && !form_10_40) {
             return Some((10052, format!("Invalid time in force:{}", order.tif)));
         }
+        // The duration and the end time (ibx#688; the reference 10.51,
+        // paper, 17/10/2026, market closed, each refused at once, nothing
+        // sent, its cancel 10147): a duration with a time in force other
+        // than GTD, minutes included (10272); GTD with an end time and a
+        // duration, a modify that adds one too (10273); GTD with neither
+        // (391, the date and time text named "End Time").
+        let duration = order.duration != i32::MAX;
+        let gtd = order.tif == "GTD";
+        let end_time = !order.good_till_date.trim().is_empty();
+        if duration && !gtd {
+            return Some((10272, "Duration field is only valid with time-in-force of GTD".into()));
+        }
+        if gtd && duration && end_time {
+            return Some((10273, "Expiration date and time and Duration cannot be set on the order at the same time.".into()));
+        }
+        if gtd && !duration && !end_time {
+            return Some((391, INVALID_DATE_TIME.replace("%s", "End Time")));
+        }
         if let Some(refusal) = Self::contract_month_refusal(contract_month) {
             return Some(refusal);
         }
         if Self::action_sshortx(&order.action) {
             return refuse("SSHORTX orders are not supported");
+        }
+        // A size of 0 (ibx#688; the reference 10.51, paper, 17/10/2026,
+        // market closed: an AAPL limit order, refused at once, nothing
+        // sent, its cancel 10147), except for a cash quantity, a hedge
+        // order (sized by the gateway), an advisor's allocation and the
+        // average cost destination (those not observed yet).
+        let fa_sized = !order.fa_group.is_empty() || !order.fa_method.is_empty() || !order.fa_percentage.is_empty();
+        if order.total_quantity == 0.0 && !is_given(order.cash_qty) && order.hedge_type.is_empty() && !fa_sized
+            && !exchange.eq_ignore_ascii_case("AVGCOST")
+        {
+            return refuse("The size value cannot be zero:");
         }
         // A quantity below 0 or above 999,999,999 (ibx#263).
         if order.total_quantity < 0.0 || order.total_quantity > 999_999_999.0 {
@@ -6693,6 +6835,12 @@ impl ClientCore {
             && (pct < 0.0 || pct > 100.0)
         {
             return refuse("Invalid Trailing Percent value. Valid values are greater than 0 and less than 100.");
+        }
+        // A pegged to benchmark order without its reference contract
+        // (ibx#688; the reference 10.51, paper, 17/10/2026, market closed:
+        // referenceContractId 0, refused at once, nothing sent).
+        if order_type == "PEG BENCH" && order.reference_contract_id <= 0 {
+            return refuse("Missing reference financial instrument");
         }
         // A stop or trigger price that is not a number (error 403's text for
         // the stop types, error 361's for MIT and LIT; the value must be finite
@@ -6935,6 +7083,8 @@ impl ClientCore {
             .or_else(|| Self::volatility_type_refusal(order))
             .or_else(|| self.hedge_read_refusal(order_id, sec_type, order, shared))
             .or_else(|| Self::refusal_before_sending_for(order, exchange, contract_month, account_pending, shared.reference.form_10_40()))
+            .or_else(|| self.parent_refusal(order, shared))
+            .or_else(|| Self::scale_size_refusal(order))
             .or_else(|| Self::account_config_refusal(order, shared.reference.account_features().as_deref(), account))
             .or_else(|| Self::open_flags_refusal(order, exchange))
             .or_else(|| Self::overnight_tif_refusal(order, &shared.reference))
@@ -6972,7 +7122,8 @@ impl ClientCore {
         let refused = self.refusal_at_reading(order_id, &contract.sec_type, &contract.exchange, &contract.last_trade_date_or_contract_month,
             order, shared, account_pending, account).is_some()
             || self.refusal_with_contract(order, &contract.exchange, shared, contract_zone.as_deref(), &mut Vec::new()).is_some()
-            || self.hedge_sent(std::borrow::Cow::Borrowed(order)).hedge_max_size == crate::api::types::HEDGE_MAX_SIZE_MISSING;
+            || self.hedge_sent(std::borrow::Cow::Borrowed(order)).hedge_max_size == crate::api::types::HEDGE_MAX_SIZE_MISSING
+            || self.kept_refusal(order).is_some();
         if refused {
             return vec![(order_id, contract.clone(), order.clone(), false)];
         }
@@ -7006,6 +7157,13 @@ impl ClientCore {
         let refusal = self.refusal_at_reading(order_id, sec_type, exchange, contract_month, order, shared, account_pending, account);
         if refusal.is_some() {
             return (notices, refusal, None);
+        }
+        // Opting out of smart routing: a warning, and the order goes on
+        // without it (ibx#688; the reference 10.51, paper, 17/10/2026,
+        // market closed: 2181 at once, then the order's answers). An
+        // account where the attribute is on is not observed yet.
+        if order.opt_out_smart_routing {
+            notices.push((2181, "Warning: The 'OptOutFromSmartRouting' order attribute is not supported.".into()));
         }
         let later = self.refusal_with_contract(order, exchange, shared, contract_zone.as_deref(), &mut algo_warnings);
         if later.is_some() && !order.what_if && !self.is_order_tracked(order_id) {
@@ -7376,8 +7534,9 @@ impl ClientCore {
             } else {
                 order.tif_byte()
             },
-            // The algo, restated by the reference's replace (ibx#263).
-            attrs: crate::types::OrderAttrs { algo: Self::order_algo(order)?, ..order.attrs() },
+            // The algo, restated by the reference's replace (ibx#263); the
+            // working order's parent kept (ibx#688).
+            attrs: crate::types::OrderAttrs { algo: Self::order_algo(order)?, parent_id: working.parent_id, ..order.attrs() },
         })))
     }
 
@@ -8567,9 +8726,12 @@ mod tests {
             text("Missing parent order: server: 0 order: 11 parent: 60 hedge:[B]"), "case N");
         assert_eq!(core.hedge_read_refusal(11, "OPT", &hedge("B", "1"), &shared),
             Some((320, "Error reading request. Invalid beta hedge order. Both parent and hedge can only be Stock orders.".into())));
-        for ok in [hedge("B", "1"), hedge("B", "0.5"), hedge("S", ""), hedge("P", "2"), hedge("F", "")] {
+        for ok in [hedge("B", "1"), hedge("B", "0.5"), hedge("S", ""), hedge("P", "2")] {
             assert_eq!(read(&ok), None, "{ok:?}");
         }
+        // A forex hedge: on a currency pair, not on a stock (ibx#688).
+        assert_eq!(core.hedge_read_refusal(11, "CASH", &hedge("F", ""), &shared), None);
+        assert_eq!(core.hedge_read_refusal(11, "STK", &hedge("F", ""), &shared).map(|r| r.0), Some(10063));
         // A modify of a filled hedge whose parent filled (regular hours,
         // 16/10/2026): the parent is still known, the modify gets 104.
         core.finished_orders.lock().unwrap().extend([OrderId::from(70), OrderId::from(71)]);
@@ -8782,7 +8944,8 @@ mod tests {
         let unreadable_10_40 = |s: &str| ClientCore::refusal_before_sending_for(&gtd(s), "SMART", "", false, true).map(|(code, _)| code);
         assert_eq!(unreadable_10_40("not a date"), Some(391));
         assert_eq!(unreadable("20260930 16:00:00 Asia/Tokyo"), None);
-        assert_eq!(unreadable(""), None);
+        // GTD with neither an end time nor a duration (ibx#688).
+        assert_eq!(unreadable(""), Some(391));
         let machine = crate::gateway::machine_time_zone();
         assert_eq!(refused(&format!("20260930 16:00:00 {machine}"), Some("US/Eastern")), None);
     }
@@ -9349,7 +9512,8 @@ mod tests {
 
     // ibx#462: a what-if with the id of an order the server has not
     // answered yet gets 103 (captured 02/10/2026); once answered, it is a
-    // preview. A modify goes on either way. An id below the highest that
+    // preview. A modify too gets 103 before the answer (ibx#688, paper
+    // 17/10/2026), and goes on after it. An id below the highest that
     // the server knows (an order of an earlier session) is no new id.
     #[test]
     fn what_if_on_an_order_not_answered_yet_and_known_ids() {
@@ -9358,8 +9522,9 @@ mod tests {
         let what_if = ApiOrder { what_if: true, ..lmt(101.0) };
         core.track_order(79, ApiContract::default(), lmt(100.0), 0);
         assert_eq!(core.refusal_for_order_id(79, &what_if, &shared).map(|r| r.0), Some(103));
-        assert!(core.refusal_for_order_id(79, &lmt(101.0), &shared).is_none(), "a modify");
+        assert_eq!(core.refusal_for_order_id(79, &lmt(101.0), &shared).map(|r| r.0), Some(103), "a modify before the answer");
         core.update_order_status(79, "Submitted", 0.0, 1.0);
+        assert!(core.refusal_for_order_id(79, &lmt(101.0), &shared).is_none(), "a modify");
         assert!(core.refusal_for_order_id(79, &what_if, &shared).is_none(), "a preview");
         assert_eq!(core.refusal_for_order_id(60, &lmt(100.0), &shared).map(|r| r.0), Some(103));
         shared.orders.push_order_info(60, crate::bridge::RichOrderInfo {

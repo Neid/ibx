@@ -491,7 +491,7 @@ fn combo_refusals_before_sending() {
     let chf = ApiContract { currency: "CHF".into(), ..spy_qqq("QQQ,SPY") };
     assert_eq!(place(&mut s, &chf, &lmt), ["error 7 321 Error validating request.-'PlaceOrder(3)' : cause - Currency CHF isn't supported for smart combo."]);
     let unknown = ApiOrder { smart_combo_routing_params: vec![TagValue { tag: "Foo".into(), value: "1".into() }], ..lmt.clone() };
-    assert!(place(&mut s, &spy_qqq("QQQ,SPY"), &unknown)[0].starts_with("error 7 320 Error reading request:Invalid combo routing tag."));
+    assert!(place(&mut s, &spy_qqq("QQQ,SPY"), &unknown)[0].starts_with("error 7 321 Error validating request.-'PlaceOrder(3)' : cause - Invalid combo routing tag."));
     let three_prices = ApiOrder { order_combo_legs: vec![1.0, 2.0, 3.0], lmt_price: f64::MAX, ..lmt.clone() };
     assert_eq!(place(&mut s, &spy_qqq("QQQ,SPY"), &three_prices),
         ["error 7 320 Error reading request:Mismatch per-leg price number with combo leg specification."]);

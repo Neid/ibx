@@ -171,11 +171,9 @@ fn per_leg_prices_not_one_per_leg() {
         &Order { order_combo_legs: vec![1.0], ..order("LMT") });
 }
 
-// Not observed yet (ibx#688): the reference is expected to answer this
-// rule at its first checks (321); ibx answers 320 when it reads the
-// request.
+// Refused at the first checks, 321 (ibx#688; observed on paper,
+// 17/10/2026, market closed: a two-leg stock combo with the tag "Foo").
 #[test]
-#[ignore = "ibx#688: 321 expected, ibx sends 320; to observe"]
 fn unknown_combo_routing_tag() {
     refused("10027-1", &bag(vec![leg(756733, "BUY"), leg(320227571, "SELL")]), &Order {
         smart_combo_routing_params: vec![TagValue { tag: "Bogus".into(), value: "1".into() }],
@@ -366,6 +364,8 @@ fn cancel_of_an_order_with_a_cancel_pending() {
 fn modify_refused(rule: &str, contract: &Contract, first: &Order, second_contract: &Contract, second: &Order) {
     let mut engine = Engine::start();
     engine.client.place_order(REFUSED, contract, first).unwrap();
+    // The server answered it: placed again, a modify (ibx#688).
+    engine.answer_order(REFUSED);
     engine.client.place_order(REFUSED, second_contract, second).unwrap();
     let rule = local_rule(rule);
     let errors = engine.errors();
@@ -858,4 +858,241 @@ fn trail_limit_without_a_trailing_amount() {
         lmt_price: 0.0, lmt_price_offset: 0.1, aux_price: f64::MAX, trailing_percent: f64::MAX, trail_stop_price: f64::MAX,
         ..order("TRAIL LIMIT")
     }, &format!("{CAUSE}Please enter a trailing stop price"));
+}
+
+// ── Observed on paper, 17/10/2026, market closed, second round (ibx#688):
+// one far AAPL order each, a client at level 214, nothing sent; ibx used to
+// send these orders, or to give another code. ──
+
+/// The date and time text of the reference with its field's label.
+fn date_time_text(label: &str) -> String {
+    local_rule("343-1").text.replacen("%s", label, 1)
+}
+
+// A delta-neutral contract on an order that is no combo: 320 at once,
+// "Error reading request." then a space, with a final period.
+#[test]
+fn delta_neutral_contract_without_combo_legs() {
+    let contract = Contract {
+        delta_neutral_contract: Some(ibx::api::types::DeltaNeutralContract { con_id: 265598, delta: 0.5, price: 100.0 }),
+        ..aapl()
+    };
+    refused_seen("429-1", &contract, &order("LMT"),
+        "Error reading request. Delta neutral orders are only supported for combos (BAG security type).");
+}
+
+// A manual order time that cannot be read: 10300 with the date and time
+// text, labelled "Manual Order Time".
+#[test]
+fn manual_order_time_not_readable() {
+    refused_seen("10300-1", &aapl(), &Order { manual_order_time: "garbage".into(), ..order("LMT") },
+        &date_time_text("Manual Order Time"));
+}
+
+// An active start time not in the hh:mm:ss form: 10315 labelled "Active
+// Start Time"; the stop time takes its own label (not observed yet).
+#[test]
+fn active_time_not_a_time() {
+    refused_seen("10315-1", &aapl(), &Order { active_start_time: "garbage".into(), ..order("LMT") },
+        "Active Start Time: The time entered is invalid. The correct format is hh:mm:ss. E.g.: 15:00:00 in UTC. No date should be specified, current date is assumed.");
+    refused_seen("10315-1", &aapl(), &Order { active_stop_time: "25:00:00".into(), ..order("LMT") },
+        "Active Stop Time: The time entered is invalid. The correct format is hh:mm:ss. E.g.: 15:00:00 in UTC. No date should be specified, current date is assumed.");
+}
+
+// A time condition without its time: 10314, as one that cannot be read.
+#[test]
+fn time_condition_without_a_time() {
+    refused("10314-1", &aapl(), &Order {
+        conditions: vec![OrderCondition::Time { time: String::new(), is_more: true }],
+        ..order("LMT")
+    });
+}
+
+// A duration with a time in force other than GTD, minutes included.
+#[test]
+fn duration_without_gtd() {
+    refused("10272-1", &aapl(), &Order { duration: 100, ..order("LMT") });
+    refused("10272-1", &aapl(), &Order { duration: 5, tif: "Minutes".into(), ..order("LMT") });
+}
+
+// GTD with an end time and a duration.
+#[test]
+fn gtd_with_an_end_time_and_a_duration() {
+    refused("10273-1", &aapl(), &Order {
+        tif: "GTD".into(), good_till_date: "20261120 15:00:00 US/Eastern".into(), duration: 100, ..order("LMT")
+    });
+}
+
+// GTD with neither an end time nor a duration: 391 with the date and
+// time text labelled "End Time".
+#[test]
+fn gtd_without_an_end_time_or_a_duration() {
+    refused_seen("391-1", &aapl(), &Order { tif: "GTD".into(), ..order("LMT") }, &date_time_text("End Time"));
+}
+
+// A size of 0: the table's text, ending with a colon.
+#[test]
+fn size_zero() {
+    refused_seen("160-1", &aapl(), &Order { total_quantity: 0.0, ..order("LMT") },
+        &format!("{CAUSE}The size value cannot be zero:"));
+}
+
+// Pegged to benchmark without its reference contract.
+#[test]
+fn pegged_to_benchmark_without_its_reference() {
+    refused("10075-1", &aapl(), &Order { reference_contract_id: 0, ..order("PEG BENCH") });
+}
+
+// A child under a parent this client does not have: 135 with the parent's
+// id after the text.
+#[test]
+fn child_of_an_unknown_parent() {
+    refused_seen("135-1", &aapl(), &Order { parent_id: 1, ..order("LMT") }, "Can't find order with id = 1");
+}
+
+// A scale order whose first component is larger than the order.
+#[test]
+fn scale_first_component_above_the_order() {
+    refused("417-1", &aapl(), &Order { scale_init_level_size: 10, scale_price_increment: 0.1, ..order("LMT") });
+}
+
+// A forex hedge on a contract that is no currency pair: its own code,
+// the parent stays held.
+#[test]
+fn fx_hedge_not_on_a_currency_pair() {
+    hedge_refused("10063-1", &aapl(), &hedge(6, "F", ""), None);
+}
+
+/// `engine` kept the refused order `id` for its cancel: its cancel ends
+/// it as an order never sent (202 "Order was discarded", then 161).
+fn assert_kept(engine: &mut Engine, id: i64) {
+    engine.client.cancel_order(id, "").unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let mut errors = Vec::new();
+    while !errors.iter().any(|e: &(i64, i64, String)| e.0 == id && e.1 == 161) && std::time::Instant::now() < deadline {
+        errors.extend(engine.errors());
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+    let mine: Vec<(i64, String)> = errors.iter().filter(|e| e.0 == id).map(|e| (e.1, e.2.clone())).collect();
+    assert_eq!(mine.first(), Some(&(202, "Order Canceled - reason:Order was discarded.".to_string())), "{errors:?}");
+    assert!(mine.iter().any(|(code, _)| *code == 161), "{errors:?}");
+}
+
+/// Place `order` on AAPL: refused with `rule` (the text `seen` where
+/// given), nothing sent, kept for its cancel.
+fn kept_refused(rule: &str, order: &Order, seen: Option<&str>) {
+    let mut engine = Engine::start();
+    engine.client.place_order(REFUSED, &aapl(), order).unwrap();
+    assert_refused_text(&mut engine, REFUSED, rule, seen);
+    assert_kept(&mut engine, REFUSED);
+}
+
+fn price_condition() -> OrderCondition {
+    OrderCondition::Price {
+        con_id: 265598, exchange: "SMART".into(), price: 1000 * ibx::types::PRICE_SCALE, is_more: true, trigger_method: 0,
+    }
+}
+
+/// The text of 148 as the reference 10.51 gives it: the table's two
+/// sentences joined by one space.
+const CONDITIONS_SEEN: &str = "Conditional submission of orders is supported for Limit, Market, MidPrice, Relative and Snap order types only. Conditional cancellation of orders is supported for Limit, MidPrice, IBAlgo - Limit order types only.";
+
+// Conditions on a stop order, and conditions that cancel a relative
+// order: 148, the order kept for its cancel.
+#[test]
+fn conditions_on_an_order_type_without_them() {
+    kept_refused("148-1", &Order { aux_price: 500.0, conditions: vec![price_condition()], ..order("STP") }, Some(CONDITIONS_SEEN));
+    kept_refused("148-2", &Order {
+        aux_price: 0.01, lmt_price: 0.0, conditions: vec![price_condition()], conditions_cancel_order: true, ..order("REL")
+    }, Some(CONDITIONS_SEEN));
+}
+
+// An OCA group name longer than 64 characters: 401 "OCA Group", the
+// order kept for its cancel (the server closed the session when ibx sent
+// one).
+#[test]
+fn oca_group_name_too_long() {
+    kept_refused("401-1", &Order { oca_group: "O".repeat(70), ..order("LMT") }, Some("OCA Group"));
+}
+
+// A trailing stop under a held stop order: 328 on the child, kept for its
+// cancel; the parent stays held.
+#[test]
+fn trailing_stop_under_a_stop_parent() {
+    let mut engine = Engine::start();
+    engine.client.place_order(6, &aapl(), &Order { aux_price: 500.0, transmit: false, ..order("STP") }).unwrap();
+    let child = Order { action: "SELL".into(), aux_price: 1.0, lmt_price: 0.0, parent_id: 6, ..order("TRAIL") };
+    engine.client.place_order(REFUSED, &aapl(), &child).unwrap();
+    assert_refused(&mut engine, REFUSED, "328-1");
+    assert!(engine.orders(0).iter().all(|f| field(f, 6121) != Some("6")), "the parent stays held");
+    assert_kept(&mut engine, REFUSED);
+}
+
+// Opting out of smart routing: the warning 2181 with "Warning: " before
+// the table's text, and the order is sent.
+#[test]
+fn opt_out_of_smart_routing_is_a_warning() {
+    let mut engine = Engine::start();
+    engine.client.place_order(REFUSED, &aapl(), &Order { opt_out_smart_routing: true, ..order("LMT") }).unwrap();
+    let frames = engine.orders(1);
+    assert!(frames.iter().any(|f| field(f, 6121) == Some("7")), "the order is sent: {frames:?}");
+    let rule = local_rule("2181-1");
+    let errors = engine.errors();
+    assert!(errors.iter().any(|(id, code, text)| *id == REFUSED && *code == rule.api_code
+        && *text == format!("Warning: {}", rule.text)), "{errors:?}");
+}
+
+// A modify that adds a duration to a GTD order with an end time.
+#[test]
+fn modify_adding_a_duration_to_gtd() {
+    let first = Order { tif: "GTD".into(), good_till_date: "20261120 15:00:00 US/Eastern".into(), ..order("LMT") };
+    modify_refused("10273-2", &aapl(), &first, &aapl(), &Order { duration: 100, ..first.clone() });
+}
+
+// The same order id placed again before the server answered the order:
+// 103, the order stays as placed.
+#[test]
+fn order_placed_again_before_its_answer() {
+    let mut engine = Engine::start();
+    engine.client.place_order(REFUSED, &aapl(), &order("LMT")).unwrap();
+    engine.client.place_order(REFUSED, &aapl(), &Order { lmt_price: 101.0, ..order("LMT") }).unwrap();
+    let rule = local_rule("103-1");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let mut errors = Vec::new();
+    while errors.is_empty() && std::time::Instant::now() < deadline {
+        engine.serve();
+        errors.extend(engine.errors());
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+    assert!(errors.iter().any(|(id, code, text)| *id == REFUSED && *code == rule.api_code
+        && *text == format!("{}: {}", rule.text, REFUSED)), "{errors:?}");
+    let frames = engine.orders(1);
+    assert!(frames.iter().all(|f| field(f, 35) != Some("G")), "no replace sent: {frames:?}");
+}
+
+// ── Written as the reference writes them (ibx#688, paper 17/10/2026) ──
+
+// A GTD order with a duration: the duration in its attribute after the
+// origin, no end time.
+#[test]
+fn gtd_with_a_duration_is_written_with_it() {
+    let mut engine = Engine::start();
+    engine.client.place_order(REFUSED, &aapl(), &Order { tif: "GTD".into(), duration: 3600, ..order("LMT") }).unwrap();
+    let frames = engine.orders(1);
+    let sent = frames.iter().find(|f| field(f, 6121) == Some("7")).expect("the order is sent");
+    assert_eq!(field(sent, 8402), Some("3600"), "{sent:?}");
+    assert_eq!((field(sent, 432), field(sent, 126)), (None, None));
+    let tags: Vec<u32> = sent.iter().map(|(t, _)| *t).collect();
+    let at = |tag: u32| tags.iter().position(|t| *t == tag).unwrap();
+    assert!(at(6122) < at(8402), "after the origin: {tags:?}");
+}
+
+// A limit order at a price of 0 goes without its price.
+#[test]
+fn limit_order_at_zero_is_written_without_its_price() {
+    let mut engine = Engine::start();
+    engine.client.place_order(REFUSED, &aapl(), &Order { lmt_price: 0.0, ..order("LMT") }).unwrap();
+    let frames = engine.orders(1);
+    let sent = frames.iter().find(|f| field(f, 6121) == Some("7")).expect("the order is sent");
+    assert_eq!(field(sent, 44), None, "{sent:?}");
 }

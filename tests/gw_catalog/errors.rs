@@ -31,6 +31,11 @@ const OBSERVED_TEXTS: &[(i64, &str, &str)] = &[
         "a goodTillDate that cannot be read (ibx#548, paper 11/10/2026)"),
     (200, "The contract description specified for %s is ambiguous.",
         "a tick-by-tick request with no exchange whose contract is listed on several exchanges (ibx#702, paper 15/10/2026)"),
+    (148, "Conditional submission of orders is supported for Limit, Market, MidPrice, Relative and Snap order types only. Conditional cancellation of orders is supported for Limit, MidPrice, IBAlgo - Limit order types only.",
+        "the two sentences joined by one space (ibx#688, paper 17/10/2026)"),
+    (401, "OCA Group", "an OCA group name longer than 64 characters (ibx#688, paper 17/10/2026)"),
+    (2181, "Warning: The 'OptOutFromSmartRouting' order attribute is not supported.",
+        "opting out of smart routing, with \"Warning: \" before the text (ibx#688, paper 17/10/2026)"),
 ];
 
 /// One place where ibx raises an error.

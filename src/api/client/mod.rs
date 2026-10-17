@@ -347,6 +347,14 @@ impl EClient {
         self.core.track_order(order_id, contract, order, instrument);
     }
 
+    /// Mark a tracked order as answered by the server (for testing
+    /// without a server answer): placed again, it is a modify (ibx#688).
+    #[cfg(any(test, feature = "test-support"))]
+    #[doc(hidden)]
+    pub fn order_answered_for_test(&self, order_id: OrderId) {
+        self.core.update_order_status(order_id, "Submitted", 0.0, 1.0);
+    }
+
     /// Pre-seed a con_id → InstrumentId mapping (for testing without a live engine).
     #[doc(hidden)]
     pub fn seed_instrument(&self, con_id: i64, instrument: InstrumentId) {

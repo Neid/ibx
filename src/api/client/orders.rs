@@ -185,6 +185,9 @@ impl EClient {
         if !self.core.carry_deferred_checks(oid, &mut cmd, deferred, &self.shared) {
             return Ok(());
         }
+        // A rule checked once the contract is known that keeps the order
+        // for its cancel (ibx#688).
+        self.core.carry_kept_refusal(&mut cmd, order);
         built.push(cmd);
         self.core.cache_contract(contract.con_id, contract.clone());
         if order.what_if {

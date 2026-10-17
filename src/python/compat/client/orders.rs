@@ -169,6 +169,9 @@ impl EClient {
         if !self.core.carry_deferred_checks(oid, &mut cmd, deferred, &shared) {
             return Ok(());
         }
+        // A rule checked once the contract is known that keeps the order
+        // for its cancel (ibx#688).
+        self.core.carry_kept_refusal(&mut cmd, api_order);
         built.push(cmd);
 
         // Track order in shared core

@@ -1600,6 +1600,16 @@ impl Contract {
             description: self.description.clone(),
             issuer_id: self.issuer_id.clone(),
             combo_legs_descrip: self.combo_legs_descrip.clone(),
+            // Read for the order rules (ibx#688): any object with the
+            // official class's attributes.
+            delta_neutral_contract: Python::attach(|py| {
+                let d = self.delta_neutral_contract.bind(py);
+                (!d.is_none()).then(|| crate::api::types::DeltaNeutralContract {
+                    con_id: attr(d, "conId", "con_id").unwrap_or(0),
+                    delta: attr(d, "delta", "delta").unwrap_or(0.0),
+                    price: attr(d, "price", "price").unwrap_or(0.0),
+                })
+            }),
             ..Default::default()
         }
     }

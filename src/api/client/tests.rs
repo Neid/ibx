@@ -574,6 +574,7 @@ fn place_order_adjustable_stop_child_keeps_parent_oca_and_tif() {
         tif: "GTC".into(),
         ..Default::default()
     };
+    known_parent(&client, 100);
     client.place_order(101, &spy(), &order).unwrap();
 
     match rx.try_recv().unwrap() {
@@ -670,7 +671,8 @@ fn place_order_stop_with_parent_and_gtc_uses_submit_ex() {
         aux_price: 240.0, tif: "GTC".into(), parent_id: 42,
         oca_group: "77".into(), ..Default::default()
     };
-    client.place_order(1, &spy(), &order).unwrap();
+    known_parent(&client, 42);
+    client.place_order(43, &spy(), &order).unwrap();
 
     let cmd = rx.try_recv().unwrap();
     match cmd {
@@ -1357,6 +1359,8 @@ fn place_order_type_aliases() {
         shared.market.set_instrument_count(1);
         client.place_order(1, &spy(), &order(alias)).unwrap();
         client.place_order(2, &spy(), &order(name)).unwrap();
+        acked(&client, 1);
+        acked(&client, 2);
         let a = format!("{:?}", rx.try_recv().unwrap()).replacen("order_id: 1", "order_id: 2", 1);
         let b = format!("{:?}", rx.try_recv().unwrap());
         assert_eq!(a, b, "{alias}");
@@ -1801,6 +1805,7 @@ fn place_order_algo_bracket_child_keeps_parent_oca_and_tif() {
         parent_id: 100, oca_group: "BR1".into(), tif: "GTC".into(),
         ..Default::default()
     };
+    known_parent(&client, 100);
     client.place_order(101, &spy(), &order).unwrap();
     match rx.try_recv().unwrap() {
         ControlCommand::Order(OrderRequest::SubmitLimitEx { tif, attrs, .. }) => {
@@ -4069,6 +4074,8 @@ fn modify_limit_order_price_via_resubmit() {
     };
     client.place_order(80, &spy(), &order).unwrap();
     while rx.try_recv().is_ok() {}
+    // The server answered it: a modify, no longer a new order (ibx#688).
+    acked(&client, 80);
 
     let modified = Order {
         action: "BUY".into(), total_quantity: 100.0,
@@ -4101,7 +4108,10 @@ fn modify_order_before_ack_no_panic() {
     }
     let mut count = 0;
     while rx.try_recv().is_ok() { count += 1; }
-    assert!(count >= 10, "All modify attempts should send commands, got {}", count);
+    // Placed again before the server answered it: 103 each time, as the
+    // reference (ibx#688, paper 17/10/2026).
+    assert_eq!(count, 1, "the first order only");
+    assert_eq!(shared.orders.drain_order_errors().iter().filter(|e| e.1 == 103).count(), 9);
 }
 
 #[test]
@@ -4164,6 +4174,9 @@ fn rapid_modify_multiple_prices_no_crash() {
             ..Default::default()
         };
         let _ = client.place_order(77, &spy(), &order);
+        if i == 0 {
+            acked(&client, 77);
+        }
     }
     let mut order_count = 0;
     while let Ok(cmd) = rx.try_recv() {
@@ -4183,6 +4196,8 @@ fn modify_tif_day_to_gtc_via_resubmit() {
     };
     client.place_order(88, &spy(), &order).unwrap();
     while rx.try_recv().is_ok() {}
+    // The server answered it: a modify, no longer a new order (ibx#688).
+    acked(&client, 88);
 
     let modified = Order {
         action: "BUY".into(), total_quantity: 100.0,
@@ -4214,6 +4229,8 @@ fn modify_price_and_qty_simultaneously() {
     };
     client.place_order(55, &spy(), &order).unwrap();
     while rx.try_recv().is_ok() {}
+    // The server answered it: a modify, no longer a new order (ibx#688).
+    acked(&client, 55);
 
     let modified = Order {
         action: "BUY".into(), total_quantity: 200.0,
@@ -4251,6 +4268,8 @@ fn modify_of_side_or_oca_is_refused_before_sending() {
         shared.market.set_instrument_count(1);
         client.place_order(70, &spy(), &placed).unwrap();
         while rx.try_recv().is_ok() {}
+        // The server answered it: a modify, no longer a new order (ibx#688).
+        acked(&client, 70);
         client.place_order(70, &spy(), &modified).unwrap();
         assert!(rx.try_recv().is_err(), "{code}: no replace is sent");
         assert_eq!(shared.orders.drain_order_errors(), [(70, code, text.to_string())]);
@@ -4268,6 +4287,7 @@ fn modify_of_side_or_oca_is_refused_before_sending() {
         shared.market.set_instrument_count(1);
         client.place_order(71, &spy(), &placed).unwrap();
         while rx.try_recv().is_ok() {}
+        acked(&client, 71);
         client.place_order(71, &spy(), &modified).unwrap();
         assert!(rx.try_iter().any(|c| matches!(c, ControlCommand::Order(OrderRequest::Modify { order_id: 71, .. }))));
         assert!(shared.orders.drain_order_errors().is_empty());
@@ -4296,6 +4316,8 @@ fn modify_must_restate_the_held_overnight_time_in_force() {
         shared.market.set_instrument_count(1);
         client.place_order(72, &spy(), &lmt(tif, include_overnight, 600.0)).unwrap();
         while rx.try_recv().is_ok() {}
+        // The server answered it: a modify, no longer a new order (ibx#688).
+        acked(&client, 72);
         assert_eq!(client.core.tracked_order(72).map(|o| o.tif).as_deref(), Some(held), "{tif}");
 
         // The placed time in force again: refused, nothing sent.
@@ -4374,6 +4396,8 @@ fn modify_type_change_gets_329_and_a_side_change_105_first() {
         };
         client.place_order(57, &spy(), &placed).unwrap();
         while rx.try_recv().is_ok() {}
+        // The server answered it: a modify, no longer a new order (ibx#688).
+        acked(&client, 57);
         let stp = Order {
             action: action.into(), total_quantity: 1.0, order_type: "STP".into(), aux_price: 195.0, ..Default::default()
         };
@@ -4395,6 +4419,8 @@ fn modify_order_type_lmt_to_stp() {
     };
     client.place_order(66, &spy(), &order).unwrap();
     while rx.try_recv().is_ok() {}
+    // The server answered it: a modify, no longer a new order (ibx#688).
+    acked(&client, 66);
 
     let modified = Order {
         action: "BUY".into(), total_quantity: 100.0,
@@ -4436,6 +4462,8 @@ fn modify_of(first: Order, second: Order) -> (u32, OrderKind, u8, OrderAttrs) {
     shared.market.set_instrument_count(1);
     client.place_order(90, &spy(), &first).unwrap();
     while rx.try_recv().is_ok() {}
+    // The server answered it: a modify, no longer a new order (ibx#688).
+    acked(&client, 90);
     client.place_order(90, &spy(), &second).unwrap();
     match rx.try_recv().unwrap() {
         ControlCommand::Order(OrderRequest::Modify { order_id: 90, qty, kind, tif, attrs, .. }) => (qty, kind, tif, attrs),
@@ -5275,6 +5303,19 @@ fn placed_order(client: &EClient, shared: &Arc<SharedState>, id: i64) {
     client.place_order(id, &spy(), &order).unwrap();
 }
 
+/// The server answered order `id` (ibx#688): placed again, it is a modify.
+fn acked(client: &EClient, id: i64) {
+    client.core.update_order_status(id, "Submitted", 0.0, 1.0);
+}
+
+/// An order `id` this client placed and the server answered: a parent
+/// a child can name (ibx#688).
+fn known_parent(client: &EClient, id: i64) {
+    let parent = Order { action: "BUY".into(), total_quantity: 1.0, order_type: "LMT".into(), lmt_price: 100.0, ..Default::default() };
+    client.core.track_order(id, spy(), parent, 0);
+    acked(client, id);
+}
+
 // Every report of a known order gives open_order then order_status, also
 // when the status is unchanged (a modify confirm).
 #[test]
@@ -5314,6 +5355,7 @@ fn a_refused_pending_order_is_listed_with_its_status_only() {
 fn the_preset_time_in_force_is_the_orders() {
     let (client, rx, shared) = test_client();
     placed_order(&client, &shared, 63);
+    acked(&client, 63);
     shared.orders.push_order_error(63, 10349, "Order TIF was set to GTC based on order preset.".into());
     let mut w = StatusRecorder::default();
     client.process_msgs(&mut w);

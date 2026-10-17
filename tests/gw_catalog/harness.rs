@@ -152,6 +152,38 @@ impl Engine {
         self.ccp.send_fix(&reply);
     }
 
+    /// Answer the new order `id` as the server does once it took it (New),
+    /// and let the client read the answer: placed again, the order is then
+    /// a modify (ibx#688). An order this server does not get (a combo,
+    /// whose legs it does not answer) is marked answered in the client.
+    pub fn answer_order(&mut self, id: i64) {
+        let id_text = id.to_string();
+        let deadline = Instant::now() + Duration::from_secs(1);
+        let clord = loop {
+            self.read();
+            if let Some(c) = self.orders.iter().find(|f| field(f, 6121) == Some(id_text.as_str())).and_then(|f| field(f, 11)) {
+                break c.to_string();
+            }
+            if Instant::now() >= deadline {
+                self.client.order_answered_for_test(id);
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        };
+        self.ccp.send_fix(&[
+            (35, "8"), (11, clord.as_str()), (17, "1.1.0"), (150, "0"), (20, "0"), (39, "0"),
+            (167, "CS"), (55, "AAPL"), (38, "1"), (44, "100"), (32, "0"), (31, "0.00"), (14, "0"),
+            (151, "1"), (6, "0"), (54, "1"), (37, "1"), (1, "DUXXXXXXX"), (40, "2"), (6121, id_text.as_str()),
+            (6119, "39"), (59, "0"), (6008, "265598"), (15, "USD"),
+        ]);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !self.callbacks().iter().any(|c| c.contains(&format!(":{id}:")) || c.contains(&format!("({id}")))
+            && Instant::now() < deadline
+        {
+            std::thread::sleep(Duration::from_millis(2));
+        }
+    }
+
     /// The callbacks the API client got since the last call.
     pub fn callbacks(&self) -> Vec<String> {
         let mut w = RecordingWrapper::default();

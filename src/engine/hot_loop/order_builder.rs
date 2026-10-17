@@ -179,6 +179,11 @@ fn send_orders(
         if hedge_max_size_refusal(&order_req, context, shared) {
             continue;
         }
+        // A refusal the client decided, once the contract is known: the
+        // order kept for its cancel (ibx#688).
+        if kept_refusal(&mut order_req, context, shared) {
+            continue;
+        }
         // The time zones the client could not check: against the zone of
         // the contract's trading hours, once they came; the order waits for
         // them when they were asked (ibx#668; the reference 10.51, paper,
@@ -2387,9 +2392,15 @@ fn send_new_order(
     // observed 07/10 and 13/10/2026, AAPL for FOXRIVER).
     let algo_destination = field(fields, 100)
         .is_some_and(|d| context.algo_providers.iter().any(|p| p.eq_ignore_ascii_case(d)));
+    // A limit order at a price of 0 goes without its price, as the
+    // reference writes it (ibx#688; the reference 10.51, paper, 17/10/2026,
+    // market closed: an AAPL limit order at 0, the server's answer naming
+    // the missing price). A combo keeps its price, which may be 0.
+    let zero_limit = field(fields, 40) == Some("2") && context.combo_send.is_none();
     let mut out: Vec<(u32, &str)> = Vec::with_capacity(fields.len() + short_sale.len() + 10);
     for &(tag, value) in fields {
         match (tag, what_if) {
+            (44, _) if zero_limit && value.parse::<f64>().is_ok_and(|p| p == 0.0) => {}
             (100, _) if algo_destination => out.push((100, "BEST")),
             (38, _) if cash_qty.is_some() => out.push((38, cash_qty.as_deref().unwrap_or(value))),
             // A fund order goes with a quantity of 1, its amount in the cash
@@ -2591,6 +2602,9 @@ pub(crate) fn reference_rank(tag: u32) -> u16 {
         // the reference's frames of 12/10/2026; route marketable to BBO
         // with it (ibx#608).
         6557 | 8265 => 94,
+        // The duration of a GTD order, before the price management flag as
+        // in the reference's frame of 17/10/2026 (ibx#688).
+        8402 => 94,
         // The price management flag, most often last of the attributes in
         // the reference's frames (captures of 28/09 and 01/10/2026).
         8339 => 95,
@@ -2652,6 +2666,23 @@ fn hedge_max_size_refusal(req: &OrderRequest, context: &mut Context, shared: &Ar
     log::warn!("Hedge order {} refused: no max size", oid);
     shared.orders.push_order_error(oid, 10364, "Max Hedging Size value must be defined for the hedge order.".into());
     context.unsent.insert(oid, (instrument, req.new_order_qty().unwrap_or(0), attrs.parent_id));
+    true
+}
+
+/// A new order the client found refused by a rule the reference checks
+/// once the contract is known (`ClientCore::kept_refusal`, ibx#688): its
+/// error, nothing sent; the order is kept for its cancel, which ends it as
+/// an order never sent (Cancelled, 202, 161).
+fn kept_refusal(req: &mut OrderRequest, context: &mut Context, shared: &Arc<SharedState>) -> bool {
+    let Some(instrument) = req.instrument() else { return false };
+    let qty = req.new_order_qty().unwrap_or(0);
+    let Some(attrs) = req.new_order_attrs_mut() else { return false };
+    let Some((code, text)) = attrs.kept_refusal.take() else { return false };
+    let oid = req.order_id();
+    log::warn!("Order {} refused: {}", oid, code);
+    shared.orders.push_order_error(oid, code, text);
+    let parent = req.new_order_side().and_then(|(_, a)| a).map_or(0, |a| a.parent_id);
+    context.unsent.insert(oid, (instrument, qty, parent));
     true
 }
 
@@ -5334,6 +5365,10 @@ fn push_extended_attrs(
     if attrs.ignore_open_auction { fields.push((6562, "1".to_string())); }
     if attrs.post_only { fields.push((6605, "1".to_string())); }
     if attrs.deactivate { fields.push((6521, "1".to_string())); }
+    // The duration of a GTD order (the reference 10.51, paper, 17/10/2026,
+    // market closed: 3600 written after the origin, before the price
+    // management flag; ibx#688).
+    if let Some(d) = attrs.duration { fields.push((8402, d.to_string())); }
     // Seek price improvement, and route marketable to BBO where the
     // precaution let it through (ibx#608, paper 12/10/2026).
     if attrs.seek_price_improvement { fields.push((6557, "1".to_string())); }

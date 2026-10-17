@@ -540,6 +540,13 @@ pub struct OrderAttrs {
     /// Work the order in the overnight session too (API includeOvernight),
     /// sent as an order attribute (ibx#467).
     pub include_overnight: bool,
+    /// The API duration in seconds of a GTD order, sent as an order
+    /// attribute (ibx#688); None when not set.
+    pub duration: Option<i32>,
+    /// A refusal the client decided for a new order (ibx#688): the engine
+    /// gives it once the contract is known and keeps the order for its
+    /// cancel, as one never sent.
+    pub kept_refusal: Option<(i64, String)>,
     /// The API postOnly, allowPreOpen, ignoreOpenAuction and deactivate,
     /// sent as order attributes where they apply (ibx#607).
     pub post_only: bool,

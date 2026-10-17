@@ -1544,17 +1544,17 @@ local_rule,10342-1,10342 rules: imbalanceOnly set and the attribute list does no
 local_rule,10274-1,10274 rules: postToAts set and the attribute list does not allow it,open #688
 local_rule,168-1,168 read: discretionaryAmt < 0,tests/gw_catalog/refusals.rs::negative_discretionary_amount
 local_rule,313-1,313 read: a combo leg cannot be read,open #688
-local_rule,409-1,409 read: message versions 22 to 25 only: old scale component count > 0,open #688
-local_rule,429-1,429 read: deltaNeutralContract given without combo legs,open #688
-local_rule,10027-1,10027 check: a smartComboRoutingParams tag is not one of the allowed tags; the tag list is read with the request but refused at the first checks,open #688
+local_rule,409-1,409 read: message versions 22 to 25 only: old scale component count > 0,open #739
+local_rule,429-1,429 read: deltaNeutralContract given without combo legs,tests/gw_catalog/refusals.rs::delta_neutral_contract_without_combo_legs
+local_rule,10027-1,10027 check: a smartComboRoutingParams tag is not one of the allowed tags; the tag list is read with the request but refused at the first checks,tests/gw_catalog/refusals.rs::unknown_combo_routing_tag
 local_rule,10057-1,10057 read: number of per-leg prices not 0 and not the number of legs,tests/gw_catalog/refusals.rs::per_leg_prices_not_one_per_leg
 local_rule,10060-1,10060 read: trailingPercent and auxPrice both set (for trailing types auxPrice 0 counts as unset),tests/gw_catalog/refusals.rs::trailing_percent_with_a_trailing_amount
 local_rule,10105-1,10105 read: side SELL LONG and shortSaleSlot not -100,open #688
-local_rule,10300-1,10300 read: manualOrderTime not a date and time,open #688
+local_rule,10300-1,10300 read: manualOrderTime not a date and time,tests/gw_catalog/refusals.rs::manual_order_time_not_readable
 local_rule,10314-1,10314 read: the time of a time condition is not a date and time,tests/gw_catalog/refusals.rs::time_condition_not_a_time
-local_rule,10315-1,10315 read: activeStartTime / activeStopTime not in the hh:mm:ss form,open #688
-local_rule,10316-1,10316 read: message version < 24 with the old outsideRth / trigger flag,open #688
-local_rule,10340-1,10340 read: externalUserId / manualOrderIndicator from client versions 187 to 189,open #688
+local_rule,10315-1,10315 read: activeStartTime / activeStopTime not in the hh:mm:ss form,tests/gw_catalog/refusals.rs::active_time_not_a_time
+local_rule,10316-1,10316 read: message version < 24 with the old outsideRth / trigger flag,open #739
+local_rule,10340-1,10340 read: externalUserId / manualOrderIndicator from client versions 187 to 189,open #739
 local_rule,10354-1,10354 read: new request form: attachedOrders given and the server feature that forbids attaching in one request is on,tests/gw_catalog/refusals.rs::attached_orders_not_in_one_request
 local_rule,10356-1,"10356 read: new request form: attachedOrders with a stop-loss order id but no stop-loss type PRESET, or the reverse",tests/gw_catalog/refusals.rs::attached_stop_loss_without_its_type
 local_rule,10356-2,"10356 read: new request form: attachedOrders with a profit-taker order id but no profit-taker type PRESET, or the reverse",tests/gw_catalog/refusals.rs::attached_profit_taker_without_its_id
@@ -1564,9 +1564,9 @@ local_rule,452-1,452 check: exchange empty,tests/gw_catalog/refusals.rs::order_w
 local_rule,10052-1,"10052 check: time in force OVERNIGHT or OVERNIGHT + DAY, or includeOvernight set with a time in force other than DAY, or a time in force text that is not known; the error is sent and the request goes on (classic request form)",tests/gw_catalog/refusals.rs::time_in_force_not_known_or_not_day_overnight
 local_rule,10052-2,"10052 check: new request form: time in force OVERNIGHT or OVERNIGHT + DAY, or includeOvernight set with a time in force other than DAY, or a time in force text that is not known; the request is refused",open #602
 local_rule,10052-3,"10052 check: new request form, client version 215 or above, server feature that requires a time in force on, and the time in force is empty",open #602
-local_rule,10272-1,10272 check: duration set with a time in force other than GTD,open #688
-local_rule,10273-1,10273 check: GTD with both an expiration date and time and a duration,open #688
-local_rule,391-1,"391 check: GTD with neither an expiration date and time nor a duration; the text is the date and time message with 'End Time' as the field name, not the message of 391",open #688
+local_rule,10272-1,10272 check: duration set with a time in force other than GTD,tests/gw_catalog/refusals.rs::duration_without_gtd
+local_rule,10273-1,10273 check: GTD with both an expiration date and time and a duration,tests/gw_catalog/refusals.rs::gtd_with_an_end_time_and_a_duration
+local_rule,391-1,"391 check: GTD with neither an expiration date and time nor a duration; the text is the date and time message with 'End Time' as the field name, not the message of 391",tests/gw_catalog/refusals.rs::gtd_without_an_end_time_or_a_duration
 local_rule,10244-1,"10244 check: crypto order with a cash quantity where none is allowed: a LMT order, or a MKT SELL order",open #666
 local_rule,10289-1,10289 check: crypto MKT BUY order without a cash quantity,open #666
 local_rule,10052-4,"10052 check: crypto BUY order whose time in force is not allowed for crypto (IOC or minutes, and with a server feature off also DAY, GTC, GTD); text = the time in force after a colon (the plain message when the time in force is empty)",open #666
@@ -1575,7 +1575,7 @@ local_rule,10040-1,10040 check: the broker's own ATS destination with an unknown
 local_rule,10372-1,"10372 check: lastTradeDateOrContractMonth not empty and neither an expiry form, nor yyyyMM, nor yyyyMMdd",tests/gw_catalog/refusals.rs::contract_month_not_readable
 local_rule,477-1,477 check: CASH pseudo-FX destination not allowed for the account,open #688
 local_rule,498-1,"498 check: side SSHORTX or a short combo leg, feature off",tests/gw_catalog/refusals.rs::sshortx_not_supported
-local_rule,160-1,"160 check: size 0 (not QUOTE, no FA sizing, not hedge child, no cash quantity), and (new in 10.51) the destination is not AVGCOST",open #688
+local_rule,160-1,"160 check: size 0 (not QUOTE, no FA sizing, not hedge child, no cash quantity), and (new in 10.51) the destination is not AVGCOST",tests/gw_catalog/refusals.rs::size_zero
 local_rule,355-1,"355 check: quantity out of range (> 999,999,999 or < 0)",tests/gw_catalog/refusals.rs::quantity_out_of_range
 local_rule,321-2,"321 check: the order type needs a stop or trigger price and auxPrice is unset: STP, STP LMT, STP PRT ('stop price'), TRAIL LIMIT ('trailing stop price'), and (new in 10.51) LIT, MIT ('trigger price'), TRAIL LIT ('trailing trigger price')",tests/gw_catalog/refusals.rs::trail_limit_without_a_stop_price ; tests/gw_catalog/refusals.rs::stop_order_without_a_stop_price
 local_rule,146-1,"146 check: triggerMethod not in 0, 1, 2, 3, 4, 7, 8",tests/gw_catalog/refusals.rs::trigger_method_not_the_gateways
@@ -1619,7 +1619,7 @@ local_rule,10081-1,10081 check: custom SMART strategy invalid,open #688
 local_rule,10100-1,"10100 check: combo hedging strategy, non-cleared account",open #688
 local_rule,10099-1,10099 check: parent hedged with a combination order,open #688
 local_rule,10131-1,10131 check: RTH flag on BAG or PDC,open #688
-local_rule,10075-1,10075 check: PEG BENCH with referenceContractId <= 0,open #688
+local_rule,10075-1,10075 check: PEG BENCH with referenceContractId <= 0,tests/gw_catalog/refusals.rs::pegged_to_benchmark_without_its_reference
 local_rule,362-1,362 check: adjusted stop price invalid,open #688
 local_rule,363-1,363 check: adjusted stop-limit price invalid,open #688
 local_rule,403-1,"403 check: STP, STP PRT, STP LMT, TRAIL LIMIT with auxPrice invalid",tests/gw_catalog/refusals.rs::stop_order_with_a_stop_price_not_a_number
@@ -1630,8 +1630,8 @@ local_rule,10210-1,10210 check: MIDPRICE with outsideRth true,tests/gw_catalog/r
 local_rule,10274-2,10274 check: postToAts out of range,open #688
 local_rule,10315-2,10315 check: time algo parameter bad value,tests/gw_catalog/refusals.rs::own_algo_active_time_not_a_time
 local_rule,10341-1,10341 check: orderId already live with another parentId,open #688
-local_rule,135-1,135 check: parent order id not found; text = the parent id after the message,open #688
-local_rule,417-1,417 check: scale initial component size vs total size,open #688
+local_rule,135-1,135 check: parent order id not found; text = the parent id after the message,tests/gw_catalog/refusals.rs::child_of_an_unknown_parent
+local_rule,417-1,417 check: scale initial component size vs total size,tests/gw_catalog/refusals.rs::scale_first_component_above_the_order
 local_rule,145-2,145 check: customerAccount set and the account configuration does not allow a customer account,tests/gw_catalog/refusals.rs::customer_account_without_the_account_config
 local_rule,145-3,145 check: professionalCustomer true and the account configuration does not allow it,tests/gw_catalog/refusals.rs::professional_customer_without_the_account_config
 local_rule,10051-1,10051 check: postOnly set and the order type does not support post-only,tests/gw_catalog/refusals.rs::post_only_on_a_market_order
@@ -1653,17 +1653,17 @@ local_rule,103-1,103 flow: orderId not in the order table and not above the high
 local_rule,10149-2,10149 flow: new request form: the order id or an attached order id is not a known order and not a valid id,tests/gw_catalog/refusals.rs::attached_order_id_zero
 local_rule,103-2,103 flow: new request form: the order id or an attached order id is not a known order and not above the highest used,tests/gw_catalog/refusals.rs::attached_order_id_below_the_highest_used
 local_rule,103-3,103 flow: new request form: the order id and the attached order ids are not all different,tests/gw_catalog/refusals.rs::attached_order_ids_not_all_different
-local_rule,10268-1,10268 flow: eTradeOnly set with the feature on,open #688
-local_rule,10269-1,10269 flow: firmQuoteOnly set with the feature on,open #688
-local_rule,10270-1,10270 flow: nbboPriceCap set with the feature on,open #688
-local_rule,10348-1,10348 flow: optOutSmartRouting set with the feature on,open #688
-local_rule,2168-1,"2168 flow: warning, order sent: eTradeOnly set, feature off, attribute cleared",open #688
-local_rule,2169-1,"2169 flow: warning, order sent: firmQuoteOnly set, feature off",open #688
-local_rule,2170-1,"2170 flow: warning, order sent: nbboPriceCap set, feature off",open #688
-local_rule,2181-1,"2181 flow: warning, order sent: optOutSmartRouting set, feature off",open #688
+local_rule,10268-1,10268 flow: eTradeOnly set with the feature on,open #739
+local_rule,10269-1,10269 flow: firmQuoteOnly set with the feature on,open #739
+local_rule,10270-1,10270 flow: nbboPriceCap set with the feature on,open #739
+local_rule,10348-1,10348 flow: optOutSmartRouting set with the feature on,open #634
+local_rule,2168-1,"2168 flow: warning, order sent: eTradeOnly set, feature off, attribute cleared",open #739
+local_rule,2169-1,"2169 flow: warning, order sent: firmQuoteOnly set, feature off",open #739
+local_rule,2170-1,"2170 flow: warning, order sent: nbboPriceCap set, feature off",open #739
+local_rule,2181-1,"2181 flow: warning, order sent: optOutSmartRouting set, feature off",tests/gw_catalog/refusals.rs::opt_out_of_smart_routing_is_a_warning
 local_rule,2184-1,"2184 flow: warning, order sent: FA session, the order has an allocation group, and the allocation warning was not acknowledged before (shown once, then remembered in the settings); text ends with a link",open #507
 local_rule,2102-1,"2102 flow: a new order whose id is still pending: warning code, order not sent",open #688
-local_rule,2139-1,"2139 flow: warning, order sent",open #688
+local_rule,2139-1,"2139 flow: warning, order sent",open #739
 local_rule,2146-1,"2146 flow: warning, order sent: order id too high",open #688
 local_rule,10318-1,10318 build: fractional quantity not supported for the contract / order,open #688
 local_rule,10208-1,10208 build: stock size with more decimals than allowed,open #688
@@ -1673,7 +1673,7 @@ local_rule,464-3,464 build: invalid exchange,open #688
 local_rule,10080-1,10080 build: custom SMART strategy not supported,open #688
 local_rule,10031-1,10031 build: hedge child with a limit price,tests/gw_catalog/refusals.rs::hedge_with_a_limit_price
 local_rule,10032-1,10032 build: hedge child with a size,tests/gw_catalog/refusals.rs::hedge_with_a_size
-local_rule,10063-1,10063 build: invalid FX hedge,open #688
+local_rule,10063-1,10063 build: invalid FX hedge,tests/gw_catalog/refusals.rs::fx_hedge_not_on_a_currency_pair
 local_rule,10195-1,10195 build: use-parent-price parameters invalid,open #688
 local_rule,463-1,463 build: no valid price,open #688
 local_rule,388-1,388 build: size below the minimum size,open #688
@@ -1694,8 +1694,8 @@ local_rule,442-2,442 build: algo not allowed for the order,src/control/algo.rs::
 local_rule,10314-2,10314 build: a time algo parameter is not a date and time,src/control/algo.rs::time_parameters_are_read_as_dates
 local_rule,10235-1,10235 rules: MiFID account and no Decision Maker,open #425
 local_rule,402-1,402 rules: conditions not allowed for the instrument,open #688
-local_rule,148-1,"148 rules: conditions on an order type other than LMT, MKT, MIDPRICE, REL, SNAP",open #688
-local_rule,148-2,148 rules: conditionsCancelOrder on an order type other than LMT or MIDPRICE,open #688
+local_rule,148-1,"148 rules: conditions on an order type other than LMT, MKT, MIDPRICE, REL, SNAP",tests/gw_catalog/refusals.rs::conditions_on_an_order_type_without_them
+local_rule,148-2,148 rules: conditionsCancelOrder on an order type other than LMT or MIDPRICE,tests/gw_catalog/refusals.rs::conditions_on_an_order_type_without_them
 local_rule,398-1,"398 rules: condition trigger error (time condition without time, ...)",open #688
 local_rule,10051-2,10051 rules: unknown order type,tests/gw_catalog/refusals.rs::order_type_not_known
 local_rule,10052-8,10052 rules: TIF not valid,open #688
@@ -1705,27 +1705,27 @@ local_rule,10166-1,"10166 rules: destination not valid for the contract and the 
 local_rule,412-1,412 rules: contract not tradable,open #688
 local_rule,154-1,154 rules: halted security,open #688
 local_rule,107-1,107 rules: incomplete order,open #688
-local_rule,328-1,328 rules: trailing child on a parent that is not LMT or STP LMT,open #688
-local_rule,401-1,401 rules: OCA name over 64 characters,open #688
+local_rule,328-1,328 rules: trailing child on a parent that is not LMT or STP LMT,tests/gw_catalog/refusals.rs::trailing_stop_under_a_stop_parent
+local_rule,401-1,401 rules: OCA name over 64 characters,tests/gw_catalog/refusals.rs::oca_group_name_too_long
 local_rule,461-1,461 rules: size not a multiple of the lot,open #688
 local_rule,10098-1,10098 rules: SNAP order with a negative offset,open #688
 local_rule,2137-1,"2137 rules: closing order larger than the position: warning code, order refused",open #688
 local_rule,10132-2,10132 rules: read-only account,open #688
 local_rule,10361-1,10361 rules: VOL order whose volatility is below the minimum of its volatility type,open #673
 local_rule,10364-1,10364 rules: an attached hedge child of the kind that takes a maximum hedge size has none,tests/gw_catalog/refusals.rs::selling_beta_hedge_without_a_max_size
-local_rule,10365-1,10365 rules: the maximum hedge size of such a hedge child is below its filled quantity,open #688
+local_rule,10365-1,10365 rules: the maximum hedge size of such a hedge child is below its filled quantity,open #602
 local_rule,10355-1,10355 rules: new request form: attachedOrders asks for a profit taker and the order preset has none; order dropped,tests/gw_catalog/refusals.rs::attached_from_a_preset_without_them
 local_rule,10355-2,10355 rules: new request form: attachedOrders asks for a stop loss and the order preset has none; order dropped,tests/gw_catalog/refusals.rs::attached_from_a_preset_without_them
 local_rule,10349-1,"10349 rules: notice, order still sent: API order whose time in force was taken from the order preset",tests/gw_catalog/refusals.rs::time_in_force_from_the_order_preset
 local_rule,10353-1,"10353 rules: API order with routeMarketableToBbo set and the API precaution 'Bypass Route Marketable to BBO Warning' off: warning code, order discarded",tests/gw_catalog/refusals.rs::route_marketable_to_bbo_without_the_bypass
-local_rule,2185-1,"2185 rules: a hedge child of the kind that takes a maximum hedge size, with a maximum below the computed hedge size, hedge-size precaution on: warning code, order refused",open #688
+local_rule,2185-1,"2185 rules: a hedge child of the kind that takes a maximum hedge size, with a maximum below the computed hedge size, hedge-size precaution on: warning code, order refused",open #602
 local_rule,104-1,"104 modify: modify of an order that is filled, cancelled or with a cancel pending",src/client_core.rs::place_on_a_cancelled_order_id_is_refused ; src/engine/hot_loop/order_builder.rs::modify_of_an_order_the_engine_no_longer_holds_is_refused
 local_rule,105-1,105 modify: modified order does not match the original,tests/gw_catalog/refusals.rs::modify_of_the_side
 local_rule,329-1,329 modify: modify to another order type,tests/gw_catalog/refusals.rs::modify_to_another_order_type
 local_rule,462-1,462 modify: modify to another time in force,src/api/client/tests.rs::modify_must_restate_the_held_overnight_time_in_force
 local_rule,10326-1,10326 modify: OCA group changed,tests/gw_catalog/refusals.rs::modify_of_the_oca_group
 local_rule,10327-1,10327 modify: OCA type changed,tests/gw_catalog/refusals.rs::modify_of_the_oca_type
-local_rule,10273-2,10273 modify: modify of a GTD order where the new or the working order has an expiration date and time and the new or the working order has a duration,open #688
+local_rule,10273-2,10273 modify: modify of a GTD order where the new or the working order has an expiration date and time and the new or the working order has a duration,tests/gw_catalog/refusals.rs::modify_adding_a_duration_to_gtd
 local_rule,10059-1,10059 modify: combo modify with a leg the working order does not have,tests/gw_catalog/refusals.rs::combo_modify_with_another_leg
 local_rule,10147-1,10147 cancel: cancel of an order id that is not found,tests/gw_catalog/refusals.rs::cancel_of_an_unknown_order
 local_rule,10148-1,10148 cancel: cancel of an order in a state that cannot be cancelled,tests/gw_catalog/refusals.rs::cancel_of_an_order_with_a_cancel_pending

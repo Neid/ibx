@@ -524,6 +524,9 @@ impl Order {
             professional_customer: self.professional_customer,
             reference_exchange: self.reference_exchange_id.clone(),
             include_overnight: self.include_overnight,
+            duration: (self.duration != i32::MAX).then_some(self.duration),
+            // Set where the order is placed (`ClientCore::carry_kept_refusal`).
+            kept_refusal: None,
             // Not sent with the AccuDistr algo, as the reference (ibx#607,
             // paper 12/10/2026: the order accepted without it).
             post_only: self.post_only && !self.algo_strategy.eq_ignore_ascii_case("AccuDistr"),
@@ -635,6 +638,8 @@ impl Order {
             || self.exempt_code != -1
             // A usePriceMgmtAlgo the caller set (ibx#492).
             || self.use_price_mgmt_algo != i32::MAX
+            // A duration, sent as an order attribute (ibx#688).
+            || self.duration != i32::MAX
     }
 }
 
