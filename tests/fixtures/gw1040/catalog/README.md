@@ -4,7 +4,7 @@ The reference 10.40's error codes, order attributes, local order rules and order
 tests (ibx#485, `tests/gw_catalog.rs`). Every expected value of those tests comes from here, never from the ibx code.
 Made from 24/09/2026 to 03/10/2026, with the translation specs of the reference (order submit, modify, cancel, combo
 and local validation). The tests now read the 1051 tables where they exist (`tests/fixtures/gw1051/catalog/`); these
-stay for the 1040 recordings and for the order writers.
+stay for the 1040 recordings (all four have a 1051 table since 17/10/2026).
 
 ## Files
 

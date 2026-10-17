@@ -366,7 +366,12 @@ fn cases() -> Vec<Case> {
 }
 
 /// Cases with a known difference from the gateway, and the open issue.
-const OPEN: &[(&str, &str)] = &[];
+const OPEN: &[(&str, &str)] = &[
+    // The 10.51 new order writes, with the conditions, a third flag (the
+    // conditions include the overnight session, 0 or 1) between the two
+    // condition flags; ibx writes the two flags only.
+    ("SubmitEx with OCA, GTD and conditions", "ibx#726: the conditions' overnight flag of the 10.51 new order"),
+];
 
 /// The order id of each expected message of a case's requests: the ids
 /// of a bracket, the order a cancel-all or a cancel or replace is for.

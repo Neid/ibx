@@ -33,8 +33,8 @@ fn catalog_path(version: &str, name: &str) -> PathBuf {
 }
 
 /// The reference version a catalog file is read from: 10.51 when its 10.51
-/// table is made, else 10.40. The local rules (ibx#659) and the order
-/// writers have no 10.51 table yet.
+/// table is made, else 10.40. The four catalogs have a 10.51 table since
+/// 17/10/2026 (the order writers last, ibx#604).
 pub fn version_of(name: &str) -> &'static str {
     if catalog_path("gw1051", name).exists() { "gw1051" } else { "gw1040" }
 }

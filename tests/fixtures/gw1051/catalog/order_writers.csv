@@ -1,0 +1,986 @@
+msg,pos,tag,block,when,condition
+D,1,131,,never,RFQ order (no ClOrdID then)
+D,2,11,,always,not RFQ: ClOrdID {permId}.{version}
+D,3,131,,never,RFQ response record present
+D,4,8476,,never,second ClOrdID: never set for an API placeOrder
+D,5,44,,"flag:lmt_price & type_in:LMT,LOC,LIT,MIDPRICE,REL,RPI,PASSV REL,PEG BEST,PEG MID,PEG MKT,STP LMT,TRAIL LIMIT,TRAIL LIT,REL + LMT,BOX TOP",order type writes a limit price and the API lmtPrice is set
+D,6,6879,,flag:leg_prices,"combo per-leg prices (non-guaranteed, LMT or REL + LMT)"
+D,7,44,,type_in:VOL,VOL order: market-rule minimum
+D,8,44,,type_in:VOL,VOL order: limit price
+D,9,8262,,never,hedge child using the parent price
+D,10,99,,"flag:aux_price & type_not_in:VOL,PEG MID,REL","order type is not a vol peg, PEG MID or REL, and the stop / aux value is set"
+D,11,1,,always,no FA allocation: account (tag 440 for an institutional session)
+D,12,6700,,never,account has a model code
+D,13,8065,allocation,flag:fa_allocation,FA allocation of the order
+D,13,6160,allocation,flag:fa_allocation,FA allocation of the order
+D,13,6159,allocation,flag:fa_allocation,FA allocation of the order
+D,13,6700,allocation,flag:fa_allocation,FA allocation of the order
+D,13,6240,allocation,flag:fa_allocation,FA allocation of the order
+D,13,6164,allocation,flag:fa_allocation,FA allocation of the order
+D,13,8303,allocation,flag:fa_allocation,FA allocation of the order
+D,13,6806,allocation,flag:fa_allocation,FA allocation of the order
+D,13,6894,allocation,flag:fa_allocation,FA allocation of the order
+D,13,6895,allocation,flag:fa_allocation,FA allocation of the order
+D,14,6834,allocation,flag:fa_allocation,FA allocation of the order (second form)
+D,14,6835,allocation,flag:fa_allocation,FA allocation of the order (second form)
+D,14,6836,allocation,flag:fa_allocation,FA allocation of the order (second form)
+D,14,6936,allocation,flag:fa_allocation,FA allocation of the order (second form)
+D,14,6240,allocation,flag:fa_allocation,FA allocation of the order (second form)
+D,14,8303,allocation,flag:fa_allocation,FA allocation of the order (second form)
+D,14,6806,allocation,flag:fa_allocation,FA allocation of the order (second form)
+D,14,6894,allocation,flag:fa_allocation,FA allocation of the order (second form)
+D,14,6895,allocation,flag:fa_allocation,FA allocation of the order (second form)
+D,14,8291,allocation,flag:fa_allocation,FA allocation of the order (second form)
+D,15,126,,flag:gtd_time,GTD with a time
+D,16,432,,flag:gtd_date,GTD with a date only
+D,17,114,,flag:short_sale,short sale: slot
+D,18,114,,flag:short_sale,short sale: slot
+D,19,5700,,flag:short_sale,short sale: location
+D,20,6086,,flag:short_sale,short sale
+D,21,1688,,flag:short_sale,short sale: exempt code
+D,22,114,,never,"short sale, other account case"
+D,23,5700,,never,"short sale, other account case"
+D,24,6086,,never,"short sale, other account case"
+D,25,97,,never,PossResend
+D,26,6257,,flag:adjustable,adjustable stop: adjusted order type set
+D,27,6261,,flag:adjustable,adjustable stop: adjusted order type
+D,28,6258,,other,adjustable stop: trigger price when set
+D,29,6259,,other,adjustable stop: adjusted stop price when set
+D,30,6262,,other,adjustable stop: adjusted stop-limit price when set
+D,31,6260,,other,adjustable stop: adjusted trailing amount when set
+D,32,6117,,"flag:stop_price & type_in:STP,STP LMT,STP PRT,TRAIL,TRAIL LIMIT",stop types: the stop price (trailing types: on a new order or when it changed)
+D,33,12,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,13,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,18,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,22,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,48,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,63,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,66,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,67,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,68,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,77,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,110,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,111,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,152,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,168,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,440,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,583,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,851,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,1028,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,3950,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6010,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6095,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6102,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6115,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6117,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6122,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6133,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6135,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6148,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6149,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6150,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6152,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6153,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6154,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6205,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6207,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6232,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6248,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6268,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6269,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6275,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6279,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6280,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6281,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6282,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6283,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6284,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6285,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6286,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6287,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6289,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6290,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6291,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6365,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6370,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6377,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6390,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6391,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6403,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6405,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6406,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6407,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6408,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6412,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6433,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6434,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6437,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6438,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6441,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6445,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6446,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6447,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6448,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6449,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6450,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6458,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6459,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6460,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6461,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6467,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6468,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6480,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6485,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6486,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6487,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6488,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6489,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6506,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6516,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6519,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6521,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6524,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6526,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6527,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6531,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6532,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6534,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6535,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6547,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6551,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6557,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6559,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6562,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6564,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6570,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6571,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6580,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6590,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6591,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6595,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6596,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6602,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6605,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6609,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6626,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6628,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6636,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6637,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6640,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6641,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6642,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6643,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6644,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6645,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6646,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6649,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6650,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6664,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6665,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6666,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6670,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6671,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6678,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6690,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6703,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6704,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6707,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6708,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6710,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6715,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6722,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6724,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6732,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6733,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6734,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6736,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6737,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6740,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6748,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6750,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6769,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6788,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6789,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6790,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6791,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6792,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6793,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6794,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6795,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6796,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6800,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6809,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6814,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6816,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6817,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6819,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6838,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6851,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6852,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6860,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6861,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6862,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6863,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6866,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6867,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6874,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6876,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6877,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6878,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6880,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6881,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6901,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6936,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6938,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6939,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6941,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6942,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6965,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6975,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6979,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,6998,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,8012,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,8015,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,8016,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,8020,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,8021,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,8022,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,8023,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,8024,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,8043,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,8047,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,8048,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,8052,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,8053,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,8059,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,8060,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,8061,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,8062,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,8083,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,8086,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,8089,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,8090,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,8095,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,8111,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,8145,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,8149,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,8153,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,8161,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,8165,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,8191,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,8214,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,8215,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,8218,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,8221,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,8229,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,8231,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,8232,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,8237,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,8243,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,8245,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,8246,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,8248,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,8252,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,8253,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,8254,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,8255,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,8261,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,8262,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,8265,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,8266,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,8267,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,8268,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,8291,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,8294,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,8302,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,8320,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,8326,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,8339,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,8340,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,8341,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,8352,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,8354,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,8355,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,8378,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,8402,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,8403,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,8404,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,8405,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,8409,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,8411,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,8412,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,8415,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,8417,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,8429,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,8452,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,8458,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,8467,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,8468,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,8469,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,8470,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,8471,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,8474,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,8475,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,8479,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,8485,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,8486,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,8487,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,8488,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,8501,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,8506,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,8513,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,8517,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,8534,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,8535,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,8536,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,8571,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,8572,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,8582,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,8585,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,8589,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,8594,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,8596,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,8604,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,8605,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,8606,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,8607,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,8615,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,9801,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,9813,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,9816,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,9822,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,99994,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,99995,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,33,2147483647,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+D,34,8294,,never,manual order type
+D,35,847,algo,flag:algo,"algo order: the parameters with a field number in the server's algo definition (849 maxPctVol in the captured definitions), 847 strategy, 5957 count, 5958 / 5960 pairs"
+D,35,849,algo,flag:algo,"algo order: the parameters with a field number in the server's algo definition (849 maxPctVol in the captured definitions), 847 strategy, 5957 count, 5958 / 5960 pairs"
+D,35,5957,algo,flag:algo,"algo order: the parameters with a field number in the server's algo definition (849 maxPctVol in the captured definitions), 847 strategy, 5957 count, 5958 / 5960 pairs"
+D,35,5958,algo,flag:algo,"algo order: the parameters with a field number in the server's algo definition (849 maxPctVol in the captured definitions), 847 strategy, 5957 count, 5958 / 5960 pairs"
+D,35,5960,algo,flag:algo,"algo order: the parameters with a field number in the server's algo definition (849 maxPctVol in the captured definitions), 847 strategy, 5957 count, 5958 / 5960 pairs"
+D,36,9816,,type_in:VOL,VOL order: volatility
+D,37,6516,,never,special flag
+D,38,6858,,never,special security type
+D,39,8425,,never,special security type
+D,40,6450,scale,never,scale table set (not set by an API order)
+D,40,6447,scale,never,scale table set (not set by an API order)
+D,40,6448,scale,never,scale table set (not set by an API order)
+D,41,6270,,never,VOL order or a specific attribute
+D,42,6271,,never,VOL order or option attribute
+D,43,6661,,never,special order flags
+D,44,6121,,always,order came from the API (API orderId set)
+D,45,6119,,always,order came from the API (API clientId)
+D,46,38,,never,fund order quantity
+D,47,38,,never,fund order quantity
+D,48,38,,other,38=1 for a special size case
+D,49,38,,always,quantity by the contract size rules
+D,50,40,,always,order type
+D,51,40,,other,order type (branch)
+D,52,40,,other,order type (branch)
+D,53,40,,other,order type (branch)
+D,54,211,,flag:peg_difference,pegged types with an offset
+D,55,18,,flag:exec_inst,ExecInst not empty
+D,56,55,,never,"fund side: symbol,fund"
+D,57,55,,always,symbol
+D,58,200,,flag:option,option or derivative contract: maturity
+D,59,201,,flag:option,option: right
+D,60,202,,flag:option,option: strike
+D,61,200,,never,other derivative: maturity alone
+D,62,167,,always,security type
+D,63,48,,never,security id set
+D,64,22,,never,security id set
+D,65,231,,flag:multiplier,not fund side: contract multiplier (1.00 for a stock)
+D,66,54,,always,side
+D,67,59,,always,time in force
+D,68,59,,other,time in force (branch)
+D,69,59,,other,time in force (branch)
+D,70,6436,,flag:tif_flag,"time-in-force flag (DTC, overnight)"
+D,71,47,,never,Rule80A: empty for an API order
+D,72,8032,,other,"order directed to the broker's own ATS exchange, no post-to-ATS attribute: =1"
+D,73,6287,,never,NotHeld: non-API orders on some routes
+D,74,100,,always,exchange (SMART as BEST)
+D,75,6210,,always,contract present: routing destination (SMART as BEST)
+D,76,6008,,always,conId of the contract
+D,77,6008,,other,conId of the SMART-routed underlying
+D,78,6147,,never,fund side
+D,79,6079,,never,fund side
+D,80,6080,,never,fund side
+D,81,6081,,never,fund side
+D,82,6082,,never,fund side
+D,83,6080,,never,fund side
+D,84,6082,,never,fund side
+D,85,6008,,other,conId of the order (combos)
+D,86,6209,,flag:oca,OCA group not empty and the OCA group attribute applies
+D,87,231,combo,flag:combo,"combo (BAG): 231 when the combo has a multiplier, 6079 leg count, per leg 6080 / 6081 / 6082 (and 616, 6087 ... when their rules apply), 6175, 6134, per-leg short sale block"
+D,87,6079,combo,flag:combo,"combo (BAG): 231 when the combo has a multiplier, 6079 leg count, per leg 6080 / 6081 / 6082 (and 616, 6087 ... when their rules apply), 6175, 6134, per-leg short sale block"
+D,87,566,combo,flag:combo,"combo (BAG): 231 when the combo has a multiplier, 6079 leg count, per leg 6080 / 6081 / 6082 (and 616, 6087 ... when their rules apply), 6175, 6134, per-leg short sale block"
+D,87,6080,combo,flag:combo,"combo (BAG): 231 when the combo has a multiplier, 6079 leg count, per leg 6080 / 6081 / 6082 (and 616, 6087 ... when their rules apply), 6175, 6134, per-leg short sale block"
+D,87,6081,combo,flag:combo,"combo (BAG): 231 when the combo has a multiplier, 6079 leg count, per leg 6080 / 6081 / 6082 (and 616, 6087 ... when their rules apply), 6175, 6134, per-leg short sale block"
+D,87,6082,combo,flag:combo,"combo (BAG): 231 when the combo has a multiplier, 6079 leg count, per leg 6080 / 6081 / 6082 (and 616, 6087 ... when their rules apply), 6175, 6134, per-leg short sale block"
+D,87,8211,combo,flag:combo,"combo (BAG): 231 when the combo has a multiplier, 6079 leg count, per leg 6080 / 6081 / 6082 (and 616, 6087 ... when their rules apply), 6175, 6134, per-leg short sale block"
+D,87,616,combo,flag:combo,"combo (BAG): 231 when the combo has a multiplier, 6079 leg count, per leg 6080 / 6081 / 6082 (and 616, 6087 ... when their rules apply), 6175, 6134, per-leg short sale block"
+D,87,6087,combo,flag:combo,"combo (BAG): 231 when the combo has a multiplier, 6079 leg count, per leg 6080 / 6081 / 6082 (and 616, 6087 ... when their rules apply), 6175, 6134, per-leg short sale block"
+D,87,6680,combo,flag:combo,"combo (BAG): 231 when the combo has a multiplier, 6079 leg count, per leg 6080 / 6081 / 6082 (and 616, 6087 ... when their rules apply), 6175, 6134, per-leg short sale block"
+D,87,6679,combo,flag:combo,"combo (BAG): 231 when the combo has a multiplier, 6079 leg count, per leg 6080 / 6081 / 6082 (and 616, 6087 ... when their rules apply), 6175, 6134, per-leg short sale block"
+D,87,6705,combo,flag:combo,"combo (BAG): 231 when the combo has a multiplier, 6079 leg count, per leg 6080 / 6081 / 6082 (and 616, 6087 ... when their rules apply), 6175, 6134, per-leg short sale block"
+D,87,6401,combo,flag:combo,"combo (BAG): 231 when the combo has a multiplier, 6079 leg count, per leg 6080 / 6081 / 6082 (and 616, 6087 ... when their rules apply), 6175, 6134, per-leg short sale block"
+D,87,6442,combo,flag:combo,"combo (BAG): 231 when the combo has a multiplier, 6079 leg count, per leg 6080 / 6081 / 6082 (and 616, 6087 ... when their rules apply), 6175, 6134, per-leg short sale block"
+D,87,8028,combo,flag:combo,"combo (BAG): 231 when the combo has a multiplier, 6079 leg count, per leg 6080 / 6081 / 6082 (and 616, 6087 ... when their rules apply), 6175, 6134, per-leg short sale block"
+D,87,6175,combo,flag:combo,"combo (BAG): 231 when the combo has a multiplier, 6079 leg count, per leg 6080 / 6081 / 6082 (and 616, 6087 ... when their rules apply), 6175, 6134, per-leg short sale block"
+D,87,6134,combo,flag:combo,"combo (BAG): 231 when the combo has a multiplier, 6079 leg count, per leg 6080 / 6081 / 6082 (and 616, 6087 ... when their rules apply), 6175, 6134, per-leg short sale block"
+D,87,8020,combo,flag:combo,"combo (BAG): 231 when the combo has a multiplier, 6079 leg count, per leg 6080 / 6081 / 6082 (and 616, 6087 ... when their rules apply), 6175, 6134, per-leg short sale block"
+D,87,6147,combo,flag:combo,"combo (BAG): 231 when the combo has a multiplier, 6079 leg count, per leg 6080 / 6081 / 6082 (and 616, 6087 ... when their rules apply), 6175, 6134, per-leg short sale block"
+D,87,6148,combo,flag:combo,"combo (BAG): 231 when the combo has a multiplier, 6079 leg count, per leg 6080 / 6081 / 6082 (and 616, 6087 ... when their rules apply), 6175, 6134, per-leg short sale block"
+D,87,6149,combo,flag:combo,"combo (BAG): 231 when the combo has a multiplier, 6079 leg count, per leg 6080 / 6081 / 6082 (and 616, 6087 ... when their rules apply), 6175, 6134, per-leg short sale block"
+D,87,6150,combo,flag:combo,"combo (BAG): 231 when the combo has a multiplier, 6079 leg count, per leg 6080 / 6081 / 6082 (and 616, 6087 ... when their rules apply), 6175, 6134, per-leg short sale block"
+D,87,6086,combo,flag:combo,"combo (BAG): 231 when the combo has a multiplier, 6079 leg count, per leg 6080 / 6081 / 6082 (and 616, 6087 ... when their rules apply), 6175, 6134, per-leg short sale block"
+D,87,654,combo,flag:combo,"combo (BAG): 231 when the combo has a multiplier, 6079 leg count, per leg 6080 / 6081 / 6082 (and 616, 6087 ... when their rules apply), 6175, 6134, per-leg short sale block"
+D,87,6215,combo,flag:combo,"combo (BAG): 231 when the combo has a multiplier, 6079 leg count, per leg 6080 / 6081 / 6082 (and 616, 6087 ... when their rules apply), 6175, 6134, per-leg short sale block"
+D,87,6216,combo,flag:combo,"combo (BAG): 231 when the combo has a multiplier, 6079 leg count, per leg 6080 / 6081 / 6082 (and 616, 6087 ... when their rules apply), 6175, 6134, per-leg short sale block"
+D,87,1689,combo,flag:combo,"combo (BAG): 231 when the combo has a multiplier, 6079 leg count, per leg 6080 / 6081 / 6082 (and 616, 6087 ... when their rules apply), 6175, 6134, per-leg short sale block"
+D,87,6962,combo,flag:combo,"combo (BAG): 231 when the combo has a multiplier, 6079 leg count, per leg 6080 / 6081 / 6082 (and 616, 6087 ... when their rules apply), 6175, 6134, per-leg short sale block"
+D,88,6088,,never,fixed source: scale order or special order kinds
+D,89,6088,,always,the order's source (Socket for an API order)
+D,90,8572,,never,"account with a model and an order from a rebalance, investment, divestment or reallocation tool (not an API order): =1"
+D,91,6091,,flag:what_if,what-if order
+D,92,6406,,never,special flag when not what-if
+D,93,6107,,flag:parent,parent order set: the parent's current ClOrdID
+D,94,6128,,flag:conditions,conditions set: conditionsCancelOrder 0/1
+D,95,8612,,flag:conditions,conditions set: conditions include overnight 0/1
+D,96,6151,,flag:conditions,conditions set: conditionsIgnoreRth 0/1
+D,97,6136,conditions,flag:conditions,"order conditions: 6136 count, then one group per condition"
+D,97,6222,conditions,flag:conditions,"order conditions: 6136 count, then one group per condition"
+D,97,6137,conditions,flag:conditions,"order conditions: 6136 count, then one group per condition"
+D,97,6126,conditions,flag:conditions,"order conditions: 6136 count, then one group per condition"
+D,97,6123,conditions,flag:conditions,"order conditions: 6136 count, then one group per condition"
+D,97,6124,conditions,flag:conditions,"order conditions: 6136 count, then one group per condition"
+D,97,6127,conditions,flag:conditions,"order conditions: 6136 count, then one group per condition"
+D,97,6125,conditions,flag:conditions,"order conditions: 6136 count, then one group per condition"
+D,97,6223,conditions,flag:conditions,"order conditions: 6136 count, then one group per condition"
+D,97,6245,conditions,flag:conditions,"order conditions: 6136 count, then one group per condition"
+D,97,6263,conditions,flag:conditions,"order conditions: 6136 count, then one group per condition"
+D,97,6246,conditions,flag:conditions,"order conditions: 6136 count, then one group per condition"
+D,97,6947,conditions,flag:conditions,"order conditions: 6136 count, then one group per condition"
+D,97,6330,conditions,flag:conditions,"order conditions: 6136 count, then one group per condition"
+D,97,8569,conditions,flag:conditions,"order conditions: 6136 count, then one group per condition"
+D,98,6156,,never,special flag
+D,99,9823,,never,special flag
+D,100,15,,flag:currency,currency set
+D,101,6211,,always,"order reference field, empty when none"
+D,102,6238,,always,"always, empty when none"
+D,103,6238,,other,second branch
+D,104,6211,,other,order reference field (second branch)
+D,105,6238,,always,"always, empty when none"
+D,106,6238,,other,second branch
+D,107,6251,,never,special value set
+D,108,207,,never,destination AVGCOST only
+D,109,6899,,never,inline allocation profile (not set by an API order)
+D,110,6239,,never,inline allocation profile (not set by an API order)
+D,111,6407,,never,special state value
+D,112,6958,,never,routing strategy change
+D,113,6964,,other,a setting of the session: the user name of the login
+D,114,8441,,never,co-trading
+D,115,8442,,never,co-trading
+G,1,11,,always,new ClOrdID
+G,2,41,,always,previous ClOrdID
+G,3,41,,other,previous ClOrdID (branch)
+G,4,8476,,never,second ClOrdID from the server's last report
+G,5,44,,"flag:lmt_price & type_in:LMT,LOC,LIT,MIDPRICE,REL,RPI,PASSV REL,PEG BEST,PEG MID,PEG MKT,STP LMT,TRAIL LIMIT,TRAIL LIT,REL + LMT,BOX TOP",order type writes a limit price and the API lmtPrice is set
+G,6,6879,,flag:leg_prices,"combo per-leg prices (non-guaranteed, LMT or REL + LMT)"
+G,7,44,,type_in:VOL,VOL order: market-rule minimum
+G,8,44,,type_in:VOL,VOL order: limit price
+G,9,8262,,never,hedge child using the parent price
+G,10,99,,"flag:aux_price & type_not_in:VOL,PEG MID,REL","order type is not a vol peg, PEG MID or REL, and the stop / aux value is set"
+G,11,1,,always,no FA allocation: account (tag 440 for an institutional session)
+G,12,6700,,never,account has a model code
+G,13,8065,allocation,flag:fa_allocation,FA allocation of the order
+G,13,6160,allocation,flag:fa_allocation,FA allocation of the order
+G,13,6159,allocation,flag:fa_allocation,FA allocation of the order
+G,13,6700,allocation,flag:fa_allocation,FA allocation of the order
+G,13,6240,allocation,flag:fa_allocation,FA allocation of the order
+G,13,6164,allocation,flag:fa_allocation,FA allocation of the order
+G,13,8303,allocation,flag:fa_allocation,FA allocation of the order
+G,13,6806,allocation,flag:fa_allocation,FA allocation of the order
+G,13,6894,allocation,flag:fa_allocation,FA allocation of the order
+G,13,6895,allocation,flag:fa_allocation,FA allocation of the order
+G,14,6834,allocation,flag:fa_allocation,FA allocation of the order (second form)
+G,14,6835,allocation,flag:fa_allocation,FA allocation of the order (second form)
+G,14,6836,allocation,flag:fa_allocation,FA allocation of the order (second form)
+G,14,6936,allocation,flag:fa_allocation,FA allocation of the order (second form)
+G,14,6240,allocation,flag:fa_allocation,FA allocation of the order (second form)
+G,14,8303,allocation,flag:fa_allocation,FA allocation of the order (second form)
+G,14,6806,allocation,flag:fa_allocation,FA allocation of the order (second form)
+G,14,6894,allocation,flag:fa_allocation,FA allocation of the order (second form)
+G,14,6895,allocation,flag:fa_allocation,FA allocation of the order (second form)
+G,14,8291,allocation,flag:fa_allocation,FA allocation of the order (second form)
+G,15,126,,flag:gtd_time,GTD with a time
+G,16,432,,flag:gtd_date,GTD with a date only
+G,17,114,,flag:short_sale,short sale: slot
+G,18,114,,flag:short_sale,short sale: slot
+G,19,5700,,flag:short_sale,short sale: location
+G,20,6086,,flag:short_sale,short sale
+G,21,1688,,flag:short_sale,short sale: exempt code
+G,22,114,,never,"short sale, other account case"
+G,23,5700,,never,"short sale, other account case"
+G,24,6086,,never,"short sale, other account case"
+G,25,97,,never,PossResend
+G,26,6257,,flag:adjustable,adjustable stop: adjusted order type set
+G,27,6261,,flag:adjustable,adjustable stop: adjusted order type
+G,28,6258,,other,adjustable stop: trigger price when set
+G,29,6259,,other,adjustable stop: adjusted stop price when set
+G,30,6262,,other,adjustable stop: adjusted stop-limit price when set
+G,31,6260,,other,adjustable stop: adjusted trailing amount when set
+G,32,6117,,"flag:stop_price & type_in:STP,STP LMT,STP PRT,TRAIL,TRAIL LIMIT",stop types: the stop price (trailing types: on a new order or when it changed)
+G,33,12,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,13,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,18,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,22,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,48,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,63,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,66,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,67,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,68,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,77,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,110,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,111,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,152,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,168,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,440,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,583,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,851,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,1028,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,3950,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6010,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6095,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6102,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6115,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6117,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6122,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6133,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6135,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6148,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6149,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6150,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6152,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6153,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6154,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6205,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6207,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6232,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6248,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6268,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6269,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6275,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6279,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6280,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6281,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6282,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6283,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6284,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6285,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6286,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6287,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6289,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6290,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6291,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6365,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6370,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6377,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6390,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6391,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6403,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6405,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6406,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6407,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6408,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6412,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6433,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6434,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6437,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6438,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6441,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6445,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6446,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6447,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6448,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6449,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6450,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6458,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6459,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6460,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6461,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6467,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6468,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6480,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6485,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6486,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6487,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6488,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6489,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6506,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6516,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6519,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6521,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6524,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6526,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6527,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6531,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6532,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6534,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6535,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6547,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6551,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6557,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6559,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6562,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6564,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6570,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6571,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6580,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6590,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6591,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6595,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6596,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6602,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6605,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6609,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6626,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6628,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6636,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6637,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6640,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6641,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6642,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6643,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6644,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6645,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6646,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6649,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6650,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6664,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6665,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6666,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6670,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6671,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6678,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6690,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6703,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6704,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6707,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6708,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6710,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6715,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6722,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6724,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6732,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6733,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6734,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6736,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6737,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6740,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6748,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6750,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6769,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6788,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6789,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6790,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6791,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6792,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6793,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6794,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6795,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6796,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6800,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6809,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6814,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6816,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6817,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6819,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6838,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6851,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6852,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6860,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6861,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6862,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6863,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6866,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6867,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6874,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6876,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6877,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6878,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6880,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6881,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6901,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6936,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6938,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6939,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6941,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6942,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6965,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6975,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6979,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,6998,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,8012,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,8015,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,8016,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,8020,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,8021,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,8022,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,8023,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,8024,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,8043,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,8047,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,8048,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,8052,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,8053,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,8059,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,8060,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,8061,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,8062,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,8083,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,8086,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,8089,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,8090,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,8095,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,8111,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,8145,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,8149,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,8153,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,8161,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,8165,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,8191,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,8214,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,8215,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,8218,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,8221,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,8229,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,8231,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,8232,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,8237,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,8243,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,8245,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,8246,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,8248,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,8252,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,8253,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,8254,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,8255,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,8261,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,8262,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,8265,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,8266,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,8267,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,8268,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,8291,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,8294,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,8302,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,8320,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,8326,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,8339,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,8340,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,8341,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,8352,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,8354,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,8355,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,8378,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,8402,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,8403,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,8404,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,8405,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,8409,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,8411,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,8412,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,8415,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,8417,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,8429,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,8452,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,8458,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,8467,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,8468,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,8469,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,8470,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,8471,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,8474,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,8475,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,8479,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,8485,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,8486,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,8487,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,8488,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,8501,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,8506,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,8513,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,8517,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,8534,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,8535,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,8536,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,8571,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,8572,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,8582,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,8585,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,8589,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,8594,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,8596,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,8604,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,8605,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,8606,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,8607,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,8615,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,9801,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,9813,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,9816,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,9822,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,99994,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,99995,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,33,2147483647,attributes,attribute,"each order attribute whose rule applies to the order, in no fixed order; booleans only as =1; the unset value is skipped"
+G,34,8294,,never,manual order type
+G,35,847,algo,flag:algo,"algo order: the parameters with a field number in the server's algo definition (849 maxPctVol in the captured definitions), 847 strategy, 5957 count, 5958 / 5960 pairs"
+G,35,849,algo,flag:algo,"algo order: the parameters with a field number in the server's algo definition (849 maxPctVol in the captured definitions), 847 strategy, 5957 count, 5958 / 5960 pairs"
+G,35,5957,algo,flag:algo,"algo order: the parameters with a field number in the server's algo definition (849 maxPctVol in the captured definitions), 847 strategy, 5957 count, 5958 / 5960 pairs"
+G,35,5958,algo,flag:algo,"algo order: the parameters with a field number in the server's algo definition (849 maxPctVol in the captured definitions), 847 strategy, 5957 count, 5958 / 5960 pairs"
+G,35,5960,algo,flag:algo,"algo order: the parameters with a field number in the server's algo definition (849 maxPctVol in the captured definitions), 847 strategy, 5957 count, 5958 / 5960 pairs"
+G,36,9816,,type_in:VOL,VOL order: volatility
+G,37,6516,,never,special flag
+G,38,6858,,never,special security type
+G,39,8425,,never,special security type
+G,40,38,,never,fund order quantity
+G,41,38,,never,fund order quantity
+G,42,38,,always,total order quantity
+G,43,54,,always,side
+G,44,40,,always,order type
+G,45,40,,other,order type (branch)
+G,46,40,,other,order type (branch)
+G,47,40,,other,order type (branch)
+G,48,211,,flag:peg_difference,pegged types with an offset
+G,49,18,,flag:exec_inst,ExecInst not empty
+G,50,55,,never,"fund side: symbol,fund"
+G,51,55,,always,symbol
+G,52,200,,flag:option,option: maturity
+G,53,201,,flag:option,option: right
+G,54,202,,flag:option,option: strike
+G,55,200,,never,other derivative: maturity alone
+G,56,167,,always,security type
+G,57,6035,,always,contract field (the symbol in the captures)
+G,58,59,,always,time in force
+G,59,59,,other,time in force (branch)
+G,60,59,,other,time in force (branch)
+G,61,6436,,flag:tif_flag,"time-in-force flag (DTC, overnight)"
+G,62,6008,,always,conId of the contract
+G,63,6008,,other,conId of the SMART-routed underlying
+G,64,6147,,never,fund side
+G,65,6079,,never,fund side
+G,66,6080,,never,fund side
+G,67,6081,,never,fund side
+G,68,6082,,never,fund side
+G,69,6080,,never,fund side
+G,70,6082,,never,fund side
+G,71,6008,,other,conId of the order (combos)
+G,72,8612,,flag:conditions,conditions set: conditions include overnight 0/1
+G,73,6136,conditions,flag:conditions,order conditions on a replace
+G,73,6222,conditions,flag:conditions,order conditions on a replace
+G,73,6137,conditions,flag:conditions,order conditions on a replace
+G,73,6126,conditions,flag:conditions,order conditions on a replace
+G,73,6123,conditions,flag:conditions,order conditions on a replace
+G,73,6124,conditions,flag:conditions,order conditions on a replace
+G,73,6127,conditions,flag:conditions,order conditions on a replace
+G,73,6125,conditions,flag:conditions,order conditions on a replace
+G,73,6223,conditions,flag:conditions,order conditions on a replace
+G,73,6245,conditions,flag:conditions,order conditions on a replace
+G,73,6263,conditions,flag:conditions,order conditions on a replace
+G,73,6246,conditions,flag:conditions,order conditions on a replace
+G,73,6947,conditions,flag:conditions,order conditions on a replace
+G,73,6330,conditions,flag:conditions,order conditions on a replace
+G,73,8569,conditions,flag:conditions,order conditions on a replace
+G,74,231,combo,flag:combo,"combo (BAG): 231 when the combo has a multiplier, 6079 leg count, per leg 6080 / 6081 / 6082 (and 616, 6087 ... when their rules apply), 6175, 6134, per-leg short sale block"
+G,74,6079,combo,flag:combo,"combo (BAG): 231 when the combo has a multiplier, 6079 leg count, per leg 6080 / 6081 / 6082 (and 616, 6087 ... when their rules apply), 6175, 6134, per-leg short sale block"
+G,74,566,combo,flag:combo,"combo (BAG): 231 when the combo has a multiplier, 6079 leg count, per leg 6080 / 6081 / 6082 (and 616, 6087 ... when their rules apply), 6175, 6134, per-leg short sale block"
+G,74,6080,combo,flag:combo,"combo (BAG): 231 when the combo has a multiplier, 6079 leg count, per leg 6080 / 6081 / 6082 (and 616, 6087 ... when their rules apply), 6175, 6134, per-leg short sale block"
+G,74,6081,combo,flag:combo,"combo (BAG): 231 when the combo has a multiplier, 6079 leg count, per leg 6080 / 6081 / 6082 (and 616, 6087 ... when their rules apply), 6175, 6134, per-leg short sale block"
+G,74,6082,combo,flag:combo,"combo (BAG): 231 when the combo has a multiplier, 6079 leg count, per leg 6080 / 6081 / 6082 (and 616, 6087 ... when their rules apply), 6175, 6134, per-leg short sale block"
+G,74,8211,combo,flag:combo,"combo (BAG): 231 when the combo has a multiplier, 6079 leg count, per leg 6080 / 6081 / 6082 (and 616, 6087 ... when their rules apply), 6175, 6134, per-leg short sale block"
+G,74,616,combo,flag:combo,"combo (BAG): 231 when the combo has a multiplier, 6079 leg count, per leg 6080 / 6081 / 6082 (and 616, 6087 ... when their rules apply), 6175, 6134, per-leg short sale block"
+G,74,6087,combo,flag:combo,"combo (BAG): 231 when the combo has a multiplier, 6079 leg count, per leg 6080 / 6081 / 6082 (and 616, 6087 ... when their rules apply), 6175, 6134, per-leg short sale block"
+G,74,6680,combo,flag:combo,"combo (BAG): 231 when the combo has a multiplier, 6079 leg count, per leg 6080 / 6081 / 6082 (and 616, 6087 ... when their rules apply), 6175, 6134, per-leg short sale block"
+G,74,6679,combo,flag:combo,"combo (BAG): 231 when the combo has a multiplier, 6079 leg count, per leg 6080 / 6081 / 6082 (and 616, 6087 ... when their rules apply), 6175, 6134, per-leg short sale block"
+G,74,6705,combo,flag:combo,"combo (BAG): 231 when the combo has a multiplier, 6079 leg count, per leg 6080 / 6081 / 6082 (and 616, 6087 ... when their rules apply), 6175, 6134, per-leg short sale block"
+G,74,6401,combo,flag:combo,"combo (BAG): 231 when the combo has a multiplier, 6079 leg count, per leg 6080 / 6081 / 6082 (and 616, 6087 ... when their rules apply), 6175, 6134, per-leg short sale block"
+G,74,6442,combo,flag:combo,"combo (BAG): 231 when the combo has a multiplier, 6079 leg count, per leg 6080 / 6081 / 6082 (and 616, 6087 ... when their rules apply), 6175, 6134, per-leg short sale block"
+G,74,8028,combo,flag:combo,"combo (BAG): 231 when the combo has a multiplier, 6079 leg count, per leg 6080 / 6081 / 6082 (and 616, 6087 ... when their rules apply), 6175, 6134, per-leg short sale block"
+G,74,6175,combo,flag:combo,"combo (BAG): 231 when the combo has a multiplier, 6079 leg count, per leg 6080 / 6081 / 6082 (and 616, 6087 ... when their rules apply), 6175, 6134, per-leg short sale block"
+G,74,6134,combo,flag:combo,"combo (BAG): 231 when the combo has a multiplier, 6079 leg count, per leg 6080 / 6081 / 6082 (and 616, 6087 ... when their rules apply), 6175, 6134, per-leg short sale block"
+G,74,8020,combo,flag:combo,"combo (BAG): 231 when the combo has a multiplier, 6079 leg count, per leg 6080 / 6081 / 6082 (and 616, 6087 ... when their rules apply), 6175, 6134, per-leg short sale block"
+G,74,6147,combo,flag:combo,"combo (BAG): 231 when the combo has a multiplier, 6079 leg count, per leg 6080 / 6081 / 6082 (and 616, 6087 ... when their rules apply), 6175, 6134, per-leg short sale block"
+G,74,6148,combo,flag:combo,"combo (BAG): 231 when the combo has a multiplier, 6079 leg count, per leg 6080 / 6081 / 6082 (and 616, 6087 ... when their rules apply), 6175, 6134, per-leg short sale block"
+G,74,6149,combo,flag:combo,"combo (BAG): 231 when the combo has a multiplier, 6079 leg count, per leg 6080 / 6081 / 6082 (and 616, 6087 ... when their rules apply), 6175, 6134, per-leg short sale block"
+G,74,6150,combo,flag:combo,"combo (BAG): 231 when the combo has a multiplier, 6079 leg count, per leg 6080 / 6081 / 6082 (and 616, 6087 ... when their rules apply), 6175, 6134, per-leg short sale block"
+G,74,6086,combo,flag:combo,"combo (BAG): 231 when the combo has a multiplier, 6079 leg count, per leg 6080 / 6081 / 6082 (and 616, 6087 ... when their rules apply), 6175, 6134, per-leg short sale block"
+G,74,654,combo,flag:combo,"combo (BAG): 231 when the combo has a multiplier, 6079 leg count, per leg 6080 / 6081 / 6082 (and 616, 6087 ... when their rules apply), 6175, 6134, per-leg short sale block"
+G,74,6215,combo,flag:combo,"combo (BAG): 231 when the combo has a multiplier, 6079 leg count, per leg 6080 / 6081 / 6082 (and 616, 6087 ... when their rules apply), 6175, 6134, per-leg short sale block"
+G,74,6216,combo,flag:combo,"combo (BAG): 231 when the combo has a multiplier, 6079 leg count, per leg 6080 / 6081 / 6082 (and 616, 6087 ... when their rules apply), 6175, 6134, per-leg short sale block"
+G,74,1689,combo,flag:combo,"combo (BAG): 231 when the combo has a multiplier, 6079 leg count, per leg 6080 / 6081 / 6082 (and 616, 6087 ... when their rules apply), 6175, 6134, per-leg short sale block"
+G,74,6962,combo,flag:combo,"combo (BAG): 231 when the combo has a multiplier, 6079 leg count, per leg 6080 / 6081 / 6082 (and 616, 6087 ... when their rules apply), 6175, 6134, per-leg short sale block"
+G,75,6088,,never,fixed source: scale order or special order kinds
+G,76,6088,,never,fixed source: option liquidity tool order
+G,77,6088,,always,the order's source (Socket for an API order)
+G,78,8572,,never,"account with a model and an order from a rebalance, investment, divestment or reallocation tool (not an API order): =1"
+G,79,6211,,always,"order reference field, empty when none"
+G,80,6238,,always,"always, empty when none"
+G,81,6238,,other,second branch
+G,82,6211,,other,order reference field (second branch)
+G,83,6238,,always,"always, empty when none"
+G,84,6238,,other,second branch
+G,85,566,combo_key,never,combo with a combo key value (not set by an API order)
+G,85,231,combo_key,never,combo with a combo key value (not set by an API order)
+G,85,6079,combo_key,never,combo with a combo key value (not set by an API order)
+G,85,566,combo_key,never,combo with a combo key value (not set by an API order)
+G,85,6080,combo_key,never,combo with a combo key value (not set by an API order)
+G,85,6081,combo_key,never,combo with a combo key value (not set by an API order)
+G,85,6082,combo_key,never,combo with a combo key value (not set by an API order)
+G,85,8211,combo_key,never,combo with a combo key value (not set by an API order)
+G,85,616,combo_key,never,combo with a combo key value (not set by an API order)
+G,85,6087,combo_key,never,combo with a combo key value (not set by an API order)
+G,85,6680,combo_key,never,combo with a combo key value (not set by an API order)
+G,85,6679,combo_key,never,combo with a combo key value (not set by an API order)
+G,85,6705,combo_key,never,combo with a combo key value (not set by an API order)
+G,85,6401,combo_key,never,combo with a combo key value (not set by an API order)
+G,85,6442,combo_key,never,combo with a combo key value (not set by an API order)
+G,85,8028,combo_key,never,combo with a combo key value (not set by an API order)
+G,85,6175,combo_key,never,combo with a combo key value (not set by an API order)
+G,85,6134,combo_key,never,combo with a combo key value (not set by an API order)
+G,85,8020,combo_key,never,combo with a combo key value (not set by an API order)
+G,85,6147,combo_key,never,combo with a combo key value (not set by an API order)
+G,85,6148,combo_key,never,combo with a combo key value (not set by an API order)
+G,85,6149,combo_key,never,combo with a combo key value (not set by an API order)
+G,85,6150,combo_key,never,combo with a combo key value (not set by an API order)
+G,85,6086,combo_key,never,combo with a combo key value (not set by an API order)
+G,85,654,combo_key,never,combo with a combo key value (not set by an API order)
+G,85,6215,combo_key,never,combo with a combo key value (not set by an API order)
+G,85,6216,combo_key,never,combo with a combo key value (not set by an API order)
+G,85,1689,combo_key,never,combo with a combo key value (not set by an API order)
+G,85,6962,combo_key,never,combo with a combo key value (not set by an API order)
+G,86,6964,,other,a setting of the session: the user name of the login
+G,87,8441,,never,co-trading
+G,88,8442,,never,co-trading
+F,1,11,,always,new ClOrdID
+F,2,41,,always,previous ClOrdID
+F,3,41,,other,previous ClOrdID (branch)
+F,4,8476,,never,second ClOrdID from the server's last report
+F,5,38,,never,fund order quantity
+F,6,38,,never,fund order quantity
+F,7,38,,always,order quantity
+F,8,54,,always,side
+F,9,1,,always,account
+F,10,6700,,never,account model code
+F,11,1,,other,allocation string when an allocation is set
+F,12,6008,,always,"conId, when not 0"
+F,13,6088,,always,the order's source (Socket for an API order)
+F,14,97,,never,PossResend
+F,15,6516,,never,OMS container
+F,16,6901,,never,no leg price change
+F,17,6944,,always,"cancel tag: SEL for cancelOrder, ALL for a global cancel"
+F,18,8187,,never,cancel reason: empty for a cancel
+F,19,,ticket_owner,never,ticket ownership (no tag for an API order)
+F,20,8089,cancel_attributes,other,"the attributes ExtOperator, ExternalUserId, ManualOrderIndicator of the order"
+F,20,6722,cancel_attributes,other,"the attributes ExtOperator, ExternalUserId, ManualOrderIndicator of the order"
+F,20,1028,cancel_attributes,other,"the attributes ExtOperator, ExternalUserId, ManualOrderIndicator of the order"
