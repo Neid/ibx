@@ -1096,7 +1096,11 @@ fn the_index_part_waits_for_a_frozen_status_and_a_named_index() {
     engine.service_option_models(Instant::now());
     assert!(engine.farm.optmd.has(id));
     assert!(engine.farm.optmd.index_starts.is_empty());
-    assert!(lookups(&mut ccp_side).iter().all(|(_, _, exchange)| exchange != "ANYEXCH"), "no lookup of the index part");
+    // Its future's definition only, asked as the reference asks a
+    // client's model's underlying (ibx#731); no lookup of the index part.
+    let asked = lookups(&mut ccp_side);
+    let future = ES_FUT.to_string();
+    assert!(asked.iter().all(|(_, con_id, _)| *con_id == future), "no lookup of the index part: {asked:?}");
 }
 
 // ibx#730 (the reference 10.51, paper, 13/10 and 14/10/2026, two first
@@ -1263,4 +1267,62 @@ fn a_futures_option_order_model_asks_what_the_reference_asks() {
     assert!(engine.ccp.optcalc.with_inputs(&es_put_terms(ES_PUT), |inputs| inputs.is_some()), "the model reads the index's dividends");
     engine.service_option_models(Instant::now() + Duration::from_secs(1));
     assert!(ccp_texts(&mut ccp_side).is_empty(), "nothing more");
+}
+
+// ibx#731 (the reference 10.51, paper, recordings of 12-16/10/2026: an
+// AAPL call asked by a client in 13 sessions): when the underlying is not
+// known, the client's model asks its definition for the engine's own need
+// and its preferred definition, both on any exchange, sent together, with
+// no client source (5 sessions of 5); either answer gives the model what
+// it waits for. When the underlying is known, nothing is asked (8 of 8).
+#[test]
+fn a_client_model_asks_an_unknown_underlying_as_the_reference() {
+    let (mut engine, _shared, mut farm_side, id) = order_engine();
+    engine.set_routing_table(crate::engine::routing::TableKind::MarketData,
+        "BEST,STK,Top,1,*,cdc1.example,4000,usfarm;BEST,OPT,Top,1,*,cdc1.example,4000,usfarm");
+    engine.context.agg_groups.insert(OPTION, 1);
+    let (ccp, mut ccp_side) = crate::protocol::connection::mem_pair();
+    engine.ccp_conn = Some(crate::protocol::connection::Connection::new_mem(ccp));
+    let sub = farm::MdSubscribe {
+        con_id: OPTION, symbol: "AAPL".into(), exchange: "SMART".into(), sec_type: "OPT".into(),
+        last_trade_date: "20261218".into(), strike: 340.0, right: "C".into(), multiplier: "100".into(),
+        instrument: id, mode_9887: 0, snapshot: false,
+    };
+    engine.route_md_subscribe(&sub);
+    engine.service_option_models(Instant::now());
+    let asked = ccp_texts(&mut ccp_side);
+    let forms: Vec<(String, String, String, String)> = asked.iter().filter(|m| m.contains("|35=c|"))
+        .map(|m| (field(m, 320), field(m, 6008), field(m, 6004), field(m, 6088))).collect();
+    assert_eq!(forms, [
+        ("SecDefReqMsgNDReqByConid1".to_string(), AAPL.to_string(), "ANYEXCH".to_string(), String::new()),
+        ("PreferredReqByConid2".to_string(), AAPL.to_string(), "ANYEXCH".to_string(), String::new()),
+    ], "{asked:?}");
+    // Asked once while they are on their way.
+    engine.service_option_models(Instant::now());
+    assert!(ccp_texts(&mut ccp_side).is_empty());
+
+    // The first answer starts the model; the second is read and dropped.
+    let answer = |name: &str| crate::protocol::fix::fix_build(&[(35, "d"), (320, name), (322, "*"), (323, "4"),
+        (55, "AAPL"), (167, "STK"), (207, "BEST"), (6008, "265598"), (15, "USD"), (6178, "1")], 1);
+    engine.inject_ccp_message(&answer("SecDefReqMsgNDReqByConid1"));
+    engine.service_option_models(Instant::now());
+    assert!(engine.farm.optmd.has(id));
+    assert!(!sent(&mut farm_side).is_empty(), "the model's entries");
+    assert_eq!(engine.context.lot_lookups.len(), 1, "the preferred definition still on its way");
+    engine.inject_ccp_message(&answer("PreferredReqByConid2"));
+    assert!(engine.context.lot_lookups.is_empty());
+    assert!(ccp_texts(&mut ccp_side).iter().all(|m| !m.contains("|35=c|")), "no other definition asked");
+
+    // The underlying known: nothing asked.
+    let (mut engine, _shared, _farm_side, id) = order_engine();
+    engine.set_routing_table(crate::engine::routing::TableKind::MarketData,
+        "BEST,STK,Top,1,*,cdc1.example,4000,usfarm;BEST,OPT,Top,1,*,cdc1.example,4000,usfarm");
+    engine.context.agg_groups.insert(OPTION, 1);
+    engine.context.agg_groups.insert(AAPL, 1);
+    let (ccp, mut ccp_side) = crate::protocol::connection::mem_pair();
+    engine.ccp_conn = Some(crate::protocol::connection::Connection::new_mem(ccp));
+    engine.route_md_subscribe(&farm::MdSubscribe { instrument: id, ..sub });
+    engine.service_option_models(Instant::now());
+    assert!(engine.farm.optmd.has(id));
+    assert!(ccp_texts(&mut ccp_side).iter().all(|m| !m.contains("|35=c|")), "no definition asked");
 }

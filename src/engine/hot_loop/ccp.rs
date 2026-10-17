@@ -971,8 +971,9 @@ fn secdef_by_symbol_fields(req_id: ReqId, lookup: &SymbolLookup, strike: &str) -
     fields
 }
 
-/// Write one by-symbol lookup on `conn` (ibx#410; also the conId lookup of
-/// a market data request, ibx#278).
+/// Write one by-symbol lookup on `conn` (ibx#410; also the contract lookup
+/// of a historical request, ibx#427). A market data request's is asked as
+/// an order's (ibx#731).
 pub(crate) fn send_symbol_lookup_on(conn: &mut Connection, req_id: ReqId, lookup: &SymbolLookup, strike: &str) {
     send_lookup_body(conn, &secdef_by_symbol_fields(req_id, lookup, strike));
 }
@@ -6851,6 +6852,7 @@ mod tests {
             ("historical data", HIST_LOOKUP_FIRST_ID, HIST_LOOKUP_IDS),
             ("market data", farm::MD_LOOKUP_FIRST_ID, farm::MD_LOOKUP_IDS),
             ("order's option model", farm::MODEL_LOOKUP_FIRST_ID, farm::MODEL_LOOKUP_IDS),
+            ("definition a request or a model waits for", farm::DEFINITION_LOOKUP_FIRST_ID, farm::DEFINITION_LOOKUP_IDS),
         ];
         ranges.sort_by_key(|r| r.1);
         // A caller's request id is a positive i32.
@@ -8977,7 +8979,7 @@ mod reconnect_tests {
             // Same low bits in the market data and internal ranges, and a
             // caller lookup number: none of them is this lookup's reply.
             let reply = |id: &str| pipe_msg(&format!("35=d|43=N|320={}|322=*|323=4|55=AAPL|167=STK|207=BEST|6008=265598|15=USD", id));
-            for other in ["FixSecDefReqBySymbol3758096384", "FixSecDefReqBySymbol4026531840", "FixSecDefReqBySymbol0", "ibxlot0"] {
+            for other in ["FixSecDefReqBySymbol3758096384", "FixSecDefReqBySymbol4026531840", "FixSecDefReqBySymbol0", "SecDefReqMsgReqByConid2147483648"] {
                 assert!(!ccp.contract_resolve_reply(other, &crate::control::contracts::parse_secdef_records(&reply(other)).unwrap(), &shared), "{}", other);
             }
             assert_eq!(ccp.pending_resolves.len(), 1);

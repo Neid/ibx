@@ -777,6 +777,10 @@ pub const SECDEF_BY_CONID_NAME: &str = "socket-reqContractDetailsReqByConid";
 pub const SECDEF_PREFERRED_NAME: &str = "PreferredReqByConid";
 /// Name of the lookup of a contract not seen yet, by conId (ibx#424).
 pub const SECDEF_MSG_NAME: &str = "SecDefReqMsgReqByConid";
+/// Name of the lookup by conId the engine makes for its own need, with no
+/// client source: the underlying of a client's option model when it is
+/// not known (ibx#731).
+pub const SECDEF_MSG_ND_NAME: &str = "SecDefReqMsgNDReqByConid";
 /// The name of the batch lookup of the portfolio's contracts (ibx#705).
 pub const SECDEF_SMALL_BATCH_NAME: &str = "SmallBatchReqByConid";
 /// Name of the lookup of a record's market rule on one of its valid

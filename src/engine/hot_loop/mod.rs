@@ -591,45 +591,81 @@ impl HotLoop {
         true
     }
 
-    /// Ask the auth connection for a contract's definition, unless a lookup
-    /// for it is in flight. False when it cannot be asked.
+    /// Ask the auth connection for the definition of the contract of a
+    /// client's request, unless a lookup for it is in flight. False when it
+    /// cannot be asked.
+    ///
+    /// Asked as the reference asks the definition of a contract a client's
+    /// request gives by its conId: by its name for that, with the client
+    /// source, on the request's exchange (ibx#731; the reference 10.51,
+    /// paper, recordings of 13 and 16/10/2026: 13 historical, real-time
+    /// bar and depth requests given by conId alone, 13 asked so, on
+    /// IDEALPRO, BEST for SMART, CME).
     fn ask_definition(&mut self, con_id: i64, exchange: &str) -> bool {
-        self.ask_definition_as(con_id, exchange, None)
+        self.ask_definition_named(con_id, exchange, true, |c| farm::next_definition_lookup(c, crate::control::contracts::SECDEF_MSG_NAME))
+    }
+
+    /// [`Self::ask_definition`] for the engine's own need, with no client
+    /// source: an option model's or an order quote's (ibx#731).
+    fn ask_own_definition(&mut self, con_id: i64, exchange: &str) -> bool {
+        self.ask_definition_named(con_id, exchange, false, |c| farm::next_definition_lookup(c, crate::control::contracts::SECDEF_MSG_ND_NAME))
     }
 
     /// [`Self::ask_definition`], named as the reference names the lookup of
-    /// that kind when `kind` is given (an order's option model's, ibx#730).
-    fn ask_definition_as(&mut self, con_id: i64, exchange: &str, kind: Option<&str>) -> bool {
+    /// that kind (an order's option model's, ibx#730).
+    fn ask_definition_as(&mut self, con_id: i64, exchange: &str, kind: &str) -> bool {
+        self.ask_definition_named(con_id, exchange, false, |c| farm::next_model_lookup(c, kind))
+    }
+
+    /// The underlying's definition of a client's option model, as the
+    /// reference asks it when the underlying is not known: its definition
+    /// for the engine's need and its preferred definition, both on any
+    /// exchange, sent together (ibx#731; the reference 10.51, paper,
+    /// recordings of 12-16/10/2026: 5 option requests of 5 whose
+    /// underlying was not known; none of 8 whose underlying was known).
+    /// Either answer gives what the model waits for.
+    fn ask_underlying_definitions(&mut self, under_con_id: i64) {
+        if self.context.lot_lookups.iter().any(|(_, c, _)| *c == under_con_id) {
+            return;
+        }
+        if self.ask_own_definition(under_con_id, "ANYEXCH") {
+            let name = farm::next_definition_lookup(&mut self.context, crate::control::contracts::SECDEF_PREFERRED_NAME);
+            self.send_definition_lookup(under_con_id, "ANYEXCH", false, name);
+        }
+    }
+
+    fn ask_definition_named(&mut self, con_id: i64, exchange: &str, from_client: bool, name: impl FnOnce(&mut Context) -> String) -> bool {
         if self.context.lot_lookups.iter().any(|(_, c, _)| *c == con_id) {
             return true;
         }
         if self.ccp_conn.is_none() || self.ccp.disconnected {
             return false;
         }
-        let req_id = match kind {
-            Some(kind) => farm::next_model_lookup(&mut self.context, kind),
-            None => {
-                let id = format!("ibxlot{}", self.context.next_lot_lookup);
-                self.context.next_lot_lookup = self.context.next_lot_lookup.wrapping_add(1);
-                id
-            }
-        };
-        let Some(conn) = self.ccp_conn.as_mut() else { return false };
+        let req_id = name(&mut self.context);
+        self.send_definition_lookup(con_id, exchange, from_client, req_id)
+    }
+
+    /// Send a definition lookup by conId and wait for its answer under
+    /// `req_id`. False when it cannot be sent.
+    fn send_definition_lookup(&mut self, con_id: i64, exchange: &str, from_client: bool, req_id: String) -> bool {
+        let Some(conn) = self.ccp_conn.as_mut().filter(|_| !self.ccp.disconnected) else { return false };
         let ts = chrono_free_timestamp();
         let con_id_str = con_id.to_string();
         let exchange = match exchange.to_ascii_uppercase().as_str() {
             "" | "SMART" => "BEST".to_string(),
             other => other.to_string(),
         };
-        let _ = conn.send_fix(&[
+        let mut fields: Vec<(u32, &str)> = vec![
             (fix::TAG_MSG_TYPE, "c"),
             (fix::TAG_SENDING_TIME, &ts),
             (320, &req_id),
             (321, "2"),
-            (146, "1"),
-            (6008, &con_id_str),
-            (6004, &exchange),
-        ]);
+        ];
+        if from_client {
+            fields.push((crate::control::contracts::TAG_IB_SOURCE, "Socket"));
+        }
+        fields.extend([(146, "1"), (6008, con_id_str.as_str()), (6004, exchange.as_str())]);
+        let _ = conn.send_fix(&fields);
         self.hb.last_ccp_sent = Instant::now();
         log::info!("Definition of con_id {} on {} asked ({})", con_id, exchange, req_id);
         self.context.lot_lookups.push((req_id, con_id, Instant::now() + farm::LOT_LOOKUP_TIMEOUT));
@@ -977,7 +1013,7 @@ impl HotLoop {
             };
             // A SMART route needs the contract's aggregate group.
             if self.needs_agg_group(&sub) {
-                if now < deadline && self.ask_definition(con_id, "SMART") {
+                if now < deadline && self.ask_own_definition(con_id, "SMART") {
                     self.farm.order_quote_starts.push((instrument, con_id, exchange, deadline));
                 } else {
                     log::warn!("Order quote of con_id {}: no definition for its route", con_id);
@@ -1026,7 +1062,7 @@ impl HotLoop {
                 }
                 // An order's model asks it on the order's exchange.
                 let exchange = s.order.clone().unwrap_or_else(|| "SMART".to_string());
-                self.ask_definition(s.con_id, &exchange);
+                self.ask_own_definition(s.con_id, &exchange);
                 self.farm.optmd.starting.push(s);
                 continue;
             };
@@ -1053,7 +1089,7 @@ impl HotLoop {
                         instrument: s.instrument, mode_9887: 0, snapshot: false,
                     };
                     if self.needs_agg_group(&opt_sub) {
-                        self.ask_definition(s.con_id, "SMART");
+                        self.ask_own_definition(s.con_id, "SMART");
                         self.farm.optmd.starting.push(s);
                         continue;
                     }
@@ -1078,7 +1114,13 @@ impl HotLoop {
                 instrument: s.instrument, mode_9887: 0, snapshot: false,
             };
             if self.needs_agg_group(&under_sub) {
-                self.ask_definition(terms.under_con_id, "SMART");
+                // A client's model asks its underlying as the reference
+                // (ibx#731); an order's on the smart route.
+                if s.order.is_none() {
+                    self.ask_underlying_definitions(terms.under_con_id);
+                } else {
+                    self.ask_own_definition(terms.under_con_id, "SMART");
+                }
                 self.farm.optmd.starting.push(s);
                 continue;
             }
@@ -1191,7 +1233,7 @@ impl HotLoop {
             };
             if let Some(con_id) = missing {
                 // Named as the reference names them (ibx#730).
-                if s.asked != Some(con_id) && self.ask_definition_as(con_id, "ANYEXCH", Some(crate::control::contracts::SECDEF_PREFERRED_NAME)) {
+                if s.asked != Some(con_id) && self.ask_definition_as(con_id, "ANYEXCH", crate::control::contracts::SECDEF_PREFERRED_NAME) {
                     s.asked = Some(con_id);
                 }
                 self.farm.optmd.index_starts.push(s);
@@ -1734,10 +1776,13 @@ impl HotLoop {
             filters,
             continuous: false,
         };
-        let strike = lookup.filters.strike_text();
         match self.ccp_conn.as_mut().filter(|_| !self.ccp.disconnected) {
             Some(conn) => {
-                ccp::send_symbol_lookup_on(conn, ReqId::from(req_id), &lookup, &strike);
+                // With the client source whatever the terms, an option's
+                // strike after its right (ibx#731; the reference 10.51,
+                // paper, recordings of 12-16/10/2026: 46 option requests by
+                // description of 46, as an order's lookup).
+                ccp::send_order_lookup_on(conn, ReqId::from(req_id), &lookup);
                 self.hb.last_ccp_sent = Instant::now();
                 log::info!("Market data for {} {}: contract lookup ({})", sub.symbol, sub.sec_type, req_id);
             }
@@ -5979,7 +6024,11 @@ mod tests {
         let asked = plain_messages_sent(&mut ccp_side);
         assert_eq!(asked.len(), 1, "{asked:?}");
         assert!(asked[0].contains("|35=c|") && asked[0].contains("|6008=265598|") && asked[0].contains("|6004=BEST|"), "{}", asked[0]);
-        let req_id = asked[0].split('|').find_map(|p| p.strip_prefix("320=")).unwrap().to_string();
+        // Named and asked as the reference asks the definition of a
+        // client's contract (ibx#731).
+        assert!(asked[0].contains("|320=SecDefReqMsgReqByConid1|321=2|6088=Socket|146=1|"), "{}", asked[0]);
+        let wire = asked[0].split('|').find_map(|p| p.strip_prefix("320=")).unwrap();
+        let req_id = engine.ccp_conn.as_ref().unwrap().internal_name(wire);
         assert!(farm_messages_sent(&mut farm_side).is_empty(), "nothing subscribed before the lot is known");
 
         let reply = fix::fix_build(&[(35, "d"), (320, &req_id), (6008, "265598"), (167, "CS"),
@@ -6003,6 +6052,34 @@ mod tests {
         assert_eq!(sent.len(), 2, "one cancel with both entries, then the new subscription: {sent:?}");
         assert!(sent[0].contains("|263=2|146=2|"), "{}", sent[0]);
         assert!(sent[1].contains("6008=265598|"), "{}", sent[1]);
+    }
+
+    // ibx#731 (the reference 10.51, paper, recordings of 12-16/10/2026, 46
+    // AAPL option requests by description): the lookup of an option's
+    // market data request carries the client source, as an order's, the
+    // strike after the right.
+    #[test]
+    fn an_option_request_by_description_is_looked_up_with_the_source() {
+        let shared = Arc::new(SharedState::new());
+        let mut engine = HotLoop::new(shared.clone(), None, None);
+        let (c1, _farm_side) = socket_pair();
+        let (c2, mut ccp_side) = socket_pair();
+        engine.farm_conn = Some(Connection::new_mem(c1));
+        engine.ccp_conn = Some(Connection::new_mem(c2));
+        let (tx, rx) = crossbeam_channel::bounded(8);
+        engine.set_control_rx(rx);
+        let filters = crate::types::SecDefFilters {
+            last_trade_date_or_contract_month: "20261218".into(), strike: 340.0, right: "C".into(),
+            multiplier: "100".into(), ..Default::default()
+        };
+        tx.send(ControlCommand::SubscribeBySymbol {
+            symbol: "AAPL".into(), sec_type: "OPT".into(), exchange: "SMART".into(), currency: "USD".into(),
+            filters, mode_9887: 0, snapshot: false, over_limit: false, reply_tx: None,
+        }).unwrap();
+        engine.poll_once();
+        let asked = plain_messages_sent(&mut ccp_side);
+        assert_eq!(asked.len(), 1, "{asked:?}");
+        assert!(asked[0].contains("|321=2|6088=Socket|55=AAPL|167=OPT|541=20261218|201=1|202=340|231=100|100=BEST|15=USD|"), "{}", asked[0]);
     }
 
     // ibx#278 (captured E6): two requests with no conId get their own
@@ -6626,7 +6703,7 @@ mod routing_tests {
         let n = ccp_side.read(&mut buf).unwrap();
         let asked = String::from_utf8_lossy(&buf[..n]).replace('\x01', "|");
         assert!(asked.contains("|35=c|") && asked.contains("|6008=14094|"), "{asked}");
-        let req_id = asked.split('|').find_map(|p| p.strip_prefix("320=")).unwrap().to_string();
+        let req_id = engine.ccp_conn.as_ref().unwrap().internal_name(asked.split('|').find_map(|p| p.strip_prefix("320=")).unwrap());
         assert!(sent(&mut farm_side).is_empty());
 
         let reply = fix::fix_build(&[(35, "d"), (320, &req_id), (6008, "14094"), (167, "CS"), (6178, "3")], 1);
@@ -7681,7 +7758,7 @@ mod tbt_tests {
         subscribe(&mut engine, &tx, 14094, "BMW", "SMART", "STK", crate::types::TbtType::Last);
         let asked = plain_sent(&mut ccp_side);
         assert!(asked.len() == 1 && asked[0].contains("|35=c|") && asked[0].contains("|6008=14094|"), "{asked:?}");
-        let req_id = asked[0].split('|').find_map(|p| p.strip_prefix("320=")).unwrap().to_string();
+        let req_id = engine.ccp_conn.as_ref().unwrap().internal_name(asked[0].split('|').find_map(|p| p.strip_prefix("320=")).unwrap());
         let reply = fix::fix_build(&[(35, "d"), (320, &req_id), (6008, "14094"), (167, "CS"), (6178, "3")], 1);
         assert!(farm::round_lot_reply(&mut engine.context, &req_id, &reply));
         engine.send_lot_ready();
@@ -7794,6 +7871,42 @@ mod bars_routing_tests {
         engine.poll_once();
         let day = engine.pool.find("cashhmds").expect("day charts farm");
         assert_eq!(engine.pool.get(day).unwrap().queued(), 1);
+    }
+
+    // ibx#731 (the reference 10.51, paper, 16/10/2026, EUR bars given by
+    // conId alone on IDEALPRO, four sessions): the definition the request
+    // waits for is asked under the reference's name for a client's
+    // contract, in the session series of the lookups by conId, with the
+    // client source, on the request's exchange; its answer, under the
+    // session name, releases the request.
+    #[test]
+    fn bars_of_a_con_id_alone_ask_the_definition_as_the_reference() {
+        use std::io::Read;
+        let shared = Arc::new(SharedState::new());
+        let mut engine = HotLoop::new(shared.clone(), None, None);
+        let (client, _server) = crate::protocol::connection::mem_pair();
+        engine.hmds_conn = Some(Connection::new_mem(client));
+        let (ccp, mut ccp_side) = crate::protocol::connection::mem_pair();
+        engine.ccp_conn = Some(Connection::new_mem(ccp));
+        engine.set_routing_table(TableKind::Historical,
+            "IDEALPRO,CASH,DayChart|Bar5Sec,4,*,ndc1.example,4000,cashhmds");
+        let (tx, rx) = crossbeam_channel::bounded(8);
+        engine.set_control_rx(rx);
+        tx.send(bars(1, 12087792, "IDEALPRO", "", "1 hour")).unwrap();
+        engine.poll_once();
+        ccp_side.set_read_timeout(Some(std::time::Duration::from_millis(300))).unwrap();
+        let mut buf = [0u8; 4096];
+        let n = ccp_side.read(&mut buf).unwrap();
+        let asked = String::from_utf8_lossy(&buf[..n]).replace('\x01', "|");
+        assert!(asked.contains("|35=c|") && asked.contains("|320=SecDefReqMsgReqByConid1|321=2|6088=Socket|146=1|6008=12087792|6004=IDEALPRO|"), "{asked}");
+        assert!(engine.pool.find("cashhmds").is_none(), "nothing asked before the definition");
+        let reply = fix::fix_build(&[(35, "d"), (320, "SecDefReqMsgReqByConid1"), (55, "EUR"), (167, "CASH"), (6008, "12087792")], 1);
+        engine.inject_ccp_message(&reply);
+        engine.send_lot_ready();
+        engine.poll_once();
+        let day = engine.pool.find("cashhmds").expect("day charts farm");
+        assert_eq!(engine.pool.get(day).unwrap().queued(), 1);
+        assert!(shared.reference.drain_historical_errors().is_empty());
     }
 }
 

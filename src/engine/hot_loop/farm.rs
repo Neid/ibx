@@ -219,6 +219,21 @@ pub(crate) const MD_LOOKUP_IDS: u32 = 0x1000_0000;
 pub(crate) const MODEL_LOOKUP_FIRST_ID: u32 = 0x9000_0000;
 pub(crate) const MODEL_LOOKUP_IDS: u32 = 0x1000_0000;
 
+/// Request numbers of the definition lookups by conId a request or a
+/// model waits for (round lot, aggregate group, security type; ibx#731):
+/// a range of their own.
+pub(crate) const DEFINITION_LOOKUP_FIRST_ID: u32 = 0x8000_0000;
+pub(crate) const DEFINITION_LOOKUP_IDS: u32 = 0x1000_0000;
+
+/// The internal name of the next of those lookups, as the reference names
+/// its kind (`kind` then a number of their range; the connection gives it
+/// the session's number on the wire).
+pub(crate) fn next_definition_lookup(context: &mut Context, kind: &str) -> String {
+    let number = DEFINITION_LOOKUP_FIRST_ID + context.next_lot_lookup % DEFINITION_LOOKUP_IDS;
+    context.next_lot_lookup = context.next_lot_lookup.wrapping_add(1);
+    format!("{kind}{number}")
+}
+
 /// The internal name of the next lookup of an order's option model, as the
 /// reference names its kind (`kind` then a number of the model's range;
 /// the connection gives it the session's number on the wire).
@@ -3737,10 +3752,10 @@ mod tests {
         assert!(!fill_from_definition(&context, &mut early), "not known before the definition");
         assert!(early.sec_type.is_empty());
         context.lot_parked.push(sub);
-        context.lot_lookups.push(("ibxlot0".into(), 9, Instant::now() + LOT_LOOKUP_TIMEOUT));
+        context.lot_lookups.push(("SecDefReqMsgReqByConid2147483648".into(), 9, Instant::now() + LOT_LOOKUP_TIMEOUT));
         let msg = crate::control::contracts::tests::pipe_msg(
-            "35=d|320=ibxlot0|55=AAPL|167=OPT|207=BEST|6008=9|541=20261218|200=202612|201=1|202=340|231=100|15=USD");
-        assert!(round_lot_reply(&mut context, "ibxlot0", &msg));
+            "35=d|320=SecDefReqMsgReqByConid2147483648|55=AAPL|167=OPT|207=BEST|6008=9|541=20261218|200=202612|201=1|202=340|231=100|15=USD");
+        assert!(round_lot_reply(&mut context, "SecDefReqMsgReqByConid2147483648", &msg));
         assert_eq!(context.lot_ready.len(), 1);
         assert_eq!((context.lot_ready[0].sec_type.as_str(), context.lot_ready[0].symbol.as_str()), ("OPT", "AAPL"));
         // Known now: a later request with the conId alone takes it at once.
@@ -4593,14 +4608,14 @@ mod tests {
             instrument, mode_9887: 0, snapshot: false,
         };
         let deadline = Instant::now() + LOT_LOOKUP_TIMEOUT;
-        context.lot_lookups.push(("ibxlot0".into(), 265598, deadline));
-        context.lot_lookups.push(("ibxlot1".into(), 272093, deadline));
+        context.lot_lookups.push(("SecDefReqMsgReqByConid2147483648".into(), 265598, deadline));
+        context.lot_lookups.push(("SecDefReqMsgReqByConid2147483649".into(), 272093, deadline));
         context.lot_parked.push(sub(265598, aapl));
         context.lot_parked.push(sub(272093, msft));
-        let reply = crate::protocol::fix::fix_build(&[(35, "d"), (320, "ibxlot0"), (6008, "265598"), (167, "CS"),
+        let reply = crate::protocol::fix::fix_build(&[(35, "d"), (320, "SecDefReqMsgReqByConid2147483648"), (6008, "265598"), (167, "CS"),
             (6523, "USSTK"), (6030, "1"), (6023, "40"), (6027, "40")], 1);
         assert!(!round_lot_reply(&mut context, "other", &reply), "not a round-lot lookup");
-        assert!(round_lot_reply(&mut context, "ibxlot0", &reply));
+        assert!(round_lot_reply(&mut context, "SecDefReqMsgReqByConid2147483648", &reply));
         assert_eq!(context.market.round_lot(aapl), 40);
         assert_eq!(context.round_lots.get(&265598), Some(&40));
         assert_eq!(context.lot_ready.len(), 1);

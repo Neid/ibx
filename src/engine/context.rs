@@ -463,13 +463,15 @@ pub struct Context {
     /// SmartDepth requests waiting for their components' definitions
     /// (#452).
     pub(crate) depth_gathers: Vec<crate::engine::hot_loop::farm::DepthGather>,
-    /// Definition lookups in flight for a round lot: (request id, conId,
-    /// deadline).
+    /// Definition lookups by conId in flight for what a request or a model
+    /// needs (round lot, aggregate group, security type): (request id,
+    /// conId, deadline).
     pub(crate) lot_lookups: Vec<(String, i64, std::time::Instant)>,
     /// Market data subscriptions waiting for their round lot, in order.
     pub(crate) lot_parked: Vec<crate::engine::hot_loop::farm::MdSubscribe>,
     /// Subscriptions whose round lot is known, to be sent.
     pub(crate) lot_ready: Vec<crate::engine::hot_loop::farm::MdSubscribe>,
+    /// The next number of those lookups' range (ibx#731).
     pub(crate) next_lot_lookup: u32,
     /// Market data subscriptions given without a conId, waiting for the
     /// lookup that resolves it: (request number, subscription, deadline)
