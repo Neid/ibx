@@ -428,7 +428,12 @@ fn stream_pass(st: &mut StreamState, m: &Mirror, pass: Pass, out: &mut Out) {
         }
     }
     let delayed = st.delayed;
-    let (bid_auto, ask_auto) = if delayed {
+    // The frozen bid and ask do not execute automatically (ibx#494; the
+    // reference 10.51, paper, 17/10/2026 weekend, AAPL in frozen mode, two
+    // streams and two snapshots on fresh processes: the frozen bid and ask
+    // without it, the real-time -1 before the switch with it; options
+    // likewise, 15/10/2026).
+    let (bid_auto, ask_auto) = if delayed || st.frozen {
         (false, false)
     } else if st.farm_auto {
         (m.auto.bid_auto() == Some(true), m.auto.ask_auto() == Some(true))
@@ -1342,6 +1347,33 @@ mod tests {
         let q = Quote { bid_size: 20 * QTY_SCALE, ..q };
         shared.market.push_test_message(6, &q, &TestMessage { steps: Some(&[MdStep::Quote]), sizes_seen: true, ..Default::default() });
         assert_eq!(poll(&core, &shared), ["size:1:0:20"]);
+    }
+
+    // ibx#494 (the reference 10.51, paper, 17/10/2026 weekend, AAPL in
+    // frozen mode, two streams and two snapshots on fresh processes): a
+    // stock's frozen bid and ask do not execute automatically, where its
+    // real-time ones do.
+    #[test]
+    fn a_stocks_frozen_bid_and_ask_do_not_execute_automatically() {
+        let (core, shared) = (ClientCore::new(), SharedState::new());
+        stream(&core, &shared, 1, 6);
+        core.mdt_sent.lock().unwrap().insert(1);
+        core.last_quotes.lock().unwrap().get_mut(&1).unwrap().freeze();
+        let p = |cents: i64| cents * PRICE_SCALE / 100;
+        let q = Quote { bid: p(34262), ask: p(34286), bid_size: 3 * QTY_SCALE, ask_size: 4 * QTY_SCALE, ..Default::default() };
+        shared.market.push_test_message(6, &q, &TestMessage { steps: Some(&[MdStep::Quote]), sizes_seen: true, ..Default::default() });
+        let mut out = Vec::new();
+        core.poll_market_data(&shared, None, &mut out);
+        assert_eq!(lines(&out), ["price:1:1:342.62", "size:1:0:3", "price:1:2:342.86", "size:1:3:4", "generic:1:49:-1"]);
+        assert!(out.iter().all(|o| !matches!(o, MdOut::Tick(_, MdTick::Price { can_auto_execute: true, .. }))), "{out:?}");
+        // The same stream in real time: both execute automatically.
+        let (core, shared) = (ClientCore::new(), SharedState::new());
+        stream(&core, &shared, 1, 6);
+        shared.market.push_test_message(6, &q, &TestMessage { steps: Some(&[MdStep::Quote]), sizes_seen: true, ..Default::default() });
+        let mut out = Vec::new();
+        core.poll_market_data(&shared, None, &mut out);
+        let auto = out.iter().filter(|o| matches!(o, MdOut::Tick(_, MdTick::Price { can_auto_execute: true, .. }))).count();
+        assert_eq!(auto, 2, "{out:?}");
     }
 
     // ibx#692 (the reference 10.51, paper, 14/10/2026, an AAPL call from
