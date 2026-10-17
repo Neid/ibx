@@ -223,6 +223,14 @@ pub struct ContractDefinition {
     /// Symbol of the request when it reads as a CUSIP (the CUSIP of a bond
     /// row), else empty.
     pub lookup_cusip: String,
+    /// Market type as received (US stock, US warrant...), empty when
+    /// absent: with the wire type, whether its sizes count in round lots
+    /// (ibx#732).
+    pub market_type: String,
+    /// SMART component exchanges as received, empty when absent (ibx#732).
+    pub smart_components: Vec<String>,
+    /// Listing exchange as received, empty when absent (ibx#732).
+    pub listing_exchange: String,
 }
 
 /// Fund fields of a definition (detail block, FUND only on the API).
@@ -324,6 +332,9 @@ impl Default for ContractDefinition {
             bond_api: false,
             ev_api: false,
             lookup_cusip: String::new(),
+            market_type: String::new(),
+            smart_components: Vec::new(),
+            listing_exchange: String::new(),
         }
     }
 }
@@ -671,7 +682,14 @@ fn apply_secdef_fields<'a>(def: &mut ContractDefinition, keys: &mut RecordKeys<'
                     def.exchange = exchange_from_fix(v).to_string();
                 }
             }
-            TAG_IB_PRIMARY_EXCHANGE => def.primary_exchange = exchange_from_fix(v).to_string(),
+            TAG_IB_PRIMARY_EXCHANGE => {
+                def.primary_exchange = exchange_from_fix(v).to_string();
+                def.listing_exchange = v.to_string();
+            }
+            TAG_IB_MARKET_TYPE => def.market_type = v.to_string(),
+            6177 => {
+                def.smart_components = v.split(',').map(str::trim).filter(|e| !e.is_empty()).map(String::from).collect();
+            }
             8224 => def.primary_suffix = v.to_string(),
             TAG_CURRENCY => def.currency = v.to_string(),
             TAG_IB_LOCAL_SYMBOL => def.local_symbol = v.to_string(),

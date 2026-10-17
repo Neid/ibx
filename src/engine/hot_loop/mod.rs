@@ -15,7 +15,7 @@ use std::time::Instant;
 use std::io;
 
 use crate::bridge::{Event, SharedState};
-use crate::engine::context::Context;
+use crate::engine::context::{Context, DefAsk};
 use crate::engine::park::{ControlSender, Parker, RawHandle, Waker};
 use crate::config::chrono_free_timestamp;
 use crate::gateway::{ccp_reconnect_host, reconnect_ccp_via, CcpReconnect, ReconnectAuth};
@@ -605,6 +605,48 @@ impl HotLoop {
         self.ask_definition_named(con_id, exchange, true, |c| farm::next_definition_lookup(c, crate::control::contracts::SECDEF_MSG_NAME))
     }
 
+    /// A client's historical, real-time bar or depth request given by a
+    /// conId alone asks its contract's definition each time, known or not,
+    /// as [`Self::ask_definition`] asks it, and waits for it (ibx#732;
+    /// observed on paper, recordings of 13 and 16/10/2026: 17 such requests
+    /// of 17 asked it, 11 of them on a contract known from an earlier
+    /// answer). True when the request waits: it comes back to the command
+    /// loop once the answer came (or after the lookup's deadline) and goes
+    /// on then, without asking it again. A lookup is sent for each request,
+    /// even when one for the contract is on its way.
+    fn ask_definition_each_time(&mut self, kind: DefAsk, req_id: ReqId, con_id: i64, exchange: &str,
+        request: impl FnOnce() -> ControlCommand) -> bool
+    {
+        if con_id <= 0 || self.context.def_asked.remove(&(kind, req_id)) {
+            return false;
+        }
+        if self.ccp_conn.is_none() || self.ccp.disconnected {
+            return false;
+        }
+        let name = farm::next_definition_lookup(&mut self.context, crate::control::contracts::SECDEF_MSG_NAME);
+        if !self.send_definition_lookup(con_id, exchange, true, name) {
+            return false;
+        }
+        self.context.def_asked.insert((kind, req_id));
+        self.context.def_parked.push((con_id, request()));
+        true
+    }
+
+    /// Drop a request of `kind` waiting for its definition (its cancel came
+    /// first). True when one waited.
+    fn drop_parked(&mut self, kind: DefAsk, req_id: ReqId) -> bool {
+        let of_kind = |c: &ControlCommand| match (kind, c) {
+            (DefAsk::Historical, ControlCommand::FetchHistorical { req_id: r, .. })
+            | (DefAsk::RealTimeBars, ControlCommand::SubscribeRealTimeBar { req_id: r, .. })
+            | (DefAsk::Depth, ControlCommand::SubscribeDepth { req_id: r, .. }) => *r == req_id,
+            _ => false,
+        };
+        let before = self.context.def_parked.len();
+        self.context.def_parked.retain(|(_, c)| !of_kind(c));
+        self.context.def_asked.remove(&(kind, req_id));
+        self.context.def_parked.len() != before
+    }
+
     /// [`Self::ask_definition`] for the engine's own need, with no client
     /// source: an option model's or an order quote's (ibx#731).
     fn ask_own_definition(&mut self, con_id: i64, exchange: &str) -> bool {
@@ -1115,9 +1157,13 @@ impl HotLoop {
             };
             if self.needs_agg_group(&under_sub) {
                 // A client's model asks its underlying as the reference
-                // (ibx#731); an order's on the smart route.
+                // (ibx#731), once the company lookup of its underlying, on
+                // its way, answered (ibx#732); an order's on the smart
+                // route.
                 if s.order.is_none() {
-                    self.ask_underlying_definitions(terms.under_con_id);
+                    if !self.ccp.company_pending(terms.under_con_id) {
+                        self.ask_underlying_definitions(terms.under_con_id);
+                    }
                 } else {
                     self.ask_own_definition(terms.under_con_id, "SMART");
                 }
@@ -1473,6 +1519,13 @@ impl HotLoop {
         let contracts = self.farm.depth_contracts();
         if !contracts.contains(&con_id) && contracts.len() >= self.depth_limit {
             return refuse(&self.shared, 309, format!("Max number ({}) of market depth requests has been reached", self.depth_limit));
+        }
+        // Given by its conId alone, with no security type: its definition
+        // is asked each time (ibx#732).
+        if sec_type.is_empty() && self.ask_definition_each_time(DefAsk::Depth, req_id, con_id, &exchange, || ControlCommand::SubscribeDepth {
+            req_id, con_id, exchange: exchange.clone(), sec_type: String::new(), num_rows, is_smart_depth,
+        }) {
+            return;
         }
         // A contract given by its conId alone takes the type of its
         // definition (ibx#678, the rule of #643).
@@ -2649,6 +2702,17 @@ impl HotLoop {
                     self.ccp.start_contract_resolve(req_id, lookup, *request, &mut self.ccp_conn, &mut self.hb);
                 }
                 ControlCommand::FetchHistorical { req_id, con_id, symbol, sec_type, exchange, end_date_time, duration, bar_size, what_to_show, use_rth, keep_up_to_date, include_expired, format_date } => {
+                    // Given by its conId alone, with no security type: its
+                    // definition is asked each time (ibx#732).
+                    if sec_type.is_empty()
+                        && self.ask_definition_each_time(DefAsk::Historical, req_id, con_id, &exchange, || ControlCommand::FetchHistorical {
+                            req_id, con_id, symbol: symbol.clone(), sec_type: String::new(), exchange: exchange.clone(),
+                            end_date_time: end_date_time.clone(), duration: duration.clone(), bar_size: bar_size.clone(),
+                            what_to_show: what_to_show.clone(), use_rth, keep_up_to_date, include_expired, format_date,
+                        })
+                    {
+                        continue;
+                    }
                     // A contract given by its conId alone takes the type of
                     // its definition, which it waits for when not known
                     // (ibx#643's rule; the reference 10.51 served an option
@@ -2712,6 +2776,9 @@ impl HotLoop {
                     }
                 }
                 ControlCommand::CancelHistorical { req_id } => {
+                    // A request waiting for its definition is never sent
+                    // (ibx#732).
+                    self.drop_parked(DefAsk::Historical, req_id);
                     // 162 or 366 to the client, then the cancels (ibx#431, ibx#429).
                     for (farm_id, xml) in self.hmds.cancel_bar_request(req_id, &self.shared) {
                         if let Some(sink) = farm_sink!(self, farm_id) {
@@ -2867,6 +2934,24 @@ impl HotLoop {
                     }
                 }
                 ControlCommand::SubscribeRealTimeBar { req_id, con_id, symbol, sec_type, exchange, what_to_show, use_rth } => {
+                    // Given by its conId alone, with no security type: its
+                    // definition is asked each time, and the query names the
+                    // contract by its definition's symbol and type (ibx#732;
+                    // observed on paper, 13/10/2026: an option and a future,
+                    // two sessions, 4 requests of 4).
+                    let alone = sec_type.is_empty();
+                    if alone && self.hmds_conn.is_some() && crate::control::historical::realtime_bar_data(&what_to_show).is_some()
+                        && self.ask_definition_each_time(DefAsk::RealTimeBars, req_id, con_id, &exchange, || ControlCommand::SubscribeRealTimeBar {
+                            req_id, con_id, symbol: symbol.clone(), sec_type: String::new(), exchange: exchange.clone(),
+                            what_to_show: what_to_show.clone(), use_rth,
+                        })
+                    {
+                        continue;
+                    }
+                    let (symbol, sec_type) = match self.context.def_kinds.get(&con_id) {
+                        Some((kind, name)) if alone => (if symbol.is_empty() { name.clone() } else { symbol }, kind.clone()),
+                        _ => (symbol, sec_type),
+                    };
                     if self.hmds_conn.is_none() {
                         self.emit_hmds_unavailable(req_id, false);
                     } else {
@@ -2877,6 +2962,8 @@ impl HotLoop {
                     // A request waiting for its contract's lookup is never
                     // sent.
                     self.ccp.pending_resolves.retain(|p| !(p.req_id == req_id && matches!(p.request, ControlCommand::SubscribeRealTimeBar { .. })));
+                    // Nor one waiting for its definition (ibx#732).
+                    self.drop_parked(DefAsk::RealTimeBars, req_id);
                     // The router's cancel once no request is left on it
                     // (ibx#454).
                     if let Some(tid) = self.hmds.end_rtbar(req_id) {
@@ -2894,6 +2981,12 @@ impl HotLoop {
                     self.route_depth_subscribe(req_id, con_id, exchange, sec_type, num_rows, is_smart_depth);
                 }
                 ControlCommand::UnsubscribeDepth { req_id } => {
+                    // A request waiting for its definition has nothing on
+                    // the wire (ibx#732).
+                    if self.drop_parked(DefAsk::Depth, req_id) {
+                        self.shared.market.purge_depth_updates(req_id);
+                        continue;
+                    }
                     // A SmartDepth request still waiting for its
                     // components' definitions has nothing on the wire.
                     if let Some(pos) = self.context.depth_gathers.iter().position(|g| g.req_id == req_id) {
@@ -6082,6 +6175,145 @@ mod tests {
         assert!(asked[0].contains("|321=2|6088=Socket|55=AAPL|167=OPT|541=20261218|201=1|202=340|231=100|100=BEST|15=USD|"), "{}", asked[0]);
     }
 
+    /// The request name of a lookup as written.
+    fn lookup_name(msg: &str) -> String {
+        msg.split('|').find_map(|p| p.strip_prefix("320=")).unwrap_or_default().to_string()
+    }
+
+    fn lookups_sent(server: &mut crate::protocol::connection::MemTransport) -> Vec<String> {
+        plain_messages_sent(server).into_iter().filter(|m| m.contains("|35=c|")).collect()
+    }
+
+    // ibx#732 (observed on paper, recordings of 12-16/10/2026: 120 market
+    // data requests by conId after a contract details answer, none asked
+    // the definition): the contracts of the portfolio's batch and of a
+    // contract details answer are known record by record, each with the
+    // round lot of its own size steps; a later market data request on them
+    // asks nothing and goes out at once.
+    #[test]
+    fn contracts_of_every_answer_are_known() {
+        use crate::control::contracts::tests::pipe_msg;
+        let shared = Arc::new(SharedState::new());
+        let mut engine = HotLoop::new(shared.clone(), None, None);
+        let (c1, mut farm_side) = socket_pair();
+        let (c2, mut ccp_side) = socket_pair();
+        engine.farm_conn = Some(Connection::new_mem(c1));
+        engine.ccp_conn = Some(Connection::new_mem(c2));
+        engine.set_scale_us_lots(true);
+        engine.set_routing_table(crate::engine::routing::TableKind::MarketData,
+            "BEST,STK,Top,1,*,cdc1.example,4000,usfarm;BEST,STK,Top,2,*,cdc1.example,4000,usfarm");
+        let (tx, rx) = crossbeam_channel::bounded(8);
+        engine.set_control_rx(rx);
+
+        // The portfolio's batch: two US stocks in one answer, their rules
+        // with size steps of 40 and 1.
+        engine.ccp.pending_secdef.push((0xF000_0000, false, Instant::now() + std::time::Duration::from_secs(5)));
+        engine.inject_ccp_message(&pipe_msg("35=d|43=N|320=SmallBatchReqByConid4026531840|322=*|323=4|\
+            55=MSFT|167=STK|207=BEST|6008=272093|6031=4563|15=USD|6177=AMEX,NASDAQ,|6178=1|\
+            55=AXTI|167=STK|207=BEST|6008=4726868|6031=557|15=USD|6178=2|\
+            146=2|6038=Y|6019=2|6031=557|6026=1|6023=0|6027=0.0001|6030=1|6023=0|6027=1|\
+            6031=4563|6026=1|6023=0|6027=0.01|6030=1|6023=0|6027=40|\
+            6344=2|6008=272093|6470=NASDAQ|6523=USSTK|6008=4726868|6470=NASDAQ|6523=USSTK"));
+        assert_eq!(engine.context.round_lots.get(&272093), Some(&40));
+        assert_eq!(engine.context.round_lots.get(&4726868), Some(&1));
+        assert_eq!(engine.context.agg_groups.get(&272093), Some(&1));
+        assert_eq!(engine.context.agg_groups.get(&4726868), Some(&2));
+        assert_eq!(engine.context.listing_exchanges.get(&272093).map(String::as_str), Some("NASDAQ"));
+        assert_eq!(engine.context.smart_components.get(&272093).cloned(), Some(vec!["AMEX".to_string(), "NASDAQ".to_string()]));
+        assert!(engine.context.us_lots.contains(&272093) && engine.context.us_lots.contains(&4726868));
+        assert_eq!(engine.context.def_kinds.get(&4726868), Some(&("STK".to_string(), "AXTI".to_string())));
+
+        // A contract details answer by conId.
+        engine.ccp.send_contract_details_by_con_id(7, 265598, "SMART", &mut engine.ccp_conn, &mut engine.hb);
+        let asked = lookups_sent(&mut ccp_side);
+        assert_eq!(asked.len(), 1, "{asked:?}");
+        engine.inject_ccp_message(&pipe_msg(&format!("35=d|43=N|320={}|322=*|323=4|\
+            55=AAPL|167=STK|207=BEST|6008=265598|6031=4563|15=USD|6178=1|\
+            146=1|6038=Y|6019=1|6031=4563|6026=1|6023=0|6027=0.01|6030=1|6023=0|6027=100|\
+            6344=1|6008=265598|6470=NASDAQ|6523=USSTK", lookup_name(&asked[0]))));
+        assert_eq!(engine.context.round_lots.get(&265598), Some(&100));
+
+        // Market data on the three: no definition asked, each subscribed
+        // at once with its round lot.
+        for con_id in [272093, 4726868, 265598] {
+            tx.send(subscribe_cmd(con_id, "STK")).unwrap();
+        }
+        engine.poll_once();
+        assert!(lookups_sent(&mut ccp_side).is_empty(), "no definition asked");
+        let sent = farm_messages_sent(&mut farm_side).join("\n");
+        for con_id in [272093, 4726868, 265598] {
+            assert!(sent.contains(&format!("6008={con_id}|")), "{con_id} subscribed: {sent}");
+        }
+        let lot = |c: i64| engine.context.market.round_lot(engine.context.market.instrument_by_con_id(c).unwrap());
+        assert_eq!((lot(272093), lot(4726868), lot(265598)), (40, 1, 100));
+    }
+
+    // ibx#732 (observed on paper, recordings of 12-16/10/2026: 11 option
+    // requests by description of 11 whose underlying's company was not
+    // known): the option's answer is followed by the company lookup of its
+    // underlying; the option model asks the underlying's definitions only
+    // after the company answered (5 of 5); the company's answer does not
+    // make the underlying known. A second request asks no company again.
+    #[test]
+    fn an_option_request_asks_its_underlying_company_first() {
+        use crate::control::contracts::tests::pipe_msg;
+        let shared = Arc::new(SharedState::new());
+        let mut engine = HotLoop::new(shared.clone(), None, None);
+        let (c1, _farm_side) = socket_pair();
+        let (c2, mut ccp_side) = socket_pair();
+        engine.farm_conn = Some(Connection::new_mem(c1));
+        engine.ccp_conn = Some(Connection::new_mem(c2));
+        engine.set_routing_table(crate::engine::routing::TableKind::MarketData,
+            "BEST,STK,Top,1,*,cdc1.example,4000,usfarm;BEST,OPT,Top,2,*,cdc1.example,4000,usfarm");
+        let (tx, rx) = crossbeam_channel::bounded(8);
+        engine.set_control_rx(rx);
+        let request = || {
+            let filters = crate::types::SecDefFilters {
+                last_trade_date_or_contract_month: "20261218".into(), strike: 340.0, right: "C".into(),
+                multiplier: "100".into(), ..Default::default()
+            };
+            ControlCommand::SubscribeBySymbol {
+                symbol: "AAPL".into(), sec_type: "OPT".into(), exchange: "SMART".into(), currency: "USD".into(),
+                filters, mode_9887: 0, snapshot: false, over_limit: false, reply_tx: None,
+            }
+        };
+        let option = |name: &str| pipe_msg(&format!("35=d|43=N|320={name}|322=*|323=4|\
+            55=AAPL|167=OPT|207=BEST|6008=692808239|541=20261218|201=1|202=340|231=100|15=USD|6178=2|6346=265598"));
+        tx.send(request()).unwrap();
+        engine.poll_once();
+        let asked = lookups_sent(&mut ccp_side);
+        assert_eq!(asked.len(), 1, "{asked:?}");
+        engine.inject_ccp_message(&option(&lookup_name(&asked[0])));
+        let asked = lookups_sent(&mut ccp_side);
+        assert_eq!(asked.len(), 1, "{asked:?}");
+        assert!(lookup_name(&asked[0]).starts_with("UnderlyingECNoDupsNDReqByConid")
+            && asked[0].contains("|146=1|6008=265598|6004=ANYEXCH|"), "{}", asked[0]);
+        // The option's model waits for the company's answer.
+        engine.send_md_resolved();
+        for _ in 0..3 {
+            engine.poll_once();
+            engine.service_option_models(Instant::now());
+        }
+        assert!(lookups_sent(&mut ccp_side).is_empty(), "nothing before the company's answer");
+        engine.inject_ccp_message(&pipe_msg(&format!("35=d|43=N|320={}|322=*|323=4|\
+            55=AAPL|167=STK|207=BEST|6008=265598|15=USD|6178=1", lookup_name(&asked[0]))));
+        assert!(!engine.context.agg_groups.contains_key(&265598), "the company's answer gives no knowledge");
+        engine.poll_once();
+        engine.service_option_models(Instant::now());
+        let pair: Vec<String> = lookups_sent(&mut ccp_side).iter()
+            .map(|m| format!("{} {}", lookup_name(m).trim_end_matches(char::is_numeric), m.contains("|6008=265598|6004=ANYEXCH|")))
+            .collect();
+        assert_eq!(pair, ["SecDefReqMsgNDReqByConid true", "PreferredReqByConid true"]);
+
+        // A second request: its company is known, none asked.
+        tx.send(request()).unwrap();
+        engine.poll_once();
+        let asked = lookups_sent(&mut ccp_side);
+        assert_eq!(asked.len(), 1, "{asked:?}");
+        engine.inject_ccp_message(&option(&lookup_name(&asked[0])));
+        assert!(lookups_sent(&mut ccp_side).is_empty(), "no company asked again");
+    }
+
     // ibx#278 (captured E6): two requests with no conId get their own
     // slots, a lookup each, then a subscription by the conId found; both
     // run side by side. A lookup that finds several contracts ends its
@@ -7908,6 +8140,111 @@ mod bars_routing_tests {
         assert_eq!(engine.pool.get(day).unwrap().queued(), 1);
         assert!(shared.reference.drain_historical_errors().is_empty());
     }
+
+    /// Everything written on a test connection, as text.
+    fn written(side: &mut crate::protocol::connection::MemTransport) -> String {
+        use std::io::Read;
+        side.set_read_timeout(Some(std::time::Duration::from_millis(300))).unwrap();
+        let mut out = Vec::new();
+        let mut chunk = [0u8; 8192];
+        while let Ok(n) = side.read(&mut chunk) {
+            if n == 0 { break; }
+            out.extend_from_slice(&chunk[..n]);
+        }
+        String::from_utf8_lossy(&out).replace('\x01', "|")
+    }
+
+    fn definition_names(text: &str) -> Vec<String> {
+        text.split("|35=c|").skip(1).filter_map(|m| m.split('|').find_map(|p| p.strip_prefix("320=")).map(String::from)).collect()
+    }
+
+    // ibx#732 (observed on paper, recordings of 16/10/2026: EUR bars given
+    // by conId alone, 5 requests of 5, the last on a contract known from
+    // the request before): bars of a conId alone ask the definition each
+    // time, known or not, and wait for it; once it came the request goes
+    // on with no second lookup.
+    #[test]
+    fn bars_of_a_con_id_alone_ask_the_definition_each_time() {
+        let shared = Arc::new(SharedState::new());
+        let mut engine = HotLoop::new(shared.clone(), None, None);
+        let (client, _server) = crate::protocol::connection::mem_pair();
+        engine.hmds_conn = Some(Connection::new_mem(client));
+        let (ccp, mut ccp_side) = crate::protocol::connection::mem_pair();
+        engine.ccp_conn = Some(Connection::new_mem(ccp));
+        engine.set_routing_table(TableKind::Historical,
+            "IDEALPRO,CASH,DayChart|Bar5Sec,4,*,ndc1.example,4000,cashhmds");
+        // Known: its kind, group and rule.
+        engine.context.agg_groups.insert(12087792, -1);
+        engine.context.def_kinds.insert(12087792, ("CASH".into(), "EUR".into()));
+        shared.reference.note_contract_rule(12087792, 239);
+        let (tx, rx) = crossbeam_channel::bounded(8);
+        engine.set_control_rx(rx);
+        for (req_id, number, size) in [(1, 1, "1 hour"), (2, 2, "30 mins")] {
+            tx.send(bars(req_id, 12087792, "IDEALPRO", "", size)).unwrap();
+            engine.poll_once();
+            let asked = written(&mut ccp_side);
+            let name = format!("SecDefReqMsgReqByConid{number}");
+            assert_eq!(definition_names(&asked), [name.clone()], "{asked}");
+            assert!(asked.contains("|6088=Socket|146=1|6008=12087792|6004=IDEALPRO|"), "{asked}");
+            let queued = engine.pool.find("cashhmds").map_or(0, |d| engine.pool.get(d).unwrap().queued());
+            assert_eq!(queued, req_id as usize - 1, "nothing asked before the definition");
+            let reply = fix::fix_build(&[(35, "d"), (320, &name), (55, "EUR"), (167, "CASH"), (6008, "12087792")], 1);
+            engine.inject_ccp_message(&reply);
+            engine.send_lot_ready();
+            engine.poll_once();
+            let day = engine.pool.find("cashhmds").expect("day charts farm");
+            assert_eq!(engine.pool.get(day).unwrap().queued(), req_id as usize);
+            assert!(definition_names(&written(&mut ccp_side)).is_empty(), "no second lookup");
+        }
+        // With its description, nothing is asked.
+        tx.send(bars(3, 12087792, "IDEALPRO", "CASH", "15 mins")).unwrap();
+        engine.poll_once();
+        assert!(definition_names(&written(&mut ccp_side)).is_empty());
+        assert!(engine.context.def_asked.is_empty());
+        assert!(shared.reference.drain_historical_errors().is_empty());
+    }
+
+    // ibx#732 (observed on paper, 13/10/2026, two sessions: an option and a
+    // future given by conId alone, 4 real-time bar requests of 4): the
+    // definition is asked first, as for bars; the query goes out once it
+    // came, naming the contract by its definition's symbol and type. A
+    // second request asks it again.
+    #[test]
+    fn real_time_bars_of_a_con_id_alone_ask_the_definition_first() {
+        let shared = Arc::new(SharedState::new());
+        let mut engine = HotLoop::new(shared.clone(), None, None);
+        let (client, mut hmds_side) = crate::protocol::connection::mem_pair();
+        engine.hmds_conn = Some(Connection::new_mem(client));
+        let (ccp, mut ccp_side) = crate::protocol::connection::mem_pair();
+        engine.ccp_conn = Some(Connection::new_mem(ccp));
+        let (tx, rx) = crossbeam_channel::bounded(8);
+        engine.set_control_rx(rx);
+        let request = |req_id: ReqId| ControlCommand::SubscribeRealTimeBar {
+            req_id, con_id: 692806985, symbol: String::new(), sec_type: String::new(), exchange: "SMART".into(),
+            what_to_show: "MIDPOINT".into(), use_rth: true,
+        };
+        tx.send(request(1)).unwrap();
+        engine.poll_once();
+        let asked = written(&mut ccp_side);
+        assert_eq!(definition_names(&asked), ["SecDefReqMsgReqByConid1"], "{asked}");
+        assert!(asked.contains("|321=2|6088=Socket|146=1|6008=692806985|6004=BEST|"), "{asked}");
+        assert!(!written(&mut hmds_side).contains("realTime"), "no query before the definition");
+        let reply = fix::fix_build(&[(35, "d"), (320, "SecDefReqMsgReqByConid1"), (55, "AAPL"), (167, "OPT"), (207, "BEST"),
+            (6008, "692806985"), (541, "20261218"), (201, "1"), (202, "100"), (231, "100"), (15, "USD")], 1);
+        engine.inject_ccp_message(&reply);
+        engine.send_lot_ready();
+        engine.poll_once();
+        let query = written(&mut hmds_side);
+        assert!(query.contains("realTime1;;AAPL@SMART Midpoint;;") && query.contains("<secType>OPT</secType>")
+            && query.contains("<contractID>692806985</contractID>"), "{query}");
+        assert!(definition_names(&written(&mut ccp_side)).is_empty(), "no second lookup");
+
+        // Known now, asked again.
+        tx.send(request(2)).unwrap();
+        engine.poll_once();
+        assert_eq!(definition_names(&written(&mut ccp_side)), ["SecDefReqMsgReqByConid2"]);
+        assert!(shared.reference.drain_historical_errors().is_empty());
+    }
 }
 
 #[cfg(test)]
@@ -7980,6 +8317,67 @@ mod depth_tests {
 
     fn errors(shared: &SharedState) -> Vec<String> {
         shared.orders.drain_order_errors().into_iter().map(|(id, code, text)| format!("{}:{}:{}", id, code, text)).collect()
+    }
+
+    // ibx#732 (observed on paper, 13/10/2026, two sessions: an option and a
+    // future given by conId alone, 4 depth requests of 4, each contract
+    // known from the requests before it): a depth request of a conId alone
+    // asks the definition each time, on its exchange, and waits for it;
+    // once it came the request goes on with no second lookup.
+    #[test]
+    fn a_depth_request_of_a_con_id_alone_asks_the_definition_each_time() {
+        use std::io::Read;
+        let (mut engine, shared, mut side, tx) = engine();
+        let (ccp, mut ccp_side) = loopback();
+        engine.ccp_conn = Some(ccp);
+        engine.context.def_kinds.insert(265598, ("STK".into(), "AAPL".into()));
+        let mut lookups = || {
+            ccp_side.set_read_timeout(Some(Duration::from_millis(300))).unwrap();
+            let mut out = Vec::new();
+            let mut chunk = [0u8; 8192];
+            while let Ok(n) = ccp_side.read(&mut chunk) {
+                if n == 0 { break; }
+                out.extend_from_slice(&chunk[..n]);
+            }
+            let text = String::from_utf8_lossy(&out).replace('\x01', "|");
+            text.split("|35=c|").skip(1).map(|m| m.split("|10=").next().unwrap_or("").to_string()).collect::<Vec<String>>()
+        };
+        for (req_id, number, exchange) in [(7, 1, "NASDAQ"), (8, 2, "IEX")] {
+            tx.send(depth(req_id, 265598, exchange, "", 5, false)).unwrap();
+            engine.poll_once();
+            let asked = lookups();
+            assert_eq!(asked.len(), 1, "{asked:?}");
+            let name = format!("SecDefReqMsgReqByConid{number}");
+            assert!(asked[0].contains(&format!("320={name}|321=2|6088=Socket|146=1|6008=265598|6004={exchange}")), "{}", asked[0]);
+            assert!(sent(&mut side).is_empty(), "no book before the definition");
+            let reply = crate::protocol::fix::fix_build(&[(35, "d"), (320, &name), (55, "AAPL"), (167, "STK"), (207, "NASDAQ"),
+                (6008, "265598"), (6178, "1")], 1);
+            engine.inject_ccp_message(&reply);
+            engine.send_lot_ready();
+            engine.poll_once();
+            let book = sent(&mut side);
+            assert_eq!(book.len(), 1, "{book:?}");
+            assert!(book[0].contains(&format!("6008=265598|207={exchange}|")), "{}", book[0]);
+            assert!(lookups().is_empty(), "no second lookup");
+        }
+        assert!(engine.context.def_asked.is_empty());
+        assert!(errors(&shared).is_empty());
+
+        // Cancelled while its definition is on its way: never sent, no
+        // error.
+        tx.send(depth(9, 265598, "MEMX", "", 5, false)).unwrap();
+        engine.poll_once();
+        assert_eq!(lookups().len(), 1);
+        tx.send(ControlCommand::UnsubscribeDepth { req_id: 9 }).unwrap();
+        engine.poll_once();
+        assert!(engine.context.def_parked.is_empty() && engine.context.def_asked.is_empty());
+        let reply = crate::protocol::fix::fix_build(&[(35, "d"), (320, "SecDefReqMsgReqByConid3"), (55, "AAPL"), (167, "STK"),
+            (6008, "265598"), (6178, "1")], 1);
+        engine.inject_ccp_message(&reply);
+        engine.send_lot_ready();
+        engine.poll_once();
+        assert!(sent(&mut side).is_empty());
+        assert!(errors(&shared).is_empty());
     }
 
     // ibx#702 (the reference 10.51, paper 15/10/2026: +6 ms): a depth

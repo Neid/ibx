@@ -197,6 +197,15 @@ pub(crate) struct DefLink {
     pub(crate) currency: String,
 }
 
+/// The kinds of request that ask their contract's definition each time
+/// they are given by a conId alone (ibx#732).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum DefAsk {
+    Historical,
+    RealTimeBars,
+    Depth,
+}
+
 pub struct Context {
     pub(crate) market: MarketState,
     positions: [i64; MAX_INSTRUMENTS],
@@ -337,6 +346,10 @@ pub struct Context {
     /// ones whose definition came, to be handled again (ibx#404).
     pub(crate) def_parked: Vec<(i64, crate::types::ControlCommand)>,
     pub(crate) def_ready: Vec<crate::types::ControlCommand>,
+    /// The client's requests given by a conId alone whose definition was
+    /// asked for them, by kind of request and request id: handled again
+    /// once it came, they go on without asking it again (ibx#732).
+    pub(crate) def_asked: std::collections::HashSet<(crate::engine::context::DefAsk, crate::types::ReqId)>,
     /// Listing exchange by conId, once its definition was read (#452).
     pub(crate) listing_exchanges: HashMap<i64, String>,
     /// The terms of the options whose definition was read, for the option
@@ -610,6 +623,7 @@ impl Context {
             depth_unsupported: std::collections::HashSet::new(),
             def_parked: Vec::new(),
             def_ready: Vec::new(),
+            def_asked: std::collections::HashSet::new(),
             smart_components: HashMap::new(),
             valid_exchanges: HashMap::new(),
             depth_descriptions: HashMap::new(),

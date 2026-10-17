@@ -3342,29 +3342,6 @@ impl CcpState {
         log::info!("Sent account summary {}: {}", if subscribe.is_some() { "subscribe" } else { "cancel" }, sr_id);
     }
 
-    pub(crate) fn send_secdef_request(&mut self, req_id: ReqId, con_id: i64, ccp_conn: &mut Option<Connection>, hb: &mut HeartbeatState) {
-        if let Some(conn) = ccp_conn.as_mut() {
-            let con_id_str = con_id.to_string();
-            let req_id_str = req_id.to_string();
-            let ts = chrono_free_timestamp();
-            let _ = conn.send_fix(&[
-                (fix::TAG_MSG_TYPE, "c"),
-                (fix::TAG_SENDING_TIME, &ts),
-                (crate::control::contracts::TAG_SECURITY_REQ_ID, &req_id_str),
-                (crate::control::contracts::TAG_SECURITY_REQ_TYPE, "2"),
-                (crate::control::contracts::TAG_IB_CON_ID, &con_id_str),
-                (crate::control::contracts::TAG_IB_SOURCE, "Socket"),
-            ]);
-            log::info!("Sent secdef request: req_id={} con_id={}", req_id, con_id);
-            hb.last_ccp_sent = Instant::now();
-        } else {
-            // No CCP socket: the entry waits, as a sent one does (ibx#485).
-            log::warn!("secdef request req_id={} queued with no CCP socket", req_id);
-        }
-        // Known-conId lookup: single record, no paginated terminator.
-        self.pending_secdef.push((req_id, true, Instant::now() + SECDEF_TIMEOUT));
-    }
-
     /// The lookup of a scanner row's contract (ibx#513), in the reference's
     /// form: the preferred contract of the conId, asked for the scanner
     /// (recording of 26/09/2026).
@@ -3568,7 +3545,11 @@ impl CcpState {
                 if let Some(def) = records.first() {
                     self.cache_definition(def, shared);
                 }
-                note_order_option(context, records.first(), msg);
+                // Known from the order's lookup (ibx#732): an option
+                // order's model asks no second definition of it (ibx#730;
+                // observed on paper, 13-16/10/2026, 4 first option orders
+                // of 4).
+                super::farm::note_answer(context, &records, msg);
                 keep_zone(shared);
                 if let Some(con_id) = self.defer_order_schedule(records.first(), shared, context) {
                     context.zone_pending.insert(con_id);
@@ -3581,6 +3562,7 @@ impl CcpState {
                 if let Some(def) = records.first() {
                     self.cache_definition(def, shared);
                 }
+                super::farm::note_answer(context, &records, msg);
                 if let Some(conn) = ccp_conn.as_mut() {
                     super::order_builder::send_clearing_rules(context, conn, hb);
                 }
@@ -3608,7 +3590,11 @@ impl CcpState {
                 if let Some(def) = records.first() {
                     self.cache_definition(def, shared);
                 }
-                note_order_option(context, records.first(), msg);
+                // Known from the order's lookup (ibx#732): an option
+                // order's model asks no second definition of it (ibx#730;
+                // observed on paper, 13-16/10/2026, 4 first option orders
+                // of 4).
+                super::farm::note_answer(context, &records, msg);
                 keep_zone(shared);
                 if let Some(con_id) = self.defer_order_schedule(records.first(), shared, context) {
                     context.zone_pending.insert(con_id);
@@ -3620,9 +3606,17 @@ impl CcpState {
             // Asked for a SmartDepth component (#452): not a user reply.
             if super::farm::depth_component_reply(context, rid, msg) { return; }
             // Asked for the conId of a market data request (ibx#278).
-            if super::farm::md_contract_reply(context, shared, rid, msg) { return; }
+            if super::farm::md_contract_reply(context, shared, rid, msg) {
+                self.ask_option_company(&records, ccp_conn, hb);
+                return;
+            }
             // Asked for the conId of a historical-data request (ibx#427).
-            if self.contract_resolve_reply(rid, &records, shared) { return; }
+            // Its contract is known from then on (ibx#732): the request
+            // asks no second definition for its route.
+            if self.contract_resolve_reply(rid, &records, shared) {
+                super::farm::note_answer(context, &records, msg);
+                return;
+            }
             // Asked for the option of an option calculation (ibx#442).
             if self.optcalc.secdef_reply(rid, msg, ccp_conn, hb, shared) { return; }
         }
@@ -3692,6 +3686,11 @@ impl CcpState {
         let Some(req_id) = contracts::secdef_request_number(&rid) else { return };
         let Some(idx) = self.pending_secdef.iter().position(|(pid, _, _)| *pid == req_id) else { return };
         let (_, single_shot, _) = self.pending_secdef.remove(idx);
+        // Every contract of a contract details answer, of the portfolio's
+        // batch and of the other lookups by conId is known from now on,
+        // record by record (ibx#732): the contract cache above keeps what
+        // an order shows, this what the engine's lookups need.
+        super::farm::note_answer(context, &records, msg);
         let mut records = records;
         // A CONTFUT request (ibx#438): the continuous future records are
         // kept; with FUT+CONTFUT the futures lookup follows and its rows
@@ -4187,6 +4186,38 @@ impl CcpState {
     /// definition request with the request id `UnderlyingECNoDupsNDReqByConid{N}`,
     /// the security request type the code sends, one related symbol, the
     /// underlying's contract id and the exchange `ANYEXCH` (captured 28/09/2026).
+    /// The company lookup of the underlying of a client's option market
+    /// data request given by description, once its lookup answered
+    /// (ibx#732): as for a contract details row, when the option's record
+    /// has no industry and the underlying's company is neither known nor
+    /// asked. The option model asks the underlying's definitions only after
+    /// its answer (observed on paper, recordings of 12-16/10/2026: 11
+    /// option requests of 11 whose underlying's company was not known yet
+    /// asked it 0 to 7 ms after the option's answer; the underlying's two
+    /// lookups, when asked, 1 to 8 ms after the company's answer, 5 of 5;
+    /// no later request of the session asked it again; no future's request
+    /// asked it, 2 of 2).
+    pub(crate) fn ask_option_company(&mut self, records: &[crate::control::contracts::ContractDefinition], ccp_conn: &mut Option<Connection>, hb: &mut HeartbeatState) {
+        let Some(def) = records.iter().find(|d| d.con_id != 0) else { return };
+        // An answer of several contracts ended its request (error 200).
+        if records.iter().any(|d| d.con_id != 0 && d.con_id != def.con_id) {
+            return;
+        }
+        let under = def.under_con_id;
+        if def.sec_type.to_api_str() != "OPT" || under <= 0 || !def.industry.is_empty()
+            || self.company_by_underlying.contains_key(&under)
+            || self.pending_company.iter().any(|(_, u)| *u == under)
+        {
+            return;
+        }
+        self.send_company_lookup(under, ccp_conn, hb);
+    }
+
+    /// Whether the company lookup of an underlying is on its way.
+    pub(crate) fn company_pending(&self, under_con_id: i64) -> bool {
+        self.pending_company.iter().any(|(_, u)| *u == under_con_id)
+    }
+
     fn send_company_lookup(&mut self, under_con_id: i64, ccp_conn: &mut Option<Connection>, hb: &mut HeartbeatState) {
         let rid = format!("{}{}", crate::control::contracts::SECDEF_UNDERLYING_NAME, self.next_fanout_id);
         self.next_fanout_id = self.next_fanout_id.wrapping_add(1);
@@ -4817,16 +4848,6 @@ pub(crate) fn parse_ledger_rows(text: &str) -> Vec<crate::bridge::LedgerRow> {
     rows
 }
 
-/// An option's or a futures option's definition from its order's own
-/// lookup, kept for the order's option model: the reference asks no second
-/// definition of the contract for it (ibx#730; paper, observed in the
-/// recordings of 13-16/10/2026, 4 first option orders of 4).
-fn note_order_option(context: &mut Context, def: Option<&crate::control::contracts::ContractDefinition>, msg: &[u8]) {
-    if let Some(def) = def.filter(|d| d.con_id > 0 && super::optcalc::terms_of(d).is_option()) {
-        super::farm::note_definition(context, def.con_id, msg);
-    }
-}
-
 /// The market rule of each contract of a definition reply (ibx#615): the
 /// historical prices are given in its steps below session level 224.
 fn note_contract_rules(records: &[crate::control::contracts::ContractDefinition], shared: &SharedState) {
@@ -5006,25 +5027,6 @@ impl CcpState {
         log::info!("Portfolio contracts looked up in one batch ({}): {:?}", name, cold);
         self.auto_fetched_conids.extend(cold);
         self.pending_secdef.push((ReqId::from(req_id), false, Instant::now() + SECDEF_TIMEOUT));
-    }
-
-    /// Issue an internal secdef request for `con_id` if the reference cache is cold and we
-    /// haven't already auto-fetched it this session. The reply path populates the cache via
-    /// the existing security definition answer handler; we don't track the response.
-    fn auto_fetch_secdef_if_cold(
-        &mut self,
-        con_id: i64,
-        ccp_conn: &mut Option<Connection>,
-        shared: &SharedState,
-        hb: &mut HeartbeatState,
-    ) {
-        if con_id == 0 { return; }
-        if self.auto_fetched_conids.contains(&con_id) { return; }
-        if shared.reference.get_contract(con_id).is_some() { return; }
-        let req_id = self.next_internal_secdef_id;
-        self.next_internal_secdef_id = self.next_internal_secdef_id.wrapping_add(1);
-        self.auto_fetched_conids.insert(con_id);
-        self.send_secdef_request(ReqId::from(req_id), con_id, ccp_conn, hb);
     }
 
     /// Park a scanner result and dispatch concurrent secdef requests for every cache-miss
@@ -7105,7 +7107,7 @@ mod tests {
         let mut conn = Some(Connection::new_mem(client));
         let mut hb = HeartbeatState::new();
         let key = "1/STK/NASDAQ#LITE";
-        ccp.send_secdef_request(100, 756733, &mut conn, &mut hb);
+        ccp.send_contract_details_by_con_id(100, 756733, "SMART", &mut conn, &mut hb);
         ccp.send_secdef_request_by_symbol(101, "MSFT", "STK", "SMART", "USD", &Default::default(), &mut conn, &mut hb);
         let _ = ccp_messages_sent(&mut server);
 
@@ -7421,7 +7423,7 @@ mod tests {
             request: crate::types::ControlCommand::Shutdown,
         });
         let key = "1/STK/ARCA#LITE";
-        ccp.send_secdef_request(1001, 756733, &mut None, &mut hb);
+        ccp.send_contract_details_by_con_id(1001, 756733, "SMART", &mut None, &mut hb);
         ccp.send_secdef_request_by_symbol(1002, "AAPL", "STK", "SMART", "USD", &Default::default(), &mut None, &mut hb);
 
         let spy = pipe_msg(&format!(

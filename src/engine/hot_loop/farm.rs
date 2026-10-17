@@ -99,42 +99,105 @@ pub(crate) fn note_definition(context: &mut Context, con_id: i64, msg: &[u8]) {
         context.no_definition.insert(con_id);
     }
     if let Some(def) = records.iter().find(|d| d.con_id == con_id) {
-        if !def.valid_exchanges.is_empty() {
-            context.valid_exchanges.insert(con_id, def.valid_exchanges.clone());
+        note_record_terms(context, con_id, def);
+    }
+}
+
+/// Whether a record is the one of a US stock or US warrant, as
+/// [`crate::control::contracts::is_us_stock_or_warrant`] reads a whole
+/// answer.
+fn record_is_us_lot(def: &crate::control::contracts::ContractDefinition) -> bool {
+    matches!((def.wire_sec_type.as_str(), def.market_type.as_str()), ("CS" | "STK", "USSTK") | ("WAR", "USWAR"))
+}
+
+/// Keep what the engine needs from every record of a definition answer,
+/// each under its own conId (ibx#732): its routing entries, its round lot,
+/// its kind and its option terms, as [`note_definition`] keeps them from
+/// the engine's own lookups. The reference knows a contract from any
+/// answer that gave it (contract details, the portfolio's batch at the
+/// login, an order's lookups): it asks no definition for it later
+/// (observed on paper, recordings of 12-16/10/2026: 120 market data
+/// requests by conId after a contract details answer, none asked; 8 option
+/// models whose underlying came from the batch, none asked). One answer of
+/// a single contract keeps the round lot of the whole answer, as a round
+/// lot lookup's; a record of an answer of several contracts keeps the one
+/// of its own size steps.
+pub(crate) fn note_answer(context: &mut Context, records: &[crate::control::contracts::ContractDefinition], msg: &[u8]) {
+    let single = records.iter().all(|d| d.con_id == records.first().map_or(0, |f| f.con_id));
+    for (i, def) in records.iter().enumerate() {
+        if def.con_id <= 0 || records[..i].iter().any(|d| d.con_id == def.con_id) {
+            continue;
         }
-        if let Some(description) = depth_description(def) {
-            context.depth_descriptions.insert(con_id, description);
-        }
-        // An option's terms, for the option model of its market data
-        // (ibx#502).
-        let terms = super::optcalc::terms_of(def);
-        let sec_type = if terms.sec_type.is_empty() { def.sec_type.to_api_str().to_string() } else { terms.sec_type.clone() };
-        if !sec_type.is_empty() {
-            context.def_kinds.insert(con_id, (sec_type, def.symbol.clone()));
-        }
-        if !def.stock_type.is_empty() {
-            context.stock_types.insert(con_id, def.stock_type.clone());
-        }
-        if !def.join_key.is_empty() {
-            context.join_keys.insert(con_id, def.join_key.clone());
-        }
-        // A future's or an index's links, for the index part of a futures
-        // option order's model (ibx#727).
-        if matches!(def.sec_type.to_api_str(), "FUT" | "IND") {
-            context.def_links.insert(con_id, crate::engine::context::DefLink {
-                under_con_id: def.under_con_id, index_con_id: def.index_con_id,
-                exchange: def.exchange.clone(), sec_type: def.sec_type.to_api_str().to_string(),
-                join_key: def.join_key.clone(), currency: def.currency.clone(),
-            });
-        }
-        if terms.is_option() || crate::control::optcalc::market::has_model(&terms.sec_type) {
-            context.option_terms.insert(con_id, terms);
-        }
-        // The steps of its last size and price, from session level 222
-        // (ibx#613).
-        if crate::client_core::SERVER_VERSION >= crate::client_core::LEVEL_FRACTIONAL_LAST_SIZE {
-            context.def_increments.insert(con_id, definition_increments(def));
-        }
+        let us = record_is_us_lot(def);
+        let lot = match (us, single) {
+            (false, _) => 1,
+            (true, true) => crate::control::contracts::round_lot_from_secdef(msg),
+            (true, false) => def.size_increments.iter().map(|inc| inc.increment).filter(|inc| *inc > 0.0)
+                .min_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
+                .map(|inc| inc.trunc() as i64).filter(|lot| *lot > 0).unwrap_or(100),
+        };
+        note_record(context, def, us, lot);
+    }
+}
+
+/// [`note_answer`] for one record.
+fn note_record(context: &mut Context, def: &crate::control::contracts::ContractDefinition, us: bool, lot: i64) {
+    let con_id = def.con_id;
+    if us {
+        context.us_lots.insert(con_id);
+    } else if def.sec_type.to_api_str() == "STK" {
+        context.foreign_stocks.insert(con_id);
+    }
+    context.agg_groups.insert(con_id, def.agg_group.unwrap_or(-1));
+    if !def.listing_exchange.is_empty() {
+        context.listing_exchanges.insert(con_id, def.listing_exchange.clone());
+    }
+    if !def.smart_components.is_empty() {
+        context.smart_components.insert(con_id, def.smart_components.clone());
+    }
+    context.no_definition.remove(&con_id);
+    context.round_lots.insert(con_id, lot);
+    note_record_terms(context, con_id, def);
+}
+
+/// The part of a definition kept from its record: valid exchanges, depth
+/// description, kind, option terms, links and increments.
+fn note_record_terms(context: &mut Context, con_id: i64, def: &crate::control::contracts::ContractDefinition) {
+    if !def.valid_exchanges.is_empty() {
+        context.valid_exchanges.insert(con_id, def.valid_exchanges.clone());
+    }
+    if let Some(description) = depth_description(def) {
+        context.depth_descriptions.insert(con_id, description);
+    }
+    // An option's terms, for the option model of its market data
+    // (ibx#502).
+    let terms = super::optcalc::terms_of(def);
+    let sec_type = if terms.sec_type.is_empty() { def.sec_type.to_api_str().to_string() } else { terms.sec_type.clone() };
+    if !sec_type.is_empty() {
+        context.def_kinds.insert(con_id, (sec_type, def.symbol.clone()));
+    }
+    if !def.stock_type.is_empty() {
+        context.stock_types.insert(con_id, def.stock_type.clone());
+    }
+    if !def.join_key.is_empty() {
+        context.join_keys.insert(con_id, def.join_key.clone());
+    }
+    // A future's or an index's links, for the index part of a futures
+    // option order's model (ibx#727).
+    if matches!(def.sec_type.to_api_str(), "FUT" | "IND") {
+        context.def_links.insert(con_id, crate::engine::context::DefLink {
+            under_con_id: def.under_con_id, index_con_id: def.index_con_id,
+            exchange: def.exchange.clone(), sec_type: def.sec_type.to_api_str().to_string(),
+            join_key: def.join_key.clone(), currency: def.currency.clone(),
+        });
+    }
+    if terms.is_option() || crate::control::optcalc::market::has_model(&terms.sec_type) {
+        context.option_terms.insert(con_id, terms);
+    }
+    // The steps of its last size and price, from session level 222
+    // (ibx#613).
+    if crate::client_core::SERVER_VERSION >= crate::client_core::LEVEL_FRACTIONAL_LAST_SIZE {
+        context.def_increments.insert(con_id, definition_increments(def));
     }
 }
 
