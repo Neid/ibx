@@ -4,7 +4,7 @@
 //! for a message whose disabling needs its warning accepted.
 //!
 //! Observed on the reference 10.51 on 17/10/2026 (paper, market closed, the
-//! official client at level 225; 37 cases, two fresh processes). What a
+//! official client at level 225; 39 cases, three fresh processes). What a
 //! request that passes the checks is answered, and the configuration the
 //! rules read (its messages, the settings the session cannot change, the
 //! routing strategies), are the decision asked on ibx#610: they come in
@@ -348,6 +348,39 @@ mod tests {
         assert_eq!(check(&c19), err(7428, VALIDATION_FAILED, &["configuration.api.settings.loggingLevel"]));
         let d15 = UpdateConfigRequest { messages: vec![msg(Some(605), Some(false)), msg(Some(999999), Some(true))], ..req(Some(7515)) };
         assert_eq!(check(&d15), err(7515, VALIDATION_FAILED, &["configuration.messages: Message with id 999999 not found"]));
+    }
+
+    #[test]
+    fn every_kind_together_keeps_the_reference_order() {
+        // o1, o2 (third run, 17/10/2026 22:47).
+        let o1 = UpdateConfigRequest {
+            messages: vec![msg(Some(999999), Some(true)), msg(None, Some(true))],
+            orders: Some(OrdersConfig { smart_routing: Some(OrdersSmartRoutingConfig { default_algorithm: Some("bogus".into()), ..Default::default() }) }),
+            ..settings(7601, ApiSettingsConfig {
+                socket_port: Some(80), encode_api_messages: Some("bogus".into()), logging_level: Some("bogus".into()),
+                send_instrument_timezone: Some("bogus".into()), historical_data_max_size: Some(3),
+                option_exercise_request_type: Some("bogus".into()), let_api_account_requests_switch_subscription: Some(false),
+                master_client_id: Some(-1), ..Default::default()
+            })
+        };
+        let s = |n: &str| format!("configuration.api.settings.{n}");
+        let expected = [s("socketPort"), s("encodeApiMessages"), s("loggingLevel"), s("sendInstrumentTimezone"),
+            s("historicalDataMaxSize"), s("optionExerciseRequestType"), s("letApiAccountRequestsSwitchSubscription"),
+            s("masterClientId"), "configuration.orders.smartRouting.defaultAlgorithm".into(),
+            "configuration.messages: Message with id 999999 not found".into(),
+            "configuration.messages: Message configuration missing required 'id' field".into()];
+        assert_eq!(update_config_check(&o1, &paper()).unwrap().errors, expected);
+        let o2 = UpdateConfigRequest {
+            lock_and_exit: Some(LockAndExitConfig { auto_logoff_type: Some("logoff".into()), ..Default::default() }),
+            messages: vec![MessageConfig { id: Some(118), default_action: Some("a".into()), ..Default::default() }],
+            api: Some(ApiConfig {
+                precautions: Some(ApiPrecautionsConfig { bypass_bond_warning: Some(true), ..Default::default() }),
+                settings: Some(ApiSettingsConfig { allow_localhost_only: Some(true), ..Default::default() }),
+            }),
+            ..req(Some(7602))
+        };
+        assert_eq!(check(&o2), err(7602, RO, &["configuration.lockAndExit.autoLogoffType",
+            "configuration.api.settings.allowLocalhostOnly", "configuration.api.precautions", "configuration.messages.defaultAction"]));
     }
 
     #[test]
