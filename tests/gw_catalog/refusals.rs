@@ -27,7 +27,14 @@ fn assert_refused(engine: &mut Engine, id: i64, rule: &str) {
 /// As [`assert_refused`], with `seen` the text the reference 10.51 was seen
 /// giving for the rule where it is not the table's.
 fn assert_refused_text(engine: &mut Engine, id: i64, rule: &str, seen: Option<&str>) {
+    assert_refused_as(engine, id, rule, None, seen);
+}
+
+/// As [`assert_refused_text`], with `code` the code the reference 10.51
+/// was seen giving where it is not the table's.
+fn assert_refused_as(engine: &mut Engine, id: i64, rule: &str, code: Option<i64>, seen: Option<&str>) {
     let rule = local_rule(rule);
+    let want = code.unwrap_or(rule.api_code);
     // The engine's refusals come from its thread.
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     let mut errors = Vec::new();
@@ -40,13 +47,13 @@ fn assert_refused_text(engine: &mut Engine, id: i64, rule: &str, seen: Option<&s
     }
     let mine: Vec<&(i64, i64, String)> = errors.iter().filter(|e| e.0 == id).collect();
     assert!(
-        mine.iter().any(|(_, code, text)| *code == rule.api_code && match seen {
+        mine.iter().any(|(_, code, text)| *code == want && match seen {
             Some(seen) => text == seen,
             None => matches_template(&rule.text, text, false)
                 // The table is 10.40's; 10.51 adds the order id to 103 (ibx#625).
                 || (rule.api_code == 103 && *text == format!("{}: {}", rule.text, id)),
         }),
-        "rule {} (gateway code {}): want {} {:?}, got {:?}", rule.id, rule.code, rule.api_code, rule.text, errors,
+        "rule {} (gateway code {}): want {} {:?}, got {:?}", rule.id, rule.code, want, seen.unwrap_or(&rule.text), errors,
     );
     // Nothing sent for the refused order: the next order is the first the
     // server reads after it.
@@ -76,6 +83,13 @@ fn refused_seen(rule: &str, contract: &Contract, order: &Order, seen: &str) {
     let mut engine = Engine::start();
     engine.client.place_order(REFUSED, contract, order).expect("a refusal is an error callback, not a call error");
     assert_refused_text(&mut engine, REFUSED, rule, Some(seen));
+}
+
+/// As [`refused_seen`], with the code the reference 10.51 was seen giving.
+fn refused_seen_as(rule: &str, contract: &Contract, order: &Order, code: i64, seen: &str) {
+    let mut engine = Engine::start();
+    engine.client.place_order(REFUSED, contract, order).expect("a refusal is an error callback, not a call error");
+    assert_refused_as(&mut engine, REFUSED, rule, Some(code), Some(seen));
 }
 
 fn order(order_type: &str) -> Order {
@@ -786,4 +800,62 @@ fn hedge_with_a_limit_price() {
 #[test]
 fn hedge_with_a_size() {
     hedge_refused("10032-1", &aapl(), &Order { total_quantity: 5.0, ..hedge(6, "P", "2") }, None);
+}
+
+// ── Observed on paper, 17/10/2026, market closed (ibx#688): one far AAPL
+// order each, a client at level 214, the refusal by an error callback with
+// the order id, nothing sent; ibx used to fail in the call. ──
+
+const CAUSE: &str = "Error validating request.-'PlaceOrder(3)' : cause - ";
+
+// A time in force that is not known, and GTC on an order for the
+// overnight session: 10052 with the time in force.
+#[test]
+fn time_in_force_not_known_or_not_day_overnight() {
+    refused_seen("10052-1", &aapl(), &Order { tif: "XYZ".into(), ..order("LMT") }, "Invalid time in force:XYZ");
+    refused_seen("10052-1", &aapl(), &Order { tif: "GTC".into(), include_overnight: true, ..order("LMT") },
+        "Invalid time in force:GTC");
+}
+
+// A future's contract month that cannot be read: 10372 with the table's
+// text, before any lookup of the contract.
+#[test]
+fn contract_month_not_readable() {
+    let mes = Contract {
+        symbol: "MES".into(), sec_type: "FUT".into(), exchange: "CME".into(), currency: "USD".into(),
+        last_trade_date_or_contract_month: "2026AB".into(), ..Default::default()
+    };
+    refused("10372-1", &mes, &Order { lmt_price: 1000.0, ..order("LMT") });
+}
+
+// A name that is no order type: 321 "Invalid order type was entered",
+// where the table gives 10051.
+#[test]
+fn order_type_not_known() {
+    refused_seen_as("10051-2", &aapl(), &order("XYZ"), 321, &format!("{CAUSE}Invalid order type was entered"));
+}
+
+// SSHORTX: the table's text, with no space at its end.
+#[test]
+fn sshortx_not_supported() {
+    refused_seen("498-1", &aapl(), &Order { action: "SSHORTX".into(), ..order("LMT") },
+        &format!("{CAUSE}SSHORTX orders are not supported"));
+}
+
+// A TRAIL without its trailing amount: the table's text, the order type
+// named "TRAIL Order".
+#[test]
+fn trail_without_a_trailing_amount() {
+    refused_seen("10028-1", &aapl(), &Order { lmt_price: 0.0, aux_price: f64::MAX, trailing_percent: f64::MAX, ..order("TRAIL") },
+        &format!("{CAUSE}You must enter a Trailing Amount for TRAIL Order."));
+}
+
+// A TRAIL LIMIT without its trailing amount nor its trailing stop price:
+// the stop price is asked first.
+#[test]
+fn trail_limit_without_a_trailing_amount() {
+    refused_seen("321-2", &aapl(), &Order {
+        lmt_price: 0.0, lmt_price_offset: 0.1, aux_price: f64::MAX, trailing_percent: f64::MAX, trail_stop_price: f64::MAX,
+        ..order("TRAIL LIMIT")
+    }, &format!("{CAUSE}Please enter a trailing stop price"));
 }

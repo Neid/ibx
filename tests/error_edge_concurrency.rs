@@ -95,17 +95,23 @@ fn place_order_empty_action_is_refused_by_callback() {
     assert_eq!(errors, [(1, 321, "Error validating request.-'PlaceOrder(3)' : cause - Invalid side field was entered".to_string())]);
 }
 
+// ibx#688: a name that is no order type is the reference's 321 callback
+// (observed on paper, 17/10/2026), not an error of the call; a documented
+// type ibx does not send still fails in the call.
 #[test]
-fn place_order_unsupported_order_type_returns_error() {
-    let (client, _rx, shared) = test_client();
+fn place_order_unknown_order_type_is_refused_by_callback() {
+    let (client, rx, shared) = test_client();
     shared.market.set_instrument_count(1);
     let order = Order {
         action: "BUY".into(), total_quantity: 100.0,
         order_type: "NONSENSE".into(), ..Default::default()
     };
-    let result = client.place_order(1, &spy(), &order);
-    assert!(result.is_err());
-    assert!(result.unwrap_err().contains("Unsupported order type"));
+    client.place_order(1, &spy(), &order).unwrap();
+    assert!(rx.try_recv().is_err(), "nothing sent");
+    let errors = shared.orders.drain_order_errors();
+    assert_eq!(errors, [(1, 321, "Error validating request.-'PlaceOrder(3)' : cause - Invalid order type was entered".to_string())]);
+    let not_sent = Order { order_type: "VWAP".into(), ..order };
+    assert!(client.place_order(2, &spy(), &not_sent).unwrap_err().contains("Unsupported order type"));
 }
 
 // Since ibx#622 an algo outside ibx's list is sent with its parameters as

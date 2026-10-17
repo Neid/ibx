@@ -2703,6 +2703,9 @@ impl HotLoop {
                     // at a later order under it (ibx#718).
                     if let Some(conn) = self.ccp_conn.as_mut() {
                         order_builder::advance_held_lookups(&mut self.context, conn, &mut self.hb, &self.shared);
+                    } else {
+                        // No session to ask: not known until it is back.
+                        self.shared.orders.held_waiting(order_id);
                     }
                 }
                 ControlCommand::RegisterInstrument { con_id, symbol, sec_type, exchange, reply_tx } => {

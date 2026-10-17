@@ -36,6 +36,11 @@ impl Clock {
 /// Most finished orders kept for `Context::finished_status`.
 pub const FINISHED_ORDERS_MAX: usize = 65_536;
 
+/// What an order gave of its contract when looked up by symbol: the
+/// symbol, its type and route, its exchange, its currency and its terms
+/// (ibx#718).
+pub(crate) type OrderContractKey = (String, (String, String), String, String, SecDefFilters);
+
 /// What a server-reported status did to an order (ibx#212 ibx#473).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StatusChange {
@@ -288,6 +293,10 @@ pub struct Context {
     /// not all answered (ibx#718), with whether the record lookup was sent
     /// for them.
     pub(crate) held_lookups: Vec<(crate::types::OrderId, bool)>,
+    /// The contracts the order lookups of the session named, by what the
+    /// order gave of them (ibx#718): a later held order of one of them is
+    /// known at once.
+    pub(crate) order_contracts_named: Vec<(OrderContractKey, i64)>,
     /// The clearing rule lookups to send, and those on their way, and how
     /// many the session made (ibx#709).
     pub(crate) order_clearing_to_send: Vec<(i64, String)>,
@@ -572,6 +581,7 @@ impl Context {
             order_record_lookups: Vec::new(),
             order_records_cleared: std::collections::HashSet::new(),
             held_lookups: Vec::new(),
+            order_contracts_named: Vec::new(),
             order_clearing_to_send: Vec::new(),
             order_clearing_lookups: Vec::new(),
             next_clearing_rule: 0,

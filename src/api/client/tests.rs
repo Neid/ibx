@@ -884,6 +884,8 @@ fn a_working_order_with_transmit_off_is_left_and_a_held_order_can_be_cancelled()
     assert!(client.core.held_orders.lock().unwrap().is_empty());
 }
 
+// ibx#688: a time in force that is not known is the reference's 10052
+// callback, nothing sent (observed on paper, 17/10/2026).
 #[test]
 fn place_order_unknown_tif_is_rejected() {
     let (client, rx, shared) = test_client();
@@ -892,9 +894,9 @@ fn place_order_unknown_tif_is_rejected() {
         action: "BUY".into(), total_quantity: 1.0, order_type: "LMT".into(),
         lmt_price: 100.0, tif: "XYZ".into(), ..Default::default()
     };
-    let err = client.place_order(1, &spy(), &order).unwrap_err();
-    assert!(err.to_string().contains("tif"), "got: {}", err);
-    assert!(rx.try_recv().is_err());
+    client.place_order(1, &spy(), &order).unwrap();
+    assert!(rx.try_recv().is_err(), "nothing sent");
+    assert_eq!(shared.orders.drain_order_errors(), [(1, 10052, "Invalid time in force:XYZ".to_string())]);
 }
 
 // ibx#263: the reference takes all-or-none on any order type; its
@@ -1988,16 +1990,19 @@ fn algo_what_if_is_a_preview() {
     }
 }
 
+// ibx#688: a name that is no order type is the reference's 321 callback,
+// nothing sent (observed on paper, 17/10/2026).
 #[test]
-fn place_order_unsupported_type_returns_error() {
-    let (client, _rx, shared) = test_client();
+fn place_order_unknown_type_is_refused_by_callback() {
+    let (client, rx, shared) = test_client();
     shared.market.set_instrument_count(1);
     let order = Order {
         action: "BUY".into(), total_quantity: 100.0, order_type: "FANTASY".into(), ..Default::default()
     };
-    let result = client.place_order(1, &spy(), &order);
-    assert!(result.is_err());
-    assert!(result.unwrap_err().contains("Unsupported order type"));
+    client.place_order(1, &spy(), &order).unwrap();
+    assert!(rx.try_recv().is_err(), "nothing sent");
+    assert_eq!(shared.orders.drain_order_errors(),
+        [(1, 321, "Error validating request.-'PlaceOrder(3)' : cause - Invalid order type was entered".to_string())]);
 }
 
 #[test]
@@ -2166,17 +2171,20 @@ fn stp_lmt_order_with_zero_aux_price_is_rejected() {
     assert!(result.unwrap_err().contains("aux_price"));
 }
 
+// ibx#688: the reference's 321 callback, nothing sent (observed on paper,
+// 17/10/2026).
 #[test]
 fn trail_order_with_zero_amount_and_zero_percent_is_rejected() {
-    let (client, _rx, shared) = test_client();
+    let (client, rx, shared) = test_client();
     shared.market.set_instrument_count(1);
     let order = Order {
         action: "SELL".into(), total_quantity: 100.0, order_type: "TRAIL".into(),
         ..Default::default() // neither trailing_percent nor aux_price
     };
-    let result = client.place_order(1, &spy(), &order);
-    assert!(result.is_err());
-    assert!(result.unwrap_err().contains("trailing_percent"));
+    client.place_order(1, &spy(), &order).unwrap();
+    assert!(rx.try_recv().is_err(), "nothing sent");
+    assert_eq!(shared.orders.drain_order_errors(), [(1, 321,
+        "Error validating request.-'PlaceOrder(3)' : cause - You must enter a Trailing Amount for TRAIL Order.".to_string())]);
 }
 
 #[test]
@@ -2192,17 +2200,23 @@ fn trail_order_with_trailing_percent_succeeds() {
     assert!(matches!(cmd, ControlCommand::Order(OrderRequest::SubmitTrailingStopPct { .. })));
 }
 
+// ibx#688: without its trailing stop price, the reference asks for it
+// first (321 callback, observed on paper, 17/10/2026); with it, an order
+// without its trailing amount still fails in the call (not observed yet).
 #[test]
 fn trail_limit_order_with_zero_aux_price_is_rejected() {
-    let (client, _rx, shared) = test_client();
+    let (client, rx, shared) = test_client();
     shared.market.set_instrument_count(1);
     let order = Order {
         action: "SELL".into(), total_quantity: 100.0, order_type: "TRAIL LIMIT".into(),
         lmt_price: 148.0, ..Default::default() // aux_price missing
     };
-    let result = client.place_order(1, &spy(), &order);
-    assert!(result.is_err());
-    assert!(result.unwrap_err().contains("aux_price"));
+    client.place_order(1, &spy(), &order).unwrap();
+    assert!(rx.try_recv().is_err(), "nothing sent");
+    assert_eq!(shared.orders.drain_order_errors(), [(1, 321,
+        "Error validating request.-'PlaceOrder(3)' : cause - Please enter a trailing stop price".to_string())]);
+    let with_stop = Order { trail_stop_price: 150.0, ..order };
+    assert!(client.place_order(2, &spy(), &with_stop).unwrap_err().contains("aux_price"));
 }
 
 #[test]

@@ -140,27 +140,41 @@ class TestAuxPriceValidation:
         with pytest.raises(RuntimeError, match="aux_price"):
             client.place_order(2, make_spy(), order)
 
-    def test_trail_order_zero_both_rejected(self, local_client):
-        """TRAIL with neither trailing_percent nor aux_price must raise."""
-        _, client = local_client
+    def test_trail_order_zero_both_rejected(self):
+        """TRAIL with neither trailing_percent nor aux_price: the reference's
+        321 by a callback, nothing sent (ibx#688, observed 17/10/2026)."""
+        if not hasattr(EClient, "_test_connect"):
+            pytest.skip("built without the test-support feature")
+        wrapper = Wrapper()
+        client = EClient(wrapper)
+        client._test_connect()
         order = Order()
         order.action = "SELL"
         order.total_quantity = 1
         order.order_type = "TRAIL"
         # neither trailing_percent nor aux_price set
-        with pytest.raises(RuntimeError, match="trailing_percent"):
-            client.place_order(3, make_spy(), order)
+        client.place_order(3, make_spy(), order)
+        client._test_dispatch_once()
+        assert wrapper.events == [("error", 3, 321,
+            "Error validating request.-'PlaceOrder(3)' : cause - You must enter a Trailing Amount for TRAIL Order.")]
 
-    def test_trail_limit_order_zero_aux_price_rejected(self, local_client):
-        """TRAIL LIMIT with only lmt_price must raise."""
-        _, client = local_client
+    def test_trail_limit_order_zero_aux_price_rejected(self):
+        """TRAIL LIMIT with only lmt_price: the reference asks its trailing
+        stop price first, 321 by a callback (ibx#688, observed 17/10/2026)."""
+        if not hasattr(EClient, "_test_connect"):
+            pytest.skip("built without the test-support feature")
+        wrapper = Wrapper()
+        client = EClient(wrapper)
+        client._test_connect()
         order = Order()
         order.action = "SELL"
         order.total_quantity = 1
         order.order_type = "TRAIL LIMIT"
         order.lmt_price = 148.0
-        with pytest.raises(RuntimeError, match="aux_price"):
-            client.place_order(4, make_spy(), order)
+        client.place_order(4, make_spy(), order)
+        client._test_dispatch_once()
+        assert wrapper.events == [("error", 4, 321,
+            "Error validating request.-'PlaceOrder(3)' : cause - Please enter a trailing stop price")]
 
     def test_mit_order_zero_aux_price_rejected(self, local_client):
         """MIT with no aux_price must raise."""

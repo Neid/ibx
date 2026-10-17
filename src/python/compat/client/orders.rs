@@ -29,7 +29,8 @@ impl EClient {
         // that is refused is not held (ibx#547).
         let session_account = self.account_id.lock().unwrap().clone().unwrap_or_default();
         let (notices, refusal, _) = self.core.order_read_checks(
-            oid, contract.con_id, &contract.sec_type, &contract.exchange, order, &shared, &session_account, false);
+            oid, contract.con_id, &contract.sec_type, &contract.exchange, &contract.last_trade_date_or_contract_month, order,
+            &shared, &session_account, false);
         let combo = ClientCore::combo_order(contract, order, &shared.reference, &session_account);
         for (code, message) in notices {
             shared.orders.push_order_error(oid, code, message);
@@ -79,7 +80,8 @@ impl EClient {
         // checks once it is known comes after (ibx#665).
         let looked_up = contract.con_id == 0 && !contract.sec_type.eq_ignore_ascii_case("BAG");
         let (notices, refusal, deferred) = self.core.order_read_checks(
-            oid, contract.con_id, &contract.sec_type, &contract.exchange, api_order, &shared, &session_account, looked_up);
+            oid, contract.con_id, &contract.sec_type, &contract.exchange, &contract.last_trade_date_or_contract_month, api_order,
+            &shared, &session_account, looked_up);
         if !was_held {
             for (code, message) in notices {
                 shared.orders.push_order_error(oid, code, message);

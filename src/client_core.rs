@@ -1793,6 +1793,27 @@ const ORDER_TYPE_ALIASES: [(&str, &str); 15] = [
     ("TRAILLMT", "TRAIL LIMIT"),
 ];
 
+/// The order types ibx sends, under the names ibx uses.
+const ORDER_TYPES_SENT: [&str; 32] = [
+    "MKT", "LMT", "STP", "STP LMT", "TRAIL", "TRAIL LIMIT", "MOC", "LOC", "MIT", "LIT", "MTL", "MKT PRT", "STP PRT",
+    "REL", "PEG MKT", "PEG MID", "PEG MIDPT", "MIDPX", "MIDPRICE", "SNAP MKT", "SNAP MID", "SNAP MIDPT", "SNAP PRI",
+    "SNAP PRIM", "BOX TOP", "PEG BENCH", "TRAIL MIT", "TRAIL LIT", "PEG BEST", "RPI", "PASSV REL", "VOL",
+];
+
+/// Order types of the API's documentation that ibx does not send: placed,
+/// they fail in the call. Any other name is no order type: the reference
+/// refuses it with 321 (ibx#688; observed on paper, 17/10/2026).
+const ORDER_TYPES_NOT_SENT: [&str; 12] = [
+    "LMT + MKT", "REL + LMT", "REL + MKT", "PEG STK", "VWAP", "TRAIL REL + MKT", "TRAIL LMT + MKT", "QUOTE",
+    "PEG PRIM VOL", "PEG MID VOL", "PEG MKT VOL", "PEG SRF VOL",
+];
+
+/// The time in force texts an order takes (GTX and NMIN are read as GTC
+/// before, see `canonical_tif`); any other is refused with 10052.
+const TIF_TEXTS: [&str; 12] = [
+    "", "DAY", "GTC", "IOC", "FOK", "OPG", "GTD", "DTC", "AUC", "Minutes", TIF_OVERNIGHT, TIF_OVERNIGHT_DAY,
+];
+
 /// The order types that can rest as post-only, the others refused with
 /// 10051 (ibx#607, 10.51: each order type's own answer, up
 /// its class chain; the types ibx supports, under the names ibx uses).
@@ -5440,25 +5461,14 @@ impl ClientCore {
     /// Call this before `find_or_register_instrument` to fail fast.
     pub fn validate_order(order: &ApiOrder) -> Result<(), String> {
         // An action the reference does not know is its 321 refusal
-        // (`order_rule_refusal`); one it knows that ibx cannot send
-        // (SSHORTX, SELL LONG) fails here.
-        if Self::action_known(&order.action) {
+        // (`order_rule_refusal`), as SSHORTX (ibx#688); one it knows that
+        // ibx cannot send (SELL LONG) fails here.
+        if Self::action_known(&order.action) && !Self::action_sshortx(&order.action) {
             order.side()?;
         }
 
-        // An unrecognized tif would otherwise be sent as DAY silently.
-        match order.tif.as_str() {
-            // Minutes goes out as the reference sends it; the server decides
-            // (ibx#660; paper 13/10/2026: rejected on a SMART stock, 201).
-            "" | "DAY" | "GTC" | "IOC" | "FOK" | "OPG" | "GTD" | "DTC" | "AUC" | "Minutes"
-            | TIF_OVERNIGHT | TIF_OVERNIGHT_DAY => {}
-            other => {
-                return Err(format!(
-                    "Unsupported tif '{}': use DAY, GTC, IOC, FOK, OPG, GTD, DTC, AUC, Minutes, OVERNIGHT or OVERNIGHT + DAY",
-                    other
-                ));
-            }
-        }
+        // A time in force that is not known is the reference's 10052, given
+        // at the reading (`order_rule_refusal`, ibx#688).
 
         let order_type = order.order_type.to_uppercase();
 
@@ -5466,14 +5476,10 @@ impl ClientCore {
         // (439, ibx#263); one ibx cannot send fails when the order is built.
         // An algo order is checked as the order type it rides (ibx#263).
         // A what-if is checked as the order it previews (ibx#462).
-        match order_type.as_str() {
-            "MKT" | "LMT" | "STP" | "STP LMT" | "TRAIL" | "TRAIL LIMIT"
-            | "MOC" | "LOC" | "MIT" | "LIT" | "MTL" | "MKT PRT" | "STP PRT"
-            | "REL" | "PEG MKT" | "PEG MID" | "PEG MIDPT" | "MIDPX" | "MIDPRICE"
-            | "SNAP MKT" | "SNAP MID" | "SNAP MIDPT" | "SNAP PRI" | "SNAP PRIM"
-            | "BOX TOP" | "PEG BENCH"
-            | "TRAIL MIT" | "TRAIL LIT" | "PEG BEST" | "RPI" | "PASSV REL" | "VOL" => {}
-            _ => return Err(format!("Unsupported order type: '{}'", order.order_type)),
+        // A name that is no order type is the reference's 321, given at the
+        // reading (`order_rule_refusal`, ibx#688).
+        if ORDER_TYPES_NOT_SENT.contains(&order_type.as_str()) {
+            return Err(format!("Unsupported order type: '{}'", order.order_type));
         }
 
         // Reject orders that require aux_price when it is zero — prevents silent no-trigger bugs.
@@ -5492,13 +5498,12 @@ impl ClientCore {
                     order.order_type
                 ));
             }
-            "TRAIL" if !is_given(order.trailing_percent) && !is_given(order.aux_price) => {
-                return Err(
-                    "TRAIL order requires either trailing_percent or aux_price (trail amount) \
-                     but both are 0.0".into()
-                );
-            }
-            "TRAIL LIMIT" if !is_given(order.aux_price) => {
+            // A TRAIL without its trailing amount is the reference's 321,
+            // given at the reading (`order_rule_refusal`, ibx#688), as a
+            // TRAIL LIMIT without its trailing stop price; a TRAIL LIMIT
+            // with that price and no trailing amount fails here (not
+            // observed yet).
+            "TRAIL LIMIT" if !is_given(order.aux_price) && is_given(order.trail_stop_price) => {
                 return Err(
                     "TRAIL LIMIT order requires aux_price (trail amount) but got 0.0".into()
                 );
@@ -5782,7 +5787,15 @@ impl ClientCore {
         if !c.symbol.is_ascii() {
             return Some((10363, format!("Non-ASCII symbol in field {request}.contract.symbol.")));
         }
-        let month = c.last_trade_date_or_contract_month.trim();
+        Self::contract_month_refusal(&c.last_trade_date_or_contract_month)
+    }
+
+    /// A contract month or date that is neither yyyyMM (a month 01 to 12)
+    /// nor yyyyMMdd (a real date): 10372 (ibx#658; on a placeOrder too,
+    /// ibx#688, observed on paper, 17/10/2026: a future's month "2026AB",
+    /// nothing sent).
+    pub fn contract_month_refusal(month: &str) -> Option<(i64, String)> {
+        let month = month.trim();
         let digits = month.bytes().all(|b| b.is_ascii_digit());
         let valid = month.is_empty()
             // A date with a time after it is left to the server.
@@ -6082,17 +6095,18 @@ impl ClientCore {
     /// error code and text. Nothing is sent for such an order. `exchange`
     /// is the contract's.
     pub fn refusal_before_sending(order: &ApiOrder, exchange: &str) -> Option<(i64, String)> {
-        Self::refusal_before_sending_for(order, exchange, false, false)
+        Self::refusal_before_sending_for(order, exchange, "", false, false)
     }
 
     /// [`Self::refusal_before_sending`] for an order whose account's
     /// application is not approved yet when `account_pending` (see
     /// [`Self::order_account_pending`], ibx#421).
     /// `form_10_40`: the rules of the reference 10.40, for its replays.
-    pub fn refusal_before_sending_for(order: &ApiOrder, exchange: &str, account_pending: bool, form_10_40: bool) -> Option<(i64, String)> {
+    /// `contract_month`: the contract's month or date, as given.
+    pub fn refusal_before_sending_for(order: &ApiOrder, exchange: &str, contract_month: &str, account_pending: bool, form_10_40: bool) -> Option<(i64, String)> {
         Self::read_refusal(order)
             .or_else(|| Self::exchange_refusal(exchange))
-            .or_else(|| Self::order_rule_refusal(order, account_pending, form_10_40))
+            .or_else(|| Self::order_rule_refusal(order, contract_month, account_pending, form_10_40))
             .or_else(|| Self::fractional_quantity_refusal(order))
             .or_else(|| Self::good_till_date_unreadable(order, form_10_40))
             .or_else(|| Self::good_after_time_unreadable(order, form_10_40))
@@ -6305,6 +6319,18 @@ impl ClientCore {
         }
     }
 
+    /// Whether an action is SSHORTX (case ignored), which the reference
+    /// refuses (ibx#688).
+    pub fn action_sshortx(action: &str) -> bool {
+        action.eq_ignore_ascii_case("SSHORTX") || action.eq_ignore_ascii_case("SSHRTX")
+    }
+
+    /// Whether a name (in capitals) is an order type: one ibx sends, or
+    /// one of the API's documentation ibx does not send (ibx#688).
+    pub fn order_type_known(order_type: &str) -> bool {
+        ORDER_TYPES_SENT.contains(&order_type) || ORDER_TYPES_NOT_SENT.contains(&order_type)
+    }
+
     /// Whether the reference knows an order action (case ignored): BUY,
     /// SELL, SSHORT, SSHRT, SSHORTX, SSHRTX, SELL LONG and Exchange_Action.
     /// Any other reads as side 0.
@@ -6512,13 +6538,33 @@ impl ClientCore {
     /// 321 with the rule text (ibx#468), in the reference's order
     /// (it stops at the first). The text after "cause - " is
     /// the rule's; for the TRAIL LIMIT rule only its end is known.
-    fn order_rule_refusal(order: &ApiOrder, account_pending: bool, form_10_40: bool) -> Option<(i64, String)> {
+    fn order_rule_refusal(order: &ApiOrder, contract_month: &str, account_pending: bool, form_10_40: bool) -> Option<(i64, String)> {
         let refuse = |cause: &str| Some((321, format!("Error validating request.-'PlaceOrder(3)' : cause - {}", cause)));
         let order_type = order.order_type.to_uppercase();
         // An action the reference does not know reads as side 0, refused
         // first (ibx#485).
         if !Self::action_known(&order.action) {
             return refuse("Invalid side field was entered");
+        }
+        // Then, in the order of the reference's checks (ibx#688; observed
+        // on paper, 17/10/2026, market closed, one AAPL order each, nothing
+        // sent): a name that is no order type; a time in force that is not
+        // known, or an order for the overnight session with a time in force
+        // other than DAY (10052 with the time in force; 10.40 took the
+        // latter, ibx#467); a contract month that cannot be read (10372);
+        // SSHORTX.
+        if !Self::order_type_known(&order_type) {
+            return refuse("Invalid order type was entered");
+        }
+        let day = order.tif.is_empty() || order.tif == "DAY";
+        if !TIF_TEXTS.contains(&order.tif.as_str()) || (order.include_overnight && !day && !form_10_40) {
+            return Some((10052, format!("Invalid time in force:{}", order.tif)));
+        }
+        if let Some(refusal) = Self::contract_month_refusal(contract_month) {
+            return Some(refusal);
+        }
+        if Self::action_sshortx(&order.action) {
+            return refuse("SSHORTX orders are not supported");
         }
         // A quantity below 0 or above 999,999,999 (ibx#263).
         if order.total_quantity < 0.0 || order.total_quantity > 999_999_999.0 {
@@ -6593,6 +6639,14 @@ impl ClientCore {
         }
         if matches!(order_type.as_str(), "MIT" | "LIT") && (!order.aux_price.is_finite() || order.aux_price == f64::MAX) {
             return refuse("Invalid Trigger Price");
+        }
+        // A TRAIL by amount (no trailing percent) whose trailing amount is
+        // unset, 0 or below 0 (ibx#688; observed on paper, 17/10/2026, with
+        // the amount unset). The other trailing types are not observed yet.
+        if order_type == "TRAIL" && !is_given(order.trailing_percent)
+            && (!is_given(order.aux_price) || order.aux_price < 0.0)
+        {
+            return refuse("You must enter a Trailing Amount for TRAIL Order.");
         }
         // TRAIL LIMIT: exactly one of lmtPrice and lmtPriceOffset (also on a
         // replace: sending back the computed lmtPrice with the offset was
@@ -6809,14 +6863,14 @@ impl ClientCore {
     /// orders are read last: their refusal is the one given (ibx#609).
     #[allow(clippy::too_many_arguments)]
     fn refusal_at_reading(
-        &self, order_id: OrderId, sec_type: &str, exchange: &str, order: &ApiOrder, shared: &SharedState,
+        &self, order_id: OrderId, sec_type: &str, exchange: &str, contract_month: &str, order: &ApiOrder, shared: &SharedState,
         account_pending: bool, account: &str,
     ) -> Option<(i64, String)> {
         let no_single = shared.reference.logon_features().split(',').any(|f| f == ATTACHED_NOT_IN_ONE_REQUEST_FEATURE);
         Self::attached_orders_read_refusal(order, no_single)
             .or_else(|| Self::volatility_type_refusal(order))
             .or_else(|| self.hedge_read_refusal(order_id, sec_type, order, shared))
-            .or_else(|| Self::refusal_before_sending_for(order, exchange, account_pending, shared.reference.form_10_40()))
+            .or_else(|| Self::refusal_before_sending_for(order, exchange, contract_month, account_pending, shared.reference.form_10_40()))
             .or_else(|| Self::account_config_refusal(order, shared.reference.account_features().as_deref(), account))
             .or_else(|| Self::open_flags_refusal(order, exchange))
             .or_else(|| Self::overnight_tif_refusal(order, &shared.reference))
@@ -6851,7 +6905,8 @@ impl ClientCore {
     ) -> Vec<(OrderId, ApiContract, ApiOrder, bool)> {
         let account_pending = Self::order_account_pending(order, &shared.reference, account);
         let contract_zone = shared.reference.time_zone_id(contract.con_id);
-        let refused = self.refusal_at_reading(order_id, &contract.sec_type, &contract.exchange, order, shared, account_pending, account).is_some()
+        let refused = self.refusal_at_reading(order_id, &contract.sec_type, &contract.exchange, &contract.last_trade_date_or_contract_month,
+            order, shared, account_pending, account).is_some()
             || self.refusal_with_contract(order, &contract.exchange, shared, contract_zone.as_deref(), &mut Vec::new()).is_some()
             || self.hedge_sent(std::borrow::Cow::Borrowed(order)).hedge_max_size == crate::api::types::HEDGE_MAX_SIZE_MISSING;
         if refused {
@@ -6860,9 +6915,10 @@ impl ClientCore {
         self.orders_to_transmit(order_id, contract, order)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn order_read_checks(
-        &self, order_id: OrderId, con_id: i64, sec_type: &str, exchange: &str, order: &ApiOrder, shared: &SharedState, account: &str,
-        looked_up: bool,
+        &self, order_id: OrderId, con_id: i64, sec_type: &str, exchange: &str, contract_month: &str, order: &ApiOrder, shared: &SharedState,
+        account: &str, looked_up: bool,
     ) -> (Vec<(i64, String)>, Option<(i64, String)>, Option<DeferredChecks>) {
         let mut notices = Self::implied_zone_warnings(order);
         // A goodAfterTime without a zone: 2174 the first time in the
@@ -6883,7 +6939,7 @@ impl ClientCore {
         // paper 11/10/2026: after 439, 343 or 110 the same id placed again
         // gets 103, and its cancel 10147; after 321, 391 or 145 it is a
         // new order).
-        let refusal = self.refusal_at_reading(order_id, sec_type, exchange, order, shared, account_pending, account);
+        let refusal = self.refusal_at_reading(order_id, sec_type, exchange, contract_month, order, shared, account_pending, account);
         if refusal.is_some() {
             return (notices, refusal, None);
         }
@@ -8659,7 +8715,7 @@ mod tests {
         let unreadable = |s: &str| ClientCore::refusal_before_sending(&gtd(s), "SMART").map(|(code, _)| code);
         assert_eq!(unreadable("not a date"), Some(343));
         assert_eq!(unreadable("20260930 16:00:00 Nowhere/Zone"), Some(343));
-        let unreadable_10_40 = |s: &str| ClientCore::refusal_before_sending_for(&gtd(s), "SMART", false, true).map(|(code, _)| code);
+        let unreadable_10_40 = |s: &str| ClientCore::refusal_before_sending_for(&gtd(s), "SMART", "", false, true).map(|(code, _)| code);
         assert_eq!(unreadable_10_40("not a date"), Some(391));
         assert_eq!(unreadable("20260930 16:00:00 Asia/Tokyo"), None);
         assert_eq!(unreadable(""), None);
@@ -8737,7 +8793,7 @@ mod tests {
         // paper 11/10/2026).
         for t in ["MIT", "LIT"] {
             assert_eq!(ClientCore::refusal_before_sending(&typed(t, f64::MAX), "SMART"), rule("Please enter a trigger price"), "{t}");
-            assert_eq!(ClientCore::refusal_before_sending_for(&typed(t, f64::MAX), "SMART", false, true), rule("Please enter a stop price"), "{t}");
+            assert_eq!(ClientCore::refusal_before_sending_for(&typed(t, f64::MAX), "SMART", "", false, true), rule("Please enter a stop price"), "{t}");
             assert_eq!(ClientCore::refusal_before_sending(&typed(t, f64::INFINITY), "SMART"), rule("Invalid Trigger Price"), "{t}");
             assert_eq!(ClientCore::refusal_before_sending(&typed(t, 90.0), "SMART"), None, "{t}");
         }
@@ -8778,7 +8834,7 @@ mod tests {
 
         let core = ClientCore::new();
         let shared = SharedState::new();
-        let warned = |id: OrderId, gat: &str| core.order_read_checks(id, 265598, "STK", "SMART",
+        let warned = |id: OrderId, gat: &str| core.order_read_checks(id, 265598, "STK", "SMART", "",
             &ApiOrder { good_after_time: gat.into(), ..lmt(100.0) }, &shared, "DU1", false).0.iter().any(|n| n.0 == 2174);
         assert!(warned(20, "20261012 16:00:00"), "the first without a zone");
         assert!(!warned(21, "16:00:00"), "not again in the session");
@@ -8885,7 +8941,7 @@ mod tests {
     fn the_what_if_type_is_checked_as_the_order_is_read() {
         let check = |what_if: bool, what_if_type: i32| {
             let order = ApiOrder { what_if, what_if_type, ..lmt(100.0) };
-            ClientCore::refusal_before_sending_for(&order, "SMART", false, false)
+            ClientCore::refusal_before_sending_for(&order, "SMART", "", false, false)
         };
         for ok in [i32::MAX, 0, 1] {
             assert_eq!(check(true, ok), None, "{ok}");
@@ -9038,9 +9094,9 @@ mod tests {
             ..lmt(100.0)
         };
         let text = "Order processing failed. Unknown algo attribute:giveUp".to_string();
-        let (_, now, later) = core.order_read_checks(31, 265598, "STK", "SMART", &order, &shared, "DU1", false);
+        let (_, now, later) = core.order_read_checks(31, 265598, "STK", "SMART", "", &order, &shared, "DU1", false);
         assert_eq!((now, later), (Some((443, text.clone())), None));
-        let (_, now, later) = core.order_read_checks(32, 0, "STK", "SMART", &order, &shared, "DU1", true);
+        let (_, now, later) = core.order_read_checks(32, 0, "STK", "SMART", "", &order, &shared, "DU1", true);
         assert_eq!(now, None);
         assert_eq!(later, Some(DeferredChecks { errors: vec![(443, text.clone())], refused: true, zone_checks: Vec::new() }));
 
@@ -9067,13 +9123,13 @@ mod tests {
         let machine = crate::gateway::machine_time_zone();
         let other = if machine == "Asia/Tokyo" { "Europe/Paris" } else { "Asia/Tokyo" };
         let order = ApiOrder { good_after_time: format!("20261230 23:00:00 {other}"), ..lmt(100.0) };
-        let (_, now, later) = core.order_read_checks(41, 272093, "STK", "SMART", &order, &shared, "DU1", false);
+        let (_, now, later) = core.order_read_checks(41, 272093, "STK", "SMART", "", &order, &shared, "DU1", false);
         assert_eq!(now, None);
         let start = INVALID_DATE_TIME.replace("%s", "Start Time");
         assert_eq!(later.map(|d| d.zone_checks), Some(vec![(vec![other.to_string()], 337, start.clone())]));
         // Once the zone is known the check is made at once.
         shared.reference.cache_time_zone_id(272093, "US/Eastern");
-        let (_, now, later) = core.order_read_checks(42, 272093, "STK", "SMART", &order, &shared, "DU1", false);
+        let (_, now, later) = core.order_read_checks(42, 272093, "STK", "SMART", "", &order, &shared, "DU1", false);
         assert_eq!((now, later), (Some((337, start)), None));
     }
 
@@ -9087,7 +9143,7 @@ mod tests {
         let core = ClientCore::new();
         let shared = SharedState::new();
         shared.reference.cache_time_zone_id(265598, "US/Eastern");
-        let checks = |id: OrderId, order: &ApiOrder| core.order_read_checks(id, 265598, "STK", "SMART", order, &shared, "DU1", false).1.map(|r| r.0);
+        let checks = |id: OrderId, order: &ApiOrder| core.order_read_checks(id, 265598, "STK", "SMART", "", order, &shared, "DU1", false).1.map(|r| r.0);
         // A zone that is not the contract's: 343, after the id check.
         let machine = crate::gateway::machine_time_zone();
         let other = if machine == "Asia/Tokyo" { "Europe/Paris" } else { "Asia/Tokyo" };
@@ -9109,10 +9165,10 @@ mod tests {
         // OVERNIGHT + DAY, refused as the order is read: the id is not used
         // (its cancel answers 10147).
         let mkt = ApiOrder { order_type: "MKT".into(), post_only: true, ..lmt(0.0) };
-        assert_eq!(core.order_read_checks(9, 265598, "STK", "SMART", &mkt, &shared, "DU1", false).1,
+        assert_eq!(core.order_read_checks(9, 265598, "STK", "SMART", "", &mkt, &shared, "DU1", false).1,
             Some((10051, "Invalid order type".to_string())));
         let overnight = ApiOrder { tif: "OVERNIGHT + DAY".into(), allow_pre_open: true, ..lmt(100.0) };
-        assert_eq!(core.order_read_checks(9, 265598, "STK", "SMART", &overnight, &shared, "DU1", false).1,
+        assert_eq!(core.order_read_checks(9, 265598, "STK", "SMART", "", &overnight, &shared, "DU1", false).1,
             Some((10052, "Invalid time in force:OVERNIGHT + DAY".to_string())));
         assert_eq!(checks(9, &lmt(100.0)), None, "the id was not used");
         // A price that is not a number: after the id check.

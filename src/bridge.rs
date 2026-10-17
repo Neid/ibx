@@ -1414,10 +1414,18 @@ impl OrderState {
         }
     }
 
+    /// Whether a held order is still noted as unknown, without waiting
+    /// (engine side, ibx#718): the engine decides for it, it never waits
+    /// for itself.
+    #[doc(hidden)] pub fn held_pending(&self, order_id: OrderId) -> bool {
+        self.held_unknown.lock().unwrap().contains_key(&order_id)
+    }
+
     /// Whether a held order still waits for the lookups of its placeOrder
     /// (ibx#718). An order the engine has not taken yet is waited for (at
-    /// most a second), so that a later request reads what the engine
-    /// decided for it.
+    /// most a second; the engine decides as it takes the order, so the wait
+    /// is that of the command's way to it), so that a later request reads
+    /// what the engine decided for it.
     pub fn is_held_unknown(&self, order_id: OrderId) -> bool {
         let held = self.held_unknown.lock().unwrap();
         let (held, _) = self.held_unknown_changed

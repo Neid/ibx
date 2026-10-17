@@ -4033,9 +4033,15 @@ enum HeldLookup {
 /// (the lookup of ibx#706); the order is known once that answered, about
 /// 0.57 s after the placeOrder. A later held order of a
 /// contract whose records the session has asks only its contract (eleven
-/// runs). Until then a hedge order under it is refused (see the client's
-/// hedge reading). A held order the client did not note as unknown (placed
-/// again while held) has nothing to wait for.
+/// runs) and is known at once (a hedge 0.1 s after it passed the reading;
+/// observed on paper, 17/10/2026, market closed). A held order given by
+/// its conId asks at most its record (one definition lookup by conId on
+/// the primary exchange, answered in 0.12 s; a hedge 0.5 s after passed the
+/// reading, same run). Until then a hedge order under it is refused (see
+/// the client's hedge reading). A held order the client did not note as
+/// unknown (placed again while held) has nothing to wait for. The decision
+/// is made as the engine takes the order, so the client's wait for it is
+/// that of the command's way.
 pub(crate) fn advance_held_lookups(context: &mut Context, conn: &mut Connection, hb: &mut HeartbeatState, shared: &Arc<SharedState>) {
     let mut i = 0;
     while i < context.held_lookups.len() {
@@ -4070,7 +4076,8 @@ fn held_lookup_step(
     context: &mut Context, conn: &mut Connection, hb: &mut HeartbeatState, shared: &Arc<SharedState>,
     order_id: OrderId, asked: bool,
 ) -> HeldLookup {
-    if !shared.orders.is_held_unknown(order_id) {
+    // Not waited on: the engine decides for its own orders (ibx#718).
+    if !shared.orders.held_pending(order_id) {
         return HeldLookup::Known;
     }
     // Transmitted or cancelled meanwhile: no longer held.
@@ -4078,7 +4085,20 @@ fn held_lookup_step(
     let con_id = match context.market.con_id(slot) {
         // Its contract's lookup on its way; a lookup refused or with no
         // single contract leaves the order held as before (not observed).
-        Some(0) if context.order_lookups.iter().any(|(_, s)| *s == slot) => return HeldLookup::Wait,
+        // A contract an earlier order lookup of the session named, whose
+        // records the session has, is known at once, its lookup still on
+        // its way (observed on paper, 17/10/2026, market closed: a beta
+        // hedge 0.1 s after a held parent of a contract ordered and
+        // cancelled before passed the reading).
+        Some(0) if context.order_lookups.iter().any(|(_, s)| *s == slot) => {
+            let key = order_contract_key(context, slot);
+            let named = context.order_contracts_named.iter().find(|(k, _)| *k == key).map(|(_, c)| *c);
+            return match named {
+                Some(c) if !context.order_record_lookups.iter().any(|(_, k, _)| *k == c)
+                    && missing_order_record(context, shared, slot, c).is_none() => HeldLookup::Known,
+                _ => HeldLookup::Wait,
+            };
+        }
         Some(c) if c > 0 => c,
         _ => return HeldLookup::Known,
     };
@@ -4112,6 +4132,14 @@ fn held_lookup_step(
     context.preset_waiters.remove(&order_id);
     ask_order_record(context, conn, hb, con_id, &exchange);
     HeldLookup::Asked
+}
+
+/// What an order gave of the contract of its slot, as the lookup by
+/// symbol asks it (ibx#718).
+fn order_contract_key(context: &Context, slot: crate::types::InstrumentId) -> crate::engine::context::OrderContractKey {
+    let m = &context.market;
+    (m.symbol(slot).to_string(), m.order_routing(slot), m.exchange(slot).to_string(), m.currency(slot).to_string(),
+        context.order_lookup_filters.get(&slot).cloned().unwrap_or_default())
 }
 
 /// Request numbers of the contract lookups of orders (ibx#486): a range
@@ -4549,6 +4577,13 @@ pub(crate) fn order_contract_reply(context: &mut Context, shared: &SharedState, 
     con_ids.dedup();
     for slot in slots {
         if let [con_id] = con_ids[..] {
+            // Named for the session: a later held order of the same
+            // contract is known at once (ibx#718).
+            let key = order_contract_key(context, slot);
+            match context.order_contracts_named.iter_mut().find(|(k, _)| *k == key) {
+                Some(named) => named.1 = con_id,
+                None => context.order_contracts_named.push((key, con_id)),
+            }
             // The slot of that conId when it routes the same way: the
             // waiting orders take it and this slot is freed; else this slot
             // keeps the conId.
@@ -10597,7 +10632,7 @@ mod tests {
             core.hold_order(id, aapl.clone(), parent.clone(), 0);
         };
         let reading = |id: OrderId, parent_id: i64| core.order_read_checks(
-            id, 265598, "STK", "SMART", &hedge(parent_id), &shared, "DU1", false).1;
+            id, 265598, "STK", "SMART", "", &hedge(parent_id), &shared, "DU1", false).1;
         let transmitted = |id: OrderId, parent_id: i64| core.orders_to_transmit_checked(id, &aapl, &hedge(parent_id), &shared, "DU1")
             .iter().map(|o| o.0).collect::<Vec<_>>();
         let record = |frames: &[Vec<(u32, String)>]| frames.iter()
@@ -10653,6 +10688,148 @@ mod tests {
         context.unsent.remove(&30);
         drain_frames(&mut context, &shared, &mut conn, &mut server);
         assert!(!shared.orders.is_held_unknown(30) && context.held_lookups.is_empty());
+    }
+
+    /// The client side of the held-parent tests (ibx#718): a held order
+    /// noted, taken by the engine as its command handler takes it (decided
+    /// at once), then kept by the client; the reading of a beta hedge under
+    /// it.
+    struct HeldClient {
+        core: crate::client_core::ClientCore,
+        shared: Arc<SharedState>,
+    }
+
+    impl HeldClient {
+        fn hold(&self, context: &mut Context, conn: &mut Option<Connection>, id: OrderId, slot: crate::types::InstrumentId,
+                contract: &crate::api::types::Contract) {
+            let parent = crate::api::types::Order {
+                action: "BUY".into(), order_type: "LMT".into(), lmt_price: 50.0, total_quantity: 10.0, tif: "DAY".into(),
+                transmit: false, ..Default::default()
+            };
+            self.core.note_held_placed(&self.shared, id);
+            hold_order(conn, context, &mut HeartbeatState::new(), id, slot, 10 * crate::types::QTY_SCALE, 0, "");
+            let at = std::time::Instant::now();
+            advance_held_lookups(context, conn.as_mut().unwrap(), &mut HeartbeatState::new(), &self.shared);
+            assert!(at.elapsed() < std::time::Duration::from_millis(100), "the engine took {:?} to decide", at.elapsed());
+            self.core.hold_order(id, contract.clone(), parent, slot);
+        }
+
+        /// The reading of a hedge under `parent_id`, and how long the
+        /// client waited for the engine's decision.
+        fn hedge_reading(&self, id: OrderId, parent_id: i64, con_id: i64) -> (Option<(i64, String)>, std::time::Duration) {
+            let hedge = crate::api::types::Order {
+                action: "SELL".into(), order_type: "MKT".into(), total_quantity: 0.0, lmt_price: f64::MAX, tif: "DAY".into(),
+                parent_id, hedge_type: "B".into(), hedge_param: "1".into(), hedge_max_size: 100, transmit: true,
+                ..Default::default()
+            };
+            let at = std::time::Instant::now();
+            let refusal = self.core.order_read_checks(id, con_id, "STK", "SMART", "", &hedge, &self.shared, "DU1", con_id == 0).1;
+            (refusal, at.elapsed())
+        }
+    }
+
+    fn missing_parent(order_id: OrderId, parent_id: OrderId) -> Option<(i64, String)> {
+        Some((320, format!("Error reading request. Missing parent order: server: 0 order: {} parent: {} hedge:[B]", order_id, parent_id)))
+    }
+
+    // ibx#718, observed on paper, 17/10/2026, market closed (case A): a held
+    // parent by symbol of a contract the session has ordered before (a far
+    // AAPL order placed and cancelled) is known at once, its own lookup
+    // still on its way: a beta hedge 0.1 s after it passed the reading. The
+    // first held order of a contract by symbol still waits for its lookups
+    // (the rule of 16/10/2026). Either way the engine decides as it takes
+    // the order: the client does not wait for it.
+    #[test]
+    fn a_held_parent_of_a_contract_the_session_knows_is_known_at_once() {
+        let (client, mut server) = crate::protocol::connection::mem_pair();
+        let mut conn = Some(Connection::new_mem(client));
+        let shared = Arc::new(SharedState::new());
+        shared.reference.cache_contract(265598, crate::api::types::Contract {
+            con_id: 265598, symbol: "AAPL".into(), primary_exchange: "NASDAQ".into(), ..Default::default()
+        });
+        let mut context = order_context();
+        let by_symbol = |context: &mut Context, symbol: &str| {
+            let slot = context.market.try_register_unresolved().unwrap();
+            context.market.set_symbol(slot, symbol.into());
+            context.market.set_routing(slot, "STK", "SMART");
+            context.market.set_currency(slot, "USD");
+            slot
+        };
+        let stock = |symbol: &str| crate::api::types::Contract {
+            symbol: symbol.into(), sec_type: "STK".into(), exchange: "SMART".into(), currency: "USD".into(), ..Default::default()
+        };
+        // The far order before: its lookup named AAPL, its record answered.
+        let warm = by_symbol(&mut context, "AAPL");
+        context.order_lookups.push((ORDER_LOOKUP_FIRST_ID, warm));
+        let reply = "8=FIX.4.1|9=0100|35=d|320=FixSecDefReqBySymbol3221225472|322=*|323=4|55=AAPL|167=STK|207=BEST|6008=265598|15=USD|146=1|6344=1|6008=265598|10=000|".replace('|', "\x01");
+        assert!(order_contract_reply(&mut context, &shared, &format!("FixSecDefReqBySymbol{}", ORDER_LOOKUP_FIRST_ID), reply.as_bytes()));
+        context.order_records.insert((265598, "NASDAQ".to_string()));
+        let client = HeldClient { core: crate::client_core::ClientCore::new(), shared: shared.clone() };
+
+        // The held parent: its lookup asked as the reference asks it, the
+        // parent known at once, the hedge read with no wait.
+        let parent_slot = by_symbol(&mut context, "AAPL");
+        client.hold(&mut context, &mut conn, 40, parent_slot, &stock("AAPL"));
+        assert!(!shared.orders.held_pending(40) && context.held_lookups.is_empty());
+        let (refusal, waited) = client.hedge_reading(41, 40, 0);
+        assert_eq!(refusal, None);
+        assert!(waited < std::time::Duration::from_millis(100), "the client waited {waited:?}");
+        let frames = drain_frames(&mut context, &shared, &mut conn, &mut server);
+        assert_eq!(asked_kinds(&frames), ["definition"], "its own lookup only: {frames:?}");
+        assert!(!shared.orders.is_held_unknown(40));
+
+        // The first held order of another contract by symbol: unknown until
+        // its lookups answered, decided as unknown at once.
+        let ibm = by_symbol(&mut context, "IBM");
+        client.hold(&mut context, &mut conn, 50, ibm, &stock("IBM"));
+        assert!(shared.orders.held_pending(50));
+        let (refusal, waited) = client.hedge_reading(51, 50, 0);
+        assert_eq!(refusal, missing_parent(51, 50));
+        assert!(waited < std::time::Duration::from_millis(100), "the client waited {waited:?}");
+    }
+
+    // ibx#718, observed on paper, 17/10/2026, market closed (case B): a held
+    // parent given by its conId (MSFT, the first order of its contract in
+    // the session, the stock order preset known) asks one definition at
+    // once, by its conId on its primary exchange, answered 0.12 s later; a
+    // beta hedge 0.5 s after the parent passed the reading. The parent is
+    // known once that definition answered; the engine's decisions come at
+    // once, the client does not wait for them.
+    #[test]
+    fn a_held_parent_by_con_id_is_known_once_its_definition_answered() {
+        let (client, mut server) = crate::protocol::connection::mem_pair();
+        let mut conn = Some(Connection::new_mem(client));
+        let shared = Arc::new(SharedState::new());
+        shared.reference.cache_contract(272093, crate::api::types::Contract {
+            con_id: 272093, symbol: "MSFT".into(), primary_exchange: "NASDAQ".into(), ..Default::default()
+        });
+        let mut context = order_context();
+        let slot = context.market.register(272093);
+        context.set_symbol(slot, "MSFT".to_string());
+        context.market.set_routing(slot, "STK", "SMART");
+        let msft = crate::api::types::Contract {
+            con_id: 272093, symbol: "MSFT".into(), sec_type: "STK".into(), exchange: "SMART".into(), currency: "USD".into(),
+            ..Default::default()
+        };
+        let client = HeldClient { core: crate::client_core::ClientCore::new(), shared: shared.clone() };
+
+        client.hold(&mut context, &mut conn, 60, slot, &msft);
+        let frames = drain_frames(&mut context, &shared, &mut conn, &mut server);
+        assert_eq!(asked_kinds(&frames), ["record NASDAQ"], "{frames:?}");
+        let (refusal, waited) = client.hedge_reading(61, 60, 272093);
+        assert_eq!(refusal, missing_parent(61, 60));
+        assert!(waited < std::time::Duration::from_millis(100), "the client waited {waited:?}");
+
+        // Its answer: known, the hedge passes the reading.
+        let name = frames[0].iter().find(|(t, _)| *t == 320).map(|(_, v)| v.clone()).unwrap();
+        let answer = fix::fix_build(&[(35, "d"), (320, &name), (6008, "272093"), (55, "MSFT"), (167, "STK"), (207, "NASDAQ")], 1);
+        assert!(order_record_reply(&mut context, &name, &answer));
+        let frames = drain_frames(&mut context, &shared, &mut conn, &mut server);
+        assert!(frames.is_empty(), "{frames:?}");
+        assert!(!shared.orders.held_pending(60) && context.held_lookups.is_empty());
+        let (refusal, waited) = client.hedge_reading(62, 60, 272093);
+        assert_eq!(refusal, None);
+        assert!(waited < std::time::Duration::from_millis(100), "the client waited {waited:?}");
     }
 
     /// A session at its first stock order: AAPL, its symbol lookup answered

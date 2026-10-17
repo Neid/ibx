@@ -1561,7 +1561,7 @@ local_rule,10356-2,"10356 read: new request form: attachedOrders with a profit-t
 local_rule,10363-1,"10363 read: new request form: a text field of the request holds a non-ASCII character (every request of that form, placeOrder included)",open #602
 local_rule,321-1,"321 check: side unknown, or SSHORT when the session has neither the institutional flag nor an away clearing",tests/gw_catalog/refusals.rs::short_side_without_the_logon_flags ; tests/gw_catalog/refusals.rs::unknown_action
 local_rule,452-1,452 check: exchange empty,tests/gw_catalog/refusals.rs::order_without_an_exchange
-local_rule,10052-1,"10052 check: time in force OVERNIGHT or OVERNIGHT + DAY, or includeOvernight set with a time in force other than DAY, or a time in force text that is not known; the error is sent and the request goes on (classic request form)",open #688
+local_rule,10052-1,"10052 check: time in force OVERNIGHT or OVERNIGHT + DAY, or includeOvernight set with a time in force other than DAY, or a time in force text that is not known; the error is sent and the request goes on (classic request form)",tests/gw_catalog/refusals.rs::time_in_force_not_known_or_not_day_overnight
 local_rule,10052-2,"10052 check: new request form: time in force OVERNIGHT or OVERNIGHT + DAY, or includeOvernight set with a time in force other than DAY, or a time in force text that is not known; the request is refused",open #602
 local_rule,10052-3,"10052 check: new request form, client version 215 or above, server feature that requires a time in force on, and the time in force is empty",open #602
 local_rule,10272-1,10272 check: duration set with a time in force other than GTD,open #688
@@ -1572,9 +1572,9 @@ local_rule,10289-1,10289 check: crypto MKT BUY order without a cash quantity,ope
 local_rule,10052-4,"10052 check: crypto BUY order whose time in force is not allowed for crypto (IOC or minutes, and with a server feature off also DAY, GTC, GTD); text = the time in force after a colon (the plain message when the time in force is empty)",open #666
 local_rule,10366-1,10366 check: time in force in minutes with goodAfterTime set,open #688
 local_rule,10040-1,10040 check: the broker's own ATS destination with an unknown security type and no conId,open #688
-local_rule,10372-1,"10372 check: lastTradeDateOrContractMonth not empty and neither an expiry form, nor yyyyMM, nor yyyyMMdd",open #688
+local_rule,10372-1,"10372 check: lastTradeDateOrContractMonth not empty and neither an expiry form, nor yyyyMM, nor yyyyMMdd",tests/gw_catalog/refusals.rs::contract_month_not_readable
 local_rule,477-1,477 check: CASH pseudo-FX destination not allowed for the account,open #688
-local_rule,498-1,"498 check: side SSHORTX or a short combo leg, feature off",open #688
+local_rule,498-1,"498 check: side SSHORTX or a short combo leg, feature off",tests/gw_catalog/refusals.rs::sshortx_not_supported
 local_rule,160-1,"160 check: size 0 (not QUOTE, no FA sizing, not hedge child, no cash quantity), and (new in 10.51) the destination is not AVGCOST",open #688
 local_rule,355-1,"355 check: quantity out of range (> 999,999,999 or < 0)",tests/gw_catalog/refusals.rs::quantity_out_of_range
 local_rule,321-2,"321 check: the order type needs a stop or trigger price and auxPrice is unset: STP, STP LMT, STP PRT ('stop price'), TRAIL LIMIT ('trailing stop price'), and (new in 10.51) LIT, MIT ('trigger price'), TRAIL LIT ('trailing trigger price')",tests/gw_catalog/refusals.rs::trail_limit_without_a_stop_price ; tests/gw_catalog/refusals.rs::stop_order_without_a_stop_price
@@ -1624,7 +1624,7 @@ local_rule,362-1,362 check: adjusted stop price invalid,open #688
 local_rule,363-1,363 check: adjusted stop-limit price invalid,open #688
 local_rule,403-1,"403 check: STP, STP PRT, STP LMT, TRAIL LIMIT with auxPrice invalid",tests/gw_catalog/refusals.rs::stop_order_with_a_stop_price_not_a_number
 local_rule,361-1,"361 check: MIT, LIT, TRAIL LIT with auxPrice invalid",tests/gw_catalog/refusals.rs::touched_order_without_a_trigger_price
-local_rule,10028-1,"10028 check: trailing type, unit amount, trailing amount negative or unset",open #688
+local_rule,10028-1,"10028 check: trailing type, unit amount, trailing amount negative or unset",tests/gw_catalog/refusals.rs::trail_without_a_trailing_amount
 local_rule,321-3,"321 check: TRAIL LIMIT family: both lmtPrice and lmtPriceOffset set, or neither",tests/gw_catalog/refusals.rs::trail_limit_with_both_limit_fields
 local_rule,10210-1,10210 check: MIDPRICE with outsideRth true,tests/gw_catalog/refusals.rs::midprice_outside_regular_hours
 local_rule,10274-2,10274 check: postToAts out of range,open #688
@@ -1697,7 +1697,7 @@ local_rule,402-1,402 rules: conditions not allowed for the instrument,open #688
 local_rule,148-1,"148 rules: conditions on an order type other than LMT, MKT, MIDPRICE, REL, SNAP",open #688
 local_rule,148-2,148 rules: conditionsCancelOrder on an order type other than LMT or MIDPRICE,open #688
 local_rule,398-1,"398 rules: condition trigger error (time condition without time, ...)",open #688
-local_rule,10051-2,10051 rules: unknown order type,open #688
+local_rule,10051-2,10051 rules: unknown order type,tests/gw_catalog/refusals.rs::order_type_not_known
 local_rule,10052-8,10052 rules: TIF not valid,open #688
 local_rule,10070-1,10070 rules: order type not in the type list (server data),open #688
 local_rule,464-4,464 rules: destination not valid for the contract and the order does not use auto-routing (several exemptions; new in 10.51: the AVGCOST destination is exempt),src/engine/hot_loop/order_builder.rs::a_directed_order_to_an_exchange_the_contract_does_not_list_gets_464
