@@ -658,6 +658,17 @@ impl HotLoop {
         }
         self.context.def_asked.insert((kind, req_id));
         self.context.company_parked.push((under, request()));
+        // The option's class is asked once the company answered, before
+        // the request goes on (ibx#734; observed on paper, 13/10/2026: 2
+        // first real-time bars of an option given by its conId, the class
+        // 0 to 1 ms after the company's answer, the bar query 12 ms after).
+        if let Some(key) = self.context.permission_keys.get(&con_id).cloned()
+            && !self.context.trading_permissions.contains_key(&key)
+            && !self.context.permissions_asked.contains_key(&key)
+            && !self.context.classes_after_company.iter().any(|(u, k)| *u == under && *k == key)
+        {
+            self.context.classes_after_company.push((under, key));
+        }
         true
     }
 
@@ -8355,6 +8366,129 @@ mod bars_routing_tests {
         assert!(written(&mut hmds_side).contains(";;AAPL@SMART Midpoint;;"));
         assert!(shared.reference.drain_historical_errors().is_empty());
     }
+
+    /// The classes asked in written text, in order (ibx#734 tests).
+    fn classes_asked(text: &str) -> Vec<String> {
+        text.split("|35=U|").skip(1).filter(|m| m.contains("6040=65|"))
+            .filter_map(|m| m.split('|').find_map(|p| p.strip_prefix("6411=")).map(String::from)).collect()
+    }
+
+    // ibx#734 (observed on paper, 13/10/2026, two sessions: the first
+    // real-time bars of an AAPL option given by its conId, the option's
+    // class 0 to 1 ms after the company's answer, the bar query 12 ms
+    // after): the class once the company answered, before the query; a
+    // later request of the session asks it no more.
+    #[test]
+    fn real_time_bars_of_an_option_ask_its_class_after_its_company() {
+        let shared = Arc::new(SharedState::new());
+        let mut engine = HotLoop::new(shared.clone(), None, None);
+        let (client, mut hmds_side) = crate::protocol::connection::mem_pair();
+        engine.hmds_conn = Some(Connection::new_mem(client));
+        let (ccp, mut ccp_side) = crate::protocol::connection::mem_pair();
+        engine.ccp_conn = Some(Connection::new_mem(ccp));
+        let (tx, rx) = crossbeam_channel::bounded(8);
+        engine.set_control_rx(rx);
+        let request = |req_id: ReqId| ControlCommand::SubscribeRealTimeBar {
+            req_id, con_id: 692806985, symbol: String::new(), sec_type: String::new(), exchange: "SMART".into(),
+            what_to_show: "MIDPOINT".into(), use_rth: true,
+        };
+        let definition = |name: &str| fix::fix_build(&[(35, "d"), (320, name), (55, "AAPL"), (167, "OPT"), (207, "BEST"),
+            (6008, "692806985"), (6411, "2/OPT/R"), (541, "20261218"), (201, "1"), (202, "100"), (231, "100"), (15, "USD"),
+            (6346, "265598")], 1);
+        tx.send(request(1)).unwrap();
+        engine.poll_once();
+        assert_eq!(definition_names(&written(&mut ccp_side)), ["SecDefReqMsgReqByConid1"]);
+        engine.inject_ccp_message(&definition("SecDefReqMsgReqByConid1"));
+        engine.send_lot_ready();
+        engine.poll_once();
+        let asked = written(&mut ccp_side);
+        let names = definition_names(&asked);
+        assert!(names.len() == 1 && names[0].starts_with("UnderlyingECNoDupsNDReqByConid"), "{asked}");
+        assert!(classes_asked(&asked).is_empty(), "no class before the company's answer");
+        let company = fix::fix_build(&[(35, "d"), (320, &names[0]), (55, "AAPL"), (167, "STK"), (207, "BEST"), (6008, "265598")], 1);
+        engine.inject_ccp_message(&company);
+        assert_eq!(classes_asked(&written(&mut ccp_side)), ["2/OPT/R"]);
+        assert!(!written(&mut hmds_side).contains("realTime"), "the class before the query");
+        engine.send_lot_ready();
+        engine.poll_once();
+        assert!(written(&mut hmds_side).contains(";;AAPL@SMART Midpoint;;"));
+
+        tx.send(request(2)).unwrap();
+        engine.poll_once();
+        let names = definition_names(&written(&mut ccp_side));
+        engine.inject_ccp_message(&definition(&names[0]));
+        engine.send_lot_ready();
+        engine.poll_once();
+        assert!(classes_asked(&written(&mut ccp_side)).is_empty(), "asked once in the session");
+    }
+
+    // ibx#734 (observed on paper, recordings of 12-16/10/2026: 9 option
+    // market data requests by description, the class 1 to 6 ms after the
+    // company's answer, before the model's lookups; VOD on LSE, NESN on
+    // EBS, 7203 on TSEJ and ES on CME, 0 to 6 ms after the lookup's answer;
+    // SPX on CBOE, an index, nothing): market data by description asks the
+    // class of its contract.
+    #[test]
+    fn market_data_by_description_asks_the_class_of_its_contract() {
+        use crate::control::contracts::tests::pipe_msg;
+        let shared = Arc::new(SharedState::new());
+        let mut engine = HotLoop::new(shared.clone(), None, None);
+        let (c1, _farm_side) = crate::protocol::connection::mem_pair();
+        let (c2, mut ccp_side) = crate::protocol::connection::mem_pair();
+        engine.farm_conn = Some(Connection::new_mem(c1));
+        engine.ccp_conn = Some(Connection::new_mem(c2));
+        let (tx, rx) = crossbeam_channel::bounded(8);
+        engine.set_control_rx(rx);
+        let by_symbol = |symbol: &str, sec_type: &str, exchange: &str, filters: crate::types::SecDefFilters| ControlCommand::SubscribeBySymbol {
+            symbol: symbol.into(), sec_type: sec_type.into(), exchange: exchange.into(), currency: "USD".into(),
+            filters, mode_9887: 0, snapshot: false, over_limit: false, reply_tx: None,
+        };
+        let name_of = |side: &mut crate::protocol::connection::MemTransport| definition_names(&written(side)).remove(0);
+
+        // An option: its class once the company answered, first.
+        let filters = crate::types::SecDefFilters {
+            last_trade_date_or_contract_month: "20261218".into(), strike: 340.0, right: "C".into(),
+            multiplier: "100".into(), ..Default::default()
+        };
+        tx.send(by_symbol("AAPL", "OPT", "SMART", filters)).unwrap();
+        engine.poll_once();
+        let lookup = name_of(&mut ccp_side);
+        engine.inject_ccp_message(&pipe_msg(&format!("35=d|43=N|320={lookup}|322=*|323=4|\
+            55=AAPL|167=OPT|207=BEST|6008=692808239|6411=2/OPT/R|541=20261218|201=1|202=340|231=100|15=USD|6178=2|6346=265598")));
+        let asked = written(&mut ccp_side);
+        assert!(classes_asked(&asked).is_empty(), "{asked}");
+        let company = definition_names(&asked).remove(0);
+        engine.inject_ccp_message(&pipe_msg(&format!("35=d|43=N|320={company}|322=*|323=4|\
+            55=AAPL|167=STK|207=BEST|6008=265598|15=USD|6178=1")));
+        let after = written(&mut ccp_side);
+        assert_eq!(classes_asked(&after), ["2/OPT/R"]);
+        assert!(definition_names(&after).is_empty(), "the class before the model's lookups");
+
+        // A stock off the US markets and a future: at once.
+        for (symbol, sec_type, exchange, body, class) in [
+            ("VOD", "STK", "LSE", "55=VOD|167=STK|207=LSE|6008=140148322|6411=LSE/STK/NONE|15=GBP", "LSE/STK/NONE"),
+            ("ES", "FUT", "CME", "55=ES|167=FUT|207=CME|6008=515416632|6411=CME/FUT/GLOBEX|15=USD|541=20261218", "CME/FUT/GLOBEX"),
+        ] {
+            tx.send(by_symbol(symbol, sec_type, exchange, Default::default())).unwrap();
+            engine.poll_once();
+            let lookup = name_of(&mut ccp_side);
+            engine.inject_ccp_message(&pipe_msg(&format!("35=d|43=N|320={lookup}|322=*|323=4|{body}")));
+            assert_eq!(classes_asked(&written(&mut ccp_side)), [class]);
+        }
+
+        // An index: nothing; the stock again: nothing.
+        for (symbol, sec_type, exchange, body) in [
+            ("SPX", "IND", "CBOE", "55=SPX|167=IND|207=CBOE|6008=416904|6411=CBOE/IND/NONE|15=USD"),
+            ("VOD", "STK", "LSE", "55=VOD|167=STK|207=LSE|6008=140148322|6411=LSE/STK/NONE|15=GBP"),
+        ] {
+            tx.send(by_symbol(symbol, sec_type, exchange, Default::default())).unwrap();
+            engine.poll_once();
+            let asked = written(&mut ccp_side);
+            let Some(lookup) = definition_names(&asked).into_iter().next() else { continue };
+            engine.inject_ccp_message(&pipe_msg(&format!("35=d|43=N|320={lookup}|322=*|323=4|{body}")));
+            assert!(classes_asked(&written(&mut ccp_side)).is_empty(), "{symbol}");
+        }
+    }
 }
 
 #[cfg(test)]
@@ -8631,6 +8765,58 @@ mod depth_tests {
         engine.inject_farm_message(format!("8=O\x0135=Q\x01777,{first},0.01,0,0").as_bytes());
         let req = engine.farm.depth_reqs.iter().find(|r| r.req_id == 11).unwrap();
         assert!(req.smart && req.entries.iter().any(|e| e.server_tag == Some(777) && e.farm_req == first && e.farm == pool::PRIMARY_MD));
+    }
+
+    // ibx#734 (observed on paper, 13/10/2026: AAPL's depth on SMART, its
+    // components on IBEOS, OVERNIGHT, TPLUS0, T24X and TXSE naming a class,
+    // each asked within 1 ms of the component's answer; the others name
+    // none): a component's class with its answer, once.
+    #[test]
+    fn smart_depth_components_ask_their_class() {
+        let (mut engine, _shared, _side, tx) = engine();
+        let (ccp, mut ccp_side) = loopback();
+        engine.ccp_conn = Some(ccp);
+        let _nj = nj_farm(&mut engine);
+        let classes = |side: &mut crate::protocol::connection::MemTransport| -> Vec<String> {
+            use std::io::Read;
+            side.set_read_timeout(Some(Duration::from_millis(300))).unwrap();
+            let mut buf = Vec::new();
+            let mut chunk = [0u8; 8192];
+            while let Ok(n) = side.read(&mut chunk) {
+                if n == 0 { break; }
+                buf.extend_from_slice(&chunk[..n]);
+            }
+            String::from_utf8_lossy(&buf).split("\x0135=U\x01").skip(1).filter(|m| m.contains("6040=65\x01"))
+                .filter_map(|m| m.split('\x01').find_map(|p| p.strip_prefix("6411=")).map(String::from)).collect()
+        };
+        tx.send(depth(12, 265598, "SMART", "STK", 5, true)).unwrap();
+        engine.poll_once();
+        let lookups = ccp_lookups(&mut ccp_side);
+        assert!(["IBEOS", "TPLUS0", "NASDAQ"].iter().all(|x| lookups.iter().any(|(_, e)| e == x)), "{lookups:?}");
+        for (name, exch) in &lookups {
+            let class = match exch.as_str() {
+                "IBEOS" | "TPLUS0" => format!("\x016411={exch}/STK/NP"),
+                _ => "\x016411=".to_string(),
+            };
+            let msg = format!("8=FIX.4.1\x0135=d\x01320={name}\x01322=*\x01323=4\x0155=AAPL\x01167=STK\x01207={exch}\x016008=265598{class}\x01\
+                146=0\x016344=1\x016008=265598\x016432=1\x016430=1/STK\x016431=LMT/3\x01");
+            engine.inject_ccp_message(msg.as_bytes());
+            let asked = classes(&mut ccp_side);
+            match exch.as_str() {
+                "IBEOS" | "TPLUS0" => assert_eq!(asked, [format!("{exch}/STK/NP")]),
+                _ => assert!(asked.is_empty(), "{exch}: {asked:?}"),
+            }
+        }
+        // A second request: the classes are not asked again.
+        tx.send(depth(13, 265598, "SMART", "STK", 5, true)).unwrap();
+        engine.poll_once();
+        for (name, exch) in ccp_lookups(&mut ccp_side) {
+            let class = if exch == "IBEOS" || exch == "TPLUS0" { format!("{exch}/STK/NP") } else { String::new() };
+            let msg = format!("8=FIX.4.1\x0135=d\x01320={name}\x01322=*\x01323=4\x0155=AAPL\x01167=STK\x01207={exch}\x016008=265598\
+                \x016411={class}\x01146=0\x01");
+            engine.inject_ccp_message(msg.as_bytes());
+            assert!(classes(&mut ccp_side).is_empty(), "{exch}");
+        }
     }
 
     // #452: a cancel while the components are looked up sends nothing; a

@@ -231,6 +231,9 @@ pub struct ContractDefinition {
     pub smart_components: Vec<String>,
     /// Listing exchange as received, empty when absent (ibx#732).
     pub listing_exchange: String,
+    /// The trading permission class the record names, empty when it names
+    /// none (ibx#734).
+    pub permission_key: String,
 }
 
 /// Fund fields of a definition (detail block, FUND only on the API).
@@ -335,6 +338,7 @@ impl Default for ContractDefinition {
             market_type: String::new(),
             smart_components: Vec::new(),
             listing_exchange: String::new(),
+            permission_key: String::new(),
         }
     }
 }
@@ -737,6 +741,7 @@ fn apply_secdef_fields<'a>(def: &mut ContractDefinition, keys: &mut RecordKeys<'
                 _ => {}
             },
             6346 => def.under_con_id = v.parse().unwrap_or(0),
+            6411 => def.permission_key = v.to_string(),
             6577 => def.index_con_id = v.parse().unwrap_or(0),
             6855 => def.under_symbol = v.to_string(),
             6178 => def.agg_group = v.trim().parse().ok(),

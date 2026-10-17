@@ -424,6 +424,13 @@ pub struct Context {
     /// `permissions_asked`, with the time the order stops waiting.
     pub(crate) trading_permissions: HashMap<String, bool>,
     pub(crate) permissions_asked: HashMap<String, std::time::Instant>,
+    /// The trading permission class each contract's definition names, by
+    /// conId, once read (ibx#734).
+    pub(crate) permission_keys: HashMap<i64, String>,
+    /// The permission classes of derivatives asked once the company lookup
+    /// of their underlying answered: (underlying's conId, class), in the
+    /// order they came (ibx#734).
+    pub(crate) classes_after_company: Vec<(i64, String)>,
     /// The cash amount of a fund order bought by cash, in quantity units:
     /// the reference reports it as the order's remaining quantity (ibx#666;
     /// paper, 16/10/2026: Cancelled with 100 remaining for a VFIAX buy of
@@ -611,6 +618,8 @@ impl Context {
             order_wake: None,
             trading_permissions: HashMap::new(),
             permissions_asked: HashMap::new(),
+            permission_keys: HashMap::new(),
+            classes_after_company: Vec::new(),
             cash_orders: HashMap::new(),
             next_permission_request: 0,
             cfd_checked: std::collections::HashSet::new(),

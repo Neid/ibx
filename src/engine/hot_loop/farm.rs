@@ -182,6 +182,11 @@ fn note_record_terms(context: &mut Context, con_id: i64, def: &crate::control::c
     if !def.join_key.is_empty() {
         context.join_keys.insert(con_id, def.join_key.clone());
     }
+    // The trading permission class it names, for the question a request
+    // on it asks once its underlying's company answered (ibx#734).
+    if !def.permission_key.is_empty() {
+        context.permission_keys.insert(con_id, def.permission_key.clone());
+    }
     // A future's or an index's links, for the index part of a futures
     // option order's model (ibx#727).
     if matches!(def.sec_type.to_api_str(), "FUT" | "IND") {

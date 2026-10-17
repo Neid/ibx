@@ -3526,8 +3526,12 @@ pub(crate) fn sweep_permission_requests(context: &mut Context) {
 }
 
 /// The question on the trading permission of a class, once per session
-/// until its answer (ibx#666).
-fn ask_permission(context: &mut Context, conn: &mut Connection, hb: &mut HeartbeatState, key: &str) {
+/// until its answer (ibx#666). Orders and the other requests share it: a
+/// class a contract details or market data request asked is not asked
+/// again by an order, which reads its answer (ibx#734; the reference 10.51,
+/// paper, 13/10/2026: three CFD orders and a future order after contract
+/// details of the same classes asked nothing and were refused with 460).
+pub(crate) fn ask_permission(context: &mut Context, conn: &mut Connection, hb: &mut HeartbeatState, key: &str) {
     if context.trading_permissions.contains_key(key) || context.permissions_asked.contains_key(key) {
         return;
     }

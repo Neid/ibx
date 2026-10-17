@@ -3637,17 +3637,36 @@ impl CcpState {
             // Asked for a round lot (ibx#287): not a user reply.
             if super::farm::round_lot_reply(context, rid, msg) { return; }
             // Asked for a SmartDepth component (#452): not a user reply.
-            if super::farm::depth_component_reply(context, rid, msg) { return; }
-            // Asked for the conId of a market data request (ibx#278).
+            // The class it names on its exchange is asked at once (ibx#734;
+            // observed on paper, 13/10/2026: AAPL's depth on SMART, the 5
+            // components naming a class, each within 1 ms of its answer).
+            if super::farm::depth_component_reply(context, rid, msg) {
+                self.ask_class_permissions(&records, context, ccp_conn, hb);
+                return;
+            }
+            // Asked for the conId of a market data request (ibx#278). The
+            // class of the contract found: an option's once its company
+            // answered, the others' at once (ibx#734; observed on paper,
+            // 13-16/10/2026: 9 option requests after the company's answer;
+            // 6 stocks off the US markets and 2 futures 0 to 6 ms after the
+            // lookup's answer; nothing for an index).
             if super::farm::md_contract_reply(context, shared, rid, msg) {
                 self.ask_option_company(&records, ccp_conn, hb);
+                self.ask_found_class(&records, true, context, ccp_conn, hb);
                 return;
             }
             // Asked for the conId of a historical-data request (ibx#427).
             // Its contract is known from then on (ibx#732): the request
-            // asks no second definition for its route.
+            // asks no second definition for its route. The class of the
+            // contract found is asked at once (ibx#734; observed on paper,
+            // 15/10/2026: 3 historical requests by description on stocks
+            // off the US markets, 1 to 3 ms after the lookup's answer).
+            let for_client = self.resolve_for_client(rid);
             if self.contract_resolve_reply(rid, &records, shared) {
                 super::farm::note_answer(context, &records, msg);
+                if for_client {
+                    self.ask_found_class(&records, false, context, ccp_conn, hb);
+                }
                 return;
             }
             // Asked for the option of an option calculation (ibx#442).
@@ -3666,6 +3685,9 @@ impl CcpState {
                     self.cache_definition(def, shared);
                 }
             }
+            // The classes of the derivatives that waited for it, before
+            // anything else of their requests (ibx#734).
+            self.ask_classes_after_company(under, context, ccp_conn, hb);
             // A contract details row's underlying not known when the
             // company was asked: its preferred definition now, unless an
             // answer gave it meanwhile (ibx#733).
@@ -3722,6 +3744,11 @@ impl CcpState {
             if let Some(rule) = records.iter().find(|d| d.con_id == con_id).and_then(|d| d.market_rule_id) {
                 self.market_rule_by_exchange.insert((con_id, exchange), rule);
             }
+            // The class of the contract on that exchange, at once (ibx#734;
+            // observed on paper, 11-16/10/2026: every per-exchange answer of
+            // a contract details request naming a class not asked yet, 134
+            // of them, options, stocks and a CFD; most within 2 ms).
+            self.ask_class_permissions(&records, context, ccp_conn, hb);
             // The rows ready at the front leave now; the end comes with
             // the last of them (ibx#689).
             let ready = self.pending_fanout[idx].ready_rows();
@@ -3839,19 +3866,41 @@ impl CcpState {
         // and only the later rows get it, as the reference (ibx#436).
         // An underlying not known yet has its preferred definition asked
         // once the company answered (ibx#733).
+        // A future asks no company: its underlying's preferred definition,
+        // when the underlying is not known, comes straight after the
+        // question on the future's class, and the rest waits for it, as
+        // the reference (ibx#735; paper, 13/10/2026: MES contract details,
+        // 3 of 3, the class 0 to 3 ms after the future's answer, the
+        // preferred definition 4 to 15 ms after it, the trading hours 4 to
+        // 13 ms after its answer).
+        let mut futures_preferred: Vec<i64> = Vec::new();
         for def in records.iter_mut().filter(|d| d.under_con_id > 0 && d.industry.is_empty()) {
-            match self.company_by_underlying.get(&def.under_con_id) {
-                Some(company) => crate::control::contracts::apply_company(def, company),
-                None => {
-                    let under = def.under_con_id;
-                    if !self.pending_company.iter().any(|(_, u)| *u == under) {
-                        self.send_company_lookup(under, ccp_conn, hb);
-                        if !context.agg_groups.contains_key(&under) {
-                            self.preferred_after_company.insert(under);
-                        }
-                    }
+            let under = def.under_con_id;
+            if let Some(company) = self.company_by_underlying.get(&under) {
+                crate::control::contracts::apply_company(def, company);
+                continue;
+            }
+            if def.wire_sec_type == "FUT" {
+                if !context.agg_groups.contains_key(&under)
+                    && !self.pending_preferred.iter().any(|(_, u)| *u == under)
+                    && !futures_preferred.contains(&under)
+                {
+                    futures_preferred.push(under);
+                }
+                continue;
+            }
+            if !self.pending_company.iter().any(|(_, u)| *u == under) {
+                self.send_company_lookup(under, ccp_conn, hb);
+                if !context.agg_groups.contains_key(&under) {
+                    self.preferred_after_company.insert(under);
                 }
             }
+        }
+        // The classes the rows name (ibx#734), a derivative's once its
+        // underlying's company answered.
+        self.ask_class_permissions(&records, context, ccp_conn, hb);
+        for under in futures_preferred {
+            self.send_underlying_preferred(under, context, ccp_conn, hb);
         }
         let by_symbol = !single_shot && !contracts::secdef_response_is_last(msg);
         // The rest of the request (its per-exchange lookups, its trading
@@ -3873,14 +3922,72 @@ impl CcpState {
     }
 
     /// Whether a row of an answer waits for the company lookup or the
-    /// preferred definition of its underlying (ibx#733).
+    /// preferred definition of its underlying (ibx#733); a future's row for
+    /// the preferred definition alone (ibx#735).
     fn waits_for_underlying(&self, records: &[crate::control::contracts::ContractDefinition]) -> bool {
         records.iter().any(|d| {
             let under = d.under_con_id;
-            under > 0 && d.industry.is_empty()
+            under > 0 && (d.industry.is_empty() || d.wire_sec_type == "FUT")
                 && (self.pending_company.iter().any(|(_, u)| *u == under)
                     || self.pending_preferred.iter().any(|(_, u)| *u == under))
         })
+    }
+
+    /// The question on the trading permission of each class the records of
+    /// a client request's answer name, the first time the class comes in
+    /// the session, as the reference asks it (ibx#734; observed on paper,
+    /// recordings of 11-16/10/2026, 205 questions, none asked twice in a
+    /// session): at once, in the order the records name them, but for a
+    /// derivative whose underlying's company lookup is on its way, whose
+    /// class is asked once that answered (contract details, market data,
+    /// real-time bars and orders on options, a CFD's contract details: 0 to
+    /// 6 ms after the company's answer, before anything else of the
+    /// request). An index's class is never asked (7 market data requests
+    /// on SPX). Every answer seen was no permission, or none came; the
+    /// requests went on all the same; an order reads the answer later.
+    pub(crate) fn ask_class_permissions(
+        &mut self,
+        records: &[crate::control::contracts::ContractDefinition],
+        context: &mut Context,
+        ccp_conn: &mut Option<Connection>,
+        hb: &mut HeartbeatState,
+    ) {
+        let mut seen: Vec<&str> = Vec::new();
+        for def in records {
+            let key = def.permission_key.as_str();
+            if key.is_empty() || def.wire_sec_type == "IND" || seen.contains(&key) {
+                continue;
+            }
+            seen.push(key);
+            if context.trading_permissions.contains_key(key) || context.permissions_asked.contains_key(key) {
+                continue;
+            }
+            let under = def.under_con_id;
+            if under > 0 && self.company_pending(under) {
+                if !context.classes_after_company.iter().any(|(u, k)| *u == under && k == key) {
+                    context.classes_after_company.push((under, key.to_string()));
+                }
+                continue;
+            }
+            if let Some(conn) = ccp_conn.as_mut().filter(|_| !self.disconnected) {
+                super::order_builder::ask_permission(context, conn, hb, key);
+            }
+        }
+    }
+
+    /// The classes that waited for the company lookup of `under`: asked
+    /// now, in the order they came (ibx#734).
+    fn ask_classes_after_company(&mut self, under: i64, context: &mut Context, ccp_conn: &mut Option<Connection>, hb: &mut HeartbeatState) {
+        if context.classes_after_company.is_empty() {
+            return;
+        }
+        let (due, rest): (Vec<_>, Vec<_>) = std::mem::take(&mut context.classes_after_company).into_iter().partition(|(u, _)| *u == under);
+        context.classes_after_company = rest;
+        if let Some(conn) = ccp_conn.as_mut().filter(|_| !self.disconnected) {
+            for (_, key) in due {
+                super::order_builder::ask_permission(context, conn, hb, &key);
+            }
+        }
     }
 
     /// The contract details answers that no longer wait for an
@@ -4056,6 +4163,39 @@ impl CcpState {
             req_id,
             request: crate::types::ControlCommand::DisplayGroupLookup { req_id, con_id },
         });
+    }
+
+    /// Whether a lookup is one of a client request by description (not a
+    /// display group's), whose answer asks its class (ibx#734).
+    fn resolve_for_client(&self, lookup_id: &str) -> bool {
+        let Some(number) = crate::control::contracts::secdef_request_number(lookup_id) else { return false };
+        self.pending_resolves.iter().any(|p| ReqId::from(p.lookup_id) == number
+            && !matches!(p.request, crate::types::ControlCommand::DisplayGroupLookup { .. }))
+    }
+
+    /// The class of the one contract a client request's lookup by
+    /// description found (ibx#734): its record on the lookup's exchange,
+    /// the first one. None when the lookup found several contracts. An
+    /// option of a request that asks its company (`option_company`) is
+    /// asked once the company answered; another derivative (an option of a
+    /// request that asks no company, a futures option, a warrant, a CFD)
+    /// is left: not seen.
+    fn ask_found_class(
+        &mut self,
+        records: &[crate::control::contracts::ContractDefinition],
+        option_company: bool,
+        context: &mut Context,
+        ccp_conn: &mut Option<Connection>,
+        hb: &mut HeartbeatState,
+    ) {
+        let Some(first) = records.iter().find(|d| d.con_id != 0) else { return };
+        if records.iter().any(|d| d.con_id != 0 && d.con_id != first.con_id) {
+            return;
+        }
+        if first.under_con_id > 0 && first.wire_sec_type != "FUT" && !(option_company && first.wire_sec_type == "OPT") {
+            return;
+        }
+        self.ask_class_permissions(std::slice::from_ref(first), context, ccp_conn, hb);
     }
 
     /// The answer to a contract lookup of a historical-data request
@@ -4582,6 +4722,9 @@ impl CcpState {
         self.pending_company.clear();
         self.preferred_after_company.clear();
         self.pending_preferred.clear();
+        // The classes that waited for a company lookup lost with the link
+        // are asked by the next request that looks it up (ibx#734).
+        context.classes_after_company.clear();
         for (_, request) in std::mem::take(&mut context.company_parked) {
             context.def_ready.push(request);
         }
@@ -7247,22 +7390,16 @@ mod tests {
 
         ccp.process_ccp_message(&five_future_records("22", "CME/FUT"), &mut conn, &mut context, &shared, &None,
             &mut hb, "DU1");
-        // One company lookup of the underlying (ibx#436), and the rest
-        // waits for it and for the underlying's preferred definition
-        // (ibx#733).
+        // No company for futures: the class once, then the underlying's
+        // preferred definition, and the rest waits for it (ibx#735).
         let sent = ccp_messages_sent(&mut server);
-        assert_eq!(sent.len(), 1, "{sent:?}");
-        assert!(sent[0].contains("320=UnderlyingECNoDupsNDReqByConid") && sent[0].contains("6008=362687422")
-            && sent[0].contains("6004=ANYEXCH"), "{sent:?}");
+        assert_eq!(sent.len(), 2, "{sent:?}");
+        assert_eq!(sent[0], "35=U|6040=65|6410=0|6411=CME/FUT/GLOBEX");
+        assert!(sent[1].contains("320=PreferredReqByConid") && sent[1].contains("6008=362687422")
+            && sent[1].contains("6004=ANYEXCH"), "{sent:?}");
         let name = |m: &str| m.split('|').find_map(|f| f.strip_prefix("320=")).unwrap_or("").to_string();
-        let company = pipe_msg(&format!("35=d|320={}|323=4|55=NQ|167=IND|207=CME|6008=362687422|146=0|6344=1|6008=362687422",
-            name(&sent[0])));
-        ccp.process_ccp_message(&company, &mut conn, &mut context, &shared, &None, &mut hb, "DU1");
-        let sent = ccp_messages_sent(&mut server);
-        assert_eq!(sent.len(), 1, "{sent:?}");
-        assert!(sent[0].contains("320=PreferredReqByConid") && sent[0].contains("6008=362687422"), "{sent:?}");
         let preferred = pipe_msg(&format!("35=d|320={}|323=4|55=NQ|167=IND|207=CME|6008=362687422|146=0|6344=1|6008=362687422",
-            name(&sent[0])));
+            name(&sent[1])));
         ccp.process_ccp_message(&preferred, &mut conn, &mut context, &shared, &None, &mut hb, "DU1");
         let sent = ccp_messages_sent(&mut server);
         let schedules: Vec<&String> = sent.iter().filter(|m| m.contains("6040=106")).collect();
@@ -7277,6 +7414,143 @@ mod tests {
         assert_eq!(shared.reference.drain_contract_details().len(), 5);
         assert_eq!(shared.reference.drain_contract_details_end(), vec![22]);
         assert!(ccp.pending_schedule_pair.is_empty());
+    }
+
+    /// The class named by a permission question, or None for another
+    /// message (ibx#734 tests).
+    fn asked_class(m: &str) -> Option<&str> {
+        if !m.starts_with("35=U|6040=65|") {
+            return None;
+        }
+        m.split('|').find_map(|f| f.strip_prefix("6411="))
+    }
+
+    // ibx#734 (observed on paper, recordings of 11-15/10/2026: option
+    // contract details by description and by conId, the class 0 to 6 ms
+    // after the company's answer and before the preferred definition or the
+    // per-exchange lookups; each per-exchange answer's class within 2 ms;
+    // none asked twice in a session): the option's class once the company
+    // answered, then the preferred definition; each exchange's class with
+    // its answer; nothing again for a second request.
+    #[test]
+    fn option_details_ask_their_class_after_the_company_and_each_exchange_class_at_once() {
+        let (mut ccp, mut context, shared) = u186_test_state();
+        let (client, mut server) = socket_pair();
+        let mut conn = Some(Connection::new_mem(client));
+        let mut hb = HeartbeatState::new();
+        let option = |rid: &str| pipe_msg(&format!("35=d|320={rid}|323=4|55=AAPL|167=OPT|207=BEST|6008=692807782|6411=2/OPT/R|\
+            6031=32|146=0|6344=1|6008=692807782|6046=BEST,AMEX,CBOE,|6346=265598"));
+        ccp.send_secdef_request_by_symbol(71, "AAPL", "OPT", "SMART", "USD", &Default::default(), &mut conn, &mut hb);
+        let _ = ccp_messages_sent(&mut server);
+        ccp.process_ccp_message(&option("71"), &mut conn, &mut context, &shared, &None, &mut hb, "DU1");
+        let sent = ccp_messages_sent(&mut server);
+        assert_eq!(sent.len(), 1, "the company alone: {sent:?}");
+        assert!(sent_name(&sent[0]).starts_with("UnderlyingECNoDupsNDReqByConid"), "{sent:?}");
+        assert_eq!(context.classes_after_company, [(265598, "2/OPT/R".to_string())]);
+        ccp.process_ccp_message(&underlying_answer(&sent_name(&sent[0])), &mut conn, &mut context, &shared, &None, &mut hb, "DU1");
+        let sent = ccp_messages_sent(&mut server);
+        assert_eq!(sent.len(), 2, "{sent:?}");
+        assert_eq!(asked_class(&sent[0]), Some("2/OPT/R"), "the class first: {sent:?}");
+        assert!(sent_name(&sent[1]).starts_with("PreferredReqByConid"), "{sent:?}");
+        assert!(context.classes_after_company.is_empty());
+        ccp.process_ccp_message(&underlying_answer(&sent_name(&sent[1])), &mut conn, &mut context, &shared, &None, &mut hb, "DU1");
+        let lookups = ccp_messages_sent(&mut server);
+        assert_eq!(lookups.len(), 2, "{lookups:?}");
+        for (m, exch) in lookups.iter().zip(["AMEX", "CBOE"]) {
+            let answer = pipe_msg(&format!("35=d|320={}|323=4|55=AAPL|167=OPT|207={exch}|6008=692807782|6411={exch}/OPT/R|\
+                6031=100|146=0|6344=0", sent_name(m)));
+            ccp.process_ccp_message(&answer, &mut conn, &mut context, &shared, &None, &mut hb, "DU1");
+            let sent = ccp_messages_sent(&mut server);
+            assert_eq!(sent.len(), 1, "{sent:?}");
+            assert_eq!(asked_class(&sent[0]), Some(format!("{exch}/OPT/R").as_str()));
+        }
+        assert_eq!(shared.reference.drain_contract_details().len(), 1);
+        assert_eq!(shared.reference.drain_contract_details_end(), vec![71]);
+
+        // A second request of the session: no class asked again.
+        ccp.send_contract_details_by_con_id(72, 692807782, "SMART", &mut conn, &mut hb);
+        let _ = ccp_messages_sent(&mut server);
+        ccp.process_ccp_message(&option("72"), &mut conn, &mut context, &shared, &None, &mut hb, "DU1");
+        assert!(ccp_messages_sent(&mut server).iter().all(|m| asked_class(m).is_none()));
+        assert_eq!(context.permissions_asked.len(), 3);
+    }
+
+    // ibx#734 (observed on paper, 11/10/2026: MSFT bonds by description,
+    // 54 rows naming 3 classes, each asked once in the order the rows name
+    // them; 16/10/2026: BTC on PAXOS, its class 3 ms after the answer; 7
+    // market data requests on SPX: an index's class never asked): every
+    // class of the rows once, at once, an index's never.
+    #[test]
+    fn every_class_the_rows_name_is_asked_once_in_their_order_but_an_index() {
+        let (mut ccp, mut context, shared) = u186_test_state();
+        let (client, mut server) = socket_pair();
+        let mut conn = Some(Connection::new_mem(client));
+        let mut hb = HeartbeatState::new();
+        let row = |con_id: u32, key: &str| format!("55=MSFT|167=BOND|207=BEST|6008={con_id}|6411={key}|15=USD|");
+        let answer = |rid: &str| pipe_msg(&format!("35=d|320={rid}|323=4|{}{}{}{}146=0",
+            row(60611156, "7/BOND/USA_DEBT"), row(127248523, "7/BOND/EU_DEBT"), row(139592938, "7/BOND/USA_DEBT"),
+            row(421799264, "CORPACT/BOND/USA_DEBT")));
+        ccp.send_secdef_request_by_symbol(81, "MSFT", "BOND", "", "USD", &Default::default(), &mut conn, &mut hb);
+        let _ = ccp_messages_sent(&mut server);
+        ccp.process_ccp_message(&answer("81"), &mut conn, &mut context, &shared, &None, &mut hb, "DU1");
+        let classes: Vec<String> = ccp_messages_sent(&mut server).iter().filter_map(|m| asked_class(m).map(String::from)).collect();
+        assert_eq!(classes, ["7/BOND/USA_DEBT", "7/BOND/EU_DEBT", "CORPACT/BOND/USA_DEBT"]);
+        ccp.send_secdef_request_by_symbol(82, "MSFT", "BOND", "", "USD", &Default::default(), &mut conn, &mut hb);
+        let _ = ccp_messages_sent(&mut server);
+        ccp.process_ccp_message(&answer("82"), &mut conn, &mut context, &shared, &None, &mut hb, "DU1");
+        assert!(ccp_messages_sent(&mut server).iter().all(|m| asked_class(m).is_none()), "asked once in the session");
+
+        ccp.send_secdef_request_by_symbol(83, "SPX", "IND", "CBOE", "USD", &Default::default(), &mut conn, &mut hb);
+        let _ = ccp_messages_sent(&mut server);
+        let index = pipe_msg("35=d|320=83|323=4|55=SPX|167=IND|207=CBOE|6008=416904|6411=CBOE/IND/NONE|15=USD|146=0");
+        ccp.process_ccp_message(&index, &mut conn, &mut context, &shared, &None, &mut hb, "DU1");
+        assert!(ccp_messages_sent(&mut server).iter().all(|m| asked_class(m).is_none()), "an index's class is not asked");
+    }
+
+    // ibx#735 (observed on paper, 13/10/2026: MES contract details, 3 of 3,
+    // the class 0 to 3 ms after the future's answer and no company): a
+    // future whose underlying is known asks its class, then its trading
+    // hours; no company, no preferred definition.
+    #[test]
+    fn a_future_with_a_known_underlying_asks_its_class_then_its_hours() {
+        let (mut ccp, mut context, shared) = u186_test_state();
+        let (client, mut server) = socket_pair();
+        let mut conn = Some(Connection::new_mem(client));
+        let mut hb = HeartbeatState::new();
+        context.agg_groups.insert(362687422, -1);
+        ccp.send_secdef_request_by_symbol(23, "MNQ", "FUT", "CME", "USD", &Default::default(), &mut conn, &mut hb);
+        let _ = ccp_messages_sent(&mut server);
+        ccp.process_ccp_message(&five_future_records("23", "CME/FUT"), &mut conn, &mut context, &shared, &None,
+            &mut hb, "DU1");
+        let sent = ccp_messages_sent(&mut server);
+        assert_eq!(sent.len(), 2, "{sent:?}");
+        assert_eq!(asked_class(&sent[0]), Some("CME/FUT/GLOBEX"));
+        assert!(sent[1].contains("6040=106") && sent[1].contains("6256=CME/FUT"), "{sent:?}");
+        assert!(ccp.pending_company.is_empty() && ccp.pending_preferred.is_empty() && ccp.held_details.is_empty());
+    }
+
+    // ibx#734 (the reference 10.51, paper, 13/10/2026: after contract
+    // details asked the classes of an AAPL CFD and of MES, three CFD orders
+    // and an MES order asked nothing and were refused for the answer): the
+    // answer is kept for the orders; an order's question on that class is
+    // not sent again.
+    #[test]
+    fn a_class_asked_for_contract_details_is_not_asked_again_by_an_order() {
+        let (mut ccp, mut context, shared) = u186_test_state();
+        let (client, mut server) = socket_pair();
+        let mut conn = Some(Connection::new_mem(client));
+        let mut hb = HeartbeatState::new();
+        context.agg_groups.insert(362687422, -1);
+        ccp.send_secdef_request_by_symbol(24, "MNQ", "FUT", "CME", "USD", &Default::default(), &mut conn, &mut hb);
+        ccp.process_ccp_message(&five_future_records("24", "CME/FUT"), &mut conn, &mut context, &shared, &None,
+            &mut hb, "DU1");
+        let _ = ccp_messages_sent(&mut server);
+        let answer = pipe_msg("35=U|43=N|6040=66|6410=0|6411=CME/FUT/GLOBEX|6412=1|6413=DU1|6414=0");
+        ccp.process_ccp_message(&answer, &mut conn, &mut context, &shared, &None, &mut hb, "DU1");
+        assert_eq!(context.trading_permissions.get("CME/FUT/GLOBEX"), Some(&false));
+        assert!(context.permissions_asked.is_empty());
+        super::super::order_builder::ask_permission(&mut context, conn.as_mut().unwrap(), &mut hb, "CME/FUT/GLOBEX");
+        assert!(ccp_messages_sent(&mut server).is_empty(), "not asked again");
     }
 
     fn stock_reply(req_id: &str) -> Vec<u8> {
@@ -9236,6 +9510,54 @@ mod reconnect_tests {
                     assert_eq!(symbol, "AAPL"),
                 other => panic!("{:?}", other),
             }
+        }
+
+        // ibx#734 (observed on paper, 15/10/2026: historical requests by
+        // description on VOD, 7203 and BHP, the class 1 to 3 ms after the
+        // lookup's answer; nothing for a US stock, whose answer names no
+        // class): the class of the one contract found, at once; none for a
+        // display group's lookup nor for several contracts.
+        #[test]
+        fn a_contract_found_for_a_client_request_asks_its_class() {
+            let (mut ccp, mut context, shared) = (CcpState::new(), Context::new(), SharedState::new());
+            let (client, mut server) = crate::protocol::connection::mem_pair();
+            let mut conn = Some(Connection::new_mem(client));
+            let mut hb = HeartbeatState::new();
+            // The messages written, without framing, sequence and time.
+            let ccp_messages_sent = |server: &mut crate::protocol::connection::MemTransport| -> Vec<String> {
+                use std::io::Read;
+                server.set_read_timeout(Some(std::time::Duration::from_millis(200))).unwrap();
+                let mut buf = Vec::new();
+                let mut chunk = [0u8; 8192];
+                while let Ok(n) = server.read(&mut chunk) {
+                    if n == 0 { break; }
+                    buf.extend_from_slice(&chunk[..n]);
+                }
+                String::from_utf8_lossy(&buf).split("8=FIX.4.1").filter(|m| !m.is_empty())
+                    .map(|m| m.split('').filter(|f| !f.is_empty())
+                        .filter(|f| !["9=", "34=", "52=", "10="].iter().any(|p| f.starts_with(p)))
+                        .collect::<Vec<_>>().join("|"))
+                    .collect()
+            };
+            ccp.start_contract_resolve(5, lookup(), bars(5), &mut conn, &mut hb);
+            ccp.start_display_group_lookup(6, 140148322, &mut conn, &mut hb);
+            ccp.start_contract_resolve(7, lookup(), bars(7), &mut conn, &mut hb);
+            let _ = ccp_messages_sent(&mut server);
+            let vod = |n: u32| pipe_msg(&format!("35=d|43=N|320=FixSecDefReqBySymbol{n}|322=*|323=4|55=VOD|167=STK|207=BEST|\
+                6008=140148322|6411=3/STK/NONE|15=GBP|55=VOD|167=STK|207=LSE|6008=140148322|6411=LSE/STK/NONE|15=GBP"));
+            // The display group's lookup first: no class.
+            ccp.process_ccp_message(&vod(3489660929), &mut conn, &mut context, &shared, &None, &mut hb, "DU1");
+            assert!(ccp_messages_sent(&mut server).is_empty());
+            // Several contracts: error 200, no class.
+            let several = pipe_msg("35=d|43=N|320=FixSecDefReqBySymbol3489660930|322=*|323=4|55=VOD|167=STK|207=BEST|\
+                6008=140148322|6411=3/STK/NONE|15=GBP|55=VOD|167=STK|207=BEST|6008=1|6411=X/STK/NONE|15=USD");
+            ccp.process_ccp_message(&several, &mut conn, &mut context, &shared, &None, &mut hb, "DU1");
+            assert!(ccp_messages_sent(&mut server).is_empty());
+            // One contract: the class of its record on the lookup's exchange.
+            ccp.process_ccp_message(&vod(3489660928), &mut conn, &mut context, &shared, &None, &mut hb, "DU1");
+            let sent = ccp_messages_sent(&mut server);
+            assert_eq!(sent, ["35=U|6040=65|6410=0|6411=3/STK/NONE"]);
+            assert_eq!(ccp.resolved_requests.len(), 1);
         }
 
         // ibx#424: the conId of a display group update that is not a
