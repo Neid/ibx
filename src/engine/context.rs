@@ -367,6 +367,10 @@ pub struct Context {
     /// Contracts whose trading hours were asked for an order and have not
     /// come: an order with a zone to check waits for them (ibx#668).
     pub(crate) zone_pending: std::collections::HashSet<i64>,
+    /// The trading hours an order's contract answer calls for, not sent
+    /// yet (ibx#728): conId, schedule key and request name. The order sends
+    /// them at its turn, after its permission question when it has one.
+    pub(crate) order_hours_due: Vec<(i64, String, String)>,
     /// Depth requests refused with 10092: their cancel answers nothing
     /// (ibx#678).
     pub(crate) depth_unsupported: std::collections::HashSet<ReqId>,
@@ -503,6 +507,7 @@ impl Context {
             cash_orders: HashMap::new(),
             next_permission_request: 0,
             zone_pending: std::collections::HashSet::new(),
+            order_hours_due: Vec::new(),
             depth_unsupported: std::collections::HashSet::new(),
             def_parked: Vec::new(),
             def_ready: Vec::new(),

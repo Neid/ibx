@@ -84,6 +84,28 @@ impl Peer {
         }
     }
 
+    /// As [`Self::messages_until`], the server answering meanwhile the
+    /// order preset requests, with no time in force: the session's first
+    /// stock order waits for that answer (ibx#728).
+    pub fn messages_until_serving_presets(&mut self, timeout: Duration, done: impl Fn(&[Vec<u8>]) -> bool) -> Vec<Vec<u8>> {
+        let deadline = Instant::now() + timeout;
+        let mut out = Vec::new();
+        loop {
+            for m in self.messages() {
+                let fields = super::parse_fields(&m);
+                let field = |t: u32| fields.iter().find(|(k, _)| *k == t).map(|(_, v)| v.as_str());
+                if field(35) == Some("U") && field(6040) == Some("193") && let Some(kind) = field(8168) {
+                    let kind = kind.to_string();
+                    self.send_fix(&[(35, "U"), (6040, "194"), (8166, "G"), (8168, &kind)]);
+                }
+                out.push(m);
+            }
+            if done(&out) || Instant::now() >= deadline {
+                return out;
+            }
+        }
+    }
+
     fn unsign(&mut self, raw: &[u8]) -> Vec<u8> {
         let (plain, valid) = self.conn.unsign(raw);
         assert!(valid, "bad signature on {}", crate::protocol::fix::fmt_pipe(raw));

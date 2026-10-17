@@ -32,6 +32,9 @@ fn assert_refused_text(engine: &mut Engine, id: i64, rule: &str, seen: Option<&s
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     let mut errors = Vec::new();
     while !errors.iter().any(|e: &(i64, i64, String)| e.0 == id) && std::time::Instant::now() < deadline {
+        // The server answers what the engine asks meanwhile (the stock order
+        // preset, ibx#728).
+        engine.serve();
         errors.extend(engine.errors());
         std::thread::sleep(std::time::Duration::from_millis(2));
     }
@@ -320,6 +323,9 @@ fn cancel_of_an_unknown_order() {
 fn cancel_of_an_order_with_a_cancel_pending() {
     let mut engine = Engine::start();
     engine.client.place_order(REFUSED, &aapl(), &order("LMT")).unwrap();
+    // Sent first: the session's first stock order waits for the order
+    // preset (ibx#728), and a cancel before it leaves sends nothing.
+    assert_eq!(engine.orders(1).len(), 1, "the order is sent");
     engine.client.cancel_order(REFUSED, "").unwrap();
     let frames = engine.orders(2);
     assert_eq!(frames.iter().filter(|f| field(f, 35) == Some("F")).count(), 1, "the first cancel is sent");

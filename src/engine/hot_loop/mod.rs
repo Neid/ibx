@@ -283,6 +283,13 @@ impl HotLoop {
         self.context.order_records_any.insert(con_id);
     }
 
+    /// The order preset of a security type the session had before, with no
+    /// time in force (ibx#728): a replay of a recording that starts after
+    /// the reference asked it.
+    pub fn mark_order_preset_known(&mut self, sec_type: &str) {
+        self.context.order_presets.entry(sec_type.to_string()).or_insert(None);
+    }
+
     /// The logon's price management feature and exclusion list (ibx#492).
     pub fn set_price_mgmt(&mut self, on: bool, exclusions: Option<&str>) {
         self.context.price_mgmt_feature = on;

@@ -45,6 +45,9 @@ pub(crate) fn drain_and_send_orders(
     if together && let Some(conn) = ccp_conn.as_mut() && let Err(e) = conn.release() {
         log::warn!("Orders of one pass not written: {}", e);
     }
+    if let Some(conn) = ccp_conn.as_mut() {
+        flush_order_hours(context, conn, hb);
+    }
 }
 
 /// The orders of one pass, each checked and written in its turn.
@@ -136,18 +139,15 @@ fn send_orders(
             context.rth_parked.push(rewrap(order_req));
             continue;
         }
-        // An order whose contract's record on its exchange (the primary
-        // exchange for SMART) the session does not have waits for it, and
-        // the orders of that contract placed meanwhile with it (ibx#706).
+        // A stock order, once its contract is known: its trading hours, the
+        // order preset of stocks and its records, in the reference's order;
+        // it waits for their answers, and the orders of that contract placed
+        // meanwhile with it (ibx#706, ibx#728).
         if order_req.new_order_qty().is_some() && order_req.combo().is_none()
             && let Some(instrument) = order_req.instrument()
             && let Some(con_id) = context.market.con_id(instrument).filter(|c| *c > 0)
-            && !context.order_records_cleared.remove(&oid)
-            && let Some(exchange) = missing_order_record(context, shared, instrument, con_id)
+            && !stock_order_lookups(context, conn, hb, shared, oid, instrument, con_id)
         {
-            if !context.order_record_lookups.iter().any(|(_, c, x)| *c == con_id && *x == exchange) {
-                ask_order_record(context, conn, hb, con_id, &exchange);
-            }
             context.rth_parked.push(rewrap(order_req));
             continue;
         }
@@ -185,6 +185,7 @@ fn send_orders(
             // answer to the trading hours ibx asks.
             match shared.reference.time_zone_id(con_id) {
                 None if context.zone_pending.contains(&con_id) && !shared.reference.form_10_40() => {
+                    send_order_hours(context, conn, hb, con_id);
                     context.rth_parked.push(rewrap(order_req));
                     continue;
                 }
@@ -536,6 +537,12 @@ fn send_orders(
             for id in order_req.new_order_ids() {
                 context.assign_server_id(id);
             }
+        }
+        // The trading hours still due for the order's contract leave before
+        // it (ibx#728; a future and a CFD order, paper 13/10/2026: the hours
+        // 3 to 4 ms before the order message).
+        if let Some(con_id) = order_req.instrument().and_then(|i| context.market.con_id(i)).filter(|c| *c > 0) {
+            send_order_hours(context, conn, hb, con_id);
         }
         let result = match order_req {
             OrderRequest::SubmitLimit { order_id, instrument, side, qty, price } => {
@@ -3317,6 +3324,24 @@ fn permission_refusal(
     if key.is_empty() {
         return if own_message { unwritten(shared) } else { None };
     }
+    // The question on the permission, then the trading hours due for the
+    // contract (ibx#728): the reference 10.51 asks them in that order
+    // (paper, 13-16/10/2026: fourteen first orders of eight types, the
+    // hours 1 to 17 ms after the question).
+    if !context.trading_permissions.contains_key(&key) && !context.permissions_asked.contains_key(&key) {
+        let seq = context.next_permission_request.to_string();
+        context.next_permission_request += 1;
+        let now = chrono_free_timestamp();
+        match conn.send_fix(&[(35, "U"), (52, &now), (6040, "65"), (6410, &seq), (6411, &key)]) {
+            Ok(()) => hb.last_ccp_sent = Instant::now(),
+            Err(e) => log::error!("Trading permission request not sent: {}", e),
+        }
+        log::info!("Trading permission of {} asked ({})", key, seq);
+        context.permissions_asked.insert(key.clone(), Instant::now() + RTH_LOOKUP_TIMEOUT);
+    }
+    if let Some(con_id) = context.market.con_id(instrument).filter(|c| *c > 0) {
+        send_order_hours(context, conn, hb, con_id);
+    }
     match context.trading_permissions.get(&key) {
         // A bond or a crypto order with the permission: its message is not
         // written yet.
@@ -3352,20 +3377,9 @@ fn permission_refusal(
             context.unsent.insert(oid, (instrument, qty, attrs.map_or(0, |a| a.parent_id)));
             Some(true)
         }
-        None => {
-            if !context.permissions_asked.contains_key(&key) {
-                let seq = context.next_permission_request.to_string();
-                context.next_permission_request += 1;
-                let now = chrono_free_timestamp();
-                match conn.send_fix(&[(35, "U"), (52, &now), (6040, "65"), (6410, &seq), (6411, &key)]) {
-                    Ok(()) => hb.last_ccp_sent = Instant::now(),
-                    Err(e) => log::error!("Trading permission request not sent: {}", e),
-                }
-                log::info!("Trading permission of {} asked ({})", key, seq);
-                context.permissions_asked.insert(key, Instant::now() + RTH_LOOKUP_TIMEOUT);
-            }
-            waits.then_some(false)
-        }
+        // Asked above: the order waits for the answer, or goes with the
+        // question on its way.
+        None => waits.then_some(false),
     }
 }
 
@@ -3723,9 +3737,10 @@ enum HeldLookup {
 /// the reference 10.51, paper, 16/10/2026, pre-market and regular hours,
 /// the first held AAPL order of the session, three runs): its contract by
 /// symbol; once answered, the trading hours and the order preset of its
-/// type when the session has none; once both answered, its record on the
-/// primary exchange (the lookup of ibx#706); the order is known once that
-/// answered, about 0.57 s after the placeOrder. A later held order of a
+/// type when the session has none; once the preset answered (the hours'
+/// answer is not waited for, ibx#728), its record on the primary exchange
+/// (the lookup of ibx#706); the order is known once that answered, about
+/// 0.57 s after the placeOrder. A later held order of a
 /// contract whose records the session has asks only its contract (eleven
 /// runs). Until then a hedge order under it is refused (see the client's
 /// hedge reading). A held order the client did not note as unknown (placed
@@ -3776,18 +3791,19 @@ fn held_lookup_step(
         Some(c) if c > 0 => c,
         _ => return HeldLookup::Known,
     };
+    // The trading hours its contract's answer called for (ibx#728).
+    send_order_hours(context, conn, hb, con_id);
     if context.order_record_lookups.iter().any(|(_, c, _)| *c == con_id) {
         return HeldLookup::Wait;
     }
     if asked {
         return HeldLookup::Known;
     }
-    let Some(exchange) = missing_order_record(context, shared, slot, con_id) else { return HeldLookup::Known };
-    // The trading hours and the preset first, as the reference: its
-    // record lookup left 27 to 41 ms after the preset's answer.
-    if context.zone_pending.contains(&con_id) && !shared.reference.form_10_40() {
-        return HeldLookup::Wait;
-    }
+    let Some((exchange, _)) = missing_order_record(context, shared, slot, con_id) else { return HeldLookup::Known };
+    // The preset first, as the reference: its record lookup left 27 to 41
+    // ms after the preset's answer. The trading hours are not waited for:
+    // with the preset known, the reference asks the record with them
+    // (ibx#728).
     if !ask_order_preset(context, conn, hb, "STK") {
         return HeldLookup::Wait;
     }
@@ -3810,8 +3826,9 @@ pub(crate) const ORDER_LOOKUP_IDS: u32 = 0x1000_0000;
 /// ARCA, the primary NASDAQ asked; to NYSE next, nothing; to ISLAND, the
 /// symbol lookup named NASDAQ, ISLAND asked, its answer naming NASDAQ; to
 /// NASDAQ, nothing; 38 recordings of SMART orders: the primary asked once).
-/// None when it has them, or when the primary exchange is not known.
-fn missing_order_record(context: &Context, shared: &SharedState, instrument: crate::types::InstrumentId, con_id: i64) -> Option<String> {
+/// None when it has them, or when the primary exchange is not known; with
+/// whether the exchange is the primary one.
+fn missing_order_record(context: &Context, shared: &SharedState, instrument: crate::types::InstrumentId, con_id: i64) -> Option<(String, bool)> {
     if context.order_records_any.contains(&con_id) {
         return None;
     }
@@ -3823,11 +3840,112 @@ fn missing_order_record(context: &Context, shared: &SharedState, instrument: cra
         return None;
     }
     let missing = |exchange: &str| !context.order_records.contains(&(con_id, exchange.to_string()));
+    let primary = shared.reference.get_contract(con_id).map(|c| c.primary_exchange).filter(|e| !e.is_empty());
     if !destination.is_empty() && destination != "BEST" && missing(&destination) {
-        return Some(destination);
+        let is_primary = primary.as_deref() == Some(destination.as_str());
+        return Some((destination, is_primary));
     }
-    let primary = shared.reference.get_contract(con_id).map(|c| c.primary_exchange).filter(|e| !e.is_empty())?;
-    missing(&primary).then_some(primary)
+    let primary = primary?;
+    missing(&primary).then_some((primary, true))
+}
+
+/// The lookups of a stock order once its contract is known, as the
+/// reference 10.51 makes them (ibx#728; paper, 12-16/10/2026, the first
+/// stock order of the session on a contract new to it: 15 orders sent and
+/// 6 held with transmit off, a DAY order included):
+/// - the trading hours its contract's answer called for, 3 to 17 ms after
+///   that answer;
+/// - the record of the order's own exchange when the symbol lookup named
+///   another one (ISLAND, named NASDAQ: the record asked with the hours, the
+///   preset after its answer; one order, 13/10/2026);
+/// - the order preset of stocks, at the first stock order of the session
+///   whatever its time in force, 1 to 5 ms after the hours (two slow runs
+///   aside); the order waits for its answer, not for the hours' (the record
+///   left 248 ms or more after the hours in every run, 30 to 60 ms after
+///   the preset's answer);
+/// - the record of the primary exchange (ibx#706), then the order message
+///   after its answer (64 to 153 ms after it in the 15 runs).
+/// With the preset known (the next stock contract of the session), the
+/// hours and the record leave together and the order 4 to 11 ms after the
+/// record's answer (five orders, 13-15/10/2026). Without a record to ask,
+/// the order goes after the preset's answer (three orders, 13/10/2026). Other types and a contract
+/// given by its conId alone (until its definition named it): nothing here.
+/// False while the order waits for an answer.
+fn stock_order_lookups(
+    context: &mut Context, conn: &mut Connection, hb: &mut HeartbeatState, shared: &Arc<SharedState>,
+    order_id: OrderId, instrument: crate::types::InstrumentId, con_id: i64,
+) -> bool {
+    let sec_type = context.market.order_routing(instrument).0;
+    if !matches!(sec_type.as_str(), "STK" | "CS") || context.market.blank_symbol(instrument) {
+        return true;
+    }
+    send_order_hours(context, conn, hb, con_id);
+    // The order's record lookup answered: it goes on, after the preset.
+    let missing = if context.order_records_cleared.contains(&order_id) {
+        None
+    } else {
+        missing_order_record(context, shared, instrument, con_id)
+    };
+    if let Some((exchange, false)) = &missing {
+        ask_order_record_once(context, conn, hb, con_id, exchange);
+        return false;
+    }
+    if !ask_order_preset(context, conn, hb, "STK") {
+        return false;
+    }
+    if let Some((exchange, true)) = &missing {
+        ask_order_record_once(context, conn, hb, con_id, exchange);
+        return false;
+    }
+    context.order_records_cleared.remove(&order_id);
+    true
+}
+
+/// A contract's record on an exchange for its orders, unless already on its
+/// way (ibx#706).
+fn ask_order_record_once(context: &mut Context, conn: &mut Connection, hb: &mut HeartbeatState, con_id: i64, exchange: &str) {
+    if !context.order_record_lookups.iter().any(|(_, c, x)| *c == con_id && x == exchange) {
+        ask_order_record(context, conn, hb, con_id, exchange);
+    }
+}
+
+/// The trading hours due for an order's contract (ibx#728), written now,
+/// under the name taken when they were found missing.
+fn send_order_hours(context: &mut Context, conn: &mut Connection, hb: &mut HeartbeatState, con_id: i64) {
+    if !context.order_hours_due.iter().any(|(c, ..)| *c == con_id) {
+        return;
+    }
+    let (due, rest): (Vec<_>, Vec<_>) = std::mem::take(&mut context.order_hours_due).into_iter().partition(|(c, ..)| *c == con_id);
+    context.order_hours_due = rest;
+    for (_, key, name) in due {
+        let ts = chrono_free_timestamp();
+        let _ = conn.send_fix(&[
+            (fix::TAG_MSG_TYPE, "U"), (fix::TAG_SENDING_TIME, &ts),
+            (crate::control::contracts::TAG_SUB_PROTOCOL, crate::control::contracts::SUB_PROTOCOL_SCHEDULE_SUBSCRIBE),
+            (320, &name), (crate::control::contracts::TAG_SCHEDULE_JOIN_KEY, &key),
+        ]);
+        hb.last_ccp_sent = Instant::now();
+        log::info!("Trading hours of con_id {} asked for its orders ({}, {})", con_id, key, name);
+    }
+}
+
+/// The trading hours due for contracts no order waits on any more (an order
+/// refused or cancelled on the way, a definition asked for a check): written
+/// at the end of the pass, so they are never left unasked.
+fn flush_order_hours(context: &mut Context, conn: &mut Connection, hb: &mut HeartbeatState) {
+    if context.order_hours_due.is_empty() {
+        return;
+    }
+    let due: Vec<i64> = context.order_hours_due.iter().map(|(c, ..)| *c).collect();
+    for con_id in due {
+        let of_contract = |r: &OrderRequest| r.new_order_qty().is_some()
+            && r.instrument().and_then(|i| context.market.con_id(i)) == Some(con_id);
+        let waiting = context.rth_parked.iter().any(of_contract)
+            || context.held_lookups.iter().any(|(id, _)| context.unsent.get(id).and_then(|h| context.market.con_id(h.0)) == Some(con_id));
+        if !waiting {
+            send_order_hours(context, conn, hb, con_id);
+        }
+    }
 }
 
 /// Ask a contract's record on an exchange for an order (ibx#706).
@@ -5085,6 +5203,15 @@ fn condition_tags(conditions: &[OrderCondition]) -> Vec<(u32, String)> {
 mod tests {
     use super::*;
 
+    /// A session that has the stock order preset, with no time in force:
+    /// the lookups of the session's first stock order have their own tests
+    /// (ibx#728).
+    fn order_context() -> Context {
+        let mut context = Context::new();
+        context.order_presets.insert("STK".to_string(), None);
+        context
+    }
+
     /// The first server id the order id generator gives in these tests.
     const FIRST: OrderId = 1_000_000_001;
     use crate::types::Order;
@@ -5101,7 +5228,7 @@ mod tests {
     // server's next report, as the reference.
     #[test]
     fn synthesize_pending_cancel_sets_the_status_without_a_callback() {
-        let mut context = Context::new();
+        let mut context = order_context();
         let shared = Arc::new(SharedState::new());
         context.insert_order(order(7, 3, OrderStatus::PartiallyFilled));
 
@@ -5119,7 +5246,7 @@ mod tests {
 
     /// Same as `wire_tags`, with a hook to set up the engine state first.
     fn wire_tags_with(setup: impl FnOnce(&mut Context), req: OrderRequest) -> Vec<(u32, String)> {
-        let mut context = Context::new();
+        let mut context = order_context();
         context.order_ids.start_at(FIRST as i32);
         context.market.register(265598);
         // A definition that keeps outside RTH for every type, so these
@@ -5144,7 +5271,7 @@ mod tests {
     // contract's; nothing sent.
     #[test]
     fn a_zone_check_waits_for_the_trading_hours() {
-        let mut context = Context::new();
+        let mut context = order_context();
         context.order_ids.start_at(FIRST as i32);
         let instrument = context.market.register(265598);
         context.rth_types.insert((265598, "BEST".to_string()), crate::engine::outside_rth::RthTypes {
@@ -5207,7 +5334,7 @@ mod tests {
     // order with warnings only goes out after them.
     #[test]
     fn checks_after_the_lookup_are_given_once_the_contract_is_known() {
-        let mut context = Context::new();
+        let mut context = order_context();
         context.order_ids.start_at(FIRST as i32);
         let instrument = context.market.register(265598);
         context.rth_types.insert((265598, "BEST".to_string()), crate::engine::outside_rth::RthTypes {
@@ -5288,7 +5415,7 @@ mod tests {
         let (client, mut server) = crate::protocol::connection::mem_pair();
         server.set_read_timeout(Some(std::time::Duration::from_secs(2))).unwrap();
 
-        let mut context = Context::new();
+        let mut context = order_context();
         context.order_ids.start_at(FIRST as i32);
         context.market.register(265598);
         context.pending_orders.push(req);
@@ -5365,7 +5492,7 @@ mod tests {
         use std::io::Read;
         let (client, mut server) = crate::protocol::connection::mem_pair();
         server.set_read_timeout(Some(std::time::Duration::from_millis(500))).unwrap();
-        let mut context = Context::new();
+        let mut context = order_context();
         context.order_ids.start_at(FIRST as i32);
         let inst = context.market.register(265598);
         context.set_symbol(inst, "AAPL".to_string());
@@ -5591,7 +5718,7 @@ mod tests {
     #[test]
     fn a_directed_stock_order_is_discarded_unless_bypassed() {
         let run = |exchange: &str, smart: bool, bypass: bool| {
-            let mut context = Context::new();
+            let mut context = order_context();
             context.bypass_redirect_warning = bypass;
             context.algo_providers = vec!["FOXRIVER".into()];
             let id = context.market.register(265598);
@@ -5643,7 +5770,7 @@ mod tests {
     // order goes out with no second definition asked.
     #[test]
     fn the_lookup_reply_gives_the_order_rules() {
-        let mut context = Context::new();
+        let mut context = order_context();
         let slot = context.market.try_register_unresolved().unwrap();
         context.market.set_symbol(slot, "AAPL".into());
         context.market.set_routing(slot, "STK", "SMART");
@@ -5665,7 +5792,7 @@ mod tests {
     // looked up on SMART, as the reference (pre-market 13/10/2026).
     #[test]
     fn an_order_for_the_ats_venue_is_looked_up_on_smart() {
-        let mut context = Context::new();
+        let mut context = order_context();
         let slot = context.market.try_register_unresolved().unwrap();
         context.market.set_symbol(slot, "AAPL".into());
         context.market.set_routing(slot, "STK", "IBKRATS");
@@ -5692,7 +5819,7 @@ mod tests {
 
     #[test]
     fn a_new_order_without_a_contract_id_waits_for_its_lookup() {
-        let mut context = Context::new();
+        let mut context = order_context();
         let known = context.market.register(265598);
         let slot = context.market.try_register_unresolved().unwrap();
         context.market.set_symbol(slot, "AAPL".into());
@@ -5734,7 +5861,7 @@ mod tests {
     // order is not kept.
     #[test]
     fn an_order_lookup_carries_the_primary_exchange_and_its_refusal_drops_the_order() {
-        let mut context = Context::new();
+        let mut context = order_context();
         let slot = context.market.try_register_unresolved().unwrap();
         context.market.set_symbol(slot, "AAPL".into());
         context.market.set_routing(slot, "STK", "ARCA");
@@ -6004,7 +6131,7 @@ mod tests {
         let (client, mut server) = crate::protocol::connection::mem_pair();
         let mut conn = Some(Connection::new_mem(client));
         let shared = Arc::new(SharedState::new());
-        let mut context = Context::new();
+        let mut context = order_context();
         context.order_ids.start_at(FIRST as i32);
         context.market.register(265598);
         let working = Order::new(105, 0, Side::Buy, 1, 100 * P, b'2', b'0', 0);
@@ -6129,7 +6256,7 @@ mod tests {
 
     #[test]
     fn synthesize_pending_cancel_skips_terminal_and_unknown_orders() {
-        let mut context = Context::new();
+        let mut context = order_context();
         let shared = Arc::new(SharedState::new());
         // Late cancel racing a fill: the order is done, no phase to report.
         context.insert_order(order(8, 10, OrderStatus::Filled));
@@ -6148,7 +6275,7 @@ mod tests {
         let (client, mut server) = crate::protocol::connection::mem_pair();
         server.set_read_timeout(Some(std::time::Duration::from_millis(200))).unwrap();
 
-        let mut context = Context::new();
+        let mut context = order_context();
         context.market.register(265598);
         if let Some(o) = existing {
             context.insert_order(o);
@@ -6201,7 +6328,7 @@ mod tests {
         let (client, mut server) = crate::protocol::connection::mem_pair();
         server.set_read_timeout(Some(std::time::Duration::from_millis(200))).unwrap();
 
-        let mut context = Context::new();
+        let mut context = order_context();
         context.market.register(265598);
         setup(&mut context);
         context.pending_orders.push(OrderRequest::Cancel { order_id: 5 });
@@ -6348,7 +6475,7 @@ mod tests {
     /// updates raised.
     #[allow(clippy::type_complexity)]
     fn global_cancel_of(setup: impl FnOnce(&mut Context)) -> (Vec<Vec<(u32, String)>>, Vec<(i64, i64, String)>, Vec<OrderUpdate>) {
-        let mut context = Context::new();
+        let mut context = order_context();
         context.order_ids.start_at(FIRST as i32);
         context.market.register(265598);
         context.api_client_id = 7;
@@ -6488,7 +6615,7 @@ mod tests {
     // end it as ApiCancelled too (i105_combo_directed, 26/09/2026).
     #[test]
     fn cancel_of_an_order_that_never_left_is_api_cancelled() {
-        let mut context = Context::new();
+        let mut context = order_context();
         context.market.register(265598);
         context.rth_parked.push(OrderRequest::SubmitLimit { order_id: 9, instrument: 0, side: Side::Buy, qty: 2, price: 100 });
         context.rth_parked.push(OrderRequest::Modify {
@@ -6562,7 +6689,7 @@ mod tests {
     /// The 161 notices of one global cancel after `setup`, and the
     /// context after it.
     fn global_cancel_notices(setup: impl FnOnce(&mut Context)) -> (Vec<(i64, i64)>, Context) {
-        let mut context = Context::new();
+        let mut context = order_context();
         context.order_ids.start_at(FIRST as i32);
         context.market.register(265598);
         context.api_client_id = 7;
@@ -6631,7 +6758,7 @@ mod tests {
         }
         let ended = |ids: &[i64]| -> Vec<(i64, i64)> { ids.iter().flat_map(|&i| [(i, 202), (i, 161)]).collect() };
         let again = |ids: &[i64]| -> Vec<(i64, i64)> { ids.iter().map(|&i| (i, 161)).collect() };
-        let mut context = Context::new();
+        let mut context = order_context();
         context.order_ids.start_at(FIRST as i32);
         context.api_client_id = 7;
 
@@ -6990,7 +7117,7 @@ mod tests {
         let (client, mut server) = crate::protocol::connection::mem_pair();
         let mut conn = Some(Connection::new_mem(client));
         let shared = Arc::new(SharedState::new());
-        let mut context = Context::new();
+        let mut context = order_context();
         context.market.register(265598);
         context.set_symbol(0, "AAPL".to_string());
         let rth = crate::types::OrderAttrs { outside_rth: true, ..Default::default() };
@@ -7044,7 +7171,7 @@ mod tests {
         let (client, mut server) = crate::protocol::connection::mem_pair();
         let mut conn = Some(Connection::new_mem(client));
         let shared = Arc::new(SharedState::new());
-        let mut context = Context::new();
+        let mut context = order_context();
         context.market.register(265598);
         context.set_symbol(0, "AAPL".to_string());
         context.pending_orders.push(OrderRequest::SubmitLimitEx {
@@ -7079,7 +7206,7 @@ mod tests {
         let (client, mut server) = crate::protocol::connection::mem_pair();
         let mut conn = Some(Connection::new_mem(client));
         let shared = Arc::new(SharedState::new());
-        let mut context = Context::new();
+        let mut context = order_context();
         context.market.register(265598);
         context.set_symbol(0, "AAPL".to_string());
         context.market.set_routing(0, "STK", "SMART");
@@ -7109,7 +7236,7 @@ mod tests {
             hedge: Some(crate::types::Hedge { kind: 4, beta: Some(1.0), max_size_missing: true, ..Default::default() }),
             ..Default::default()
         };
-        let mut context = Context::new();
+        let mut context = order_context();
         context.market.register(265598);
         context.pending_orders.push(OrderRequest::SubmitEx { order_id: 57732, instrument: 0, side: Side::Sell, qty: 1,
             kind: crate::types::OrderKind::Market, tif: b'0', attrs });
@@ -7235,7 +7362,7 @@ mod tests {
         assert_eq!(errors, [(90, 497, "Post-Only and Sweep-to-Fill attributes cannot be used together.".to_string())]);
 
         let shared = Arc::new(SharedState::new());
-        let mut context = Context::new();
+        let mut context = order_context();
         let peg = OrderRequest::SubmitEx { order_id: 91, instrument: 0, side: Side::Buy, qty: 1,
             kind: crate::types::OrderKind::PegMkt { price: 0, offset: px(0.05) }, tif: b'0',
             attrs: A { post_only: true, ..Default::default() } };
@@ -7257,7 +7384,7 @@ mod tests {
         assert_eq!(errors, [(93, 10297, "Not Held attribute is invalid for this order.".to_string())]);
         assert!(context.unsent.contains_key(&93));
 
-        let mut context = Context::new();
+        let mut context = order_context();
         let slot = context.market.try_register_unresolved().unwrap();
         context.market.set_symbol(slot, "AAPL".into());
         context.market.set_routing(slot, "STK", "IBKRATS");
@@ -7316,7 +7443,7 @@ mod tests {
         assert_eq!(tag(&replace, 6557), Some("1"));
         // Directed away from SMART: left out, and noted for the openOrder
         // (the attribute's own rule, 10.51).
-        let mut context = Context::new();
+        let mut context = order_context();
         context.market.register(265598);
         context.market.set_routing(0, "STK", "ISLAND");
         let shared = Arc::new(SharedState::new());
@@ -7333,7 +7460,7 @@ mod tests {
     #[test]
     fn route_marketable_to_bbo_is_discarded_unless_bypassed() {
         let attrs = crate::types::OrderAttrs { route_marketable_to_bbo: true, ..Default::default() };
-        let mut context = Context::new();
+        let mut context = order_context();
         context.market.register(265598);
         context.bypass_route_bbo_warning = false;
         context.pending_orders.push(lmt_with(110, attrs.clone()));
@@ -7764,7 +7891,7 @@ mod tests {
             let (client, mut server) = crate::protocol::connection::mem_pair();
             let mut conn = Some(Connection::new_mem(client));
             let shared = Arc::new(SharedState::new());
-            let mut context = Context::new();
+            let mut context = order_context();
             context.market.register(265598);
             context.order_records_any.insert(265598);
             context.set_symbol(0, "AAPL".to_string());
@@ -7825,7 +7952,7 @@ mod tests {
             let (client, mut server) = crate::protocol::connection::mem_pair();
             let mut conn = Some(Connection::new_mem(client));
             let shared = Arc::new(SharedState::new());
-            let mut context = Context::new();
+            let mut context = order_context();
             context.bypass_redirect_warning = true;
             context.market.register(265598);
             context.order_records_any.insert(265598);
@@ -7873,7 +8000,7 @@ mod tests {
             let (client, mut server) = crate::protocol::connection::mem_pair();
             let mut conn = Some(Connection::new_mem(client));
             let shared = Arc::new(SharedState::new());
-            let mut context = Context::new();
+            let mut context = order_context();
             context.market.register(692808239);
             context.set_symbol(0, "AAPL".to_string());
             context.market.set_routing(0, "OPT", "SMART");
@@ -7921,7 +8048,7 @@ mod tests {
         let (client, mut server) = crate::protocol::connection::mem_pair();
         let mut conn = Some(Connection::new_mem(client));
         let shared = Arc::new(SharedState::new());
-        let mut context = Context::new();
+        let mut context = order_context();
         context.market.register(con_id.parse().unwrap());
         context.market.set_symbol(0, String::new());
         context.market.set_routing(0, "", exchange);
@@ -7982,7 +8109,7 @@ mod tests {
             let (client, mut server) = crate::protocol::connection::mem_pair();
             let mut conn = Some(Connection::new_mem(client));
             let shared = Arc::new(SharedState::new());
-            let mut context = Context::new();
+            let mut context = order_context();
             context.market.register(692808239);
             context.set_symbol(0, "AAPL".to_string());
             context.market.set_routing(0, "OPT", "SMART");
@@ -8017,7 +8144,7 @@ mod tests {
         let (client, mut server) = crate::protocol::connection::mem_pair();
         let mut conn = Some(Connection::new_mem(client));
         let shared = Arc::new(SharedState::new());
-        let mut context = Context::new();
+        let mut context = order_context();
         context.market.register(265598);
         context.order_records_any.insert(265598);
         context.set_symbol(0, "AAPL".to_string());
@@ -8237,7 +8364,7 @@ mod tests {
         let (client, mut server) = crate::protocol::connection::mem_pair();
         let mut conn = Some(Connection::new_mem(client));
         let shared = Arc::new(SharedState::new());
-        let mut context = Context::new();
+        let mut context = order_context();
         context.market.register(265598);
         context.set_symbol(0, "AAPL".to_string());
         context.market.set_routing(0, "STK", "SMART");
@@ -8275,7 +8402,7 @@ mod tests {
         let (client, mut server) = crate::protocol::connection::mem_pair();
         let mut conn = Some(Connection::new_mem(client));
         let shared = Arc::new(SharedState::new());
-        let mut context = Context::new();
+        let mut context = order_context();
         context.market.register(265598);
         context.set_symbol(0, "AAPL".to_string());
         context.market.set_routing(0, "STK", "SMART");
@@ -8351,7 +8478,7 @@ mod tests {
         let (client, mut server) = crate::protocol::connection::mem_pair();
         let mut conn = Some(Connection::new_mem(client));
         let shared = Arc::new(SharedState::new());
-        let mut context = Context::new();
+        let mut context = order_context();
         context.market.register(265598);
         context.set_symbol(0, "AAPL".to_string());
         context.market.set_routing(0, "STK", "SMART");
@@ -8390,7 +8517,7 @@ mod tests {
             let (client, mut server) = crate::protocol::connection::mem_pair();
             let mut conn = Some(Connection::new_mem(client));
             let shared = Arc::new(SharedState::new());
-            let mut context = Context::new();
+            let mut context = order_context();
             context.market.register(265598);
             context.order_records_any.insert(265598);
             context.set_symbol(0, "AAPL".to_string());
@@ -8451,7 +8578,7 @@ mod tests {
         let mut conn = Some(Connection::new_mem(client));
         let shared = Arc::new(SharedState::new());
         shared.reference.set_short_sale_flags(super_user, omnibus);
-        let mut context = Context::new();
+        let mut context = order_context();
         context.market.register(265598);
         context.pending_orders.push(req);
         drain_and_send_orders(&mut conn, &mut context, account, &mut HeartbeatState::new(), false, &shared);
@@ -8731,7 +8858,7 @@ mod tests {
     #[test]
     fn new_order_is_the_captured_frame() {
         const LMT: &str = "35=D|11=7.0|44=337.93|1=DU1|6010=pm0925-fill-BUY|6122=c|6433=1|6121=7|6119=250|38=100|40=2|55=AAPL|167=STK|231=1.00|54=1|59=0|100=BEST|6210=BEST|6008=265598|6088=Socket|15=USD|6211=|6238=";
-        let mut context = Context::new();
+        let mut context = order_context();
         // The server id of the frame, from the order id generator.
         context.order_ids.start_at(7);
         context.market.register(265598);
@@ -8775,7 +8902,7 @@ mod tests {
             panic!("not an order");
         };
         assert!(matches!(req, OrderRequest::SubmitEx { kind: crate::types::OrderKind::Stop { .. }, .. }), "{req:?}");
-        let mut context = Context::new();
+        let mut context = order_context();
         context.market.register(265598);
         context.set_symbol(0, "AAPL".to_string());
         context.market.set_min_tick(0, 0.01);
@@ -9360,7 +9487,7 @@ mod tests {
         use std::io::Read;
         let (client, mut server) = crate::protocol::connection::mem_pair();
         server.set_nonblocking(true).unwrap();
-        let mut context = Context::new();
+        let mut context = order_context();
         context.market.register(265598);
         context.market.set_min_tick(0, 0.01);
         context.pending_orders.push(OrderRequest::SubmitLimit { order_id: 31, instrument: 0, side: Side::Buy, qty: 1, price: px(100.005) });
@@ -9387,7 +9514,7 @@ mod tests {
         let (client, mut server) = crate::protocol::connection::mem_pair();
         let mut conn = Some(Connection::new_mem(client));
         let shared = Arc::new(SharedState::new());
-        let mut context = Context::new();
+        let mut context = order_context();
         context.order_ids.start_at(FIRST as i32);
         context.market.register(265598);
         context.pending_orders.push(limit_ex(7, Side::Buy, 100 * P, Default::default()));
@@ -9450,7 +9577,7 @@ mod tests {
         use std::io::Read;
         let (client, mut server) = crate::protocol::connection::mem_pair();
         server.set_read_timeout(Some(std::time::Duration::from_secs(2))).unwrap();
-        let mut context = Context::new();
+        let mut context = order_context();
         context.market.register(265598);
         setup(&mut context);
         let shared = Arc::new(SharedState::new());
@@ -9592,7 +9719,7 @@ mod tests {
         shared.reference.cache_contract(265598, crate::api::types::Contract {
             con_id: 265598, symbol: "AAPL".into(), primary_exchange: "NASDAQ".into(), ..Default::default()
         });
-        let mut context = Context::new();
+        let mut context = order_context();
         context.market.register(265598);
         context.set_symbol(0, "AAPL".to_string());
         let answer = |id: &str| fix::fix_build(&[(35, "d"), (320, id), (6008, "265598"), (55, "AAPL"), (167, "STK"),
@@ -9652,7 +9779,7 @@ mod tests {
         shared.reference.cache_contract(265598, crate::api::types::Contract {
             con_id: 265598, symbol: "AAPL".into(), primary_exchange: "NASDAQ".into(), ..Default::default()
         });
-        let mut context = Context::new();
+        let mut context = order_context();
         context.market.register(265598);
         context.set_symbol(0, "AAPL".to_string());
         context.market.set_routing(0, "STK", "ARCA");
@@ -9725,11 +9852,13 @@ mod tests {
             .find(|f| tag(f, 320).is_some_and(|n| n.starts_with(crate::control::contracts::SECDEF_ORDER_TYPES_NAME)))
             .map(|f| (tag(f, 320).unwrap().to_string(), tag(f, 6004).unwrap_or("").to_string()));
 
-        // The first held order of the contract: the preset asked, not yet
-        // the record; a hedge now is refused, its parent held.
+        // The first held order of the contract: its trading hours (due
+        // from its contract's answer, ibx#728), then the preset, not yet the
+        // record; a hedge now is refused, its parent held.
+        context.order_hours_due.push((265598, "1/STK/NASDAQ#LITE".to_string(), "SubMsgXMLQuery15".to_string()));
         hold(&mut context, &mut conn, 10);
         let frames = drain_frames(&mut context, &shared, &mut conn, &mut server);
-        assert!(frames.iter().any(|f| tag(f, 6040) == Some("193") && tag(f, 8168) == Some("s=STK")), "the preset: {frames:?}");
+        assert_eq!(asked_kinds(&frames), ["hours", "preset s=STK"]);
         assert_eq!(record(&frames), None, "the record waits for the preset: {frames:?}");
         let missing = Some((320, "Error reading request. Missing parent order: server: 0 order: 11 parent: 10 hedge:[B]".to_string()));
         assert_eq!(reading(11, 10), missing);
@@ -9772,6 +9901,162 @@ mod tests {
         context.unsent.remove(&30);
         drain_frames(&mut context, &shared, &mut conn, &mut server);
         assert!(!shared.orders.is_held_unknown(30) && context.held_lookups.is_empty());
+    }
+
+    /// A session at its first stock order: AAPL, its symbol lookup answered
+    /// on BEST, its trading hours due from that answer (ibx#728).
+    fn first_stock_order_session(destination: &str) -> (Context, Arc<SharedState>, Option<Connection>, crate::protocol::connection::MemTransport) {
+        let (client, server) = crate::protocol::connection::mem_pair();
+        let conn = Some(Connection::new_mem(client));
+        let shared = Arc::new(SharedState::new());
+        shared.reference.cache_contract(265598, crate::api::types::Contract {
+            con_id: 265598, symbol: "AAPL".into(), primary_exchange: "NASDAQ".into(), ..Default::default()
+        });
+        let mut context = Context::new();
+        context.order_ids.start_at(FIRST as i32);
+        context.market.register(265598);
+        context.set_symbol(0, "AAPL".to_string());
+        context.market.set_routing(0, "STK", destination);
+        context.order_records.insert((265598, "BEST".to_string()));
+        context.rth_types.insert((265598, "BEST".to_string()), crate::engine::outside_rth::RthTypes {
+            rth: true, sec_type: "STK".into(), ..Default::default()
+        });
+        context.order_hours_due.push((265598, "1/STK/NASDAQ#LITE".to_string(), "SubMsgXMLQuery15".to_string()));
+        context.zone_pending.insert(265598);
+        (context, shared, conn, server)
+    }
+
+    /// What each frame asks, in the order sent.
+    fn asked_kinds(frames: &[Vec<(u32, String)>]) -> Vec<String> {
+        frames.iter().map(|f| match (tag(f, 35), tag(f, 6040)) {
+            (Some("U"), Some("106")) => "hours".to_string(),
+            (Some("U"), Some("193")) => format!("preset {}", tag(f, 8168).unwrap_or("")),
+            (Some("U"), Some("65")) => format!("permission {}", tag(f, 6411).unwrap_or("")),
+            (Some("c"), _) if tag(f, 320).is_some_and(|n| n.starts_with(crate::control::contracts::SECDEF_ORDER_TYPES_NAME)) =>
+                format!("record {}", tag(f, 6004).unwrap_or("")),
+            (Some("c"), _) => "definition".to_string(),
+            (Some(t), _) => t.to_string(),
+            _ => "?".to_string(),
+        }).collect()
+    }
+
+    fn day_order(order_id: OrderId) -> OrderRequest {
+        OrderRequest::SubmitLimitEx {
+            order_id, instrument: 0, side: Side::Buy, qty: 1, price: 100 * P, tif: b'0', attrs: Default::default(),
+        }
+    }
+
+    fn record_answer(context: &mut Context, frame: &[(u32, String)], named: &str) {
+        let name = tag(frame, 320).expect("a record lookup").to_string();
+        let answer = fix::fix_build(&[(35, "d"), (320, &name), (6008, "265598"), (55, "AAPL"), (167, "STK"), (207, named)], 1);
+        assert!(order_record_reply(context, &name, &answer));
+    }
+
+    fn stock_preset_answer(context: &mut Context) {
+        let reply: std::collections::HashMap<u32, String> =
+            [(8166, "G"), (8168, "s=STK"), (8169, "v=1"), (4026, "GTC")].into_iter().map(|(t, v)| (t, v.to_string())).collect();
+        preset_reply(context, &fix::field_view(&reply));
+    }
+
+    // ibx#728 (the reference 10.51, paper, 12-16/10/2026, 15 first stock
+    // orders sent): the trading hours and the stock preset after the
+    // contract's answer, the preset asked for a DAY order too; the record of
+    // the primary exchange after the preset's answer, not before; the order
+    // after the record's answer, not waiting for the hours' answer, its DAY
+    // kept; the next order of the contract asks nothing.
+    #[test]
+    fn a_first_stock_order_asks_hours_and_preset_then_its_record_then_goes() {
+        let (mut context, shared, mut conn, mut server) = first_stock_order_session("SMART");
+        context.pending_orders.push(day_order(FIRST));
+        let frames = drain_frames(&mut context, &shared, &mut conn, &mut server);
+        assert_eq!(asked_kinds(&frames), ["hours", "preset s=STK"]);
+        assert_eq!(tag(&frames[0], 6256), Some("1/STK/NASDAQ#LITE"));
+        assert!(context.order_hours_due.is_empty());
+        assert!(drain_frames(&mut context, &shared, &mut conn, &mut server).is_empty(), "it waits for the preset");
+
+        stock_preset_answer(&mut context);
+        let frames = drain_frames(&mut context, &shared, &mut conn, &mut server);
+        assert_eq!(asked_kinds(&frames), ["record NASDAQ"], "the record after the preset's answer");
+
+        record_answer(&mut context, &frames[0], "NASDAQ");
+        let frames = drain_frames(&mut context, &shared, &mut conn, &mut server);
+        assert_eq!(asked_kinds(&frames), ["D"]);
+        assert_eq!(tag(&frames[0], 59), Some("0"), "the DAY order keeps its time in force");
+        assert!(shared.orders.drain_order_errors().is_empty(), "no preset notice for an order with a time in force");
+        assert!(context.zone_pending.contains(&265598), "the order did not wait for the hours' answer");
+
+        context.pending_orders.push(day_order(FIRST + 1));
+        let frames = drain_frames(&mut context, &shared, &mut conn, &mut server);
+        assert_eq!(asked_kinds(&frames), ["D"], "a second order of the contract asks nothing");
+    }
+
+    // ibx#728 (the reference 10.51, paper, 13-14/10/2026, three orders on a
+    // stock new to a session that had the preset): the hours and the record
+    // leave together; the order goes after the record's answer.
+    #[test]
+    fn with_the_preset_known_the_hours_and_the_record_leave_together() {
+        let (mut context, shared, mut conn, mut server) = first_stock_order_session("SMART");
+        context.order_presets.insert("STK".to_string(), Some("GTC".to_string()));
+        context.pending_orders.push(day_order(FIRST));
+        let frames = drain_frames(&mut context, &shared, &mut conn, &mut server);
+        assert_eq!(asked_kinds(&frames), ["hours", "record NASDAQ"]);
+        record_answer(&mut context, &frames[1], "NASDAQ");
+        let frames = drain_frames(&mut context, &shared, &mut conn, &mut server);
+        assert_eq!(asked_kinds(&frames), ["D"]);
+    }
+
+    // ibx#728 (the reference 10.51, paper, 13/10/2026, AAPL directed to
+    // ISLAND, the symbol lookup naming NASDAQ): the record of the order's
+    // own exchange leaves with the hours, the stock preset after its answer.
+    #[test]
+    fn a_record_of_the_orders_own_exchange_comes_before_the_preset() {
+        let (mut context, shared, mut conn, mut server) = first_stock_order_session("ISLAND");
+        context.order_records.insert((265598, "NASDAQ".to_string()));
+        context.pending_orders.push(day_order(FIRST));
+        let frames = drain_frames(&mut context, &shared, &mut conn, &mut server);
+        assert_eq!(asked_kinds(&frames), ["hours", "record ISLAND"]);
+        record_answer(&mut context, &frames[1], "NASDAQ");
+        let frames = drain_frames(&mut context, &shared, &mut conn, &mut server);
+        assert_eq!(asked_kinds(&frames), ["preset s=STK"], "the preset after the record's answer");
+        stock_preset_answer(&mut context);
+        let frames = drain_frames(&mut context, &shared, &mut conn, &mut server);
+        assert!(asked_kinds(&frames).iter().all(|k| !k.starts_with("record") && !k.starts_with("preset")), "{frames:?}");
+    }
+
+    // ibx#728 (the reference 10.51, paper, 13-16/10/2026, fourteen first
+    // orders of eight types): the question on the class's permission first,
+    // the trading hours due for the contract after it.
+    #[test]
+    fn the_permission_question_goes_before_the_trading_hours() {
+        let (client, mut server) = crate::protocol::connection::mem_pair();
+        let mut conn = Some(Connection::new_mem(client));
+        let shared = Arc::new(SharedState::new());
+        let mut context = order_context();
+        context.market.register(692808239);
+        context.set_symbol(0, "AAPL".to_string());
+        context.market.set_routing(0, "OPT", "SMART");
+        context.pending_orders.push(OrderRequest::SubmitLimit {
+            order_id: 80, instrument: 0, side: Side::Buy, qty: 1, price: px(0.05) });
+        let frames = drain_frames(&mut context, &shared, &mut conn, &mut server);
+        assert_eq!((frames.len(), tag(&frames[0], 35)), (1, Some("c")), "the definition: {frames:?}");
+        let id = tag(&frames[0], 320).unwrap().to_string();
+        let fields = vec![(35, "d"), (320, id.as_str()), (6008, "692808239"), (55, "AAPL"), (167, "OPT"),
+            (15, "USD"), (207, "BEST"), (6411, "2/OPT/R"), (6431, "DAY/3,LMT/3,MKT/1")];
+        assert!(rth_definition_reply(&mut context, &id, &fix::fix_build(&fields, 1)));
+        // The definition's answer called for the hours (the engine's part).
+        context.order_hours_due.push((692808239, "2/OPT/AAPL".to_string(), "SubMsgXMLQuery20".to_string()));
+        let frames = drain_frames(&mut context, &shared, &mut conn, &mut server);
+        assert_eq!(asked_kinds(&frames), ["permission 2/OPT/R", "hours"]);
+    }
+
+    // ibx#728: hours due for a contract no order waits on any more (here
+    // none) are written at the end of the pass, never left unasked.
+    #[test]
+    fn trading_hours_no_order_waits_for_still_leave() {
+        let (mut context, shared, mut conn, mut server) = first_stock_order_session("SMART");
+        let frames = drain_frames(&mut context, &shared, &mut conn, &mut server);
+        assert_eq!(asked_kinds(&frames), ["hours"]);
+        assert!(context.order_hours_due.is_empty());
     }
 
     /// A session that allows price management, with the paper exclusion
@@ -9907,7 +10192,7 @@ mod tests {
         use crate::types::OrderKind as K;
         let (client, mut server) = crate::protocol::connection::mem_pair();
         server.set_read_timeout(Some(std::time::Duration::from_millis(500))).unwrap();
-        let mut context = Context::new();
+        let mut context = order_context();
         context.market.register(265598);
         price_mgmt_session(&mut context);
         let types = context.rth_types.remove(&(265598, "BEST".to_string())).unwrap();
@@ -9966,7 +10251,7 @@ mod tests {
         let (client, mut server) = crate::protocol::connection::mem_pair();
         let mut conn = Some(Connection::new_mem(client));
         let shared = Arc::new(SharedState::new());
-        let mut context = Context::new();
+        let mut context = order_context();
         context.market.register(815824257);
         context.order_records_any.insert(815824257);
         context.market.set_symbol(0, String::new());

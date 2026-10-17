@@ -72,7 +72,7 @@ fn a_new_order_reaches_the_server_as_the_reference_frame() {
     client.place_order(5, &contract, &order).unwrap();
 
     let is_order = |m: &Vec<u8>| parse_fields(m).iter().any(|(t, v)| *t == 35 && v == "D");
-    let sent = ccp.messages_until(Duration::from_secs(5), |ms| ms.iter().any(is_order));
+    let sent = ccp.messages_until_serving_presets(Duration::from_secs(5), |ms| ms.iter().any(is_order));
     stop_tx.send(ControlCommand::Shutdown).unwrap();
     handle.join().unwrap();
 
@@ -188,7 +188,7 @@ fn an_order_of_an_earlier_session_keeps_its_order_id() {
     };
     client.place_order(id, &spy, &order).unwrap();
     let is_order = |m: &Vec<u8>| parse_fields(m).iter().any(|(t, v)| *t == 35 && v == "D");
-    let sent = ccp.messages_until(Duration::from_secs(5), |ms| ms.iter().any(is_order));
+    let sent = ccp.messages_until_serving_presets(Duration::from_secs(5), |ms| ms.iter().any(is_order));
     client.req_ids(&mut ids);
     client.process_msgs(&mut ids);
     assert_eq!(ids.0, [1, 2], "the placed id counts");

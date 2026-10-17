@@ -761,6 +761,16 @@ pub fn run(sc: &Scenario, opts: &Options, links: &mut Links, driver: &mut dyn Dr
                 links.engine.mark_order_types_done(con_id);
             }
         }
+        // The stock order preset, when the recording orders stocks and
+        // never asks it: the reference had it earlier in its session
+        // (ibx#728; it asks it at its first stock order, whatever the time
+        // in force).
+        let stock_order = recs.iter().any(|r| r.leg == "fix_out" && r.msg == "D" && r.get(167).as_deref() == Some("STK"));
+        let preset_asked = recs.iter().any(|r| r.leg == "fix_out" && r.msg == "U" && r.get(6040).as_deref() == Some("193")
+            && r.get(8168).is_some_and(|k| k == "s=STK" || k.starts_with("s=STK&")));
+        if stock_order && !preset_asked {
+            links.engine.mark_order_preset_known("STK");
+        }
     }
     if opts.positions_of_the_recording {
         for r in recs.iter().filter(|r| r.msg == "POSITION_DATA") {

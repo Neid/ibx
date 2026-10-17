@@ -84,6 +84,10 @@ pub(crate) fn replay_orders(fx: &Fixture) -> OrderReplay {
         s.shared.reference.set_api_client_id(id);
         s.client.core.client_id.store(id, std::sync::atomic::Ordering::Relaxed);
     }
+    // The order fixtures hold the order messages and reports only: the
+    // stock order preset the reference asks at its first stock order
+    // (ibx#728) is not in them, taken as known with no time in force.
+    s.engine.mark_order_preset_known("STK");
     let mut unsent = Vec::new();
     let mut cb_theirs = Vec::new();
     // The definition replies, to answer ibx's own lookups.

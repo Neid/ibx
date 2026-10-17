@@ -91,11 +91,25 @@ impl Engine {
         self.control.send(ControlCommand::Order(req)).unwrap();
     }
 
+    /// Read what the engine sent and answer it as the server does (the
+    /// order preset), while a test waits for something else.
+    pub fn serve(&mut self) {
+        self.read();
+    }
+
     fn read(&mut self) {
         for m in self.ccp.messages() {
             let fields = parse_fields(&m);
             if fields.iter().any(|(t, v)| *t == 35 && matches!(v.as_str(), "D" | "G" | "F")) {
                 self.orders.push(fields);
+            }
+            // The order preset the engine asks at the first stock order of
+            // the session (ibx#728): answered as the server does, here with
+            // no time in force (`answer_preset` gives one).
+            else if field(&fields, 35) == Some("U") && field(&fields, 6040) == Some("193")
+                && let Some(kind) = field(&fields, 8168).map(str::to_string)
+            {
+                self.ccp.send_fix(&[(35, "U"), (6040, "194"), (8166, "G"), (8168, kind.as_str())]);
             }
         }
     }

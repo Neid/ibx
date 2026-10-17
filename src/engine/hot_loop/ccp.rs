@@ -3123,6 +3123,37 @@ impl CcpState {
     /// contract, and the order's start time is shown in it (#598).
     /// The conId whose zone is then waited for, when it is not known.
     fn ask_order_schedule(&mut self, def: Option<&crate::control::contracts::ContractDefinition>, shared: &SharedState, ccp_conn: &mut Option<Connection>, hb: &mut HeartbeatState) -> Option<i64> {
+        let (con_id, ask) = self.order_schedule_needed(def, shared)?;
+        if ask {
+            let key = &def?.join_key;
+            log::info!("Trading hours of con_id {} asked for its orders ({})", con_id, key);
+            self.send_schedule_subscribe(key, ccp_conn, hb);
+        }
+        Some(con_id)
+    }
+
+    /// The trading hours of the contract an order waits for, from the
+    /// answer that made it known (ibx#728): as `ask_order_schedule`, but
+    /// the request is written at the order's turn, after the question on
+    /// its class's permission when it has one (the reference 10.51, paper,
+    /// 13-16/10/2026: the permission asked first, the trading hours 1 to
+    /// 17 ms after, fourteen first orders of eight types; for a stock, the
+    /// hours first and the order preset 1 to 5 ms after). Its name is taken
+    /// now, in the series it shares with the lookups.
+    fn defer_order_schedule(&mut self, def: Option<&crate::control::contracts::ContractDefinition>, shared: &SharedState, context: &mut Context) -> Option<i64> {
+        let (con_id, ask) = self.order_schedule_needed(def, shared)?;
+        if ask && let Some(def) = def {
+            log::info!("Trading hours of con_id {} due for its orders ({})", con_id, def.join_key);
+            context.order_hours_due.push((con_id, def.join_key.clone(), self.optcalc.next_query_id()));
+        }
+        Some(con_id)
+    }
+
+    /// Whether an order's contract needs its trading hours: None when they
+    /// are known for the day (their zone is the contract's) or the
+    /// definition has no schedule key; else its conId, noted as waiting,
+    /// and whether the request is still to make.
+    fn order_schedule_needed(&mut self, def: Option<&crate::control::contracts::ContractDefinition>, shared: &SharedState) -> Option<(i64, bool)> {
         let def = def?;
         if def.join_key.is_empty() || def.con_id == 0 {
             return None;
@@ -3136,11 +3167,7 @@ impl CcpState {
         let asked = self.order_zone_waits.iter().any(|(k, _)| *k == def.join_key)
             || self.pending_schedule_pair.iter().any(|p| !p.ready && p.join_key == def.join_key);
         self.order_zone_waits.push((def.join_key.clone(), def.con_id));
-        if !asked {
-            log::info!("Trading hours of con_id {} asked for its orders ({})", def.con_id, def.join_key);
-            self.send_schedule_subscribe(&def.join_key, ccp_conn, hb);
-        }
-        Some(def.con_id)
+        Some((def.con_id, !asked))
     }
 
     fn handle_schedule_reply(
@@ -3515,7 +3542,7 @@ impl CcpState {
                     self.cache_definition(def, shared);
                 }
                 keep_zone(shared);
-                if let Some(con_id) = self.ask_order_schedule(records.first(), shared, ccp_conn, hb) {
+                if let Some(con_id) = self.defer_order_schedule(records.first(), shared, context) {
                     context.zone_pending.insert(con_id);
                 }
                 return;
@@ -3541,7 +3568,7 @@ impl CcpState {
                     self.cache_definition(def, shared);
                 }
                 keep_zone(shared);
-                if let Some(con_id) = self.ask_order_schedule(records.first(), shared, ccp_conn, hb) {
+                if let Some(con_id) = self.defer_order_schedule(records.first(), shared, context) {
                     context.zone_pending.insert(con_id);
                 }
                 return;
@@ -6994,6 +7021,27 @@ mod tests {
         // Known for the session: the next order asks nothing.
         ccp.ask_order_schedule(defs.first(), &shared, &mut conn, &mut hb);
         assert!(ccp_messages_sent(&mut server).iter().all(|m| !m.contains("6040=106")));
+    }
+
+    // ibx#728: from an order's contract answer, the trading hours wait for
+    // the order's turn (after its permission question): nothing written,
+    // one request due for the key, named now in its series.
+    #[test]
+    fn an_orders_trading_hours_wait_for_the_order() {
+        let (mut ccp, mut context, shared) = u186_test_state();
+        let key = "1/STK/NASDAQ#LITE";
+        let def = pipe_msg(&format!("35=d|43=N|320=ord1|322=*|323=4|{}6008=265598|6046=BEST,NASDAQ,",
+            listing("AAPL", "265598", "BEST", key, "26")));
+        let defs = crate::control::contracts::parse_secdef_records(&def).unwrap();
+        assert_eq!(ccp.defer_order_schedule(defs.first(), &shared, &mut context), Some(265598));
+        assert_eq!(ccp.defer_order_schedule(defs.first(), &shared, &mut context), Some(265598));
+        assert_eq!(context.order_hours_due, [(265598, key.to_string(), "SubMsgXMLQuery1".to_string())]);
+        assert_eq!(ccp.optcalc.next_query_id(), "SubMsgXMLQuery2");
+        // Its answer gives the zone, as when it is sent at once.
+        let schedule = pipe_msg(&format!("35=U|6040=107|6256={key}|6734=US/Eastern|6840=0"));
+        ccp.handle_schedule_reply(&schedule, &shared, &None);
+        assert_eq!(shared.reference.time_zone_id(265598).as_deref(), Some("US/Eastern"));
+        assert!(ccp.order_zone_waits.is_empty());
     }
 
     #[test]
