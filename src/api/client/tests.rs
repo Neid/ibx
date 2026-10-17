@@ -7278,7 +7278,7 @@ fn requests_the_reference_session_does_not_have() {
         (7001, 503, "The TWS is out of date and must be upgraded.  It does not support contract data cancels.".to_string()),
         (7003, 503, "The TWS is out of date and must be upgraded.  It does not support historical ticks cancels.".to_string()),
         (-1, 544, "Verify Request Sending Error -   Intent to authenticate needs to be expressed during initial connect request.".to_string()),
-        (-1, 10095, "ApiVerify error:ApiVerifyMessage ignored. Message sequence error. State: verifyStatus=NONE, verifyInProgress=false".to_string()),
+        // No answer to verifyMessage on 10.51 (ibx#556).
         (-1, 551, "Verify And Auth Request Sending Error -   Intent to authenticate needs to be expressed during initial connect request.".to_string()),
     ]);
 }

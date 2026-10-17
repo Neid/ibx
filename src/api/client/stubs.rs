@@ -108,13 +108,16 @@ impl EClient {
         self.shared.orders.push_order_error(id, code, text.to_string());
     }
 
-    /// Matches `verifyMessage` in C++. No verification is in progress:
-    /// error 10095 as the reference.
+    /// Matches `verifyMessage` in C++. No verification is in progress: no
+    /// answer, as the reference 10.51 (ibx#556; paper, 17/10/2026, a client
+    /// at level 214); error 10095 as the reference 10.40 in its replays.
     pub fn verify_message(&self, _api_data: &str) {
         // One API request for the pacing, whatever it sends (ibx#565).
         let _request = crate::engine::park::one_request();
-        let (id, code, text) = crate::client_core::VERIFY_MESSAGE_OUT_OF_SEQUENCE;
-        self.shared.orders.push_order_error(id, code, text.to_string());
+        if self.shared.reference.form_10_40() {
+            let (id, code, text) = crate::client_core::VERIFY_MESSAGE_OUT_OF_SEQUENCE;
+            self.shared.orders.push_order_error(id, code, text.to_string());
+        }
     }
 
     /// Matches `verifyAndAuthRequest` in C++. A session opened without the

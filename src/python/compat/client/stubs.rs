@@ -213,7 +213,9 @@ impl EClient {
         Ok(())
     }
 
-    /// No verification is in progress: error 10095 as the reference.
+    /// No verification is in progress: no answer, as the reference 10.51
+    /// (ibx#556; paper, 17/10/2026, a client at level 214); error 10095 as
+    /// the reference 10.40 in its replays.
     #[pyo3(signature = (api_data))]
     fn verify_message(&self, py: Python<'_>, api_data: &str) -> PyResult<()> {
         // One API request for the pacing, whatever it sends (ibx#565).
@@ -222,8 +224,10 @@ impl EClient {
         if let Some(r) = self.not_connected(-1) { return r; }
         let data = api_data.to_string();
         if self.later(move |this, py| this.verify_message(py, &data)) { return Ok(()); }
-        let (id, code, text) = crate::client_core::VERIFY_MESSAGE_OUT_OF_SEQUENCE;
-        self.wrapper.call_method1(py, "error", (id, code, text, ""))?;
+        if self.shared_state()?.reference.form_10_40() {
+            let (id, code, text) = crate::client_core::VERIFY_MESSAGE_OUT_OF_SEQUENCE;
+            self.wrapper.call_method1(py, "error", (id, code, text, ""))?;
+        }
         Ok(())
     }
 

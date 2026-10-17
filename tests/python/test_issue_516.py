@@ -73,7 +73,7 @@ def test_the_verify_requests_answer_as_the_reference():
     c._test_dispatch_once()
     assert w.events == [
         ("error", -1, 544, VERIFY_REQUEST),
-        ("error", -1, 10095, VERIFY_MESSAGE),
+        # No answer to verify_message on 10.51 (ibx#556, paper 17/10/2026).
         ("error", -1, 551, VERIFY_AND_AUTH_REQUEST),
     ]
 
