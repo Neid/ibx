@@ -1489,10 +1489,15 @@ impl CcpState {
                             self.optparams.chain_reply(msg, ccp_conn, connected, hb, shared);
                         }
                         "60" => self.handle_commission_report(&parsed, shared),
-                        // An order preset asked for an order placed with no
-                        // time in force (ibx#660); not the logon's list.
+                        // An order preset asked at an order (ibx#660,
+                        // ibx#729); not the logon's list.
                         "194" if parsed.get(&8166).is_some_and(|k| *k == "G") => {
                             super::order_builder::preset_reply(context, &parsed);
+                        }
+                        // The logon's list of the order presets the account
+                        // has stored (ibx#729).
+                        "194" if parsed.get(&8166).is_some_and(|k| *k == "L") => {
+                            super::order_builder::preset_list_reply(context, all_values(msg, 8168));
                         }
                         // The combo multiplier and the leg confirmation of
                         // a combo set-up (ibx#470).
@@ -7401,6 +7406,24 @@ mod tests {
 
     fn u186_test_state() -> (CcpState, Context, SharedState) {
         (CcpState::new(), Context::new(), SharedState::new())
+    }
+
+    // ibx#729 (the reference 10.51, paper, 13/10/2026: the logon's answer
+    // of four kinds): the list of the stored order presets is kept, a
+    // pair's currency kind as named; an answer to a save changes nothing.
+    #[test]
+    fn the_logons_preset_list_is_kept() {
+        let (mut ccp, mut context, shared) = u186_test_state();
+        let list = pipe_msg("35=U|43=N|6040=194|6556=OPR.2|8166=L|8176=1|8167=4|8168=s=CASH|8169=v=1|8170=1756999922.206|8168=s=CASH&tc=EUR|8169=v=1|8170=1730816660.961|8168=s=COMB|8169=v=1|8170=1757274907.710|8168=s=STK|8169=v=1|8170=1776711654.126");
+        ccp.process_ccp_message(&list, &mut None, &mut context, &shared, &None, &mut HeartbeatState::new(), "DU1");
+        let stored = context.presets_stored.clone().expect("the list");
+        let mut kinds: Vec<&str> = stored.iter().map(String::as_str).collect();
+        kinds.sort();
+        assert_eq!(kinds, ["CASH", "CASH&tc=EUR", "COMB", "STK"]);
+        let saved = pipe_msg("35=U|43=N|6040=194|6556=OPR.19|8166=S|8168=s=CFD|8170=1791896948.081");
+        ccp.process_ccp_message(&saved, &mut None, &mut context, &shared, &None, &mut HeartbeatState::new(), "DU1");
+        assert!(context.order_presets.is_empty());
+        assert_eq!(context.presets_stored, Some(stored));
     }
 
     #[test]

@@ -370,6 +370,27 @@ pub struct Context {
     pub(crate) order_presets: HashMap<String, Option<String>>,
     pub(crate) presets_asked: std::collections::HashSet<String>,
     pub(crate) next_preset_request: u32,
+    /// The order preset kinds the account has stored on the server, from
+    /// the list asked at the logon (ibx#729); None until it answered. A kind
+    /// stored is asked at the first order of its type and waited for; a kind
+    /// not stored is saved after that order's message.
+    pub(crate) presets_stored: Option<std::collections::HashSet<String>>,
+    /// The order preset kinds to save once the order being written is out
+    /// (ibx#729).
+    pub(crate) preset_saves_due: Vec<String>,
+    /// The copied waits of a stock's first order (ibx#729): on for a session
+    /// opened by a logon, as the other copied waits.
+    pub(crate) order_gaps: bool,
+    /// The time those waits go by when a test sets it (the replays' clock).
+    pub(crate) gap_clock: Option<std::time::Instant>,
+    /// When the answer of the stock order preset came, for those waits.
+    pub(crate) stock_preset_answered: Option<std::time::Instant>,
+    /// When the record an order asked of its contract came, by conId.
+    pub(crate) record_answered: HashMap<i64, std::time::Instant>,
+    /// The orders that waited for the stock order preset.
+    pub(crate) preset_waiters: std::collections::HashSet<crate::types::OrderId>,
+    /// The earliest time an order held by one of those waits goes on.
+    pub(crate) order_wake: Option<std::time::Instant>,
     /// The account's trading permission by permission class, as the
     /// server answered (ibx#666); a class asked and not answered yet is in
     /// `permissions_asked`, with the time the order stops waiting.
@@ -521,6 +542,14 @@ impl Context {
             order_presets: HashMap::new(),
             presets_asked: std::collections::HashSet::new(),
             next_preset_request: 3,
+            presets_stored: None,
+            preset_saves_due: Vec::new(),
+            order_gaps: false,
+            gap_clock: None,
+            stock_preset_answered: None,
+            record_answered: HashMap::new(),
+            preset_waiters: std::collections::HashSet::new(),
+            order_wake: None,
             trading_permissions: HashMap::new(),
             permissions_asked: HashMap::new(),
             cash_orders: HashMap::new(),
@@ -1399,6 +1428,12 @@ impl Context {
 
     pub fn now_utc(&self) -> i64 {
         self.clock.now_utc()
+    }
+
+    /// The time the copied waits of the orders go by (ibx#729): the test's
+    /// clock when one is set, else now.
+    pub(crate) fn gap_now(&self) -> std::time::Instant {
+        self.gap_clock.unwrap_or_else(std::time::Instant::now)
     }
 
     /// Timestamp when the last farm socket recv returned data.

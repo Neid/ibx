@@ -3594,6 +3594,8 @@ impl HotLoop {
         self.hmds.scanner_params_delayed = true;
         // And a fan-out's requests leave at the reference's pace (ibx#689).
         self.ccp.fanout_paced = true;
+        // And a stock's first order keeps the reference's gaps (ibx#729).
+        self.context.order_gaps = true;
     }
 
     /// Send the scanner parameters request when its delay has passed
@@ -3616,6 +3618,7 @@ impl HotLoop {
     #[cfg(any(test, feature = "test-support"))]
     pub fn set_pace_clock(&mut self, now: Instant) {
         self.pace_clock = Some(self.pace_clock.map_or(now, |was| was.max(now)));
+        self.context.gap_clock = self.pace_clock;
     }
 
     /// The time set by `set_pace_clock`.
@@ -3626,12 +3629,13 @@ impl HotLoop {
 
     /// The time at which something that waits now is due: the next step of
     /// the pacing when requests wait, the next market data pass, the
-    /// scanner parameters request.
+    /// scanner parameters request, the end of an order's copied wait.
     #[cfg(any(test, feature = "test-support"))]
     pub fn next_pace_time(&self) -> Option<Instant> {
         let held = self.cmd_queue.iter().any(|q| crate::engine::pacer::is_request(&q.cmd));
         let step = self.pacer.as_ref().filter(|_| held).and_then(|p| p.next_step());
-        [step, self.md_pass.due(), self.hmds.next_scanner_due()].into_iter().flatten().min()
+        let order = self.context.order_wake.filter(|_| self.context.order_gaps);
+        [step, self.md_pass.due(), self.hmds.next_scanner_due(), order].into_iter().flatten().min()
     }
 
     /// Mutably access heartbeat state for testing (e.g., setting timestamps).
@@ -5473,6 +5477,25 @@ mod tests {
         };
         assert_eq!(order(true), "9008 9007 9006 9005 9004 9003 9002 9001");
         assert_eq!(order(false), "9002 9001 9008 9007 9006 9005 9004 9003");
+    }
+
+    // ibx#729: the copied gaps of a stock's first order are on with the
+    // pacing, go by its clock, and their end is due for a replay; off, an
+    // order's wake is not reported.
+    #[test]
+    fn an_orders_copied_gap_goes_by_the_pace_clock() {
+        let shared = Arc::new(SharedState::new());
+        let (mut engine, _server, _tx) = scanner_engine(&shared);
+        let start = Instant::now();
+        let ms = std::time::Duration::from_millis;
+        assert!(!engine.context.order_gaps);
+        engine.context.order_wake = Some(start + ms(40));
+        assert_eq!(engine.next_pace_time(), None);
+        engine.pace_requests();
+        engine.set_pace_clock(start);
+        assert!(engine.context.order_gaps);
+        assert_eq!(engine.context.gap_now(), start);
+        assert_eq!(engine.next_pace_time(), Some(start + ms(40)));
     }
 
     // ibx#553: the scanner parameters request leaves 1 s after the first
