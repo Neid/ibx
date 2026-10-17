@@ -121,6 +121,9 @@ struct State {
     /// Every order callback in arrival order ("status:<id>:<status>",
     /// "error:<id>:<code>").
     sequence: Vec<String>,
+    /// The order ids of the openOrder rows, and the openOrderEnd count.
+    open_rows: Vec<i64>,
+    open_ends: usize,
 }
 
 struct Probe {
@@ -142,6 +145,12 @@ impl Wrapper for Probe {
         let mut s = self.state.lock().unwrap();
         s.errors.push((req_id, code, msg.into()));
         s.sequence.push(format!("error:{}:{}", req_id, code));
+    }
+    fn open_order(&mut self, order_id: i64, _contract: &Contract, _order: &Order, _state: &ibx::api::types::OrderState) {
+        self.state.lock().unwrap().open_rows.push(order_id);
+    }
+    fn open_order_end(&mut self) {
+        self.state.lock().unwrap().open_ends += 1;
     }
 }
 
@@ -559,6 +568,32 @@ fn order_by_symbol(paper: &mut Paper, id: i64) {
     }
 }
 
+/// ibx#738: an order whose contract's lookup finds nothing gets 200, is
+/// not listed by reqOpenOrders, and its cancel gives 10147, as the
+/// reference 10.51 (paper, 17/10/2026, market closed).
+fn refused_at_lookup(paper: &mut Paper, id: i64) {
+    println!("  refused at its lookup (order {})", id);
+    let nowhere = Contract { con_id: 0, symbol: "ZZQXJV".into(), ..aapl() };
+    let order = Order {
+        action: "BUY".into(), order_type: "LMT".into(), total_quantity: 1.0, lmt_price: 50.0,
+        tif: "DAY".into(), ..Default::default()
+    };
+    paper.placed.push(id);
+    if let Err(e) = paper.client.place_order(id, &nowhere, &order) {
+        paper.fail(&format!("order {}: place_order returned {}", id, e));
+    }
+    let got = paper.pump(20, |s| s.errors.iter().any(|(r, c, _)| *r == id && *c == 200));
+    paper.check(got, "refused at its lookup: error 200");
+    let ends = paper.state.lock().unwrap().open_ends;
+    paper.client.req_open_orders(&mut paper.probe);
+    paper.pump(10, |s| s.open_ends > ends);
+    let listed = paper.state.lock().unwrap().open_rows.contains(&id);
+    paper.check(!listed, "refused at its lookup: not listed by reqOpenOrders");
+    let _ = paper.client.cancel_order(id, "");
+    let gone = paper.pump(10, |s| s.errors.iter().any(|(r, c, _)| *r == id && *c == 10147));
+    paper.check(gone, "refused at its lookup: its cancel gives 10147");
+}
+
 /// The wire checks of [`order_by_symbol`] on the frames logged after the
 /// place call: one lookup by symbol, its answer, then the order's new order message with
 /// the conId found.
@@ -774,6 +809,7 @@ fn order_paths_paper() {
     bracket_with_transmit_off(&mut paper, base + 700);
     global_cancel_after_ended_orders(&mut paper, base + 800);
     attached_from_preset(&mut paper, base + 900);
+    refused_at_lookup(&mut paper, base + 1000);
 
     println!("  cleanup: cancelling every order still working");
     // A modified order is placed twice under one id: cancel it once.

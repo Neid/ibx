@@ -6174,6 +6174,28 @@ fn a_forgotten_order_leaves_without_callbacks() {
     assert_eq!(w.events, vec!["open_order_end".to_string()]);
 }
 
+// ibx#738: an order refused with 200 at its contract's lookup is given the
+// error, then no open-order request lists it, as the reference 10.51
+// (paper, 17/10/2026, market closed); its id stays used: placed again, 103.
+#[test]
+fn an_order_refused_at_its_lookup_is_not_an_open_order() {
+    let (client, _rx, shared) = test_client();
+    shared.market.set_instrument_count(1);
+    let order = Order { action: "BUY".into(), total_quantity: 1.0, order_type: "LMT".into(), lmt_price: 10.0, ..Default::default() };
+    client.place_order(1, &spy(), &order).unwrap();
+    shared.orders.push_order_error(1, 200, "No security definition has been found for the request".into());
+    shared.orders.push_forgotten_order(1);
+    let mut w = RecordingWrapper::default();
+    client.process_msgs(&mut w);
+    assert_eq!(w.events.len(), 1, "{:?}", w.events);
+    assert!(w.events[0].starts_with("error:") && w.events[0].contains("200"), "{:?}", w.events);
+    w.events.clear();
+    client.req_open_orders(&mut w);
+    client.process_msgs(&mut w);
+    assert_eq!(w.events, vec!["open_order_end".to_string()]);
+    assert_eq!(client.core.refusal_for_order_id(1, &order, &shared).map(|r| r.0), Some(103));
+}
+
 // ibx#251: an open-order request made while the auth link is lost gets no
 // answer until the order replay of the new logon has ended; then each kind
 // is answered once, after the replayed statuses, as in the reference.

@@ -82,9 +82,10 @@ impl EClient {
                 Kind::fills => self.deliver_fills(wrapper, run(&mut ib.fills, until)),
                 Kind::untracked_executions => self.deliver_untracked_executions(wrapper, run(&mut ib.untracked_executions, until)),
                 Kind::forgotten_orders => {
-                    // Orders filled while the auth link was lost: no
-                    // longer known to the client, with no callback
-                    // (ibx#251).
+                    // Orders filled while the auth link was lost
+                    // (ibx#251), or refused at their contract's lookup
+                    // (ibx#738): no longer known to the client, with no
+                    // callback.
                     for order_id in run(&mut ib.forgotten_orders, until) {
                         self.core.forget_order(order_id);
                     }

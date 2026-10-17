@@ -4623,6 +4623,23 @@ fn look_up_order_contract(context: &mut Context, conn: &mut Connection, hb: &mut
     context.order_lookups.push((lookup_id, instrument));
 }
 
+/// An order refused with 200 at its contract's lookup was never sent and
+/// is not an open order: the client forgets it, after the error, so no
+/// open-order request lists it (ibx#738; the reference 10.51, paper,
+/// 17/10/2026, market closed: an order refused with 200 at its lookup, its
+/// cancel 10147, then reqOpenOrders listed nothing for it). A what-if, or
+/// a request on an order the engine holds, leaves the order as it is.
+fn drop_refused_at_lookup(context: &Context, shared: &SharedState, req: &OrderRequest) {
+    if matches!(req, OrderRequest::SubmitWhatIf { .. }) {
+        return;
+    }
+    for oid in request_order_ids(req) {
+        if context.order(oid).is_none() {
+            shared.orders.push_forgotten_order(oid);
+        }
+    }
+}
+
 /// The server refused an order's contract lookup (ibx#710): the orders that
 /// waited for it get 200 with the server's text and are not kept (their
 /// cancel gives 10147), as the reference. False when the refusal is not of
@@ -4642,6 +4659,7 @@ pub(crate) fn order_lookup_refused(context: &mut Context, shared: &SharedState, 
         context.rth_parked = kept;
         for r in refused {
             shared.orders.push_order_error(r.order_id(), 200, text.to_string());
+            drop_refused_at_lookup(context, shared, &r);
         }
         for group in context.order_groups.iter_mut() {
             group.retain(|m| m.1 != slot);
@@ -4739,6 +4757,7 @@ pub(crate) fn order_contract_reply(context: &mut Context, shared: &SharedState, 
             for r in refused {
                 let oid = r.order_id();
                 shared.orders.push_order_error(oid, crate::engine::combo::NO_DEFINITION.0, crate::engine::combo::NO_DEFINITION.1.to_string());
+                drop_refused_at_lookup(context, shared, &r);
             }
             // The orders of a group on another contract go on without it.
             for group in context.order_groups.iter_mut() {
@@ -6613,6 +6632,8 @@ mod tests {
         assert!(order_contract_reply(&mut context, &shared, "FixSecDefReqBySymbol3221225473", empty.as_bytes()));
         assert!(context.rth_parked.is_empty() && !context.api_pending.contains_key(&7));
         assert_eq!(shared.orders.drain_order_errors(), [(7, 200, "No security definition has been found for the request".to_string())]);
+        // The client forgets it: no open-order request lists it (ibx#738).
+        assert_eq!(shared.orders.drain_forgotten_orders(), vec![7]);
     }
 
     // ibx#710: an order whose contract gives a primary exchange carries it
@@ -6641,6 +6662,7 @@ mod tests {
         assert!(order_lookup_refused(&mut context, &shared, &id, "Invalid destination exchange specified"));
         assert!(context.rth_parked.is_empty() && context.order_lookups.is_empty());
         assert_eq!(shared.orders.drain_order_errors(), [(9, 200, "Invalid destination exchange specified".to_string())]);
+        assert_eq!(shared.orders.drain_forgotten_orders(), vec![9], "forgotten by the client (ibx#738)");
         assert!(!order_lookup_refused(&mut context, &shared, &id, "again"), "a lookup refused once");
     }
 
