@@ -1,7 +1,7 @@
 //! Order-path tests against the real server on the paper account, through `EClient`.
 //!
 //! Covers the order paths fixed in ibx#240 ibx#225 ibx#247 ibx#324 ibx#334
-//! ibx#339 ibx#349 ibx#313 ibx#318 ibx#405 ibx#325 ibx#327 ibx#250 ibx#328 ibx#263. Each case checks
+//! ibx#339 ibx#349 ibx#313 ibx#318 ibx#405 ibx#325 ibx#327 ibx#250 ibx#328 ibx#263 ibx#717. Each case checks
 //! the server's own reply (captured from the engine's wire trace), not only
 //! that `place_order` returned: the replace confirmation must carry the new
 //! values, a bracket child must be cancelled by the server with its parent
@@ -196,9 +196,11 @@ fn working(s: &State, id: i64) -> bool {
     matches!(last_status(s, id).as_deref(), Some("PreSubmitted" | "Submitted"))
 }
 
-/// 399 is an informational warning (order held until the open), not a refusal.
+/// 399 is an informational warning (order held until the open), not a
+/// refusal; nor is 10349, the time in force taken from the order preset
+/// for an order without one (ibx#660), after which the order goes on.
 fn refused(s: &State, id: i64) -> bool {
-    s.errors.iter().any(|(r, c, _)| *r == id && *c != 399)
+    s.errors.iter().any(|(r, c, _)| *r == id && *c != 399 && *c != 10349)
         || last_status(s, id).as_deref() == Some("Inactive")
 }
 
@@ -341,7 +343,7 @@ fn modifies(paper: &mut Paper, base: i64) {
         paper.check(!sent.is_empty() && flag == rth,
             &format!("modify {}: outside-RTH sent only when set ({})", label, rth));
         let s = paper.state.lock().unwrap();
-        let err = s.errors.iter().any(|(r, c, _)| *r == id && *c != 399);
+        let err = s.errors.iter().any(|(r, c, _)| *r == id && *c != 399 && *c != 10349);
         drop(s);
         paper.check(!err, &format!("modify {}: no error", label));
     }
@@ -432,6 +434,10 @@ fn algos(paper: &mut Paper, base: i64) {
             TagValue { tag: "noTakeLiq".into(), value: "0".into() },
             TagValue { tag: "allowPastEndTime".into(), value: "1".into() },
         ],
+        // DAY: the server refuses GTC for VWAP, and an order without a
+        // time in force takes the preset's, GTC on the paper user's
+        // stock preset (seen 18/10/2026; ibx#660).
+        tif: "DAY".into(),
         ..Default::default()
     };
     paper.place(id, &vwap);
@@ -485,7 +491,12 @@ fn conditions(paper: &mut Paper, base: i64) {
         paper.place(id, &order);
         let up = paper.wait_working(&[id]);
         paper.check(up, &format!("{}: accepted", label));
-        let ack = reply(&clord_of(id, 0), &["0", "A"]);
+        // The reply that carries the condition: a GTC order (the time in
+        // force of the paper user's stock preset, ibx#660) gets a first
+        // report without it, then a second with it (paper, 18/10/2026).
+        let ack = frames(false, "8", &clord_of(id, 0)).into_iter()
+            .filter(|f| field(f, 150).is_some_and(|e| e == "0" || e == "A"))
+            .find(|f| field(f, 6136).is_some());
         let flag = |on: bool| if on { "1" } else { "0" };
         paper.check(ack.as_ref().and_then(|f| field(f, 6136)) == Some("1"),
             &format!("{}: server confirms the condition", label));
@@ -701,6 +712,38 @@ fn contract_id_on_new_orders(paper: &mut Paper) {
         &format!("contract id after the routing field on all {} new orders ({} missing)", sent.len(), missing));
 }
 
+/// ibx#609 ibx#717 (the reference 10.51, paper, 16/10/2026, market
+/// closed): a stop loss and a profit taker asked from the order preset,
+/// when the paper user's stock preset does not auto-attach them: 10355
+/// naming the profit taker, the status Cancelled, then 202; nothing is
+/// sent to the server. Should this step start to fail with a working
+/// parent, the stock preset now auto-attaches them: that is the case
+/// ibx#717 waits for.
+fn attached_from_preset(paper: &mut Paper, id: i64) {
+    println!("  attached orders from the preset (order {})", id);
+    let order = Order {
+        action: "BUY".into(), order_type: "LMT".into(), total_quantity: 1.0, lmt_price: 100.0,
+        tif: "DAY".into(), sl_order_id: (id + 1) as i32, sl_order_type: "PRESET".into(),
+        pt_order_id: (id + 2) as i32, pt_order_type: "PRESET".into(), ..Default::default()
+    };
+    let start = wire().lines.lock().unwrap().len();
+    paper.place(id, &order);
+    let notice = format!("error:{}:202", id);
+    let done = paper.pump(20, |s| s.sequence.iter().any(|e| *e == notice) || working(s, id));
+    let s = paper.state.lock().unwrap();
+    let seq: Vec<String> = s.sequence.iter().filter(|e| e.split(':').nth(1).and_then(|v| v.parse::<i64>().ok())
+        .is_some_and(|i| (id..id + 3).contains(&i))).cloned().collect();
+    let text_ok = s.errors.iter().any(|(r, c, m)| *r == id && *c == 10355 && m == "Cannot auto-attach Profit Taker. Preset is not defined.");
+    drop(s);
+    let sent = wire().lines.lock().unwrap()[start..].iter().filter(|l| l.starts_with("WIRE>")).map(|l| parse_frame(l))
+        .any(|f| field(&f, 35) == Some("D"));
+    paper.check(done, "attached orders from the preset: answered");
+    paper.check(seq == [format!("error:{id}:10355"), format!("status:{id}:Cancelled"), notice.clone()],
+        &format!("attached orders from the preset: 10355, Cancelled, 202 ({seq:?})"));
+    paper.check(text_ok, "attached orders from the preset: 10355 names the profit taker");
+    paper.check(!sent, "attached orders from the preset: nothing sent");
+}
+
 #[test]
 #[ignore = "live: logs in to the paper account (IB_USERNAME / IB_PASSWORD)"]
 fn order_paths_paper() {
@@ -730,6 +773,7 @@ fn order_paths_paper() {
     order_by_symbol(&mut paper, base + 600);
     bracket_with_transmit_off(&mut paper, base + 700);
     global_cancel_after_ended_orders(&mut paper, base + 800);
+    attached_from_preset(&mut paper, base + 900);
 
     println!("  cleanup: cancelling every order still working");
     // A modified order is placed twice under one id: cancel it once.

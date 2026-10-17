@@ -1271,7 +1271,7 @@ error,10351,What-If type %s is not supported for your account configuration.,no 
 error,10352,What-If type specified but What-If flag is not set. Orders with whatIfType must have whatIf=true.,no test
 error,10353,"Warning: setting ""Route marketable orders to exchanges at BBO only"" order attribute can result in higher total cost of the trade after exchange fees and commissions",tests/gw_catalog/errors.rs::every_error_ibx_raises_is_the_gateways ; src/engine/hot_loop/order_builder.rs::route_marketable_to_bbo_is_discarded_unless_bypassed
 error,10354,"Attaching stop-loss or profit-taker is not allowed as part of a single placeOrder request, please submit such orders separately.",no test
-error,10355,Cannot auto-attach %s. Preset is not defined.,no test
+error,10355,Cannot auto-attach %s. Preset is not defined.,src/engine/hot_loop/order_builder.rs::attached_orders_from_an_undefined_preset_are_discarded ; live:tests/order_paths_paper.rs::order_paths_paper
 error,10356,Invalid value for %s order-id or order-type,no test
 error,10357,Configuration access via API is not available. Please refer to the application interface to view or update your settings.,src/client_core.rs::the_configuration_update_is_refused_below_level_221_and_without_configuration_access
 error,10358,Fundamentals data is not allowed,tests/gw_catalog/errors.rs::every_error_ibx_raises_is_the_gateways ; src/api/client/tests.rs::fundamentals_without_the_logon_permission_are_refused
