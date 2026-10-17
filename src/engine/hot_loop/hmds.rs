@@ -187,6 +187,9 @@ pub(crate) struct TbtSub {
     pub(crate) clients: Vec<ReqId>,
     pub(crate) min_tick: f64,
     pub(crate) size_min_tick: Option<f64>,
+    /// The size step as an exact decimal, for the fractional trade sizes
+    /// of session level 222 (ibx#613).
+    pub(crate) size_increment: Option<crate::md_events::Increment>,
     pub(crate) last: i64,
     pub(crate) bid: i64,
     pub(crate) ask: i64,
@@ -252,7 +255,7 @@ impl TbtSub {
     /// A trade's size in size increments as the client gets it at this
     /// session's level (ibx#613).
     fn trade_size(&self, raw: u64) -> f64 {
-        trade_size_at(crate::client_core::SERVER_VERSION, raw, self.size_min_tick)
+        trade_size_at(crate::client_core::SERVER_VERSION, raw, self.size_min_tick, self.size_increment)
     }
 }
 
@@ -260,13 +263,17 @@ impl TbtSub {
 /// 10.51 rules, not observed yet: no fractional trade on the paper
 /// account): the size increments times the increment, a whole number below
 /// level 222, with its fractional part from 222, as the historical trade
-/// ticks.
-pub(crate) fn trade_size_at(level: i32, raw: u64, size_min_tick: Option<f64>) -> f64 {
-    let size = match size_min_tick {
-        Some(step) => raw as f64 * step,
-        None => raw as f64,
-    };
-    if level < crate::client_core::LEVEL_FRACTIONAL_LAST_SIZE { size.round() } else { size }
+/// ticks. From 222 the size is the decimal the step gives (0.026, not the
+/// binary product 0.026000000000000002) when the step is a decimal.
+pub(crate) fn trade_size_at(level: i32, raw: u64, size_min_tick: Option<f64>, increment: Option<crate::md_events::Increment>) -> f64 {
+    if level < crate::client_core::LEVEL_FRACTIONAL_LAST_SIZE {
+        return size_min_tick.map_or(raw as f64, |step| raw as f64 * step).round();
+    }
+    match (increment, size_min_tick) {
+        (Some(inc), _) => inc.times(raw),
+        (None, Some(step)) => raw as f64 * step,
+        (None, None) => raw as f64,
+    }
 }
 
 /// How long a tick-by-tick stream with no client left waits before its
@@ -1159,6 +1166,7 @@ impl HmdsState {
         sub.farm = farm;
         sub.min_tick = extract_xml_tag(xml, "minTick").and_then(|v| v.trim().parse().ok()).unwrap_or(0.01);
         sub.size_min_tick = extract_xml_tag(xml, "sizeMinTick").and_then(|v| v.trim().parse().ok());
+        sub.size_increment = sub.size_min_tick.and_then(crate::md_events::Increment::from_step);
         (sub.last, sub.bid, sub.ask, sub.mid) = (0, 0, 0, 0);
         (sub.last_size, sub.bid_size, sub.ask_size) = (0, 0, 0);
         sub.holding = sub.history_wanted;
@@ -1560,7 +1568,7 @@ impl HmdsState {
         self.tbt_subscriptions.push(TbtSub {
             instrument, con_id, window_id, query_id, tbt_type, ignore_size, farm, rt_ticker_id: None,
             query_pending: true, owner: Some(req_id), clients,
-            min_tick: 0.01, size_min_tick: None, last: 0, bid: 0, ask: 0, mid: 0,
+            min_tick: 0.01, size_min_tick: None, size_increment: None, last: 0, bid: 0, ask: 0, mid: 0,
             last_size: 0, bid_size: 0, ask_size: 0,
             history_wanted: number_of_ticks > 0, holding: false, held: Vec::new(), cancel_at: None,
         });
@@ -2828,14 +2836,17 @@ pub(crate) mod tests {
     #[test]
     fn a_fractional_tick_by_tick_size_is_whole_below_level_222_and_kept_from_it() {
         let step = Some(0.00000001);
-        assert_eq!(trade_size_at(214, 40_000_000, step), 0.0);
-        assert_eq!(trade_size_at(214, 160_000_000, step), 2.0);
-        assert_eq!(trade_size_at(222, 40_000_000, step), 0.4);
-        assert_eq!(trade_size_at(222, 160_000_000, step), 1.6);
-        assert_eq!(trade_size_at(225, 2_600_000, step), 2_600_000.0 * 0.00000001);
+        let inc = step.and_then(crate::md_events::Increment::from_step);
+        assert_eq!(trade_size_at(214, 40_000_000, step, inc), 0.0);
+        assert_eq!(trade_size_at(214, 160_000_000, step, inc), 2.0);
+        assert_eq!(trade_size_at(222, 40_000_000, step, inc), 0.4);
+        assert_eq!(trade_size_at(222, 160_000_000, step, inc), 1.6);
+        // The decimal the step gives, not the binary product of the two.
+        assert_ne!(2_600_000.0 * 0.00000001, 0.026);
+        assert_eq!(trade_size_at(225, 2_600_000, step, inc), 0.026);
         // A whole size, or no increment: the same at both levels.
-        assert_eq!(trade_size_at(214, 300, None), 300.0);
-        assert_eq!(trade_size_at(222, 300, None), 300.0);
+        assert_eq!(trade_size_at(214, 300, None, None), 300.0);
+        assert_eq!(trade_size_at(222, 300, None, None), 300.0);
     }
 
     fn make_query_error_msg(query_id: &str, error: &str) -> Vec<u8> {

@@ -663,6 +663,12 @@ impl Increment {
         (word >> 8 != 0 && decimals < POW10.len()).then_some(Self { units: word >> 8, decimals: decimals as u8 })
     }
 
+    /// `n` steps, as the nearest number to the exact decimal (ibx#613).
+    #[inline]
+    pub fn times(self, n: u64) -> f64 {
+        (n as f64 * self.units as f64) / POW10[self.decimals as usize]
+    }
+
     /// A value in the steps of the increment, the nearest step, with the
     /// increment's decimals. An unset value (`f64::MAX`) or one that is
     /// not finite stays as it is. No allocation, a few float operations.

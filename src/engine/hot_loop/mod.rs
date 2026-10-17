@@ -6971,8 +6971,8 @@ mod tbt_tests {
         let sizes: Vec<f64> = shared.market.drain_tbt_trades().iter().map(|t| t.size).collect();
         assert!(crate::client_core::SERVER_VERSION < crate::client_core::LEVEL_FRACTIONAL_LAST_SIZE);
         assert_eq!(sizes, [0.0, 2.0]);
-        assert_eq!(hmds::trade_size_at(222, 4_000, Some(0.0001)), 0.4);
-        assert_eq!(hmds::trade_size_at(222, 16_000, Some(0.0001)), 1.6);
+        assert_eq!(hmds::trade_size_at(222, 4_000, Some(0.0001), crate::md_events::Increment::from_step(0.0001)), 0.4);
+        assert_eq!(hmds::trade_size_at(222, 16_000, Some(0.0001), crate::md_events::Increment::from_step(0.0001)), 1.6);
     }
 
     // ibx#404 (captured 18/06/2026, seq 11453, ALAB AllLast, minTick 0.01,
