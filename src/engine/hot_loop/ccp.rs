@@ -5085,6 +5085,7 @@ pub(crate) fn handle_position_update(
     };
     // Fixed-point: a fractional position is kept (ibx#313).
     let position: Qty = parsed.get(&6064).and_then(|s| parse_qty(s)).unwrap_or(0);
+    shared.portfolio.note_row_size(con_id, position);
     // Tag map verified against the updatePortfolio callback (ib-agent#172):
     // 6101 = averageCost, 6065 = marketPrice (per share), 6067 = marketValue,
     // 6100 = unrealizedPNL, 6099 = realizedPNL. Earlier code read 6065 as the

@@ -77,6 +77,9 @@ impl Links {
         crate::gateway::set_machine_zone_for_test(Some(RECORDING_ZONE));
         let shared = Arc::new(SharedState::new());
         shared.reference.set_user_name("user");
+        // The client has no clock of the recording: its own copied waits
+        // are not replayed (ibx#723).
+        shared.portfolio.set_pnl_first_wait_off();
         // Reads return at once: the test steps the engine itself.
         let pair = || {
             let (conn, mut peer) = Peer::pair();

@@ -2614,6 +2614,15 @@ pub struct PortfolioState {
     position_infos: Mutex<HashMap<i64, PositionInfo>>,
     /// Bumped when a position or its average cost changes (ibx#477).
     position_generation: AtomicU64,
+    /// The size each contract's last portfolio row gave, and a running
+    /// number bumped when a row gives another size than the contract's row
+    /// before it (ibx#723): the reference computes the account's P&L at
+    /// once then.
+    row_sizes: Mutex<HashMap<i64, Qty>>,
+    row_size_moves: AtomicU64,
+    /// The first P&L computation waits as the reference's (ibx#723); off
+    /// for a replay, whose client has no clock of the recording.
+    pnl_first_wait_off: AtomicBool,
     /// The positions whose quantity the server's position feed moved, in
     /// order, with a running number (ibx#707): a reqPositions row each. A
     /// fill of this session moves its position itself, so the feed's
@@ -2647,6 +2656,9 @@ impl PortfolioState {
             account_download_complete: AtomicBool::new(false),
             position_infos: Mutex::new(HashMap::new()),
             position_generation: AtomicU64::new(0),
+            row_sizes: Mutex::new(HashMap::new()),
+            row_size_moves: AtomicU64::new(0),
+            pnl_first_wait_off: AtomicBool::new(false),
             feed_moves: Mutex::new(Vec::new()),
             positions: std::array::from_fn(|_| AtomicU64::new(0)),
             midnight_seeds: Mutex::new(HashMap::new()),
@@ -2729,6 +2741,28 @@ impl PortfolioState {
     }
 
     /// Changes whenever a position or its average cost changes (ibx#477).
+    /// A portfolio row's size (ibx#723): counted as a move when the
+    /// contract's row before it gave another size.
+    #[doc(hidden)] pub fn note_row_size(&self, con_id: i64, size: Qty) {
+        if self.row_sizes.lock().unwrap().insert(con_id, size).is_some_and(|prev| prev != size) {
+            self.row_size_moves.fetch_add(1, Ordering::AcqRel);
+        }
+    }
+
+    /// No wait before the first P&L computation (a replay, ibx#723).
+    #[doc(hidden)] pub fn set_pnl_first_wait_off(&self) {
+        self.pnl_first_wait_off.store(true, Ordering::Release);
+    }
+
+    pub fn pnl_first_wait_off(&self) -> bool {
+        self.pnl_first_wait_off.load(Ordering::Acquire)
+    }
+
+    /// The running number of the portfolio rows that moved a size.
+    pub fn row_size_moves(&self) -> u64 {
+        self.row_size_moves.load(Ordering::Acquire)
+    }
+
     pub fn position_generation(&self) -> u64 {
         self.position_generation.load(Ordering::Acquire)
     }

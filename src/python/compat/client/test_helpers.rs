@@ -23,6 +23,8 @@ impl EClient {
             return Err(PyRuntimeError::new_err("Already connected"));
         }
         let shared = Arc::new(SharedState::new());
+        // No logon: the client's copied waits are off (ibx#723).
+        shared.portfolio.set_pnl_first_wait_off();
         let (tx, rx) = match control_capacity {
             Some(n) => crossbeam_channel::bounded(n),
             None => crossbeam_channel::unbounded(),

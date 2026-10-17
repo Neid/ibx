@@ -291,8 +291,17 @@ pub struct PnlQuotes {
     /// Inputs of the last check of the quotes: position generation, P&L
     /// requests running, single requests running, seeds.
     key: (u64, bool, bool, usize),
-    /// When the rows were last computed.
+    /// The tick of the last computation on the one-second grid: the next
+    /// is a second after it, whatever the delay of the pass (ibx#723).
     computed_at: Option<std::time::Instant>,
+    /// Not before this: the first computation, about 120 ms after the
+    /// first request (ibx#723).
+    first_at: Option<std::time::Instant>,
+    /// The portfolio rows' size moves seen at the last computation.
+    row_moves_seen: u64,
+    /// The computation of the last grid tick: the single requests are
+    /// given on the grid only.
+    grid_generation: u64,
     /// Running number of the computations; 0 before the first.
     generation: u64,
     /// The rows of the last computation, in the order of the sums.
@@ -346,6 +355,12 @@ pub struct PnlRow {
 /// pacer of its P&L computation: the first at once, then at most one a
 /// second while its data changes).
 const PNL_RECALC: std::time::Duration = std::time::Duration::from_millis(1000);
+
+/// The first P&L computation waits this long after the first request, as
+/// the reference (ibx#723; paper, 16/10/2026: its ticks 120 to 129 ms after
+/// the request, the first value at 133 ms). A copied wait: on a paced
+/// session only, and not in a replay.
+const PNL_FIRST_WAIT: std::time::Duration = std::time::Duration::from_millis(120);
 
 /// The text of error 2150, given before a P&L value that is not valid.
 pub const PNL_INVALID_TEXT: &str = "Invalid position trade derived value";
@@ -2835,6 +2850,10 @@ impl ClientCore {
             let had = q.asked.get(&c).copied().unwrap_or(false);
             q.asked.insert(c, had || total);
         }
+        // A copied wait: on a paced session only, as the others (ibx#723).
+        if !q.started && control_tx.paced() && !shared.portfolio.pnl_first_wait_off() {
+            q.first_at = Some(std::time::Instant::now() + PNL_FIRST_WAIT);
+        }
         q.started = true;
         let _ = control_tx.send(ControlCommand::PnlQuotes { con_ids: new, second_price: total });
     }
@@ -4984,17 +5003,44 @@ impl ClientCore {
     /// then all rows. Returns the number of the last computation.
     fn compute_pnl(&self, shared: &SharedState) -> u64 {
         let mut q = self.pnl_quotes.lock().unwrap();
-        if !q.started || q.computed_at.is_some_and(|t| t.elapsed() < PNL_RECALC) {
+        let now = std::time::Instant::now();
+        if !q.started || q.first_at.is_some_and(|t| q.generation == 0 && now < t) {
             return q.generation;
         }
+        let due = q.computed_at.is_none_or(|t| now.duration_since(t) >= PNL_RECALC);
+        // A portfolio row that moved a size: the account's P&L at once,
+        // off the grid, which stays (ibx#723; the reference 10.51, paper,
+        // 16/10/2026: 3.7 ms after the first row showing a fill's size).
+        let moves = shared.portfolio.row_size_moves();
+        let moved = q.generation > 0 && moves != q.row_moves_seen;
+        if !due && !moved {
+            return q.generation;
+        }
+        q.row_moves_seen = moves;
         let mut rows = pnl_rows(shared);
         if q.generation == 0 {
             rows.truncate(1);
         }
         q.rows = rows;
         q.generation += 1;
-        q.computed_at = Some(std::time::Instant::now());
+        if due {
+            // On the grid: a second after the last tick, not after this
+            // pass, so the ticks do not drift (ibx#723: the reference's
+            // ticks stay within 9 ms over 14 s); a pass late by more than a
+            // tick starts the grid again.
+            q.computed_at = Some(match q.computed_at {
+                Some(t) if now.duration_since(t) < PNL_RECALC * 2 => t + PNL_RECALC,
+                _ => now,
+            });
+            q.grid_generation = q.generation;
+        }
         q.generation
+    }
+
+    /// The computation of the last grid tick (ibx#723).
+    fn grid_pnl(&self, shared: &SharedState) -> u64 {
+        self.compute_pnl(shared);
+        self.pnl_quotes.lock().unwrap().grid_generation
     }
 
     /// The reqPnL values of the last computation (ibx#511): each field the
@@ -5068,7 +5114,9 @@ impl ClientCore {
         if reqs.is_empty() {
             return Vec::new();
         }
-        let generation = self.compute_pnl(shared);
+        // On the grid only: the reference gives none with an account
+        // update made off the grid (ibx#723, 12 of 12 on the grid).
+        let generation = self.grid_pnl(shared);
         let rows: Vec<PnlRow> = {
             let mut q = self.pnl_quotes.lock().unwrap();
             if generation == 0 || q.seen_single == generation {
@@ -8206,6 +8254,46 @@ mod tests {
         assert_eq!(full.daily_pnl, 0.9497729858385355);
         assert_eq!(full.unrealized_pnl, -990.9473989141641);
         assert!((full.realized_pnl - -716.9810584).abs() < 1e-9, "{}", full.realized_pnl);
+    }
+
+    // ibx#723 (the reference 10.51, paper, 16/10/2026): the first value
+    // about 120 ms after the request; the ticks a second apart without
+    // drift; a portfolio row that moves a size gives the account's P&L at
+    // once, off the grid, which stays, and no single update then.
+    #[test]
+    fn pnl_ticks_keep_their_grid_and_a_size_move_gives_an_account_update_at_once() {
+        let core = ClientCore::new();
+        let shared = SharedState::new();
+        pnl_account_of_15_10(&shared);
+        core.request_pnl(9003, "DU1", "DU1").unwrap();
+        core.request_pnl_single(9004, "DU1", "DU1", 9579970).unwrap();
+        {
+            let mut q = core.pnl_quotes.lock().unwrap();
+            q.started = true;
+            q.first_at = Some(std::time::Instant::now() + std::time::Duration::from_secs(60));
+        }
+        assert!(core.poll_pnl(&shared).is_empty(), "not before the first wait");
+        core.pnl_quotes.lock().unwrap().first_at = Some(std::time::Instant::now());
+        assert_eq!(core.poll_pnl(&shared).len(), 1, "the first value");
+        core.poll_pnl_single(&shared);
+        // A pass 300 ms late: the next tick is a second after the last one,
+        // not after the pass.
+        let tick = core.pnl_quotes.lock().unwrap().computed_at.unwrap();
+        *core.pnl_quotes.lock().unwrap().computed_at_mut().unwrap() -= PNL_RECALC + std::time::Duration::from_millis(300);
+        let late = tick - PNL_RECALC - std::time::Duration::from_millis(300);
+        core.poll_pnl(&shared);
+        assert_eq!(core.pnl_quotes.lock().unwrap().computed_at, Some(late + PNL_RECALC));
+        core.poll_pnl_single(&shared);
+        // A portfolio row that moves IWM's size: the account at once.
+        let grid = core.pnl_quotes.lock().unwrap().computed_at;
+        shared.portfolio.note_row_size(9579970, -20 * crate::types::QTY_SCALE);
+        shared.portfolio.note_row_size(9579970, -20 * crate::types::QTY_SCALE);
+        assert!(core.poll_pnl(&shared).is_empty(), "the same size again moves nothing");
+        shared.portfolio.set_pnl_price(9579970, 280.0);
+        shared.portfolio.note_row_size(9579970, -19 * crate::types::QTY_SCALE);
+        assert_eq!(core.poll_pnl(&shared).len(), 1, "off the grid, at once");
+        assert!(core.poll_pnl_single(&shared).is_empty(), "no single off the grid");
+        assert_eq!(core.pnl_quotes.lock().unwrap().computed_at, grid, "the grid stays");
     }
 
     // ibx#511: the position closed today (AAPL, 0 shares) of the same run:
