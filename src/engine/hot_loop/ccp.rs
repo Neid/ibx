@@ -6065,6 +6065,23 @@ mod tests {
         m
     }
 
+    // ibx#602 (the reference 10.51 at level 225, paper, 18/10/2026): a
+    // cancelled order's remaining quantity is the quantity the server
+    // reports for it, less what filled: a beta hedge of 10 sized down to its
+    // max size of 2 by the server shows 2.
+    #[test]
+    fn a_cancelled_orders_remaining_is_the_servers_quantity() {
+        let (mut ccp, mut context, shared) = ord_status_test_state();
+        let instrument = context.market.try_register(272093).unwrap();
+        context.insert_order(crate::types::Order::new(44, instrument, Side::Sell, 10, 0, b'1', b'0', 0));
+        let mut cancel = exec_report_frame(&[(20, "0"), (39, "4"), (150, "4"), (38, "2"), (14, "0"), (151, "0")]);
+        cancel.insert(11, "44".to_string());
+        ccp.handle_exec_report(&fix::field_view(&cancel), &mut context, &shared, &None, "");
+        let updates = shared.orders.drain_order_updates();
+        let last = updates.iter().rev().find(|u| u.order_id == 44).expect("a status");
+        assert_eq!((last.status, last.remaining_qty_fixed), (crate::types::OrderStatus::Cancelled, 2 * crate::types::QTY_SCALE));
+    }
+
     // ibx#329: the parent id came from the OCA group, so every order of an
     // OCA group reported the same made-up parent. It comes from the parent
     // link.
