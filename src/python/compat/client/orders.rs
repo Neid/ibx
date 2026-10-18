@@ -140,7 +140,9 @@ impl EClient {
             let refusal = self.core.tracked_contract(oid)
                 .and_then(|placed| ClientCore::combo_modify_refusal(full_contract, &placed)
                     .or_else(|| ClientCore::algo_destination_modify_refusal(full_contract, &placed,
-                        |e| shared.reference.is_algo_provider(e))));
+                        |e| shared.reference.is_algo_provider(e))))
+                // A beta hedge's max size below what it filled (ibx#602).
+                .or_else(|| self.core.hedge_filled_refusal(oid, &api_order));
             if let Some((code, message)) = refusal {
                 shared.orders.push_order_error(oid, code, message);
                 return Ok(());

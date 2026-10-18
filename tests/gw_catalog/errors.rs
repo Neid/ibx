@@ -36,6 +36,9 @@ const OBSERVED_TEXTS: &[(i64, &str, &str)] = &[
     (401, "OCA Group", "an OCA group name longer than 64 characters (ibx#688, paper 17/10/2026)"),
     (2181, "Warning: The 'OptOutFromSmartRouting' order attribute is not supported.",
         "opting out of smart routing, with \"Warning: \" before the text (ibx#688, paper 17/10/2026)"),
+    (2185, "Max Hedging Size Warning
+Restriction is specified in Precautionary Settings of Global Configuration/Presets.",
+        "the hedge-size precaution: its title and the presets' precaution line (ibx#602, paper 16/10/2026, regular hours)"),
 ];
 
 /// One place where ibx raises an error.

@@ -677,6 +677,27 @@ fn selling_beta_hedge_without_a_max_size() {
     assert!(engine.orders(0).iter().all(|f| field(f, 6121) != Some("6")), "the parent stays held");
 }
 
+// (ibx#602) A selling beta hedge whose max size is below the hedge's size
+// (the reference 10.51, paper, regular hours 16/10/2026: a parent of 10, a
+// beta of 1 and a max size of 2): the hedge-size precaution's warning on
+// the parent, which is discarded, and nothing sent for either order.
+#[test]
+fn beta_hedge_with_a_max_size_below_the_hedge() {
+    let mut engine = Engine::start();
+    engine.client.place_order(REFUSED, &aapl(), &Order { transmit: false, total_quantity: 10.0, ..order("LMT") }).unwrap();
+    let hedge = Order {
+        action: "SELL".into(), parent_id: REFUSED, hedge_type: "B".into(), hedge_param: "1".into(), hedge_max_size: 2,
+        lmt_price: f64::MAX, total_quantity: 0.0, ..order("MKT")
+    };
+    engine.wait_held_known(REFUSED);
+    engine.client.place_order(REFUSED + 1, &aapl(), &hedge).unwrap();
+    assert_refused_text(&mut engine, REFUSED, "2185-1",
+        Some("Max Hedging Size Warning
+Restriction is specified in Precautionary Settings of Global Configuration/Presets."));
+    let hedge_id = (REFUSED + 1).to_string();
+    assert!(engine.orders(0).iter().all(|f| field(f, 6121) != Some(hedge_id.as_str())), "the hedge is not sent");
+}
+
 // ── The rules of the 10.51 table taken over from 10.40 (ibx#688) ──
 
 // (ibx#688) A short sale on an institutional session without its short

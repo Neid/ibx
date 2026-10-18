@@ -938,7 +938,7 @@ error,2181,The 'OptOutFromSmartRouting' order attribute is not supported.,no tes
 error,2182,Algorithm end time is in the past for order %s,no test
 error,2183,Algorithm end time precedes algorithm start time for %s,no test
 error,2184,This order will be distributed over multiple accounts.<br>We strongly suggest you familiarize yourself with our allocation<br> facilities at the link below before submitting orders.,no test
-error,2185,The confirmed MaxHedgeSize value of %s must be greater than or equals to %s,no test
+error,2185,The confirmed MaxHedgeSize value of %s must be greater than or equals to %s,tests/gw_catalog/refusals.rs::beta_hedge_with_a_max_size_below_the_hedge ; src/engine/hot_loop/order_builder.rs::the_hedge_size_precaution_discards_the_parent_and_keeps_the_hedge
 error,2186,"Requested real-time market data requires additional subscription for API. You elected to receive delayed market data instead. To subscribe, see link in 'Market Data Connections' dialog for more details.",no test
 error,2187,Generic tick data is not available when using delayed market data fallback.,no test
 error,2188,Up-to-the-second historical data requires additional subscription for the API.,no test
@@ -1280,8 +1280,8 @@ error,10360,Scan filter %s is not allowed,no test
 error,10361,Volatility value too small. %s Volatility Type requires a minimum value of %s. Please enter %s or higher.,no test
 error,10362,OVERNIGHT order is not supported,tests/gw_catalog/errors.rs::every_error_ibx_raises_is_the_gateways
 error,10363,Non-ASCII symbol in field %s,no test
-error,10364,Max Hedging Size value must be defined for the hedge order.,no test
-error,10365,Max Hedging Size value is smaller than what has already filled: %s.,no test
+error,10364,Max Hedging Size value must be defined for the hedge order.,tests/gw_catalog/refusals.rs::selling_beta_hedge_without_a_max_size
+error,10365,Max Hedging Size value is smaller than what has already filled: %s.,src/client_core.rs::the_hedge_size_precaution_of_a_transmitted_tree
 error,10366,Orders with Time in force in minutes cannot have a start time specified,no test
 error,10367,"Requesting ""Odd Lot Bid/Ask Quotes"" generic tick 787 is not allowed",tests/gw_catalog/errors.rs::every_error_ibx_raises_is_the_gateways ; src/client_core.rs::odd_lot_quotes_are_refused_below_level_225
 error,10368,Non-guaranteed combo order is only supported for 2-leg SMART combos.,no test
@@ -1713,12 +1713,12 @@ local_rule,2137-1,"2137 rules: closing order larger than the position: warning c
 local_rule,10132-2,10132 rules: read-only account,open #688
 local_rule,10361-1,10361 rules: VOL order whose volatility is below the minimum of its volatility type,open #673
 local_rule,10364-1,10364 rules: an attached hedge child of the kind that takes a maximum hedge size has none,tests/gw_catalog/refusals.rs::selling_beta_hedge_without_a_max_size
-local_rule,10365-1,10365 rules: the maximum hedge size of such a hedge child is below its filled quantity,open #602
+local_rule,10365-1,10365 rules: the maximum hedge size of such a hedge child is below its filled quantity,src/client_core.rs::the_hedge_size_precaution_of_a_transmitted_tree
 local_rule,10355-1,10355 rules: new request form: attachedOrders asks for a profit taker and the order preset has none; order dropped,tests/gw_catalog/refusals.rs::attached_from_a_preset_without_them
 local_rule,10355-2,10355 rules: new request form: attachedOrders asks for a stop loss and the order preset has none; order dropped,tests/gw_catalog/refusals.rs::attached_from_a_preset_without_them
 local_rule,10349-1,"10349 rules: notice, order still sent: API order whose time in force was taken from the order preset",tests/gw_catalog/refusals.rs::time_in_force_from_the_order_preset
 local_rule,10353-1,"10353 rules: API order with routeMarketableToBbo set and the API precaution 'Bypass Route Marketable to BBO Warning' off: warning code, order discarded",tests/gw_catalog/refusals.rs::route_marketable_to_bbo_without_the_bypass
-local_rule,2185-1,"2185 rules: a hedge child of the kind that takes a maximum hedge size, with a maximum below the computed hedge size, hedge-size precaution on: warning code, order refused",open #602
+local_rule,2185-1,"2185 rules: a hedge child of the kind that takes a maximum hedge size, with a maximum below the computed hedge size, hedge-size precaution on: warning code, order refused",tests/gw_catalog/refusals.rs::beta_hedge_with_a_max_size_below_the_hedge
 local_rule,104-1,"104 modify: modify of an order that is filled, cancelled or with a cancel pending",src/client_core.rs::place_on_a_cancelled_order_id_is_refused ; src/engine/hot_loop/order_builder.rs::modify_of_an_order_the_engine_no_longer_holds_is_refused
 local_rule,105-1,105 modify: modified order does not match the original,tests/gw_catalog/refusals.rs::modify_of_the_side
 local_rule,329-1,329 modify: modify to another order type,tests/gw_catalog/refusals.rs::modify_to_another_order_type

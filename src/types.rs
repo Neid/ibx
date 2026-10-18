@@ -547,6 +547,10 @@ pub struct OrderAttrs {
     /// gives it once the contract is known and keeps the order for its
     /// cancel, as one never sent.
     pub kept_refusal: Option<(i64, String)>,
+    /// The hedge-size precaution of the order's tree (ibx#602): `Some(true)`
+    /// on the parent it discards (2185, Cancelled, 201), `Some(false)` on
+    /// the hedge kept unsent without a message, for its cancel.
+    pub hedge_precaution: Option<bool>,
     /// The API postOnly, allowPreOpen, ignoreOpenAuction and deactivate,
     /// sent as order attributes where they apply (ibx#607).
     pub post_only: bool,
@@ -1565,6 +1569,22 @@ impl OrderRequest {
 
     /// The attributes of a new order that carries them (ibx#665). None
     /// for any other request.
+    /// A plain new order (a DAY order with no attributes) as the same order
+    /// in its form with attributes, so that it can carry one; any other
+    /// request as it is.
+    pub fn with_attrs(self) -> Self {
+        let ex = |order_id, instrument, side, qty, kind| Self::SubmitEx { order_id, instrument, side, qty, kind, tif: b'0', attrs: OrderAttrs::default() };
+        match self {
+            Self::SubmitLimit { order_id, instrument, side, qty, price } =>
+                Self::SubmitLimitEx { order_id, instrument, side, qty, price, tif: b'0', attrs: OrderAttrs::default() },
+            Self::SubmitMarket { order_id, instrument, side, qty } => ex(order_id, instrument, side, qty, OrderKind::Market),
+            Self::SubmitStop { order_id, instrument, side, qty, stop_price } => ex(order_id, instrument, side, qty, OrderKind::Stop { stop_price }),
+            Self::SubmitStopLimit { order_id, instrument, side, qty, price, stop_price } =>
+                ex(order_id, instrument, side, qty, OrderKind::StopLimit { price, stop_price }),
+            other => other,
+        }
+    }
+
     pub fn new_order_attrs_mut(&mut self) -> Option<&mut OrderAttrs> {
         match self {
             Self::SubmitWhatIf { request } => request.new_order_attrs_mut(),

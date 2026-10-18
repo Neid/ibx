@@ -431,6 +431,11 @@ fn send_orders(
             if route_bbo_precaution(&order_req, context, shared) {
                 continue;
             }
+            // The parent of a beta hedge whose max size is below the
+            // hedge's size: discarded by the hedge-size precaution (ibx#602).
+            if hedge_size_precaution(&order_req, context, shared) {
+                continue;
+            }
             // Attached orders the order preset does not define (ibx#609),
             // once the preset of the contract's type is known: the
             // reference asks it first (ibx#717; paper, 16/10/2026: its
@@ -2658,14 +2663,59 @@ pub(crate) fn reference_rank(tag: u32) -> u16 {
 /// the hedge, nothing sent; the order is kept for its cancel, which ends it
 /// as an order never sent (Cancelled, 202, 161), and its held parent stays
 /// held.
+///
+/// The hedge of a parent the hedge-size precaution discards (ibx#602) is
+/// kept the same way, without a message.
+///
+/// Such a hedge is kept with its own quantity, 0, not the parent's it is
+/// sent with: its cancel gives Cancelled with 0 remaining (the reference
+/// 10.51, paper: 17/10/2026 market closed after 10364, 16/10/2026 regular
+/// hours after 2185, a hedge of its parent's contract both times).
 fn hedge_max_size_refusal(req: &OrderRequest, context: &mut Context, shared: &Arc<SharedState>) -> bool {
     let Some((_, Some(attrs))) = req.new_order_side() else { return false };
+    if attrs.hedge_precaution == Some(false)
+        && let Some(instrument) = req.instrument()
+    {
+        log::warn!("Hedge order {} kept unsent: its parent is discarded (hedge-size precaution)", req.order_id());
+        context.unsent.insert(req.order_id(), (instrument, 0, attrs.parent_id));
+        return true;
+    }
     if !attrs.hedge.as_ref().is_some_and(|h| h.max_size_missing) { return false; }
     let Some(instrument) = req.instrument() else { return false };
     let oid = req.order_id();
     log::warn!("Hedge order {} refused: no max size", oid);
     shared.orders.push_order_error(oid, 10364, "Max Hedging Size value must be defined for the hedge order.".into());
-    context.unsent.insert(oid, (instrument, req.new_order_qty().unwrap_or(0), attrs.parent_id));
+    context.unsent.insert(oid, (instrument, 0, attrs.parent_id));
+    true
+}
+
+/// The parent of a beta hedge whose max size is below the hedge's size
+/// (`ClientCore::note_hedge_precaution`, ibx#602; the reference 10.51,
+/// paper, regular hours 16/10/2026: a parent of 10 AAPL, its hedge of beta
+/// 1 with a max size of 2): 2185 on the parent, then orderStatus Cancelled
+/// with nothing filled and a permId, then 201 "Order was discarded.";
+/// nothing sent. Its hedge is kept unsent for its cancel.
+fn hedge_size_precaution(req: &OrderRequest, context: &mut Context, shared: &Arc<SharedState>) -> bool {
+    let Some((_, Some(attrs))) = req.new_order_side() else { return false };
+    if attrs.hedge_precaution != Some(true) { return false; }
+    let (Some(qty), Some(instrument)) = (req.new_order_qty(), req.instrument()) else { return false };
+    let oid = req.order_id();
+    log::warn!("Order {} discarded: its beta hedge's max size is below the hedge size (precaution)", oid);
+    let (code, text) = crate::client_core::HEDGE_SIZE_WARNING;
+    shared.orders.push_order_error(oid, code, text.to_string());
+    let perm_id = context.new_server_id();
+    shared.orders.push_order_update(OrderUpdate {
+        order_id: oid,
+        instrument,
+        status: OrderStatus::Cancelled,
+        filled_qty_fixed: 0,
+        remaining_qty_fixed: qty,
+        avg_fill_price: 0,
+        perm_id,
+        parent_id: attrs.parent_id,
+        timestamp_ns: context.now_ns(),
+    });
+    shared.orders.push_order_notice(oid, 201, "Order rejected - reason:Order was discarded.".into());
     true
 }
 
@@ -8143,7 +8193,38 @@ mod tests {
         drain_and_send_orders(&mut conn, &mut context, "DU1", &mut HeartbeatState::new(), false, &shared);
         assert!(peer.messages().is_empty(), "nothing sent");
         assert_eq!(shared.orders.drain_order_errors(), [(57732, 10364, "Max Hedging Size value must be defined for the hedge order.".to_string())]);
-        assert!(context.unsent.contains_key(&57732), "kept for its cancel");
+        assert_eq!(context.unsent.get(&57732).map(|h| h.1), Some(0), "kept for its cancel, with its own quantity (#602)");
+    }
+
+    // ibx#602 (the reference 10.51, paper, regular hours 16/10/2026: a
+    // parent of 10 AAPL and its beta hedge with a max size of 2): the
+    // parent gets 2185, Cancelled with nothing filled, then 201; the hedge
+    // is kept unsent without a message; nothing is sent.
+    #[test]
+    fn the_hedge_size_precaution_discards_the_parent_and_keeps_the_hedge() {
+        let mut context = order_context();
+        context.market.register(265598);
+        context.pending_orders.push(OrderRequest::SubmitEx { order_id: 58102, instrument: 0, side: Side::Buy, qty: 10,
+            kind: crate::types::OrderKind::Limit { price: 400 * P }, tif: b'0',
+            attrs: crate::types::OrderAttrs { hedge_precaution: Some(true), ..Default::default() } });
+        context.pending_orders.push(OrderRequest::SubmitEx { order_id: 58103, instrument: 0, side: Side::Sell, qty: 10,
+            kind: crate::types::OrderKind::Market, tif: b'0', attrs: crate::types::OrderAttrs {
+                parent_id: 58102, hedge_precaution: Some(false),
+                hedge: Some(crate::types::Hedge { kind: 4, beta: Some(1.0), max_size: Some(2), ..Default::default() }),
+                ..Default::default() } });
+        let shared = Arc::new(SharedState::new());
+        let (conn, mut peer) = crate::test_support::Peer::pair();
+        let mut conn = Some(conn);
+        drain_and_send_orders(&mut conn, &mut context, "DU1", &mut HeartbeatState::new(), false, &shared);
+        assert!(peer.messages().is_empty(), "nothing sent");
+        assert_eq!(shared.orders.drain_order_errors(), [(58102, 2185, crate::client_core::HEDGE_SIZE_WARNING.1.to_string())]);
+        let updates = shared.orders.drain_order_updates();
+        assert_eq!(updates.iter().map(|u| (u.order_id, u.status, u.filled_qty_fixed, u.remaining_qty_fixed)).collect::<Vec<_>>(),
+            [(58102, OrderStatus::Cancelled, 0, 10 * crate::types::QTY_SCALE)]);
+        assert_eq!(shared.orders.drain_order_notices().iter().map(|n| (n.0, n.1, n.2.as_str())).collect::<Vec<_>>(),
+            [(58102, 201, "Order rejected - reason:Order was discarded.")]);
+        assert!(!context.unsent.contains_key(&58102), "the parent is gone: its cancel finds nothing");
+        assert_eq!(context.unsent.get(&58103).map(|h| h.1), Some(0), "the hedge is kept for its cancel, with its own quantity");
     }
 
     // ibx#614, the reference's frames of 16/10/2026 (paper, AAPL MKT

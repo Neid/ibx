@@ -1294,6 +1294,12 @@ pub fn duplicate_order_id(order_id: OrderId) -> (i64, String) {
 pub const FRACTIONAL_VIA_API: (i64, &str) = (10243,
     "Fractional-sized order cannot be placed via API. Please use desktop version to place this order.");
 
+/// The hedge-size precaution's warning on the parent it discards
+/// (ibx#602; the reference 10.51, paper, regular hours 16/10/2026).
+pub const HEDGE_SIZE_WARNING: (i64, &str) = (2185,
+    "Max Hedging Size Warning
+Restriction is specified in Precautionary Settings of Global Configuration/Presets.");
+
 /// Most commission reports kept while waiting for their execution.
 pub const PENDING_COMMISSIONS_MAX: usize = 1024;
 
@@ -1605,6 +1611,10 @@ pub struct ClientCore {
     /// Orders the redirect precaution discarded (10311, 10329), until
     /// their Cancelled status (ibx#486).
     discarded: Mutex<HashSet<OrderId>>,
+    /// The orders of a transmitted tree the hedge-size precaution stops
+    /// (ibx#602): true for the parent it discards, false for the hedge
+    /// kept unsent; taken as their commands are built.
+    hedge_precaution: Mutex<HashMap<OrderId, bool>>,
     /// The last report given for each order (ibx#486).
     last_reports: Mutex<HashMap<OrderId, OrderReport>>,
     /// The commission of each execution of an order, by execution id
@@ -1779,10 +1789,11 @@ pub const LEVEL_CONFIG: i32 = 219;
 /// updateConfig (ibx#612).
 pub const LEVEL_UPDATE_CONFIG: i32 = 221;
 
-// Levels 219 and 221 are answered (ibx#610, ibx#612). Level 222 is not
-// finished: ibx answers it only once the fractional last size is (ibx#613).
+// Every level up to 225 is written (ibx#602, 18/10/2026); what is left
+// waits for a session or an account. Raising the level ibx answers is the
+// project manager's decision (ibx#602): this check stays until he takes it.
 const _: () = assert!(SERVER_VERSION < LEVEL_FRACTIONAL_LAST_SIZE,
-    "finish the fractional last size of level 222 (ibx#613) before raising the session level (ibx#602)");
+    "raising the session level is decided on ibx#602; remove this check with the move");
 
 pub const CONFIG_UNSUPPORTED: (i64, &str) =
     (503, "The TWS is out of date and must be upgraded.  It does not support config requests.");
@@ -2313,6 +2324,7 @@ impl ClientCore {
             rth_dropped: Mutex::new(HashSet::new()),
             post_only_shown: Mutex::new(HashSet::new()),
             discarded: Mutex::new(HashSet::new()),
+            hedge_precaution: Mutex::new(HashMap::new()),
             last_reports: Mutex::new(HashMap::new()),
             order_commissions: Mutex::new(HashMap::new()),
             pending_commissions: Mutex::new(PendingCommissions::default()),
@@ -4720,7 +4732,8 @@ impl ClientCore {
         }
         // The redirect precaution discards the order (ibx#486).
         // So does the precaution of routeMarketableToBbo (ibx#608).
-        if matches!(code, 10311 | 10329 | 10353) {
+        // And the hedge-size precaution its parent (ibx#602).
+        if matches!(code, 10311 | 10329 | 10353) || code == HEDGE_SIZE_WARNING.0 {
             self.discarded.lock().unwrap().insert(order_id);
         }
         // Refused with 387, or 437, 496, 497 (ibx#607), or 464 on an
@@ -6699,12 +6712,60 @@ impl ClientCore {
         (order.oca_group.chars().count() > 64).then(|| (401, "OCA Group".into()))
     }
 
-    /// Carry [`Self::kept_refusal`] with a new order to the engine.
+    /// Carry [`Self::kept_refusal`] with a new order to the engine, and
+    /// the hedge-size precaution of its tree (ibx#602).
     pub fn carry_kept_refusal(&self, cmd: &mut ControlCommand, order: &ApiOrder) {
-        if let ControlCommand::Order(req) = cmd
-            && let Some(attrs) = req.new_order_attrs_mut()
-        {
-            attrs.kept_refusal = self.kept_refusal(order);
+        if let ControlCommand::Order(req) = cmd {
+            let precaution = self.hedge_precaution.lock().unwrap().remove(&req.order_id());
+            // A plain parent takes its form with attributes to carry it.
+            if precaution.is_some() && req.new_order_attrs_mut().is_none() {
+                *req = std::mem::replace(req, OrderRequest::GlobalCancel).with_attrs();
+            }
+            if let Some(attrs) = req.new_order_attrs_mut() {
+                attrs.kept_refusal = self.kept_refusal(order);
+                attrs.hedge_precaution = precaution;
+            }
+        }
+    }
+
+    /// The hedge-size precaution of a tree about to be transmitted
+    /// (ibx#602; the reference 10.51, paper, regular hours 16/10/2026,
+    /// precaution message 731 on as the paper installation has it): a
+    /// beta hedge whose hedge sells, on its parent's contract, with a max
+    /// size below the hedge's size (the parent's quantity times the beta,
+    /// the beta 1 when the hedge has none, in whole shares) stops the
+    /// tree. The parent is discarded with 2185 (Cancelled, then 201) and
+    /// the hedge is kept unsent, without a message, for its cancel. A
+    /// hedge on another contract is sized from the beta's market data:
+    /// not checked here.
+    fn note_hedge_precaution(&self, tree: &[(OrderId, ApiContract, ApiOrder, bool)]) {
+        let same_contract = |a: &ApiContract, b: &ApiContract| if a.con_id > 0 && b.con_id > 0 {
+            a.con_id == b.con_id
+        } else {
+            a.symbol.eq_ignore_ascii_case(&b.symbol) && a.sec_type.eq_ignore_ascii_case(&b.sec_type)
+                && a.currency.eq_ignore_ascii_case(&b.currency)
+        };
+        let mut stopped = Vec::new();
+        for (id, contract, order, _) in tree {
+            let Some(hedge) = order.hedge().filter(|h| h.kind == 4) else { continue };
+            let Some(max_size) = hedge.max_size else { continue };
+            let Some((parent_id, parent_contract, parent, _)) = tree.iter().find(|p| i64::from(p.0) == order.parent_id) else { continue };
+            let sells = match hedge.beta {
+                None => order.action.eq_ignore_ascii_case("SELL"),
+                Some(beta) => (parent.action.eq_ignore_ascii_case("BUY") && beta > 0.0)
+                    || (parent.action.eq_ignore_ascii_case("SELL") && beta < 0.0),
+            };
+            if !sells || !same_contract(contract, parent_contract) {
+                continue;
+            }
+            let size = (parent.total_quantity * hedge.beta.unwrap_or(1.0)).abs().floor();
+            if (max_size as f64) < size {
+                stopped.push((*parent_id, true));
+                stopped.push((*id, false));
+            }
+        }
+        if !stopped.is_empty() {
+            self.hedge_precaution.lock().unwrap().extend(stopped);
         }
     }
 
@@ -7243,7 +7304,19 @@ impl ClientCore {
         if refused {
             return vec![(order_id, contract.clone(), order.clone(), false)];
         }
-        self.orders_to_transmit(order_id, contract, order)
+        let tree = self.orders_to_transmit(order_id, contract, order);
+        self.note_hedge_precaution(&tree);
+        tree
+    }
+
+    /// A modify of a beta hedge whose max size is below what the hedge
+    /// already filled (ibx#602): 10365 with the filled quantity, nothing
+    /// sent, the order as it was. The 10.51 rule, not observed yet: it
+    /// needs a hedge filled in part.
+    pub fn hedge_filled_refusal(&self, order_id: OrderId, order: &ApiOrder) -> Option<(i64, String)> {
+        let max_size = order.hedge().filter(|h| h.kind == 4)?.max_size?;
+        let filled = self.open_orders.lock().unwrap().get(&order_id).map(|t| t.filled)?;
+        ((max_size as f64) < filled).then(|| (10365, format!("Max Hedging Size value is smaller than what has already filled: {}.", filled)))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -9077,6 +9150,49 @@ mod tests {
         assert_eq!(refused.iter().map(|o| o.0).collect::<Vec<_>>(), [30]);
         let sent = core.orders_to_transmit_checked(30, &aapl, &ApiOrder { transmit: true, hedge_max_size: 100, ..hedge("B", "1") }, &shared, "DU1");
         assert_eq!(sent.iter().map(|o| o.0).collect::<Vec<_>>(), [10, 30]);
+    }
+
+    // ibx#602 (the reference 10.51, paper, regular hours 16/10/2026): a
+    // beta hedge of its parent's contract whose max size is below the
+    // hedge's size stops its tree: the parent is discarded, the hedge kept.
+    #[test]
+    fn the_hedge_size_precaution_of_a_transmitted_tree() {
+        let core = ClientCore::new();
+        let shared = SharedState::new();
+        let aapl = ApiContract { symbol: "AAPL".into(), sec_type: "STK".into(), exchange: "SMART".into(), currency: "USD".into(), ..Default::default() };
+        let parent = ApiOrder { action: "BUY".into(), order_type: "LMT".into(), total_quantity: 10.0, lmt_price: 400.0, transmit: false, ..Default::default() };
+        let hedge = |param: &str, max_size: i32| ApiOrder {
+            action: "SELL".into(), order_type: "MKT".into(), total_quantity: 0.0, lmt_price: f64::MAX, transmit: true,
+            parent_id: 10, hedge_type: "B".into(), hedge_param: param.into(), hedge_max_size: max_size, ..Default::default()
+        };
+        let outcome = |contract: &ApiContract, order: ApiOrder| {
+            core.hold_order(10, aapl.clone(), parent.clone(), 1);
+            let tree = core.orders_to_transmit_checked(11, contract, &order, &shared, "DU1");
+            let marks: Vec<(OrderId, Option<bool>)> = tree.iter().map(|(id, _, o, _)| {
+                // A plain order: the precaution takes its form with attributes.
+                let mut cmd = ControlCommand::Order(OrderRequest::SubmitLimit { order_id: *id, instrument: 0, side: crate::types::Side::Buy,
+                    qty: 10, price: 0 });
+                core.carry_kept_refusal(&mut cmd, o);
+                let ControlCommand::Order(req) = cmd else { unreachable!() };
+                (*id, req.new_order_side().and_then(|(_, a)| a).and_then(|a| a.hedge_precaution))
+            }).collect();
+            marks
+        };
+        let (p, h) = (OrderId::from(10), OrderId::from(11));
+        assert_eq!(outcome(&aapl, hedge("1", 2)), [(p, Some(true)), (h, Some(false))], "the observed case");
+        assert_eq!(outcome(&aapl, hedge("1", 10)), [(p, None), (h, None)], "a max size of the hedge's size");
+        assert_eq!(outcome(&aapl, hedge("0.5", 5)), [(p, None), (h, None)], "beta 0.5: a hedge of 5");
+        assert_eq!(outcome(&aapl, hedge("0.5", 4)), [(p, Some(true)), (h, Some(false))]);
+        let msft = ApiContract { symbol: "MSFT".into(), ..aapl.clone() };
+        assert_eq!(outcome(&msft, hedge("1", 2)), [(p, None), (h, None)], "another contract: sized from market data");
+        assert!(core.hedge_precaution.lock().unwrap().is_empty(), "taken as the commands are built");
+        // A modify of a hedge filled in part, with a max size below it: 10365.
+        core.track_order(12, aapl.clone(), hedge("1", 100), 1);
+        core.update_order_status(12, "Submitted", 3.0, 7.0);
+        assert_eq!(core.hedge_filled_refusal(12, &hedge("1", 2)),
+            Some((10365, "Max Hedging Size value is smaller than what has already filled: 3.".into())));
+        assert_eq!(core.hedge_filled_refusal(12, &hedge("1", 3)), None);
+        assert_eq!(core.hedge_filled_refusal(12, &ApiOrder { hedge_type: String::new(), ..hedge("1", 2) }), None);
     }
 
     // ibx#609 (the reference 10.51, paper, 15 and 16/10/2026): the reading

@@ -527,6 +527,7 @@ impl Order {
             duration: (self.duration != i32::MAX).then_some(self.duration),
             // Set where the order is placed (`ClientCore::carry_kept_refusal`).
             kept_refusal: None,
+            hedge_precaution: None,
             // Not sent with the AccuDistr algo, as the reference (ibx#607,
             // paper 12/10/2026: the order accepted without it).
             post_only: self.post_only && !self.algo_strategy.eq_ignore_ascii_case("AccuDistr"),
