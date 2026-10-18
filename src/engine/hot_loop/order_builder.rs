@@ -397,6 +397,38 @@ fn send_orders(
                     continue;
                 }
             }
+            // An order below the contract's minimum size, once its definition
+            // gave one: 388, nothing sent and nothing kept (ibx#688; the
+            // reference 10.51, paper, 19/10/2026, market closed: one share of
+            // a Tokyo stock, its cancel 10147).
+            let min_size = context.market.con_id(instrument).and_then(|c| context.min_sizes.get(&c).copied());
+            if let (Some(min), Some(qty)) = (min_size, order_req.new_order_qty())
+                && (qty as u64) < min * crate::types::QTY_SCALE as u64
+            {
+                let oid = order_req.order_id();
+                log::warn!("Order {} refused: below the minimum size {}", oid, min);
+                shared.orders.push_order_error(oid, 388, format!("Order size {} is smaller than the minimum required size of {}.",
+                    qty as f64 / crate::types::QTY_SCALE as f64, min));
+                continue;
+            }
+            // A display size or a minimum quantity below that size: 10083
+            // and 10084, nothing kept (the same runs: a Tokyo stock order of
+            // 200 showing 50, or with a minimum quantity of 50).
+            if let (Some(min), Some((_, Some(attrs)))) = (min_size, order_req.new_order_side()) {
+                let refusal = if attrs.display_size > 0 && u64::from(attrs.display_size) < min {
+                    Some((10083, "Display size is smaller than the minimum requirement."))
+                } else if attrs.min_qty > 0 && u64::from(attrs.min_qty) < min {
+                    Some((10084, "Min. quantity is smaller than the minimum requirement."))
+                } else {
+                    None
+                };
+                if let Some((code, text)) = refusal {
+                    let oid = order_req.order_id();
+                    log::warn!("Order {} refused: {} below the minimum size {}", oid, code, min);
+                    shared.orders.push_order_error(oid, code, text.to_string());
+                    continue;
+                }
+            }
             // A request for quote, once its contract is known: 416, nothing
             // sent and nothing kept (a cancel gives 10147), as the reference
             // 10.51 (paper, 19/10/2026, market closed: an AAPL option given
@@ -479,6 +511,15 @@ fn send_orders(
         // An option, futures option or warrant order without the trading
         // permission of its class (ibx#666).
         match permission_refusal(&order_req, context, conn, hb, shared) {
+            Some(false) => { context.rth_parked.push(rewrap(order_req)); continue; }
+            Some(true) => continue,
+            None => {}
+        }
+        // The attributes and market on close the contract's list does not
+        // allow, after the permission question (ibx#688; the reference
+        // 10.51, paper, 19/10/2026: an AAPL option without the permission,
+        // with sweep-to-fill, imbalance-only or market on close, got 460).
+        match attribute_list_refusal(&order_req, context, conn, hb, shared) {
             Some(false) => { context.rth_parked.push(rewrap(order_req)); continue; }
             Some(true) => continue,
             None => {}
@@ -3510,6 +3551,56 @@ fn all_or_none_refusal(
     }
 }
 
+/// A new order with a minimum quantity (10256) or a display size (10255)
+/// whose contract's list for its exchange has no key for it: refused and
+/// kept for its cancel, as the reference 10.51 (ibx#688; paper, 19/10/2026,
+/// market closed: AAPL with a minimum quantity, EUR.USD with either; the
+/// cancel gives Cancelled, 202 and 161). `Some(false)` while the list is
+/// asked for.
+fn attribute_list_refusal(
+    req: &OrderRequest,
+    context: &mut Context,
+    conn: &mut Connection,
+    hb: &mut HeartbeatState,
+    shared: &Arc<SharedState>,
+) -> Option<bool> {
+    let moc = matches!(req, OrderRequest::SubmitMoc { .. } | OrderRequest::SubmitEx { kind: crate::types::OrderKind::Moc, .. });
+    let (_, attrs) = req.new_order_side()?;
+    let attrs = attrs.cloned().unwrap_or_default();
+    if attrs.min_qty == 0 && attrs.display_size == 0 && !attrs.block_order && !attrs.sweep_to_fill && !attrs.imbalance_only && !moc {
+        return None;
+    }
+    let (min_qty, display, parent) = (attrs.min_qty > 0, attrs.display_size > 0, attrs.parent_id);
+    let (block, sweep, imbalance) = (attrs.block_order, attrs.sweep_to_fill, attrs.imbalance_only);
+    let instrument = req.instrument()?;
+    let oid = req.order_id();
+    let refusal = match definition(context, conn, hb, instrument) {
+        Definition::NoContract => return None,
+        Definition::Waiting => return Some(false),
+        Definition::Known(types, _) if types.types_known && min_qty && !types.paon =>
+            (10256, crate::engine::outside_rth::MIN_QTY_NOT_ALLOWED),
+        Definition::Known(types, _) if types.types_known && display && !types.ice =>
+            (10255, crate::engine::outside_rth::DISPLAY_SIZE_NOT_ALLOWED),
+        // A block order, sweep-to-fill and imbalance-only the same way
+        // (ibx#688; paper, 19/10/2026: an AAPL block order of 50, EUR.USD
+        // with sweep-to-fill or imbalance-only, each kept).
+        Definition::Known(types, _) if types.types_known && block && !types.block =>
+            (10266, crate::engine::outside_rth::BLOCK_NOT_ALLOWED),
+        Definition::Known(types, _) if types.types_known && sweep && !types.sweep =>
+            (10267, crate::engine::outside_rth::SWEEP_NOT_ALLOWED),
+        Definition::Known(types, _) if types.types_known && imbalance && !types.imb =>
+            (10342, crate::engine::outside_rth::IMBALANCE_NOT_ALLOWED),
+        // Market on close: 387 (a EUR.USD order on IDEALPRO, kept).
+        Definition::Known(types, _) if types.types_known && moc && !types.moc =>
+            (387, crate::engine::outside_rth::UNSUPPORTED_ORDER_TYPE),
+        Definition::Known(..) => return None,
+    };
+    log::warn!("Order {} refused: {} is not in the list of this exchange", oid, refusal.0);
+    shared.orders.push_order_error(oid, refusal.0, refusal.1.to_string());
+    context.keep_unsent(oid, (instrument, req.new_order_qty().unwrap_or(0), parent));
+    Some(true)
+}
+
 /// Outside RTH on a request (ibx#465), with allow pre-open and ignore
 /// opening auction (ibx#607). A request of an order that already waits,
 /// or with one of them whose contract definition is not known yet, waits
@@ -3665,7 +3756,13 @@ fn permission_refusal(
     if req.combo().is_some() { return None; }
     let instrument = req.instrument()?;
     let sec_type = context.market.order_routing(instrument).0;
-    if !matches!(sec_type.as_str(), "OPT" | "FOP" | "WAR" | "IOPT" | "CMDTY" | "FUND" | "BOND" | "BILL" | "CRYPTO" | "FUT" | "CFD") { return None; }
+    // A stock whose known definition names a permission class (a Tokyo
+    // stock, "16/STK/NONE"; a US stock names none) is asked for it too,
+    // and waits for the answer (ibx#688; the reference 10.51, paper,
+    // 19/10/2026, market closed: 460, the order kept).
+    let classed_stock = matches!(sec_type.as_str(), "STK" | "CS")
+        && context.market.con_id(instrument).is_some_and(|c| context.rth_types.iter().any(|(k, t)| k.0 == c && !t.permission_key.is_empty()));
+    if !classed_stock && !matches!(sec_type.as_str(), "OPT" | "FOP" | "WAR" | "IOPT" | "CMDTY" | "FUND" | "BOND" | "BILL" | "CRYPTO" | "FUT" | "CFD") { return None; }
     // A warrant, a metal and a fund go out with the question on its way
     // (paper, 16/10/2026: XAUUSD and a VFIAX buy by cash sent at once, the
     // server refusing them; the next fund order then refused with 460); a
@@ -4221,6 +4318,13 @@ pub(crate) fn rth_definition_reply(context: &mut Context, req_id: &str, msg: &[u
 
 /// The order rules of a contract on an exchange, from a definition reply
 /// of that exchange (ibx#465, ibx#669).
+/// The minimum order size a definition gives (ibx#688).
+fn note_min_size(context: &mut Context, con_id: i64, tags: &std::collections::HashMap<u32, String>) {
+    if let Some(min) = tags.get(&6581).and_then(|v| v.parse::<u64>().ok()).filter(|v| *v > 0) {
+        context.min_sizes.insert(con_id, min);
+    }
+}
+
 fn store_rth_types(context: &mut Context, key: (i64, String), msg: &[u8]) {
     let tags = fix::fix_parse(msg);
     let tokens: Vec<String> = tags.get(&6431).map(|v| v.split(',').map(String::from).collect()).unwrap_or_default();
@@ -4232,6 +4336,7 @@ fn store_rth_types(context: &mut Context, key: (i64, String), msg: &[u8]) {
         def.as_ref().map(|d| d.currency.as_str()).unwrap_or(""),
     );
     types.smart = tags.get(&6046).is_some_and(|v| v.split(',').any(|e| e == "BEST" || e == "SMART"));
+    note_min_size(context, key.0, &tags);
     types.under_sec_type = tags.get(&310).cloned().unwrap_or_default();
     types.permission_key = tags.get(&6411).cloned().unwrap_or_default();
     if let Some(d) = def.as_ref() {
@@ -5000,6 +5105,9 @@ pub(crate) fn order_contract_reply(context: &mut Context, shared: &SharedState, 
         .iter().map(|d| d.con_id).filter(|c| *c != 0).collect();
     con_ids.sort_unstable();
     con_ids.dedup();
+    if let [con_id] = con_ids[..] {
+        note_min_size(context, con_id, &fix::fix_parse(msg));
+    }
     for slot in slots {
         if let [con_id] = con_ids[..] {
             // Named for the session: a later held order of the same
@@ -9260,6 +9368,117 @@ mod tests {
             (15, "USD"), (207, exchange), (6523, "USSTK"), (6431, tokens)], 1)
     }
 
+    // ibx#688 (the reference 10.51, paper, 19/10/2026, market closed): a
+    // minimum quantity on a contract whose list has no PAON key is 10256, a
+    // display size where it has no ICE key 10255, each kept for its cancel;
+    // with the keys the order goes out.
+    #[test]
+    fn minimum_quantity_and_display_size_follow_the_list() {
+        let run = |list: &str, attrs: crate::types::OrderAttrs| {
+            let (client, mut server) = crate::protocol::connection::mem_pair();
+            let mut conn = Some(Connection::new_mem(client));
+            let shared = Arc::new(SharedState::new());
+            let mut context = order_context();
+            context.market.register(265598);
+            context.order_records_any.insert(265598);
+            context.set_symbol(0, "AAPL".to_string());
+            context.market.set_routing(0, "STK", "SMART");
+            context.pending_orders.push(OrderRequest::SubmitEx { order_id: 31, instrument: 0, side: Side::Buy, qty: 10,
+                kind: crate::types::OrderKind::Limit { price: px(50.0) }, tif: b'0', attrs });
+            let frames = drain_frames(&mut context, &shared, &mut conn, &mut server);
+            let id = tag(&frames[0], 320).unwrap().to_string();
+            assert!(rth_definition_reply(&mut context, &id, &definition_reply(&id, tag(&frames[0], 6004).unwrap(), list)));
+            let frames = drain_frames(&mut context, &shared, &mut conn, &mut server);
+            (frames.iter().any(|f| tag(f, 35) == Some("D")), shared.orders.drain_order_errors(), context.unsent.contains_key(&31))
+        };
+        let min_qty = crate::types::OrderAttrs { min_qty: 10, ..Default::default() };
+        let display = crate::types::OrderAttrs { display_size: 1, ..Default::default() };
+        let (sent, errors, kept) = run("DAY/3,LMT/3,ICE/1", min_qty.clone());
+        assert!(!sent && kept);
+        assert_eq!(errors, [(31, 10256, "The 'Minimum Quantity' order attribute may not be specified for this order.".to_string())]);
+        let (sent, errors, kept) = run("DAY/3,LMT/3,PAON/1", display.clone());
+        assert!(!sent && kept);
+        assert_eq!(errors, [(31, 10255, "The 'Display Size' order attribute may not be specified for this order.".to_string())]);
+        let (sent, errors, _) = run("DAY/3,LMT/3,PAON/1,ICE/1", crate::types::OrderAttrs { min_qty: 10, display_size: 1, ..Default::default() });
+        assert!(sent && errors.is_empty(), "{errors:?}");
+        // A block order (no list seen with its key), sweep-to-fill without
+        // SWEEP and imbalance-only without IMB: 10266, 10267, 10342, kept
+        // (an AAPL block order of 50, EUR.USD on IDEALPRO).
+        for (attrs, code, text) in [
+            (crate::types::OrderAttrs { block_order: true, ..Default::default() }, 10266, "The 'BlockOrder' order attribute may not be specified for this order."),
+            (crate::types::OrderAttrs { sweep_to_fill: true, ..Default::default() }, 10267, "The 'SweepToFill' order attribute may not be specified for this order."),
+            (crate::types::OrderAttrs { imbalance_only: true, ..Default::default() }, 10342, "The 'ImbalanceOnly' order attribute may not be specified for this order."),
+        ] {
+            let (sent, errors, kept) = run("DAY/3,LMT/3", attrs);
+            assert!(!sent && kept, "{code}");
+            assert_eq!(errors, [(31, code, text.to_string())]);
+        }
+        let (sent, errors, _) = run("DAY/3,LMT/3,SWEEP/1,IMB/1", crate::types::OrderAttrs { sweep_to_fill: true, imbalance_only: true, ..Default::default() });
+        assert!(sent && errors.is_empty(), "{errors:?}");
+    }
+
+    // ibx#688 (the reference 10.51, paper, 19/10/2026, market closed): a
+    // market-on-close order on a contract whose list has no MOC key is 387,
+    // kept (EUR.USD on IDEALPRO); with the key it goes out.
+    #[test]
+    fn market_on_close_follows_the_list() {
+        let run = |list: &str| {
+            let (client, mut server) = crate::protocol::connection::mem_pair();
+            let mut conn = Some(Connection::new_mem(client));
+            let shared = Arc::new(SharedState::new());
+            let mut context = order_context();
+            context.market.register(265598);
+            context.order_records_any.insert(265598);
+            context.set_symbol(0, "AAPL".to_string());
+            context.market.set_routing(0, "STK", "SMART");
+            context.pending_orders.push(OrderRequest::SubmitEx { order_id: 33, instrument: 0, side: Side::Buy, qty: 1,
+                kind: crate::types::OrderKind::Moc, tif: b'0', attrs: Default::default() });
+            let frames = drain_frames(&mut context, &shared, &mut conn, &mut server);
+            let id = tag(&frames[0], 320).unwrap().to_string();
+            assert!(rth_definition_reply(&mut context, &id, &definition_reply(&id, tag(&frames[0], 6004).unwrap(), list)));
+            let frames = drain_frames(&mut context, &shared, &mut conn, &mut server);
+            (frames.iter().any(|f| tag(f, 35) == Some("D")), shared.orders.drain_order_errors(), context.unsent.contains_key(&33))
+        };
+        let (sent, errors, kept) = run("DAY/3,LMT/3");
+        assert!(!sent && kept);
+        assert_eq!(errors, [(33, 387, "Unsupported order type for this exchange and security type.".to_string())]);
+        let (sent, errors, _) = run("DAY/3,LMT/3,MOC/1");
+        assert!(sent && errors.is_empty(), "{errors:?}");
+    }
+
+    // ibx#688 (the reference 10.51, paper, 19/10/2026, market closed): an
+    // order below the minimum size its contract's definition gives (100
+    // for a Tokyo stock) is 388, nothing sent, nothing kept.
+    #[test]
+    fn an_order_below_the_minimum_size_is_388() {
+        let (client, mut server) = crate::protocol::connection::mem_pair();
+        let mut conn = Some(Connection::new_mem(client));
+        let shared = Arc::new(SharedState::new());
+        let mut context = order_context();
+        context.market.register(13905804);
+        context.order_records_any.insert(13905804);
+        context.set_symbol(0, "7203".to_string());
+        context.market.set_routing(0, "STK", "SMART");
+        context.min_sizes.insert(13905804, 100);
+        context.pending_orders.push(OrderRequest::SubmitLimit { order_id: 32, instrument: 0, side: Side::Buy, qty: 1, price: px(100.0) });
+        let frames = drain_frames(&mut context, &shared, &mut conn, &mut server);
+        assert!(frames.iter().all(|f| tag(f, 35) != Some("D")), "{frames:?}");
+        assert_eq!(shared.orders.drain_order_errors(), [(32, 388, "Order size 1 is smaller than the minimum required size of 100.".to_string())]);
+        assert!(!context.unsent.contains_key(&32));
+        // A display size or a minimum quantity below that size: 10083,
+        // 10084 (orders of 200 showing 50, or with a minimum of 50).
+        for (attrs, code, text) in [
+            (crate::types::OrderAttrs { display_size: 50, ..Default::default() }, 10083, "Display size is smaller than the minimum requirement."),
+            (crate::types::OrderAttrs { min_qty: 50, ..Default::default() }, 10084, "Min. quantity is smaller than the minimum requirement."),
+        ] {
+            context.pending_orders.push(OrderRequest::SubmitEx { order_id: 34, instrument: 0, side: Side::Buy, qty: 200,
+                kind: crate::types::OrderKind::Limit { price: px(100.0) }, tif: b'0', attrs });
+            let frames = drain_frames(&mut context, &shared, &mut conn, &mut server);
+            assert!(frames.iter().all(|f| tag(f, 35) != Some("D")), "{frames:?}");
+            assert_eq!(shared.orders.drain_order_errors(), [(34, code, text.to_string())]);
+        }
+    }
+
     // ibx#414: the order-type lists of AAPL captured 28/09/2026 (on BEST:
     // PEGMID, no PEGMKT; on ISLAND: neither). The reference refuses pegged
     // to market on SMART (ib-agent#192 B8b) and pegged to midpoint on
@@ -12459,7 +12678,7 @@ mod tests {
         context.price_mgmt_exclusions = Some(crate::engine::price_mgmt::parse_exclusions(
             "*/CMDTY;*/CRYPTO;*/FUND;*/IOPT;*/SLB"));
         context.rth_types.insert((265598, "BEST".to_string()), crate::engine::outside_rth::RthTypes {
-            sec_type: "STK".into(), types_known: true, price_chk: true, ..Default::default()
+            sec_type: "STK".into(), types_known: true, price_chk: true, moc: true, ..Default::default()
         });
     }
 

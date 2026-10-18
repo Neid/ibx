@@ -260,6 +260,9 @@ pub struct Context {
     pub(crate) reported_stop: HashMap<OrderId, crate::types::Price>,
     /// What decides outside-RTH, by conId and order exchange (ibx#465).
     pub(crate) rth_types: HashMap<(i64, String), crate::engine::outside_rth::RthTypes>,
+    /// The minimum order size of a contract whose definition gives one, in
+    /// whole units (ibx#688: 100 for a Tokyo stock).
+    pub(crate) min_sizes: HashMap<i64, u64>,
     /// Definition lookups in flight for `rth_types`: (320 id, key, deadline).
     pub(crate) rth_lookups: Vec<(String, (i64, String), std::time::Instant)>,
     /// What-if previews waiting for their answer, by the ClOrdID each was
@@ -584,6 +587,7 @@ impl Context {
             scale_reset_reported: std::collections::HashSet::new(),
             reported_stop: HashMap::new(),
             rth_types: HashMap::new(),
+            min_sizes: HashMap::new(),
             rth_lookups: Vec::new(),
             rth_parked: Vec::new(),
             order_groups: Vec::new(),

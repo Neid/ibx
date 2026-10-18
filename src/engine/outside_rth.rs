@@ -53,6 +53,19 @@ pub(crate) struct RthTypes {
     pub price_chk: bool,
     /// The all-or-none key (AON) is in the list (ibx#263).
     pub aon: bool,
+    /// The keys of a minimum quantity (PAON) and of a display size (ICE)
+    /// are in the list (ibx#688: neither is in the EUR.USD list on
+    /// IDEALPRO, the AAPL list on BEST has ICE only).
+    pub paon: bool,
+    pub ice: bool,
+    /// The keys of sweep-to-fill (SWEEP), imbalance-only (IMB), a block
+    /// order (BLOCK, not seen in any list yet) and market on close (MOC)
+    /// (ibx#688: none is in the EUR.USD list on IDEALPRO; the AAPL list on
+    /// BEST has SWEEP, IMB and MOC).
+    pub sweep: bool,
+    pub imb: bool,
+    pub block: bool,
+    pub moc: bool,
     /// The keys of allow pre-open (PREOPGRTH) and of ignore opening
     /// auction (RTHIGNOPG) are in the list (ibx#607: the AAPL list on BEST
     /// has the first, not the second, paper 12/10/2026).
@@ -129,6 +142,12 @@ impl RthTypes {
                 "PASSVREL" => t.passv_rel = true,
                 "PRICECHK" => t.price_chk = true,
                 "AON" => t.aon = true,
+                "PAON" => t.paon = true,
+                "ICE" => t.ice = true,
+                "SWEEP" => t.sweep = true,
+                "IMB" => t.imb = true,
+                "BLOCK" => t.block = true,
+                "MOC" => t.moc = true,
                 "PREOPGRTH" => t.pre_open = true,
                 "RTHIGNOPG" => t.ignore_opening = true,
                 _ => {}
@@ -293,6 +312,15 @@ pub(crate) fn all_or_none_check(req: &OrderRequest) -> Option<Option<u32>> {
         }
     }
 }
+
+/// The reference's refusals of a minimum quantity (10256) and of a display
+/// size (10255) the contract's list does not allow on the order's exchange
+/// (ibx#688; the reference 10.51, paper, 19/10/2026, market closed).
+pub(crate) const MIN_QTY_NOT_ALLOWED: &str = "The 'Minimum Quantity' order attribute may not be specified for this order.";
+pub(crate) const DISPLAY_SIZE_NOT_ALLOWED: &str = "The 'Display Size' order attribute may not be specified for this order.";
+pub(crate) const BLOCK_NOT_ALLOWED: &str = "The 'BlockOrder' order attribute may not be specified for this order.";
+pub(crate) const SWEEP_NOT_ALLOWED: &str = "The 'SweepToFill' order attribute may not be specified for this order.";
+pub(crate) const IMBALANCE_NOT_ALLOWED: &str = "The 'ImbalanceOnly' order attribute may not be specified for this order.";
 
 /// Text of error 387, the reference's refusal of an order type the
 /// contract's list does not allow on the order's exchange (ibx#414).

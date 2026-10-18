@@ -514,6 +514,10 @@ pub struct OrderAttrs {
     pub discretionary_amt: Price,
     /// Sweep to fill (its own flag). Routes aggressively across exchanges.
     pub sweep_to_fill: bool,
+    /// A block order and an imbalance-only order, checked against the
+    /// contract's list (ibx#688); not written on the order message.
+    pub block_order: bool,
+    pub imbalance_only: bool,
     /// All or none (an execution instruction). Fill entire qty or nothing.
     pub all_or_none: bool,
     /// Trigger method for stop/MIT/LIT orders (its own field).

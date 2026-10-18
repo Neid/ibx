@@ -1271,13 +1271,15 @@ fn adjusted_stop_prices_not_valid() {
     });
 }
 
-// postToAts out of range (10274-2): sent.
+// postToAts out of range (10274-2): sent. On a contract whose list has no
+// POSTATS key (10274-1, EUR.USD on IDEALPRO, 19/10/2026): sent too.
 #[test]
 fn post_to_ats_out_of_range() {
     sent_on(&aapl(), &Order { post_to_ats: 5, ..order("LMT") });
 }
 
-// A minimum trade quantity below 0 (10303-1): sent.
+// A minimum trade quantity below 0 (10303-1): sent. Where the contract does
+// not take one (10302-1, EUR.USD on IDEALPRO, 19/10/2026): sent too.
 #[test]
 fn min_trade_quantity_below_zero() {
     sent_on(&aapl(), &Order { min_trade_qty: -5, ..order("LMT") });
@@ -1329,4 +1331,19 @@ fn combo_leg_not_read() {
 fn sell_long_without_the_slot() {
     refused_seen_as("10105-1", &aapl(), &Order { action: "SELL LONG".into(), short_sale_slot: 1, ..order("LMT") }, 320,
         "Error reading request. Sell Long orders must have short sale slot with value -100");
+}
+
+// A hidden order (152-1) and an order id far above the last (2146-1): sent
+// (ibx#688; the reference 10.51, paper, 19/10/2026, market closed: AAPL,
+// and EUR.USD hidden on IDEALPRO, sent; an id 100,000 above the next,
+// sent with no warning).
+#[test]
+fn hidden_and_a_far_order_id() {
+    sent_on(&aapl(), &Order { hidden: true, ..order("LMT") });
+    let mut engine = Engine::start();
+    engine.client.place_order(100_006, &aapl(), &order("LMT")).unwrap();
+    engine.answer_preset("STK", "DAY");
+    let frames = engine.orders(1);
+    assert!(frames.iter().any(|f| field(f, 6121) == Some("100006")), "sent: {frames:?} {:?}", engine.errors());
+    assert!(engine.errors().iter().all(|e| e.1 != 2146), "no warning");
 }

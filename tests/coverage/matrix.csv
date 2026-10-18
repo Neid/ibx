@@ -1534,14 +1534,14 @@ local_rule,443-1,443 build: algo parameter name not in the definition's paramete
 local_rule,460-1,460 rules: no trading permission for the account and contract (server data),src/engine/hot_loop/order_builder.rs::an_option_order_without_the_class_permission_is_refused_with_460
 local_rule,2109-1,"2109 rules: warning, order still sent: outsideRth does not apply to the order type and destination; the attribute is removed",src/engine/hot_loop/order_builder.rs::outside_rth_waits_for_the_definition_then_follows_the_rule ; src/engine/hot_loop/order_builder.rs::outside_rth_without_a_definition_uses_the_empty_list
 local_rule,10243-1,"10243 build: account can trade fractions, STK or WAR, and the quantity is not whole",tests/gw_catalog/refusals.rs::fractional_quantity
-local_rule,10256-1,10256 rules: minQty set and the server's attribute list for the contract and exchange does not allow minimum quantity,open #688
-local_rule,152-1,152 rules: hidden set and the attribute list does not allow hidden,open #688
-local_rule,10255-1,10255 rules: display size set and the attribute list does not allow a display size,open #688
+local_rule,10256-1,10256 rules: minQty set and the server's attribute list for the contract and exchange does not allow minimum quantity,src/engine/hot_loop/order_builder.rs::minimum_quantity_and_display_size_follow_the_list
+local_rule,152-1,152 rules: hidden set and the attribute list does not allow hidden,tests/gw_catalog/refusals.rs::hidden_and_a_far_order_id
+local_rule,10255-1,10255 rules: display size set and the attribute list does not allow a display size,src/engine/hot_loop/order_builder.rs::minimum_quantity_and_display_size_follow_the_list
 local_rule,10257-1,10257 rules: allOrNone set and the attribute list does not allow all-or-none,src/engine/hot_loop/order_builder.rs::all_or_none_not_in_the_list_is_refused_with_10257
-local_rule,10266-1,10266 rules: blockOrder set and the attribute list does not allow block orders,open #688
-local_rule,10267-1,10267 rules: sweepToFill set and the attribute list does not allow sweep-to-fill,open #688
-local_rule,10342-1,10342 rules: imbalanceOnly set and the attribute list does not allow imbalance-only,open #688
-local_rule,10274-1,10274 rules: postToAts set and the attribute list does not allow it,open #688
+local_rule,10266-1,10266 rules: blockOrder set and the attribute list does not allow block orders,src/engine/hot_loop/order_builder.rs::minimum_quantity_and_display_size_follow_the_list
+local_rule,10267-1,10267 rules: sweepToFill set and the attribute list does not allow sweep-to-fill,src/engine/hot_loop/order_builder.rs::minimum_quantity_and_display_size_follow_the_list
+local_rule,10342-1,10342 rules: imbalanceOnly set and the attribute list does not allow imbalance-only,src/engine/hot_loop/order_builder.rs::minimum_quantity_and_display_size_follow_the_list
+local_rule,10274-1,10274 rules: postToAts set and the attribute list does not allow it,tests/gw_catalog/refusals.rs::post_to_ats_out_of_range
 local_rule,168-1,168 read: discretionaryAmt < 0,tests/gw_catalog/refusals.rs::negative_discretionary_amount
 local_rule,313-1,313 read: a combo leg cannot be read,tests/gw_catalog/refusals.rs::combo_leg_not_read
 local_rule,409-1,409 read: message versions 22 to 25 only: old scale component count > 0,open #739
@@ -1571,9 +1571,9 @@ local_rule,10244-1,"10244 check: crypto order with a cash quantity where none is
 local_rule,10289-1,10289 check: crypto MKT BUY order without a cash quantity,open #666
 local_rule,10052-4,"10052 check: crypto BUY order whose time in force is not allowed for crypto (IOC or minutes, and with a server feature off also DAY, GTC, GTD); text = the time in force after a colon (the plain message when the time in force is empty)",open #666
 local_rule,10366-1,10366 check: time in force in minutes with goodAfterTime set,tests/gw_catalog/refusals.rs::minutes_with_a_start_time
-local_rule,10040-1,10040 check: the broker's own ATS destination with an unknown security type and no conId,open #688
+local_rule,10040-1,10040 check: the broker's own ATS destination with an unknown security type and no conId,src/client_core.rs::reading_rules_of_19_10_2026
 local_rule,10372-1,"10372 check: lastTradeDateOrContractMonth not empty and neither an expiry form, nor yyyyMM, nor yyyyMMdd",tests/gw_catalog/refusals.rs::contract_month_not_readable
-local_rule,477-1,477 check: CASH pseudo-FX destination not allowed for the account,open #688
+local_rule,477-1,477 check: CASH pseudo-FX destination not allowed for the account,src/client_core.rs::reading_rules_of_19_10_2026
 local_rule,498-1,"498 check: side SSHORTX or a short combo leg, feature off",tests/gw_catalog/refusals.rs::sshortx_not_supported
 local_rule,160-1,"160 check: size 0 (not QUOTE, no FA sizing, not hedge child, no cash quantity), and (new in 10.51) the destination is not AVGCOST",tests/gw_catalog/refusals.rs::size_zero
 local_rule,355-1,"355 check: quantity out of range (> 999,999,999 or < 0)",tests/gw_catalog/refusals.rs::quantity_out_of_range
@@ -1613,11 +1613,11 @@ local_rule,435-1,435 check: multi-account non-FA session and no account,open #48
 local_rule,10368-1,"10368 check: BAG with NonGuaranteed set, and not exactly 2 legs or not routed to SMART",tests/gw_catalog/refusals.rs::non_guaranteed_combo_not_smart
 local_rule,10369-1,"10369 check: BAG with more than 2 legs, an order type that carries a limit price (LMT, LOC, LIT, STP LMT, TRAIL LIMIT, TRAIL LIT, PEG MID, PEG BEST, PEG MKT and related types), and lmtPrice unset",tests/gw_catalog/refusals.rs::combo_of_three_legs_without_a_limit_price
 local_rule,10265-1,10265 check: FA group without a method,open #481
-local_rule,10030-1,10030 check: discretionary amount and percent both set,open #688
+local_rule,10030-1,10030 check: discretionary amount and percent both set,src/client_core.rs::sell_long_slot_discretionary_pair_and_trail_limit_under_a_stop
 local_rule,10061-1,10061 check: trailing unit percent and the value < 0 or > 100,tests/gw_catalog/refusals.rs::trailing_percent_above_100
 local_rule,10081-1,10081 check: custom SMART strategy invalid,open #688
 local_rule,10100-1,"10100 check: combo hedging strategy, non-cleared account",open #688
-local_rule,10099-1,10099 check: parent hedged with a combination order,open #688
+local_rule,10099-1,10099 check: parent hedged with a combination order,src/client_core.rs::reading_rules_of_19_10_2026
 local_rule,10131-1,10131 check: RTH flag on BAG or PDC,open #688
 local_rule,10075-1,10075 check: PEG BENCH with referenceContractId <= 0,tests/gw_catalog/refusals.rs::pegged_to_benchmark_without_its_reference
 local_rule,362-1,362 check: adjusted stop price invalid,tests/gw_catalog/refusals.rs::adjusted_stop_prices_not_valid
@@ -1677,28 +1677,28 @@ local_rule,2181-1,"2181 flow: warning, order sent: optOutSmartRouting set, featu
 local_rule,2184-1,"2184 flow: warning, order sent: FA session, the order has an allocation group, and the allocation warning was not acknowledged before (shown once, then remembered in the settings); text ends with a link",open #507
 local_rule,2102-1,"2102 flow: a new order whose id is still pending: warning code, order not sent",src/engine/hot_loop/order_builder.rs::a_re_place_of_an_order_not_sent_yet_is_a_duplicate
 local_rule,2139-1,"2139 flow: warning, order sent",open #739
-local_rule,2146-1,"2146 flow: warning, order sent: order id too high",open #688
+local_rule,2146-1,"2146 flow: warning, order sent: order id too high",tests/gw_catalog/refusals.rs::hidden_and_a_far_order_id
 local_rule,10318-1,10318 build: fractional quantity not supported for the contract / order,tests/gw_catalog/refusals.rs::quantity_decimals_and_fractions
 local_rule,10208-1,10208 build: stock size with more decimals than allowed,tests/gw_catalog/refusals.rs::quantity_decimals_and_fractions
 local_rule,10286-1,10286 build: total quantity with too many decimals,tests/gw_catalog/refusals.rs::quantity_decimals_and_fractions
-local_rule,10292-1,10292 build: order not allowed for this instrument,open #688
-local_rule,464-3,464 build: invalid exchange,open #688
+local_rule,10292-1,10292 build: order not allowed for this instrument,src/engine/hot_loop/order_builder.rs::an_index_order_is_refused_with_10345
+local_rule,464-3,464 build: invalid exchange,src/engine/hot_loop/order_builder.rs::an_order_on_an_exchange_without_a_definition_gets_200
 local_rule,10080-1,10080 build: custom SMART strategy not supported,open #688
 local_rule,10031-1,10031 build: hedge child with a limit price,tests/gw_catalog/refusals.rs::hedge_with_a_limit_price
 local_rule,10032-1,10032 build: hedge child with a size,tests/gw_catalog/refusals.rs::hedge_with_a_size
 local_rule,10063-1,10063 build: invalid FX hedge,tests/gw_catalog/refusals.rs::fx_hedge_not_on_a_currency_pair
 local_rule,10195-1,10195 build: use-parent-price parameters invalid,open #688
 local_rule,463-1,463 build: no valid price,tests/gw_catalog/refusals.rs::limit_order_at_zero
-local_rule,388-1,388 build: size below the minimum size,open #688
-local_rule,10083-1,10083 build: display size below the minimum,open #688
-local_rule,10084-1,10084 build: min quantity below the minimum,open #688
+local_rule,388-1,388 build: size below the minimum size,src/engine/hot_loop/order_builder.rs::an_order_below_the_minimum_size_is_388
+local_rule,10083-1,10083 build: display size below the minimum,src/engine/hot_loop/order_builder.rs::an_order_below_the_minimum_size_is_388
+local_rule,10084-1,10084 build: min quantity below the minimum,src/engine/hot_loop/order_builder.rs::an_order_below_the_minimum_size_is_388
 local_rule,10155-1,10155 build: invalid soft dollar tier,open #506
 local_rule,10244-2,10244 build: cash quantity not usable for the order,open #666
 local_rule,10203-1,10203 build: FUND buy rule,src/engine/hot_loop/order_builder.rs::a_fund_and_an_unwritten_type_given_by_con_id_are_refused
 local_rule,10204-1,10204 build: FUND sell rule,open #666
 local_rule,10206-1,10206 build: cash quantity with more than 2 decimals,open #666
 local_rule,10207-1,10207 build: FUND size with more than 3 decimals,open #666
-local_rule,10302-1,10302 build: min trade quantity not allowed,open #688
+local_rule,10302-1,10302 build: min trade quantity not allowed,tests/gw_catalog/refusals.rs::min_trade_quantity_below_zero
 local_rule,10303-1,10303 build: min trade quantity not a positive integer,tests/gw_catalog/refusals.rs::min_trade_quantity_below_zero
 local_rule,10362-1,"10362 build: destination OVERNIGHT or its electronic overnight venue, or includeOvernight set, and the contract has no overnight venue among its valid exchanges",src/engine/hot_loop/order_builder.rs::include_overnight_needs_an_overnight_exchange
 local_rule,10371-1,"10371 build: conditionsIncludeOvernight set, and the contract has no overnight venue among its valid exchanges, or is of an excluded kind, or the account lacks the server feature for overnight conditions",open #602
@@ -1706,13 +1706,13 @@ local_rule,439-1,439 build: no algo definition with this name for the exchanges,
 local_rule,442-2,442 build: algo not allowed for the order,src/control/algo.rs::overnight_and_number_rules
 local_rule,10314-2,10314 build: a time algo parameter is not a date and time,src/control/algo.rs::time_parameters_are_read_as_dates
 local_rule,10235-1,10235 rules: MiFID account and no Decision Maker,open #425
-local_rule,402-1,402 rules: conditions not allowed for the instrument,open #688
+local_rule,402-1,402 rules: conditions not allowed for the instrument,open #635
 local_rule,148-1,"148 rules: conditions on an order type other than LMT, MKT, MIDPRICE, REL, SNAP",tests/gw_catalog/refusals.rs::conditions_on_an_order_type_without_them
 local_rule,148-2,148 rules: conditionsCancelOrder on an order type other than LMT or MIDPRICE,tests/gw_catalog/refusals.rs::conditions_on_an_order_type_without_them
 local_rule,398-1,"398 rules: condition trigger error (time condition without time, ...)",tests/gw_catalog/refusals.rs::time_condition_not_a_time
 local_rule,10051-2,10051 rules: unknown order type,tests/gw_catalog/refusals.rs::order_type_not_known
 local_rule,10052-8,10052 rules: TIF not valid,tests/gw_catalog/refusals.rs::time_in_force_not_valid_on_the_destination
-local_rule,10070-1,10070 rules: order type not in the type list (server data),open #688
+local_rule,10070-1,10070 rules: order type not in the type list (server data),src/engine/hot_loop/order_builder.rs::market_on_close_follows_the_list
 local_rule,464-4,464 rules: destination not valid for the contract and the order does not use auto-routing (several exemptions; new in 10.51: the AVGCOST destination is exempt),src/engine/hot_loop/order_builder.rs::a_directed_order_to_an_exchange_the_contract_does_not_list_gets_464
 local_rule,10166-1,"10166 rules: destination not valid for the contract and the order uses auto-routing (same exemptions as 464, AVGCOST exempt in 10.51)",open #688
 local_rule,412-1,412 rules: contract not tradable,open #688
@@ -1720,7 +1720,7 @@ local_rule,154-1,154 rules: halted security,open #688
 local_rule,107-1,107 rules: incomplete order,open #688
 local_rule,328-1,328 rules: trailing child on a parent that is not LMT or STP LMT,tests/gw_catalog/refusals.rs::trailing_stop_under_a_stop_parent
 local_rule,401-1,401 rules: OCA name over 64 characters,tests/gw_catalog/refusals.rs::oca_group_name_too_long
-local_rule,461-1,461 rules: size not a multiple of the lot,open #688
+local_rule,461-1,461 rules: size not a multiple of the lot,open #634
 local_rule,10098-1,10098 rules: SNAP order with a negative offset,tests/gw_catalog/refusals.rs::snap_order_with_a_negative_offset
 local_rule,2137-1,"2137 rules: closing order larger than the position: warning code, order refused",open #688
 local_rule,10132-2,10132 rules: read-only account,open #688

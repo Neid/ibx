@@ -523,6 +523,8 @@ impl Order {
             parent_id: self.parent_id.max(0),
             discretionary_amt: price_from_f64(self.discretionary_amt),
             sweep_to_fill: self.sweep_to_fill,
+            block_order: self.block_order,
+            imbalance_only: self.imbalance_only,
             all_or_none: self.all_or_none,
             // Valid trigger-method codes only (ibx#223): the raw `as u8`
             // cast wrapped the gateway's -1 (Unknown) to 255, and
@@ -638,6 +640,8 @@ impl Order {
             || self.parent_id > 0
             || self.discretionary_amt > 0.0
             || self.sweep_to_fill
+            || self.block_order
+            || self.imbalance_only
             || self.all_or_none
             || self.trigger_method > 0
             || (self.cash_qty > 0.0 && self.cash_qty != f64::MAX)

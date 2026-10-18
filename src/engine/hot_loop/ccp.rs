@@ -164,6 +164,15 @@ fn order_message_399(
 {} {} {}
 {}", action, amount, t.order_text, text);
     }
+    // A currency pair by its pair and "Forex" (ibx#688; the reference 10.51,
+    // paper, 19/10/2026: "BUY 1 EUR.USD Forex").
+    if parsed.get(&167).copied() == Some("CASH")
+        && let Some(pair) = parsed.get(&6035).copied().filter(|p| !p.is_empty())
+    {
+        return format!("Order Message:
+{} {} {} Forex
+{}", action, quantity, pair, text);
+    }
     let cached = shared.reference.get_contract(con_id);
     let symbol = parsed.get(&55).map(|s| s.to_string())
         .or_else(|| cached.as_ref().map(|c| c.symbol.clone()))
@@ -2327,8 +2336,10 @@ impl CcpState {
         // keeps its status (ibx#465; captured 25/09/2026 on an OPG order:
         // "Order Message:\nBUY 1 AAPL NASDAQ.NMS\nWarning: your order will
         // not be placed at the exchange until ..."). The other types (PRICECAP
-        // in the capture) did not reach the API.
-        if parsed.get(&6360).copied() == Some("TIME") && context.order(clord_id).is_some() && owned {
+        // in the capture) did not reach the API. A Limit one too (ibx#688; the
+        // reference 10.51, paper, 19/10/2026: "Your order size is below the
+        // EUR 20000 IdealPro minimum ..." on a forex order of 1).
+        if matches!(parsed.get(&6360).copied(), Some("TIME" | "Limit")) && context.order(clord_id).is_some() && owned {
             if let Some(text) = parsed.get(&6361).copied().filter(|t| !t.is_empty()) {
                 let sent = self.order_messages_sent.entry(clord_id).or_default();
                 if !sent.iter().any(|s| s == text) {

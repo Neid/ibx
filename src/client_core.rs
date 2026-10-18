@@ -4898,6 +4898,16 @@ impl ClientCore {
         if code == RFQ_NOT_APPLICABLE && message.starts_with("RFQ is not applicable") {
             self.open_orders.lock().unwrap().remove(&order_id);
         }
+        // The engine's refusals that keep nothing: the order is gone, as
+        // on the reference (ibx#688; paper, 19/10/2026: absent from the open
+        // orders, its cancel 10147): below the minimum size (388), a display
+        // size or minimum quantity below it (10083, 10084), an index (10345).
+        if matches!(code, 388 | 10083 | 10084 | 10345) {
+            let mut orders = self.open_orders.lock().unwrap();
+            if orders.get(&order_id).is_some_and(|o| o.status == "PendingSubmit") {
+                orders.remove(&order_id);
+            }
+        }
         // A modify refused while the order was not sent yet: the order
         // stays as placed (ibx#688).
         if code == DUPLICATE_ORDER_ID.0
@@ -6896,7 +6906,11 @@ impl ClientCore {
         if unknown_now && self.hedge_parent(parent_id).is_some() {
             self.unknown_parent_refused.lock().unwrap().insert(order_id, std::time::Instant::now());
         }
-        let parent = self.hedge_parent(parent_id).filter(|_| !unknown);
+        // A combo parent is not found as a hedge's parent (ibx#688; the
+        // reference 10.51, paper, 19/10/2026, market closed: a beta hedge
+        // under a held stock combo).
+        let parent = self.hedge_parent(parent_id).filter(|_| !unknown)
+            .filter(|(c, _)| !c.sec_type.eq_ignore_ascii_case("BAG"));
         let Some((parent_contract, _)) = parent else {
             // A parent that filled or was cancelled is still known: a
             // modify of its filled hedge gets 104 further on (ibx#614; the
@@ -6968,6 +6982,12 @@ impl ClientCore {
         if order.scale_init_level_size != i32::MAX && order.scale_auto_reset && order.scale_profit_offset == f64::MAX {
             return Some((418, "Invalid scale order profit offset.".into()));
         }
+        // A block order below 50 (ibx#688; the reference 10.51, paper,
+        // 19/10/2026, market closed: an AAPL order of 1, kept: its cancel
+        // gives 202 and 161).
+        if order.block_order && order.total_quantity < 50.0 {
+            return Some((117, "The block order size must be at least 50.".into()));
+        }
         (order.oca_group.chars().count() > 64).then(|| (401, "OCA Group".into()))
     }
 
@@ -7008,12 +7028,14 @@ impl ClientCore {
     pub fn carry_kept_refusal(&self, cmd: &mut ControlCommand, order: &ApiOrder) {
         if let ControlCommand::Order(req) = cmd {
             let precaution = self.hedge_precaution.lock().unwrap().remove(&req.order_id());
-            // A plain parent takes its form with attributes to carry it.
-            if precaution.is_some() && req.new_order_attrs_mut().is_none() {
+            let kept = self.kept_refusal(order);
+            // A plain order takes its form with attributes to carry them
+            // (ibx#688: a block order below 50 went out as a plain limit).
+            if (precaution.is_some() || kept.is_some()) && req.new_order_attrs_mut().is_none() {
                 *req = std::mem::replace(req, OrderRequest::GlobalCancel).with_attrs();
             }
             if let Some(attrs) = req.new_order_attrs_mut() {
-                attrs.kept_refusal = self.kept_refusal(order);
+                attrs.kept_refusal = kept;
                 attrs.hedge_precaution = precaution;
             }
         }
@@ -7646,6 +7668,19 @@ impl ClientCore {
             .or_else(|| self.attached_orders_id_refusal(order_id, order, shared))
     }
 
+    /// The broker's own ATS destination with no security type and no conId:
+    /// 321, nothing sent (ibx#688, rule 10040-1 of the 10.51 table; the
+    /// reference 10.51, paper, 19/10/2026, market closed: AAPL on IBKRATS).
+    fn security_type_refusal(con_id: i64, sec_type: &str, exchange: &str) -> Option<(i64, String)> {
+        if con_id == 0 && sec_type.is_empty() && exchange.eq_ignore_ascii_case("IBKRATS") {
+            return Some((321, "Error validating request.-'PlaceOrder(3)' : cause - Please enter a valid security type".into()));
+        }
+        // The pseudo forex destination (rule 477-1; the reference 10.51,
+        // paper, 19/10/2026: EUR.USD on FXCONV, nothing kept).
+        (sec_type.eq_ignore_ascii_case("CASH") && exchange.eq_ignore_ascii_case("FXCONV"))
+            .then(|| (321, "Error validating request.-'PlaceOrder(3)' : cause - Pseudo FX destination is not allowed".into()))
+    }
+
     /// A request for quote when two were read in the last second: 321, as
     /// the reference 10.51 (rule 321-9; paper, 19/10/2026, market closed:
     /// the third of three AAPL option requests placed within 46 ms, the
@@ -7743,7 +7778,8 @@ impl ClientCore {
         // paper 11/10/2026: after 439, 343 or 110 the same id placed again
         // gets 103, and its cancel 10147; after 321, 391 or 145 it is a
         // new order).
-        let refusal = self.refusal_at_reading(order_id, sec_type, exchange, contract_month, order, shared, account_pending, account);
+        let refusal = Self::security_type_refusal(con_id, sec_type, exchange)
+            .or_else(|| self.refusal_at_reading(order_id, sec_type, exchange, contract_month, order, shared, account_pending, account));
         if refusal.is_some() {
             return (notices, refusal, None);
         }
@@ -10570,6 +10606,34 @@ mod tests {
     // 103 while it still holds the order (ibx#688, the reference 10.51,
     // paper, 18/10/2026). An id below the highest that the server knows (an
     // order of an earlier session) is no new id.
+    // ibx#688 (the reference 10.51, paper, 19/10/2026, market closed): the
+    // own ATS destination with no security type and no conId, and the
+    // pseudo forex destination, are 321 at the reading; a block order below
+    // 50 is 117, kept for its cancel; a hedge under a combo parent is the
+    // missing-parent 320.
+    #[test]
+    fn reading_rules_of_19_10_2026() {
+        assert_eq!(ClientCore::security_type_refusal(0, "", "IBKRATS"),
+            Some((321, "Error validating request.-'PlaceOrder(3)' : cause - Please enter a valid security type".into())));
+        assert_eq!(ClientCore::security_type_refusal(265598, "", "IBKRATS"), None);
+        assert_eq!(ClientCore::security_type_refusal(0, "STK", "IBKRATS"), None);
+        assert_eq!(ClientCore::security_type_refusal(0, "CASH", "FXCONV"),
+            Some((321, "Error validating request.-'PlaceOrder(3)' : cause - Pseudo FX destination is not allowed".into())));
+        assert_eq!(ClientCore::security_type_refusal(0, "CASH", "IDEALPRO"), None);
+
+        let core = ClientCore::new();
+        let block = |qty| ApiOrder { block_order: true, total_quantity: qty, ..lmt(50.0) };
+        assert_eq!(core.kept_refusal(&block(1.0)), Some((117, "The block order size must be at least 50.".into())));
+        assert_eq!(core.kept_refusal(&block(50.0)), None, "checked against the contract's list then");
+
+        let shared = SharedState::new();
+        let bag = ApiContract { symbol: "AAPL,MSFT".into(), sec_type: "BAG".into(), exchange: "SMART".into(), currency: "USD".into(), ..Default::default() };
+        core.hold_order(40, bag, ApiOrder { transmit: false, ..lmt(-500.0) }, 1);
+        let hedge = ApiOrder { action: "SELL".into(), order_type: "MKT".into(), parent_id: 40, hedge_type: "B".into(), hedge_param: "1".into(), ..lmt(0.0) };
+        assert_eq!(core.hedge_read_refusal(41, "STK", &hedge, &shared),
+            Some((320, "Error reading request. Missing parent order: server: 0 order: 41 parent: 40 hedge:[B]".into())));
+    }
+
     // ibx#688: a modify the engine refuses with 103 (the order not sent
     // yet) leaves the order as placed; once the server answered, a modify
     // is kept.
