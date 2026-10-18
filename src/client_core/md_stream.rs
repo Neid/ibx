@@ -444,8 +444,10 @@ fn stream_pass(st: &mut StreamState, m: &Mirror, pass: Pass, out: &mut Out) {
         (true, true)
     };
     // A kept bid or ask of -1 (no quote when the contract was left) comes
-    // with an unset size and no auto-execution (ibx#647; the reference
-    // 10.51, paper, 13/10/2026 pre-market, two option streams).
+    // with an unset size (ibx#647; the reference 10.51, paper, 13/10/2026
+    // pre-market, two option streams); an option's without auto-execution,
+    // a stock's with it (ibx#749; the reference 10.51 at level 225, paper,
+    // 18/10/2026 weekend, AAPL streamed after a snapshot, three sessions).
     let kept = matches!(pass, Pass::Step(MdStep::KeptQuote, _));
     // The frozen sender, as the delayed one, sends a size with its price
     // only (ibx#494).
@@ -467,7 +469,7 @@ fn stream_pass(st: &mut StreamState, m: &Mirror, pass: Pass, out: &mut Out) {
             } else {
                 (TICK_ASK, field::ASK_SIZE, TICK_ASK_SIZE)
             };
-            out.price(pt, idx, false);
+            out.price(pt, idx, !st.farm_auto && !delayed && !st.frozen);
             out.unset_size(size_tt);
             todo[size_idx] = false;
             continue;

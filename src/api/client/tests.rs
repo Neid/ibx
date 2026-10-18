@@ -7143,6 +7143,27 @@ fn kept_minus_one_has_no_size_and_no_auto_execution() {
     }
 }
 
+// ibx#749 (the reference 10.51 at level 225, paper, 18/10/2026 weekend,
+// AAPL streamed after a snapshot, three sessions): a stock's kept bid and
+// ask of -1 come with an unset size and with auto-execution.
+#[test]
+fn a_stocks_kept_minus_one_executes_automatically() {
+    let (client, rx, shared) = test_client();
+    let engine = top_engine(rx);
+    let stock = Contract { con_id: 265598, symbol: "AAPL".into(), sec_type: "STK".into(), exchange: "SMART".into(), ..Default::default() };
+    client.req_mkt_data(1, &stock, "", false, false).unwrap();
+    let s = crate::types::PRICE_SCALE;
+    let message = crate::md_events::TestMessage { steps: Some(&[crate::md_events::MdStep::KeptQuote]), ..Default::default() };
+    shared.market.push_test_message(5, &crate::types::Quote { bid: -s, ask: -s, ..Default::default() }, &message);
+    let mut w = SeqRec::default();
+    client.process_msgs(&mut w);
+    let quote: Vec<&String> = w.events.iter().filter(|e| e.starts_with("price:1:1:") || e.starts_with("price:1:2:")
+        || e.starts_with("size:1:0:") || e.starts_with("size:1:3:")).collect();
+    let unset = |tt: i32| format!("size:1:{tt}:{}", f64::MAX);
+    assert_eq!(quote, [&"price:1:1:-1:auto".to_string(), &unset(0), &"price:1:2:-1:auto".to_string(), &unset(3)], "{:?}", w.events);
+    drop(engine);
+}
+
 // ibx#647 (the reference 10.51, paper, 13/10/2026 after hours, the second
 // stream of an option with no bid or ask): after the kept -1 with an unset
 // size, the farm's own sizes of 0 come; its -1 prices, unchanged, do not.
