@@ -3391,29 +3391,35 @@ fn process_msgs_dispatches_all_quote_fields() {
 }
 
 // ibx#287: a wire size of 1 reached the API as 0.0001, and a US stock's
-// sizes missed the round lot. AAPL, lot 40: bid 57 -> 2280, last 2 -> 80,
-// volume 1466 as on the wire.
+// sizes missed the round lot. AAPL, lot 40. The reference 10.51 has its
+// sizes in shares from the server: the wire sizes as they are. In the
+// 10.40 form (its replays) they came in round lots: bid 57 -> 2280,
+// last 2 -> 80; the volume as on the wire in both (ibx#663, ibx#604).
 #[test]
-fn api_sizes_are_wire_sizes_times_the_round_lot() {
+fn api_sizes_are_wire_sizes_and_times_the_round_lot_only_in_the_lot_form() {
     use crate::engine::market_state::MarketState;
     use crate::protocol::tick_decoder::{self as td, RawTick};
-    let (client, _rx, shared) = test_client();
-    let mut ms = MarketState::new();
-    let id = ms.register(265598);
-    ms.set_round_lot(id, 40);
-    // The 10.40 form: sizes in round lots (ibx#663).
-    ms.set_lot_sizes(true);
-    for (tick_type, magnitude) in [(td::O_BID_SIZE, 57), (td::O_ASK_SIZE, 1), (td::O_LAST_SIZE, 2), (td::O_VOLUME, 1466)] {
-        ms.apply_tick(id, 0, false, &RawTick { server_tag: 1, tick_type, magnitude, stats_block: false, first: true, scale: 0 });
-    }
-    shared.market.push_test_message(id, ms.quote(id), &Default::default());
-    client.core.req_to_instrument.lock().unwrap().insert(1, id);
-    client.core.instrument_to_req.lock().unwrap().insert(id, vec![1]);
+    for (lot_form, wants) in [
+        (false, ["tick_size:1:0:57", "tick_size:1:3:1", "tick_size:1:5:2", "tick_size:1:8:1466"]),
+        (true, ["tick_size:1:0:2280", "tick_size:1:3:40", "tick_size:1:5:80", "tick_size:1:8:1466"]),
+    ] {
+        let (client, _rx, shared) = test_client();
+        let mut ms = MarketState::new();
+        let id = ms.register(265598);
+        ms.set_round_lot(id, 40);
+        ms.set_lot_sizes(lot_form);
+        for (tick_type, magnitude) in [(td::O_BID_SIZE, 57), (td::O_ASK_SIZE, 1), (td::O_LAST_SIZE, 2), (td::O_VOLUME, 1466)] {
+            ms.apply_tick(id, 0, false, &RawTick { server_tag: 1, tick_type, magnitude, stats_block: false, first: true, scale: 0 });
+        }
+        shared.market.push_test_message(id, ms.quote(id), &Default::default());
+        client.core.req_to_instrument.lock().unwrap().insert(1, id);
+        client.core.instrument_to_req.lock().unwrap().insert(id, vec![1]);
 
-    let mut w = RecordingWrapper::default();
-    client.process_msgs(&mut w);
-    for want in ["tick_size:1:0:2280", "tick_size:1:3:40", "tick_size:1:5:80", "tick_size:1:8:1466"] {
-        assert!(w.events.iter().any(|e| e == want), "{want} missing in {:?}", w.events);
+        let mut w = RecordingWrapper::default();
+        client.process_msgs(&mut w);
+        for want in wants {
+            assert!(w.events.iter().any(|e| e == want), "lot form {lot_form}: {want} missing in {:?}", w.events);
+        }
     }
 }
 
@@ -4344,8 +4350,11 @@ fn modify_of_side_or_oca_is_refused_before_sending() {
 // OVERNIGHT + DAY order as DAY and a DAY order with includeOvernight as
 // OVERNIGHT + DAY, reports that time in force, and refuses with 462 a
 // modify that restates another one. A modify with the held one goes out.
+// The rule of 10.40, kept for the replays of its recordings: 10.51
+// refuses the two overnight times in force at once (the test below,
+// ibx#660, ibx#604).
 #[test]
-fn modify_must_restate_the_held_overnight_time_in_force() {
+fn modify_must_restate_the_held_overnight_time_in_force_in_the_10_40_form() {
     let lmt = |tif: &str, include_overnight: bool, price: f64| Order {
         action: "BUY".into(), total_quantity: 1.0, order_type: "LMT".into(), lmt_price: price,
         tif: tif.into(), include_overnight, ..Default::default()

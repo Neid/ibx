@@ -4487,7 +4487,7 @@ mod tests {
     }
 
     #[test]
-    fn sizes_use_the_size_increment_and_the_round_lot() {
+    fn sizes_use_the_size_increment_and_the_round_lot_in_the_lot_form() {
         let shared = SharedState::new();
         let mut farm = FarmState::new();
         let mut context = Context::new();

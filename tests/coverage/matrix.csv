@@ -817,7 +817,7 @@ error,458,Auto-routed blotter order '%s' can't be modified or canceled.,no test
 error,459,No clearing rule selected,no test
 error,460,No trading permissions,no test
 error,461,Order size is not correct; it must be a multiple of the lot size.,no test
-error,462,Order modify failed. Cannot change to the new Time in Force,tests/gw_catalog/errors.rs::every_error_ibx_raises_is_the_gateways ; src/api/client/tests.rs::modify_must_restate_the_held_overnight_time_in_force ; src/golden/orders.rs::overnight_time_in_force_on_smart
+error,462,Order modify failed. Cannot change to the new Time in Force,tests/gw_catalog/errors.rs::every_error_ibx_raises_is_the_gateways ; src/api/client/tests.rs::modify_must_restate_the_held_overnight_time_in_force_in_the_10_40_form ; src/golden/orders.rs::overnight_time_in_force_on_smart
 error,463,You must enter a valid price.,no test
 error,464,Invalid exchange,no test
 error,465,Order not confirmed,no test
@@ -1722,7 +1722,7 @@ local_rule,2185-1,"2185 rules: a hedge child of the kind that takes a maximum he
 local_rule,104-1,"104 modify: modify of an order that is filled, cancelled or with a cancel pending",src/client_core.rs::place_on_a_cancelled_order_id_is_refused ; src/engine/hot_loop/order_builder.rs::modify_of_an_order_the_engine_no_longer_holds_is_refused
 local_rule,105-1,105 modify: modified order does not match the original,tests/gw_catalog/refusals.rs::modify_of_the_side
 local_rule,329-1,329 modify: modify to another order type,tests/gw_catalog/refusals.rs::modify_to_another_order_type
-local_rule,462-1,462 modify: modify to another time in force,src/api/client/tests.rs::modify_must_restate_the_held_overnight_time_in_force
+local_rule,462-1,462 modify: modify to another time in force,src/api/client/tests.rs::modify_must_restate_the_held_overnight_time_in_force_in_the_10_40_form
 local_rule,10326-1,10326 modify: OCA group changed,tests/gw_catalog/refusals.rs::modify_of_the_oca_group
 local_rule,10327-1,10327 modify: OCA type changed,tests/gw_catalog/refusals.rs::modify_of_the_oca_type
 local_rule,10273-2,10273 modify: modify of a GTD order where the new or the working order has an expiration date and time and the new or the working order has a duration,tests/gw_catalog/refusals.rs::modify_adding_a_duration_to_gtd

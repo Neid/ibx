@@ -1584,12 +1584,20 @@ mod tests {
     }
 
     #[test]
-    fn apply_tick_round_lot_scales_bid_ask_last_not_volume() {
+    fn apply_tick_takes_shares_and_the_round_lot_only_in_the_lot_form() {
+        // The sizes of 10.51 come in shares: as they are (ibx#663, ibx#604).
         let mut ms = MarketState::new();
         let id = ms.register(265598); // AAPL, round lot 40
         ms.set_size_min_tick(id, 1.0);
         ms.set_round_lot(id, 40);
-        ms.set_lot_sizes(true); // the 10.40 form (ibx#663)
+        for t in [raw(4, 57), raw(5, 3), raw(6, 2), raw(10, 1466)] {
+            ms.apply_tick(id, CENT, false, &t);
+        }
+        let q = ms.quote(id);
+        assert_eq!((q.bid_size, q.ask_size, q.last_size, q.volume),
+                   (57 * QTY_SCALE, 3 * QTY_SCALE, 2 * QTY_SCALE, 1466 * QTY_SCALE));
+        // The 10.40 form (its replays): bid, ask and last in round lots.
+        ms.set_lot_sizes(true);
         for t in [raw(4, 57), raw(5, 3), raw(6, 2), raw(10, 1466)] {
             ms.apply_tick(id, CENT, false, &t);
         }
