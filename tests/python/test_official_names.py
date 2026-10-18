@@ -252,3 +252,30 @@ def test_exercise_type_condition_numbers_and_trigger_methods():
     ours, theirs = ibx.PriceCondition.TriggerMethodEnum, PriceCondition.TriggerMethodEnum
     assert ours.idx2name == theirs.idx2name and ours.MidPoint == theirs.MidPoint == 8
     assert ours.toStr(7) == "LastBidAsk" and ours.toStr(99) == "NOTFOUND"
+
+
+# ibx#602: at session level 225 the official contract row carries the fund
+# asset type and distribution policy as members of its enums (NoneItem when
+# the row has none), and 0 as an integer for an absent multiplier or coupon.
+def test_contract_details_fund_enums_and_absent_numbers():
+    pytest.importorskip("ibapi")
+    import ibx
+    from ibapi.contract import ContractDetails, FundAssetType, FundDistributionPolicyIndicator
+
+    ours, theirs = ibx.ContractDetails(), ContractDetails()
+    for name in ("fundAssetType", "fundDistributionPolicyIndicator"):
+        a, b = getattr(ours, name), getattr(theirs, name)
+        assert (type(a).__name__, a.name, a.value) == (type(b).__name__, b.name, b.value), name
+    for name in ("evMultiplier", "coupon"):
+        assert type(getattr(ours, name)) is type(getattr(theirs, name)) is int and getattr(ours, name) == 0, name
+    assert [(m.name, m.value) for m in type(ours.fundAssetType)] == [(m.name, m.value) for m in FundAssetType]
+    assert [(m.name, m.value) for m in type(ours.fundDistributionPolicyIndicator)] ==         [(m.name, m.value) for m in FundDistributionPolicyIndicator]
+    ours.fund_asset_type, ours.fund_distribution_policy_indicator = "004", "Y"
+    assert (ours.fundAssetType.name, ours.fundDistributionPolicyIndicator.name) == ("Equity", "IncomeFund")
+    ours.fund_asset_type = "000"          # the official lookup finds no member for it
+    assert ours.fundAssetType.name == "NoneItem"
+    ours.fundAssetType = FundAssetType.Sector
+    ours.fundDistributionPolicyIndicator = FundDistributionPolicyIndicator.NoneItem
+    assert (ours.fund_asset_type, ours.fund_distribution_policy_indicator) == ("005", "")
+    ours.evMultiplier, ours.coupon = 2.5, 1.25
+    assert (ours.evMultiplier, ours.ev_multiplier, ours.coupon) == (2.5, 2.5, 1.25)

@@ -3196,6 +3196,9 @@ macro_rules! contract_details_class {
             pub min_algo_size: f64,
             pub last_price_precision: f64,
             pub last_size_precision: f64,
+            /// The official name is the field's: its getter gives 0 as an
+            /// integer (ibx#602).
+            pub coupon: f64,
             $(
                 #[pyo3(get, set)]
                 pub $field: $ty,
@@ -3216,6 +3219,7 @@ macro_rules! contract_details_class {
                     min_algo_size: self.min_algo_size,
                     last_price_precision: self.last_price_precision,
                     last_size_precision: self.last_size_precision,
+                    coupon: self.coupon,
                     $($field: self.$field.clone(),)*
                 })
             }
@@ -3235,6 +3239,7 @@ macro_rules! contract_details_class {
                     min_algo_size: f64::MAX,
                     last_price_precision: f64::MAX,
                     last_size_precision: f64::MAX,
+                    coupon: 0.0,
                     $($field: $default,)*
                 }
             }
@@ -3273,7 +3278,6 @@ contract_details_class! {
     coupon_type: String = String::new(),
     callable: bool = false,
     putable: bool = false,
-    coupon: f64 = 0.0,
     convertible: bool = false,
     maturity: String = String::new(),
     issue_date: String = String::new(),
@@ -3340,6 +3344,87 @@ impl ContractDetails {
     fn get_last_size_precision(&self, py: Python<'_>) -> PyResult<Py<PyAny>> { decimal_to_py(py, self.last_size_precision) }
     #[setter(last_size_precision)]
     fn set_last_size_precision(&mut self, v: &Bound<'_, PyAny>) -> PyResult<()> { self.last_size_precision = decimal_from_py(v)?; Ok(()) }
+
+    /// The official `FundAssetType` member of the row, `NoneItem` when the
+    /// row has none, as the official library at session level 225 decodes
+    /// it (ibx#602); `fund_asset_type` keeps the server's code.
+    #[getter(fundAssetType)]
+    fn get_fund_asset_type_member(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        fund_enum_member(py, "FundAssetType", &self.fund_asset_type)
+    }
+    #[setter(fundAssetType)]
+    fn set_fund_asset_type_member(&mut self, v: &Bound<'_, PyAny>) -> PyResult<()> {
+        self.fund_asset_type = fund_enum_code(v)?;
+        Ok(())
+    }
+    /// The official `FundDistributionPolicyIndicator` member of the row
+    /// (ibx#602); `fund_distribution_policy_indicator` keeps the code.
+    #[getter(fundDistributionPolicyIndicator)]
+    fn get_fund_distribution_policy_indicator_member(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        fund_enum_member(py, "FundDistributionPolicyIndicator", &self.fund_distribution_policy_indicator)
+    }
+    #[setter(fundDistributionPolicyIndicator)]
+    fn set_fund_distribution_policy_indicator_member(&mut self, v: &Bound<'_, PyAny>) -> PyResult<()> {
+        self.fund_distribution_policy_indicator = fund_enum_code(v)?;
+        Ok(())
+    }
+    /// The official library leaves the integer 0 when the row has no value
+    /// (ibx#602): a float only when one was given.
+    #[getter(evMultiplier)]
+    fn get_ev_multiplier_official(&self, py: Python<'_>) -> PyResult<Py<PyAny>> { zero_as_int(py, self.ev_multiplier) }
+    #[setter(evMultiplier)]
+    fn set_ev_multiplier_official(&mut self, v: f64) { self.ev_multiplier = v; }
+    #[getter(coupon)]
+    fn get_coupon_official(&self, py: Python<'_>) -> PyResult<Py<PyAny>> { zero_as_int(py, self.coupon) }
+    #[setter(coupon)]
+    fn set_coupon_official(&mut self, v: f64) { self.coupon = v; }
+}
+
+/// The official `FundAssetType` and `FundDistributionPolicyIndicator`
+/// (`enum.Enum`, values (code, name)), made once. `Others` keeps the
+/// official value, a pair inside a tuple, so that no server code finds it
+/// there either (ibx#602).
+fn fund_enums(py: Python<'_>) -> PyResult<Bound<'_, PyModule>> {
+    static MODULE: pyo3::sync::PyOnceLock<Py<PyModule>> = pyo3::sync::PyOnceLock::new();
+    let module = MODULE.get_or_try_init(py, || -> PyResult<Py<PyModule>> {
+        let code = c"from enum import Enum\n\nclass FundAssetType(Enum):\n    NoneItem = (\"None\", \"None\")\n    Others = (\"000\", \"Others\"),\n    MoneyMarket = (\"001\", \"Money Market\")\n    FixedIncome = (\"002\", \"Fixed Income\")\n    MultiAsset = (\"003\", \"Multi-asset\")\n    Equity = (\"004\", \"Equity\")\n    Sector = (\"005\", \"Sector\")\n    Guaranteed = (\"006\", \"Guaranteed\")\n    Alternative = (\"007\", \"Alternative\")\n\nclass FundDistributionPolicyIndicator(Enum):\n    NoneItem = (\"None\", \"None\")\n    AccumulationFund = (\"N\", \"Accumulation Fund\")\n    IncomeFund = (\"Y\", \"Income Fund\")\n";
+        Ok(PyModule::from_code(py, code, c"ibx_fund.py", c"ibx_fund")?.unbind())
+    })?;
+    Ok(module.bind(py).clone())
+}
+
+/// The member whose code is `code`, else the first (`NoneItem`), as the
+/// official library's lookup by code.
+fn fund_enum_member(py: Python<'_>, class: &str, code: &str) -> PyResult<Py<PyAny>> {
+    let class = fund_enums(py)?.getattr(class)?;
+    for member in class.try_iter()? {
+        let member = member?;
+        if member.getattr("value")?.get_item(0)?.extract::<String>().is_ok_and(|c| c == code) {
+            return Ok(member.unbind());
+        }
+    }
+    Ok(class.getattr("NoneItem")?.unbind())
+}
+
+/// The code of a member, or the text, set on a fund attribute; empty for
+/// `NoneItem`.
+fn fund_enum_code(v: &Bound<'_, PyAny>) -> PyResult<String> {
+    if let Ok(text) = v.extract::<String>() {
+        return Ok(text);
+    }
+    let mut code = v.getattr("value")?.get_item(0)?;
+    // `Others`: the pair is inside a tuple.
+    if code.extract::<String>().is_err() {
+        code = code.get_item(0)?;
+    }
+    let code: String = code.extract()?;
+    Ok(if code == "None" { String::new() } else { code })
+}
+
+/// 0 as the integer the official object starts with, any other value as a
+/// float.
+fn zero_as_int(py: Python<'_>, v: f64) -> PyResult<Py<PyAny>> {
+    Ok(if v == 0.0 { 0i32.into_pyobject(py)?.into_any().unbind() } else { v.into_pyobject(py)?.into_any().unbind() })
 }
 
 official_names!(ContractDetails, [
@@ -3347,7 +3432,7 @@ official_names!(ContractDetails, [
     ("validExchanges", "valid_exchanges"), ("priceMagnifier", "price_magnifier"), ("underConId", "under_con_id"),
     ("longName", "long_name"), ("contractMonth", "contract_month"), ("timeZoneId", "time_zone_id"),
     ("tradingHours", "trading_hours"), ("liquidHours", "liquid_hours"), ("evRule", "ev_rule"),
-    ("evMultiplier", "ev_multiplier"), ("aggGroup", "agg_group"), ("underSymbol", "under_symbol"),
+    ("aggGroup", "agg_group"), ("underSymbol", "under_symbol"),
     ("underSecType", "under_sec_type"), ("marketRuleIds", "market_rule_ids"), ("secIdList", "sec_id_list"),
     ("realExpirationDate", "real_expiration_date"), ("lastTradeTime", "last_trade_time"), ("stockType", "stock_type"),
     ("minSize", "min_size"), ("sizeIncrement", "size_increment"), ("suggestedSizeIncrement", "suggested_size_increment"),
@@ -3362,7 +3447,7 @@ official_names!(ContractDetails, [
     ("fundNotifyAmount", "fund_notify_amount"), ("fundMinimumInitialPurchase", "fund_minimum_initial_purchase"),
     ("fundSubsequentMinimumPurchase", "fund_subsequent_minimum_purchase"), ("fundBlueSkyStates", "fund_blue_sky_states"),
     ("fundBlueSkyTerritories", "fund_blue_sky_territories"),
-    ("fundDistributionPolicyIndicator", "fund_distribution_policy_indicator"), ("fundAssetType", "fund_asset_type"),
+    
     ("ineligibilityReasonList", "ineligibility_reason_list"), ("eventContract1", "event_contract1"),
     ("eventContractDescription1", "event_contract_description1"),
     ("eventContractDescription2", "event_contract_description2"),
