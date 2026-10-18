@@ -1690,6 +1690,15 @@ impl Context {
     /// reference's order id generator; its API order id
     /// stays its key. An order already held, or already given a server id,
     /// keeps its id.
+    /// Keep an order refused before it was sent, for its cancel, with the
+    /// id it is given now, as the reference numbers an order when it is
+    /// placed: its permId (ibx#748; the reference 10.51, paper, 18/10/2026:
+    /// a kept hedge's permId right after its parent's).
+    pub(crate) fn keep_unsent(&mut self, order_id: OrderId, entry: (crate::types::InstrumentId, crate::types::Qty, i64)) {
+        self.assign_server_id(order_id);
+        self.unsent.insert(order_id, entry);
+    }
+
     pub(crate) fn assign_server_id(&mut self, key: OrderId) {
         if self.open_orders.contains_key(&key) || self.server_ids.contains_key(&key) {
             return;

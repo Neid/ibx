@@ -7419,11 +7419,9 @@ mod news_tests {
             row(1790920800000, "DJ-RTG", "DJ-RTG$1f798bd2", math, "L:en:A:800015"),
             row(1790920800000, "DJ-RTPRO", "DJ-RTPRO$1f798bd2", math, "L:en:A:800015"),
         ]);
-        // The reference held back the fifth (Chinese and English story);
-        // its rule is not known (ibx#458).
-        assert_eq!(news.len(), 5);
-        assert_eq!(news[4].3, "DJ-N$1f79997f");
-        assert_eq!(news[4].4, "Apple Bids to Put China in Its Fold -- WSJ");
+        // The reference held back the fifth, a story whose languages also
+        // name Chinese: ibx too (ibx#755).
+        assert_eq!(news.len(), 4);
 
         // The same articles again (the reference sent AMZN repeats with
         // the first number 3, never given again): nothing.

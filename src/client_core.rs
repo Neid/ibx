@@ -196,11 +196,12 @@ fn auto_execution_from_farm(sec_type: &str, exchange: &str) -> bool {
 /// 17/10/2026).
 ///
 /// A contract only the seeds carry (closed since midnight, after the day
-/// change) is a row too when a positions request listed it, or for a
-/// single request of it alone (ibx#737; the reference 10.51 at level 225,
-/// paper, 18/10/2026, two runs each): position 0, the daily P&L the cash
-/// traded today, the unrealized P&L not valid, no value.
-fn pnl_rows(shared: &SharedState, single_con_ids: &HashSet<i64>) -> Vec<PnlRow> {
+/// change) is a row too when a positions request listed it, for a single
+/// request of it alone (ibx#737; the reference 10.51 at level 225, paper,
+/// 18/10/2026, two runs each), or once its P&L price came (ibx#753):
+/// position 0, the daily P&L the cash traded today, the unrealized P&L not
+/// valid, no value.
+fn pnl_rows(shared: &SharedState, single_con_ids: &HashSet<i64>, priced_before: &HashSet<i64>) -> Vec<PnlRow> {
     let seeds: HashMap<i64, MidnightSeed> = shared.portfolio.midnight_seeds()
         .into_iter().map(|s| (s.con_id, s)).collect();
     let infos: HashMap<i64, PositionInfo> = shared.portfolio.position_infos()
@@ -210,9 +211,17 @@ fn pnl_rows(shared: &SharedState, single_con_ids: &HashSet<i64>) -> Vec<PnlRow> 
     let midnight = shared.portfolio.midnight_prices();
     let realized_since = shared.portfolio.realized_since_seed();
     let money_since = shared.portfolio.money_since_seed();
+    // A seed-only contract counts from the computation after the one that
+    // first had its P&L price, whatever was asked (ibx#753; the reference
+    // 10.51, paper, 18/10/2026 weekend, two fresh processes: AAPL closed
+    // since midnight not counted at the second computation when its price
+    // came after the first, counted a few seconds on; counted at the
+    // second when its quote was asked before; 17/10/2026: not counted at
+    // the second, its price after the first).
+    let priced = |c: &i64| priced_before.contains(c);
     let mut con_ids: Vec<i64> = infos.keys().copied().filter(|&c| c != 0).collect();
     con_ids.extend(seeds.keys().copied()
-        .filter(|c| *c != 0 && !infos.contains_key(c) && (listed.contains(c) || single_con_ids.contains(c))));
+        .filter(|c| *c != 0 && !infos.contains_key(c) && (listed.contains(c) || single_con_ids.contains(c) || priced(c))));
     con_ids.sort_unstable();
     let qty_of = |c: &i64| infos.get(c).map_or(0, |p| p.position_fixed);
     con_ids.sort_by_key(|c| qty_of(c));
@@ -253,7 +262,7 @@ fn pnl_rows(shared: &SharedState, single_con_ids: &HashSet<i64>) -> Vec<PnlRow> 
             v => PnlValue::Valid(v),
         };
         let value = if seed_only { PnlValue::Unset } else { price.map_or(PnlValue::Unset, |p| PnlValue::Valid(qty * p)) };
-        let in_totals = !seed_only || listed.contains(&con_id);
+        let in_totals = !seed_only || listed.contains(&con_id) || priced(&con_id);
         PnlRow { con_id, qty_fixed, daily, unrealized, realized, value, in_totals }
     }).collect()
 }
@@ -333,6 +342,8 @@ pub struct PnlQuotes {
     generation: u64,
     /// The rows of the last computation, in the order of the sums.
     rows: Vec<PnlRow>,
+    /// The contracts priced at an earlier computation (ibx#753).
+    seeds_priced: HashSet<i64>,
     /// The last computation each kind of request looked at.
     seen_total: u64,
     seen_single: u64,
@@ -5398,7 +5409,11 @@ impl ClientCore {
         }
         q.row_moves_seen = moves;
         let singles: HashSet<i64> = self.pnl_single_reqs.lock().unwrap().values().copied().collect();
-        let mut rows = pnl_rows(shared, &singles);
+        let mut rows = pnl_rows(shared, &singles, &q.seeds_priced);
+        // The seed-only contracts priced at this computation count from the
+        // next one (ibx#753).
+        q.seeds_priced.extend(shared.portfolio.pnl_prices().into_iter()
+            .filter(|(_, p)| p.is_finite() && *p != f64::MAX).map(|(c, _)| c));
         if q.generation == 0 {
             rows.truncate(1);
         }
@@ -6862,6 +6877,10 @@ impl ClientCore {
             2 if !parent_contract.sec_type.eq_ignore_ascii_case("OPT") => read(format!("Invalid delta hedge order. The parent order has to be option order and hedge order can only be Stock, CFD or (in case of option on Index) Futures order. server: 0 order: 0 parent: {} hedge:[{}]", order.parent_id, order.hedge_type)),
             2 if !param.is_empty() => read("Invalid hedge ratio".into()),
             4 if !stock(&parent_contract.sec_type) || !stock(sec_type) => read("Invalid beta hedge order. Both parent and hedge can only be Stock orders.".into()),
+            // A beta written as `beta=X`: the reference answers as for a
+            // missing parent (ibx#748; the reference 10.51, paper,
+            // 18/10/2026, market closed, MSFT under a held MSFT parent).
+            4 if param.contains('=') => read(format!("Missing parent order: server: 0 order: {} parent: {} hedge:[{}]", order_id, order.parent_id, order.hedge_type)),
             4 if !param.is_empty() && hedge.beta.is_none() => read("Invalid beta value.".into()),
             3 if hedge.ratio.is_none_or(|r| r == 0.0) => read("Invalid hedge ratio".into()),
             // A forex hedge on a contract that is no currency pair: its own
@@ -9322,6 +9341,13 @@ mod tests {
         let full = core.poll_pnl(&shared).pop().expect("all rows");
         assert_eq!((full.daily_pnl, full.unrealized_pnl, full.realized_pnl), (-633.9706122558556, -1448.013612005863, -10.5616022));
         assert_eq!(full.errors, 0);
+        // The computation after: AAPL, priced at the one before, counts
+        // (ibx#753; the reference 10.51, paper, 18/10/2026: realized
+        // -23.9126623, daily less the cash AAPL traded today).
+        *core.pnl_quotes.lock().unwrap().computed_at_mut().unwrap() -= PNL_RECALC;
+        let later = core.poll_pnl(&shared).pop().expect("the next value");
+        assert!((later.realized_pnl - (-23.9126623)).abs() < 1e-9, "{}", later.realized_pnl);
+        assert!((later.daily_pnl - (full.daily_pnl - 13.3509)).abs() < 1e-9, "{}", later.daily_pnl);
         let singles: Vec<(i64, f64, f64, f64, f64, f64)> = core.poll_pnl_single(&shared).iter()
             .map(|u| (u.req_id, u.pos, u.daily_pnl, u.unrealized_pnl, u.realized_pnl, u.value)).collect();
         // AAPL's single is answered from its seed alone (ibx#737; the
@@ -9487,6 +9513,7 @@ mod tests {
         assert_eq!(read(&hedge("D", "")).unwrap()[..55], text("Invalid delta hedge order. The parent order has to be option order").unwrap()[..55], "case J");
         assert_eq!(read(&hedge("P", "")), text("Invalid hedge ratio"), "case K");
         assert_eq!(read(&hedge("B", "abc")), text("Invalid beta value."), "case M");
+        assert_eq!(read(&hedge("B", "beta=1")), text("Missing parent order: server: 0 order: 11 parent: 10 hedge:[B]"), "ibx#748");
         assert_eq!(read(&ApiOrder { parent_id: 60, ..hedge("B", "1") }),
             text("Missing parent order: server: 0 order: 11 parent: 60 hedge:[B]"), "case N");
         assert_eq!(core.hedge_read_refusal(11, "OPT", &hedge("B", "1"), &shared),

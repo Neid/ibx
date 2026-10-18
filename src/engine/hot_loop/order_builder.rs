@@ -356,7 +356,7 @@ fn send_orders(
                 let exchange = context.market.exchange(instrument).to_ascii_uppercase();
                 let keep = |context: &mut Context| {
                     let parent = order_req.new_order_side().and_then(|(_, a)| a).map_or(0, |a| a.parent_id);
-                    context.unsent.insert(oid, (instrument, order_req.new_order_qty().unwrap_or(0), parent));
+                    context.keep_unsent(oid, (instrument, order_req.new_order_qty().unwrap_or(0), parent));
                 };
                 if sec_type == "STK" {
                     log::warn!("Order {} refused: PEG STK on a stock", oid);
@@ -2851,7 +2851,7 @@ fn hedge_max_size_refusal(req: &OrderRequest, context: &mut Context, shared: &Ar
         && let Some(instrument) = req.instrument()
     {
         log::warn!("Hedge order {} kept unsent: its parent is discarded (hedge-size precaution)", req.order_id());
-        context.unsent.insert(req.order_id(), (instrument, 0, attrs.parent_id));
+        context.keep_unsent(req.order_id(), (instrument, 0, attrs.parent_id));
         return true;
     }
     if !attrs.hedge.as_ref().is_some_and(|h| h.max_size_missing) { return false; }
@@ -2859,7 +2859,7 @@ fn hedge_max_size_refusal(req: &OrderRequest, context: &mut Context, shared: &Ar
     let oid = req.order_id();
     log::warn!("Hedge order {} refused: no max size", oid);
     shared.orders.push_order_error(oid, 10364, "Max Hedging Size value must be defined for the hedge order.".into());
-    context.unsent.insert(oid, (instrument, 0, attrs.parent_id));
+    context.keep_unsent(oid, (instrument, 0, attrs.parent_id));
     true
 }
 
@@ -2906,7 +2906,7 @@ fn kept_refusal(req: &mut OrderRequest, context: &mut Context, shared: &Arc<Shar
     log::warn!("Order {} refused: {}", oid, code);
     shared.orders.push_order_error(oid, code, text);
     let parent = req.new_order_side().and_then(|(_, a)| a).map_or(0, |a| a.parent_id);
-    context.unsent.insert(oid, (instrument, qty, parent));
+    context.keep_unsent(oid, (instrument, qty, parent));
     true
 }
 
@@ -3419,7 +3419,7 @@ fn pegged_type_refusal(
             shared.orders.push_order_error(oid, 387, crate::engine::outside_rth::UNSUPPORTED_ORDER_TYPE.to_string());
             // Kept, unlisted, for its cancel (ibx#542).
             let parent = req.new_order_side().and_then(|(_, a)| a).map_or(0, |a| a.parent_id);
-            context.unsent.insert(oid, (instrument, req.new_order_qty().unwrap_or(0), parent));
+            context.keep_unsent(oid, (instrument, req.new_order_qty().unwrap_or(0), parent));
             Some(true)
         }
         Definition::Known(..) => None,
@@ -3502,7 +3502,7 @@ fn apply_outside_rth(
         log::warn!("Order {} refused: outside RTH and allow pre-open together", oid);
         shared.orders.push_order_error(oid, 437, rth::PRE_OPEN_AND_OUTSIDE_RTH.to_string());
         let parent = req.new_order_side().and_then(|(_, a)| a).map_or(0, |a| a.parent_id);
-        context.unsent.insert(oid, (instrument, req.new_order_qty().unwrap_or(0), parent));
+        context.keep_unsent(oid, (instrument, req.new_order_qty().unwrap_or(0), parent));
         return Some(true);
     }
     if let Some((_, _, _, _, outside_rth)) = rth::rth_parts(req) { *outside_rth = rth_kept; }
@@ -3549,7 +3549,7 @@ fn post_only_refusal(req: &OrderRequest, context: &mut Context, shared: &Arc<Sha
     let oid = req.order_id();
     log::warn!("Order {} refused: post-only ({})", oid, code);
     shared.orders.push_order_error(oid, code, text.to_string());
-    context.unsent.insert(oid, (instrument, req.new_order_qty().unwrap_or(0), attrs.parent_id));
+    context.keep_unsent(oid, (instrument, req.new_order_qty().unwrap_or(0), attrs.parent_id));
     true
 }
 
@@ -3567,7 +3567,7 @@ fn not_held_refusal(req: &OrderRequest, context: &mut Context, shared: &Arc<Shar
     let oid = req.order_id();
     log::warn!("Order {} refused: not-held (10297)", oid);
     shared.orders.push_order_error(oid, 10297, NOT_HELD_INVALID.to_string());
-    context.unsent.insert(oid, (instrument, req.new_order_qty().unwrap_or(0), attrs.parent_id));
+    context.keep_unsent(oid, (instrument, req.new_order_qty().unwrap_or(0), attrs.parent_id));
     true
 }
 
@@ -3734,7 +3734,7 @@ fn permission_refusal(
                 0 => context.cash_orders.get(&oid).copied().unwrap_or(0),
                 q => q,
             };
-            context.unsent.insert(oid, (instrument, qty, attrs.map_or(0, |a| a.parent_id)));
+            context.keep_unsent(oid, (instrument, qty, attrs.map_or(0, |a| a.parent_id)));
             Some(true)
         }
         // Asked above: the order waits for the answer, or goes with the
@@ -4349,7 +4349,7 @@ pub(crate) fn hold_order(
     // Held again with new values: the order stays on the contract it has,
     // which its lookup may have moved to another slot since.
     let instrument = context.unsent.get(&order_id).map_or(instrument, |h| h.0);
-    context.unsent.insert(order_id, (instrument, qty, parent_id));
+    context.keep_unsent(order_id, (instrument, qty, parent_id));
     context.hold_entry(order_id, parent_id, oca_group);
     // Its permId is the next id when it is placed, not when it is sent
     // (paper 09/10/2026: the held orders 37333 and 37334 took the two ids
@@ -5156,7 +5156,7 @@ fn invalid_exchange_refusal(
             log::warn!("Order {} refused: {} is not a valid exchange of its contract", oid, exchange);
             shared.orders.push_order_error(oid, 464, "Invalid exchange".to_string());
             let parent = req.new_order_side().and_then(|(_, a)| a).map_or(0, |a| a.parent_id);
-            context.unsent.insert(oid, (instrument, qty, parent));
+            context.keep_unsent(oid, (instrument, qty, parent));
             Some(true)
         }
     }

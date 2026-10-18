@@ -3492,6 +3492,14 @@ impl FarmState {
                 continue;
             }
             let (headline, extra_data) = split_headline(&item.raw_headline);
+            // An item in another language than English is not given
+            // (ibx#755; the reference 10.51, paper, 18/10/2026, two runs:
+            // the items whose languages also name Chinese left out, the
+            // English ones given).
+            if !english_only(&extra_data) {
+                log::debug!("News {} {} not given (languages {})", item.provider_code, item.article_id, extra_data);
+                continue;
+            }
             let news = crate::types::TickNews {
                 instrument,
                 provider_code: item.provider_code,
@@ -3504,6 +3512,14 @@ impl FarmState {
             emit(event_tx, Event::News(news));
         }
     }
+}
+
+/// Whether every language a news item's extra data lists is English (its
+/// `L` entry, a comma list; no entry passes) (ibx#755).
+fn english_only(extra_data: &str) -> bool {
+    let parts: Vec<&str> = extra_data.split(':').collect();
+    parts.iter().position(|p| *p == "L").and_then(|i| parts.get(i + 1))
+        .is_none_or(|langs| langs.split(',').all(|l| l.trim().eq_ignore_ascii_case("en")))
 }
 
 /// The head of a market data request of `n` entries.
@@ -4515,6 +4531,18 @@ mod tests {
             farm.drop_snapshot(id);
             assert!(farm.snapshot_reqs.is_empty());
         }
+    }
+
+    // ibx#755 (the reference 10.51, paper, 18/10/2026): only items whose
+    // languages are all English are given.
+    #[test]
+    fn news_items_in_english_only() {
+        assert!(english_only("A:800015:L:en"));
+        assert!(english_only("L:en:A:800015"));
+        assert!(english_only("A:800015,800015:L:en,en"));
+        assert!(english_only("A:800015:L:en:K:0.90:C:0.897268533706665"));
+        assert!(english_only(""));
+        assert!(!english_only("A:800008,800008,800015:L:Chinese (Simplified and Traditional),Chinese (Simplified and Traditional),en"));
     }
 
     // ibx#287 (AAPL, captured with the lots scaling on): wire bid size 57
