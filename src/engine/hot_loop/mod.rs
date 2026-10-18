@@ -2537,6 +2537,20 @@ impl HotLoop {
                         }
                         None => self.register_slot_or_reject(Some(con_id), symbol.clone(), &sec_type, &exchange, &reply_tx),
                     };
+                    // A contract whose definition was never read waits for
+                    // it, which tells whether it is a US stock or warrant
+                    // (ibx#645): once, the snapshot then goes on.
+                    let read = self.context.agg_groups.contains_key(&con_id) || self.context.snapshot_def_asked.remove(&con_id);
+                    if let Some(id) = slot.filter(|_| !read && con_id > 0)
+                        && self.ask_definition(con_id, &exchange)
+                    {
+                        let _ = id;
+                        self.context.snapshot_def_asked.insert(con_id);
+                        self.context.def_parked.push((con_id, ControlCommand::SubscribeSnapshot {
+                            con_id, symbol, exchange, sec_type, reply_tx: None,
+                        }));
+                        continue;
+                    }
                     if let Some(id) = slot {
                         let sub = farm::MdSubscribe {
                             con_id, symbol, exchange, sec_type, last_trade_date: String::new(), strike: 0.0,
@@ -2544,6 +2558,7 @@ impl HotLoop {
                         };
                         // A US stock or warrant, when its definition was read (ibx#648).
                         let us_lot = self.context.us_lots.contains(&con_id);
+                        let form_10_40 = self.shared.reference.form_10_40();
                         if let Some(farm_id) = self.md_target(&sub) {
                             if let Some(f) = self.pool.get_mut(farm_id) {
                                 f.note_request(Instant::now());
@@ -2552,14 +2567,19 @@ impl HotLoop {
                             if self.md_pass.on {
                                 let now = self.pace_now();
                                 let mut sink = crate::engine::md_pass::HoldSink { farm: farm_id, pass: &mut self.md_pass, now };
-                                self.farm.subscribe_snapshot(&sub, us_lot, farm_id, &mut sink, &mut self.hb);
+                                self.farm.subscribe_snapshot(&sub, us_lot, form_10_40, farm_id, &mut sink, &mut self.hb);
                             } else if let Some(sink) = farm_sink!(self, farm_id) {
-                                self.farm.subscribe_snapshot(&sub, us_lot, farm_id, sink, &mut self.hb);
+                                self.farm.subscribe_snapshot(&sub, us_lot, form_10_40, farm_id, sink, &mut self.hb);
                             }
                         }
                     }
                 }
                 ControlCommand::DropSnapshot { instrument } => {
+                    if let Some((farm_id, message)) = self.farm.cancel_snapshot_message(instrument)
+                        && let Some(sink) = farm_sink!(self, farm_id)
+                    {
+                        sink.send_comp(&message.iter().map(|(t, v)| (*t, v.as_str())).collect::<Vec<_>>());
+                    }
                     self.farm.drop_snapshot(instrument);
                     self.try_reclaim_instrument(instrument);
                 }
@@ -4854,6 +4874,38 @@ mod tests {
         engine.farm_conn = Some(farm);
         engine.hmds_conn = Some(hmds);
         (engine, shared, vec![s1, s2, s3])
+    }
+
+    // ibx#645: a regulatory snapshot of a contract whose definition was
+    // never read asks it first and waits for it (it tells whether the
+    // contract is a US stock or warrant); one whose definition is known
+    // goes on at once.
+    #[test]
+    fn a_regulatory_snapshot_waits_for_an_unknown_definition() {
+        let shared = Arc::new(SharedState::new());
+        let mut engine = HotLoop::new(shared.clone(), None, None);
+        let (c, mut server) = socket_pair();
+        engine.ccp_conn = Some(Connection::new_mem(c));
+        let (tx, rx) = crossbeam_channel::unbounded();
+        engine.set_control_rx(rx);
+        let snapshot = |con_id: i64| ControlCommand::SubscribeSnapshot {
+            con_id, symbol: "AAPL".into(), exchange: "SMART".into(), sec_type: "STK".into(), reply_tx: None,
+        };
+        tx.send(snapshot(265598)).unwrap();
+        engine.poll_control_commands();
+        let sent = {
+            use std::io::Read;
+            server.set_read_timeout(Some(std::time::Duration::from_millis(200))).unwrap();
+            let mut chunk = [0u8; 8192];
+            let n = server.read(&mut chunk).unwrap_or(0);
+            String::from_utf8_lossy(&chunk[..n]).replace('', "|")
+        };
+        assert!(sent.contains("35=c|") && sent.contains("6008=265598|"), "the definition is asked: {sent}");
+        assert_eq!(engine.context.def_parked.len(), 1, "the snapshot waits");
+        engine.context.agg_groups.insert(272093, -1);
+        tx.send(snapshot(272093)).unwrap();
+        engine.poll_control_commands();
+        assert_eq!(engine.context.def_parked.len(), 1, "a known contract does not wait");
     }
 
     // ibx#399: a lost link is told to the clients at once, once, and the

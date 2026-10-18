@@ -357,6 +357,10 @@ pub struct Context {
     /// Requests waiting for their contract's definition, by conId, and the
     /// ones whose definition came, to be handled again (ibx#404).
     pub(crate) def_parked: Vec<(i64, crate::types::ControlCommand)>,
+    /// The regulatory snapshots whose contract's definition was asked for
+    /// them, by conId: handled again once it came, without asking it again
+    /// (ibx#645).
+    pub(crate) snapshot_def_asked: std::collections::HashSet<i64>,
     pub(crate) def_ready: Vec<crate::types::ControlCommand>,
     /// The client's requests given by a conId alone whose definition was
     /// asked for them, by kind of request and request id: handled again
@@ -656,6 +660,7 @@ impl Context {
             order_hours_due: Vec::new(),
             depth_unsupported: std::collections::HashSet::new(),
             def_parked: Vec::new(),
+            snapshot_def_asked: std::collections::HashSet::new(),
             def_ready: Vec::new(),
             def_asked: std::collections::HashSet::new(),
             company_parked: Vec::new(),

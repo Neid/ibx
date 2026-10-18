@@ -6526,13 +6526,14 @@ fn regulatory_snapshot_delivers_one_batch_then_the_end() {
     assert_eq!(seen, vec!["snapshot:756733", "drop:5"]);
 }
 
+/// A permission of 0 (ibx#645: 1 waits for the fields, as the reference 10.51).
 #[test]
 fn regulatory_snapshot_without_permission_and_cancel() {
     let (client, rx, shared) = test_client();
     let engine = snapshot_engine(rx);
     client.req_mkt_data(1, &spy(), "", false, true).unwrap();
     shared.market.push_snapshot_ack(crate::bridge::TickReqParams {
-        instrument: 5, min_tick: 0.01, bbo_exchange: "9c".into(), snapshot_permissions: 1,
+        instrument: 5, min_tick: 0.01, bbo_exchange: "9c".into(), snapshot_permissions: 0,
     });
     let mut w = SnapRec::default();
     client.process_msgs(&mut w);

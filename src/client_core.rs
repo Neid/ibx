@@ -3063,9 +3063,9 @@ impl ClientCore {
         if control_tx.paced() {
             control_tx.send(snapshot(None)).map_err(|e| format!("Engine stopped: {}", e))?;
         }
-        self.reg_snapshots.lock().unwrap().push(crate::control::regsnapshot::Fetch::new(
-            req_id, con_id, instrument, symbol.to_string(), std::time::Instant::now(),
-        ));
+        let mut fetch = crate::control::regsnapshot::Fetch::new(req_id, con_id, instrument, symbol.to_string(), std::time::Instant::now());
+        fetch.deliver_partial = shared.reference.form_10_40();
+        self.reg_snapshots.lock().unwrap().push(fetch);
         Ok(())
     }
 
@@ -3116,6 +3116,9 @@ impl ClientCore {
             let ack = acks.get(&f.instrument).map(|(p, b)| (*p, b.as_str()));
             let result = match f.poll(now, ack, &fields, exchange_map) {
                 Step::Wait => return true,
+                // The step's unset code is given as 0 by the reference
+                // 10.51, which leaves it out of the message (ibx#645).
+                Step::Fail(code, text) if code == crate::control::regsnapshot::INTERNAL_ERROR.0 && !shared.reference.form_10_40() => Err((0, text)),
                 Step::Fail(code, text) => Err((code, text)),
                 Step::Deliver(ticks) => Ok(ticks),
             };

@@ -17,7 +17,12 @@ pub const EXCHANGE_MAP_TIMEOUT: Duration = Duration::from_millis(2000);
 /// of its own: the largest int as code.
 pub const INTERNAL_ERROR: (i64, &str) = (2147483647, "Internal server error");
 
-/// Snapshot permissions of the acknowledgement.
+/// Snapshot permissions of the acknowledgement. The paper account's stocks
+/// answer 1, with which the reference waits for the fields as with the
+/// real-time permission (ibx#645; the reference 10.51, paper, 18/10/2026,
+/// market closed: NVDA twice and AMZN, "Internal server error" after the
+/// fields' time, no 10170).
+pub const PERM_REALTIME: i32 = 1;
 pub const PERM_SNAPSHOT: i32 = 2;
 pub const PERM_REALTIME_TOP: i32 = 3;
 pub const PERM_SNAPSHOT_NO_API: i32 = 4;
@@ -123,11 +128,16 @@ pub struct Fetch {
     stage: Stage,
     permission: i32,
     fields: SnapshotFields,
+    /// Whether fields not all read at their time limit are delivered as
+    /// they are (10.40), or end the fetch as an internal error (10.51: its
+    /// field wait times out with an error; paper, 18/10/2026, market
+    /// closed, ibx#645).
+    pub deliver_partial: bool,
 }
 
 impl Fetch {
     pub fn new(req_id: i64, con_id: i64, instrument: u32, description: String, now: Instant) -> Fetch {
-        Fetch { req_id, con_id, instrument, description, started: now, stage: Stage::Ack, permission: 0, fields: SnapshotFields::default() }
+        Fetch { req_id, con_id, instrument, description, started: now, stage: Stage::Ack, permission: 0, fields: SnapshotFields::default(), deliver_partial: true }
     }
 
     /// One step: `ack` is the permission and BBO exchange code of the
@@ -144,7 +154,7 @@ impl Fetch {
                         return Step::Wait;
                     };
                     match permission {
-                        PERM_SNAPSHOT | PERM_REALTIME_TOP => {}
+                        PERM_SNAPSHOT | PERM_REALTIME_TOP | PERM_REALTIME => {}
                         PERM_SNAPSHOT_NO_API => {
                             return Step::Fail(10213, format!("API access is restricted on Regulatory snapshot for {}", self.description));
                         }
@@ -164,7 +174,7 @@ impl Fetch {
                         if now.duration_since(since) < FIELDS_TIMEOUT {
                             return Step::Wait;
                         }
-                        if self.fields.read_count() == 0 && self.fields.last_snapshot_time.is_none() {
+                        if !self.deliver_partial || (self.fields.read_count() == 0 && self.fields.last_snapshot_time.is_none()) {
                             return Step::Fail(INTERNAL_ERROR.0, INTERNAL_ERROR.1.into());
                         }
                         log::warn!("Regulatory snapshot req_id={}: unable to fully fetch snapshot", self.req_id);
@@ -225,12 +235,25 @@ mod tests {
     #[test]
     fn permissions_refuse_with_their_codes() {
         let t0 = Instant::now();
-        for (p, code) in [(0, 10170), (1, 10170), (4, 10213)] {
+        for (p, code) in [(0, 10170), (4, 10213)] {
             let mut f = Fetch::new(1, 1, 1, "AAPL".into(), t0);
             let Step::Fail(c, text) = f.poll(t0, Some((p, "9c")), &full(), true) else { panic!() };
             assert_eq!(c, code);
             assert!(text.ends_with("Regulatory snapshot for AAPL"), "{text}");
         }
+    }
+
+    // ibx#645 (the reference 10.51, paper, 18/10/2026, market closed): an
+    // acknowledgement with the permission 1 waits for the fields; fields not
+    // all read at their time limit end the fetch with the internal error.
+    #[test]
+    fn on_10_51_the_field_wait_ends_with_the_internal_error() {
+        let t0 = Instant::now();
+        let mut f = Fetch::new(1, 1, 1, "NVDA".into(), t0);
+        f.deliver_partial = false;
+        let some = SnapshotFields { close: Some(217.23), ..Default::default() };
+        assert_eq!(f.poll(t0, Some((1, "9c")), &some, true), Step::Wait);
+        assert_eq!(f.poll(t0 + FIELDS_TIMEOUT, Some((1, "9c")), &some, true), Step::Fail(INTERNAL_ERROR.0, INTERNAL_ERROR.1.into()));
     }
 
     #[test]

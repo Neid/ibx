@@ -54,6 +54,30 @@ pub(crate) fn entry_mark(req_type: &str, marks: u8, us_lot: bool) -> Option<&'st
     }
 }
 
+/// A regulatory snapshot's request (`subscribe`) or its cancel: one entry
+/// per (id, type), each with the entry mark of its type.
+fn snapshot_message(sub: &MdSubscribe, entries: &[(u32, &'static str)], subscribe: bool, marks: u8, us_lot: bool) -> Vec<(u32, String)> {
+    let one = entries.len() == 1 && entries[0].1 == "624";
+    let mut fields: Vec<(u32, String)> = vec![
+        (fix::TAG_MSG_TYPE, fix::MSG_MARKET_DATA_REQ.to_string()),
+        (fix::TAG_SENDING_TIME, chrono_free_timestamp().to_string()),
+        (263, if one { "3" } else if subscribe { "1" } else { "2" }.to_string()),
+        (146, entries.len().to_string()),
+    ];
+    for (id, req_type) in entries {
+        fields.extend([
+            (262, id.to_string()),
+            (6008, sub.con_id.to_string()),
+            (207, routing_exchange(&sub.exchange, &sub.sec_type).to_string()),
+            (167, fix_sec_type(&sub.sec_type).to_string()),
+            (264, req_type.to_string()),
+            (9830, "1".to_string()),
+            (9839, entry_mark(req_type, marks, us_lot).unwrap_or("1").to_string()),
+        ]);
+    }
+    fields
+}
+
 /// How long a subscription waits for the definition its round lot needs;
 /// then it goes out with sizes as on the wire.
 pub(crate) const LOT_LOOKUP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
@@ -841,6 +865,8 @@ pub(crate) struct FarmState {
     pub(crate) md_req_to_instrument: Vec<(u32, InstrumentId)>,
     /// Farm request ids of regulatory snapshots (ibx#446), with their instrument.
     pub(crate) snapshot_reqs: Vec<(u32, InstrumentId)>,
+    /// What each regulatory snapshot sent, for its cancel (ibx#645).
+    pub(crate) snapshot_wire: Vec<(InstrumentId, MdSubscribe, Vec<(u32, &'static str)>, bool, FarmId)>,
     pub(crate) instrument_md_reqs: Vec<(InstrumentId, Vec<u32>)>,
     /// The client's market data modes from reqMarketDataType (ibx#447).
     pub(crate) md_modes: crate::types::MarketDataModes,
@@ -951,6 +977,7 @@ impl FarmState {
             next_md_req_id: 1,
             md_req_to_instrument: Vec::new(),
             snapshot_reqs: Vec::new(),
+            snapshot_wire: Vec::new(),
             instrument_md_reqs: Vec::new(),
             md_modes: crate::types::MarketDataModes::default(),
             last_on_best: std::collections::HashSet::new(),
@@ -1424,6 +1451,10 @@ impl FarmState {
         // A regulatory snapshot (ibx#446): its permission and BBO exchange
         // go to its fetcher, never as tickReqParams.
         if self.snapshot_reqs.iter().any(|(id, _)| *id == req_id) {
+            // The pair's second entry adds nothing to the fetch (ibx#645).
+            if self.snapshot_reqs.iter().find(|(_, i)| *i == instrument).is_some_and(|(first, _)| *first != req_id) {
+                return;
+            }
             let permissions = parts.get(4).and_then(|s| s.trim().parse::<i32>().ok()).unwrap_or(0);
             let bbo = parts.get(5).map(|s| s.trim().to_string()).unwrap_or_default();
             log::info!("Regulatory snapshot ack: instrument {} server_tag {} permissions {} bbo {:?}", instrument, server_tag, permissions, bbo);
@@ -2492,42 +2523,50 @@ impl FarmState {
     /// SNAPSHOT and request type 624, flagged for an API client, without
     /// the streaming-client mark.
     /// `us_lot`: the contract is a US stock or warrant, by its definition.
-    pub(crate) fn subscribe_snapshot(&mut self, sub: &MdSubscribe, us_lot: bool, farm: FarmId, sink: &mut dyn FixSink, hb: &mut HeartbeatState) {
+    pub(crate) fn subscribe_snapshot(&mut self, sub: &MdSubscribe, us_lot: bool, form_10_40: bool, farm: FarmId, sink: &mut dyn FixSink, hb: &mut HeartbeatState) {
         if sub.con_id <= 0 {
             log::error!("Regulatory snapshot for instrument {} without a conId: not sent", sub.instrument);
             return;
         }
-        let id = self.next_md_req_id;
-        self.next_md_req_id += 1;
-        self.md_req_to_instrument.push((id, sub.instrument));
-        self.snapshot_reqs.push((id, sub.instrument));
-        let con_id_str = sub.con_id.to_string();
-        let id_str = id.to_string();
-        let exchange = routing_exchange(&sub.exchange, &sub.sec_type);
-        let sec_type = fix_sec_type(&sub.sec_type);
-        let ts = chrono_free_timestamp();
-        let tags: Vec<(u32, &str)> = vec![
-            (fix::TAG_MSG_TYPE, fix::MSG_MARKET_DATA_REQ),
-            (fix::TAG_SENDING_TIME, &ts),
-            (263, "3"),
-            (146, "1"),
-            (262, &id_str),
-            (6008, &con_id_str),
-            (207, exchange),
-            (167, sec_type),
-            (264, "624"),
-            (9830, "1"),
-            (9839, entry_mark("624", self.marks(), us_lot).unwrap_or("1")),
-        ];
-        if sink.send_comp(&tags) {
-            log::info!("Sent 35=V regulatory snapshot on farm {}: con_id={} {} {} id={}", farm, sub.con_id, exchange, sec_type, id);
+        // The reference 10.51 asks it as the bid/ask pair of a top of
+        // book, without the client's source, and cancels it when the fetch
+        // ends (ibx#645; paper, 18/10/2026, market closed). The 10.40 form
+        // was one snapshot entry.
+        let ids: Vec<u32> = (0..if form_10_40 { 1 } else { 2 }).map(|_| {
+            let id = self.next_md_req_id;
+            self.next_md_req_id += 1;
+            self.md_req_to_instrument.push((id, sub.instrument));
+            self.snapshot_reqs.push((id, sub.instrument));
+            id
+        }).collect();
+        let entries: Vec<(u32, &'static str)> = if form_10_40 {
+            vec![(ids[0], "624")]
+        } else {
+            vec![(ids[0], "442"), (ids[1], "443")]
+        };
+        let message = snapshot_message(sub, &entries, true, self.marks(), us_lot);
+        if sink.send_comp(&message.iter().map(|(t, v)| (*t, v.as_str())).collect::<Vec<_>>()) {
+            log::info!("Sent 35=V regulatory snapshot on farm {}: con_id={} ids={:?}", farm, sub.con_id, ids);
             if farm == PRIMARY_MD {
                 hb.last_farm_sent = Instant::now();
             }
         }
+        self.snapshot_wire.push((sub.instrument, sub.clone(), entries, us_lot, farm));
+    }
+
+    /// The cancel of a regulatory snapshot's subscription, as the reference
+    /// 10.51 sends it when the fetch ends (ibx#645): the same entries, 263=2.
+    pub(crate) fn cancel_snapshot_message(&mut self, instrument: InstrumentId) -> Option<(FarmId, Vec<(u32, String)>)> {
+        let at = self.snapshot_wire.iter().position(|(i, ..)| *i == instrument)?;
+        let (_, sub, entries, us_lot, farm) = self.snapshot_wire.swap_remove(at);
+        if entries.iter().any(|(_, t)| *t == "624") {
+            return None;
+        }
+        Some((farm, snapshot_message(&sub, &entries, false, self.marks(), us_lot)))
     }
 
     /// Forget the request of a regulatory snapshot (ibx#446).
+    /// Its cancel is [`Self::cancel_snapshot_message`].
     pub(crate) fn drop_snapshot(&mut self, instrument: InstrumentId) {
         let ids: Vec<u32> = self.snapshot_reqs.iter().filter(|(_, i)| *i == instrument).map(|(id, _)| *id).collect();
         self.snapshot_reqs.retain(|(_, i)| *i != instrument);
@@ -4413,40 +4452,68 @@ mod tests {
         assert_eq!(engine.farm.marks(), X);
     }
 
-    // ibx#446: the regulatory snapshot asks one entry with action SNAPSHOT
-    // and type 624, without the streaming mark; its ack goes to the fetcher
-    // and never gives tickReqParams.
+    // ibx#446: on 10.40 the regulatory snapshot asks one entry with action
+    // SNAPSHOT and type 624, without the streaming mark; ibx#645: on 10.51
+    // it subscribes the bid/ask pair, each entry with its mark, and its
+    // cancel sends the same entries (the reference 10.51, paper,
+    // 18/10/2026). Only the first entry's ack goes to the fetcher, never
+    // as tickReqParams.
     #[test]
     fn regulatory_snapshot_request_and_ack() {
-        let shared = SharedState::new();
-        let mut farm = FarmState::new();
-        let mut context = Context::new();
-        let id = context.market.register(265598);
-        let sub = MdSubscribe {
-            con_id: 265598, symbol: "AAPL".into(), exchange: "SMART".into(), sec_type: "STK".into(),
-            last_trade_date: String::new(), strike: 0.0, right: String::new(), multiplier: String::new(),
-            instrument: id, mode_9887: 0, snapshot: false,
-        };
-        let mut sink = RecordingSink(Vec::new());
-        let mut hb = HeartbeatState::new();
-        farm.subscribe_snapshot(&sub, true, PRIMARY_MD, &mut sink, &mut hb);
-        let msg = &sink.0[0];
-        let tags: Vec<u32> = msg.iter().map(|(t, _)| *t).collect();
-        // The entry mark last: 1 without odd-lot quotes (ibx#648).
-        assert_eq!(tags, vec![35, 52, 263, 146, 262, 6008, 207, 167, 264, 9830, 9839]);
-        assert_eq!(msg.last().unwrap().1, "1");
-        let value = |t: u32| msg.iter().find(|(x, _)| *x == t).map(|(_, v)| v.clone()).unwrap();
-        assert_eq!((value(263), value(146), value(207), value(167), value(264), value(9830)),
-            ("3".into(), "1".into(), "BEST".into(), "CS".into(), "624".into(), "1".into()));
-        let req: u32 = value(262).parse().unwrap();
-        let ack = format!("8=O35=Q1101,{req},0.01,0,2,9c,,1,1");
-        farm.handle_subscription_ack(ack.as_bytes(), &mut None::<Connection>, &mut context, &shared, &mut HeartbeatState::new());
-        assert!(shared.market.drain_tick_req_params().is_empty());
-        let acks = shared.market.drain_snapshot_acks();
-        assert_eq!(acks.len(), 1);
-        assert_eq!((acks[0].instrument, acks[0].snapshot_permissions, acks[0].bbo_exchange.as_str()), (id, 2, "9c"));
-        farm.drop_snapshot(id);
-        assert!(farm.snapshot_reqs.is_empty());
+        for form_10_40 in [true, false] {
+            let shared = SharedState::new();
+            let mut farm = FarmState::new();
+            let mut context = Context::new();
+            let id = context.market.register(265598);
+            let sub = MdSubscribe {
+                con_id: 265598, symbol: "AAPL".into(), exchange: "SMART".into(), sec_type: "STK".into(),
+                last_trade_date: String::new(), strike: 0.0, right: String::new(), multiplier: String::new(),
+                instrument: id, mode_9887: 0, snapshot: false,
+            };
+            let mut sink = RecordingSink(Vec::new());
+            let mut hb = HeartbeatState::new();
+            farm.subscribe_snapshot(&sub, true, form_10_40, PRIMARY_MD, &mut sink, &mut hb);
+            let msg = &sink.0[0];
+            let tags: Vec<u32> = msg.iter().map(|(t, _)| *t).collect();
+            let value = |t: u32| msg.iter().find(|(x, _)| *x == t).map(|(_, v)| v.clone()).unwrap();
+            let values = |t: u32| msg.iter().filter(|(x, _)| *x == t).map(|(_, v)| v.clone()).collect::<Vec<_>>();
+            if form_10_40 {
+                // The entry mark last: 1 without odd-lot quotes (ibx#648).
+                assert_eq!(tags, vec![35, 52, 263, 146, 262, 6008, 207, 167, 264, 9830, 9839]);
+                assert_eq!(msg.last().unwrap().1, "1");
+                assert_eq!((value(263), value(146), value(207), value(167), value(264), value(9830)),
+                    ("3".into(), "1".into(), "BEST".into(), "CS".into(), "624".into(), "1".into()));
+            } else {
+                assert_eq!((value(263), value(146)), ("1".into(), "2".into()));
+                assert_eq!(values(264), ["442", "443"]);
+                assert_eq!(values(167), ["CS", "CS"]);
+                assert!(!tags.contains(&6088), "no client source");
+            }
+            let req: u32 = value(262).parse().unwrap();
+            let ack = format!("8=O35=Q1101,{req},0.01,0,2,9c,,1,1");
+            farm.handle_subscription_ack(ack.as_bytes(), &mut None::<Connection>, &mut context, &shared, &mut HeartbeatState::new());
+            assert!(shared.market.drain_tick_req_params().is_empty());
+            let acks = shared.market.drain_snapshot_acks();
+            assert_eq!(acks.len(), 1);
+            assert_eq!((acks[0].instrument, acks[0].snapshot_permissions, acks[0].bbo_exchange.as_str()), (id, 2, "9c"));
+            if !form_10_40 {
+                let second: u32 = values(262)[1].parse().unwrap();
+                let ack = format!("8=O35=Q1102,{second},0.01,0,0,9c,,0,1");
+                farm.handle_subscription_ack(ack.as_bytes(), &mut None::<Connection>, &mut context, &shared, &mut HeartbeatState::new());
+                assert!(shared.market.drain_snapshot_acks().is_empty(), "the second entry's ack is not the fetch's");
+            }
+            let cancel = farm.cancel_snapshot_message(id);
+            match cancel {
+                None => assert!(form_10_40),
+                Some((_, m)) => {
+                    assert!(!form_10_40);
+                    assert!(m.iter().any(|(t, v)| *t == 263 && v == "2"));
+                    assert_eq!(m.iter().filter(|(t, _)| *t == 264).count(), 2);
+                }
+            }
+            farm.drop_snapshot(id);
+            assert!(farm.snapshot_reqs.is_empty());
+        }
     }
 
     // ibx#287 (AAPL, captured with the lots scaling on): wire bid size 57
