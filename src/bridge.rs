@@ -230,6 +230,15 @@ impl ErrorTap {
         self.events.get().map(|_| value.clone())
     }
 
+    /// A notify-only event (ibx#568), built only when a channel is
+    /// attached. Non-blocking: dropped when the channel is full.
+    #[inline]
+    fn notify(&self, event: impl FnOnce() -> Event) {
+        if let Some(tx) = self.events.get() {
+            let _ = tx.try_send(event());
+        }
+    }
+
     /// Give an answer to the event channel once its queue has it.
     /// Non-blocking: dropped when the channel is full.
     #[inline]
@@ -573,6 +582,26 @@ pub enum Event {
     /// Position update.
     /// `position` is fixed-point (QTY_SCALE).
     PositionUpdate { instrument: InstrumentId, con_id: i64, position_fixed: Qty, avg_cost: f64 },
+    /// A market depth update of a request was queued (ibx#568): notify
+    /// only, the row comes with the next `process_msgs` (`updateMktDepth`).
+    DepthUpdate { req_id: ReqId },
+    /// Generic ticks of an instrument were queued (ibx#568): notify only,
+    /// they come with the next `process_msgs` (`tickGeneric`,
+    /// `tickString` and the others of the generic list).
+    GenericTicks(InstrumentId),
+    /// The request parameters of an instrument's subscription came
+    /// (ibx#568): notify only, `tickReqParams` and the market data type
+    /// come with the next `process_msgs`.
+    MarketDataParams(InstrumentId),
+    /// The account's values or portfolio rows changed (ibx#568): notify
+    /// only; read them with `SharedState::portfolio.account_rows()` and
+    /// `position_infos()`, or wait for `updateAccountValue` and
+    /// `updatePortfolio`.
+    AccountUpdate,
+    /// A P&L price of a position changed (ibx#568): notify only; the
+    /// prices are in `SharedState::portfolio.pnl_prices()`, the P&L
+    /// callbacks come with the next `process_msgs`.
+    PnlPrice { con_id: i64 },
     /// Connection lost.
     Disconnected,
     /// Gateway logon completed. `ccp_session_id` matches the `x-ccp-session-id` header
@@ -884,7 +913,9 @@ impl MarketDataState {
     }
 
     #[doc(hidden)] pub fn push_tick_req_params(&self, params: TickReqParams) {
+        let instrument = params.instrument;
         self.tick_req_params.lock().unwrap().push(params);
+        self.error_tap.notify(|| Event::MarketDataParams(instrument));
     }
 
     pub fn drain_tick_req_params(&self) -> Vec<TickReqParams> {
@@ -1085,7 +1116,9 @@ impl MarketDataState {
     }
 
     #[doc(hidden)] pub fn push_depth_update(&self, update: DepthUpdate) {
+        let req_id = update.req_id;
         self.depth_updates.push(update);
+        self.error_tap.notify(|| Event::DepthUpdate { req_id });
     }
 
     /// Remove all buffered depth updates for a given req_id (called on cancel).
@@ -1094,7 +1127,9 @@ impl MarketDataState {
     }
 
     #[doc(hidden)] pub fn push_generic_ticks(&self, ticks: GenericTicks) {
+        let instrument = ticks.instrument;
         self.generic_ticks.lock().unwrap().push(ticks);
+        self.error_tap.notify(|| Event::GenericTicks(instrument));
     }
 
     #[doc(hidden)] pub fn push_tick_news(&self, news: TickNews) {
@@ -2756,6 +2791,7 @@ impl PortfolioState {
     #[doc(hidden)]
     pub fn update_account_rows(&self, f: impl FnOnce(&mut AccountRows)) {
         f(&mut self.account_rows.lock().unwrap());
+        self.error_tap.notify(|| Event::AccountUpdate);
     }
 
     /// Get all position infos (for reqPositions).
@@ -2999,6 +3035,7 @@ impl PortfolioState {
     /// A P&L price of the session's P&L quotes (ibx#511).
     #[doc(hidden)] pub fn set_pnl_price(&self, con_id: i64, price: f64) {
         self.pnl_prices.lock().unwrap().insert(con_id, price);
+        self.error_tap.notify(|| Event::PnlPrice { con_id });
     }
 
     pub fn pnl_prices(&self) -> HashMap<i64, f64> {
@@ -3160,6 +3197,25 @@ impl SharedState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ibx#568: the streaming market data and the state read data give
+    // notify-only events once a channel is attached, and none without one.
+    #[test]
+    fn notify_only_events_of_queued_and_state_data() {
+        let shared = SharedState::new();
+        shared.market.push_generic_ticks(GenericTicks { at: 0, instrument: 3, code: 233, ticks: vec![] });
+        let (tx, rx) = crossbeam_channel::unbounded();
+        shared.attach_event_channel(&tx);
+        shared.market.push_depth_update(DepthUpdate { req_id: 7, position: 0, market_maker: String::new(), operation: 0, side: 1,
+            price: 1.0, size: 1.0, is_smart_depth: false, l2: false });
+        shared.market.push_generic_ticks(GenericTicks { at: 0, instrument: 3, code: 233, ticks: vec![] });
+        shared.market.push_tick_req_params(TickReqParams { instrument: 3, min_tick: 0.01, bbo_exchange: String::new(), snapshot_permissions: 3 });
+        shared.portfolio.update_account_rows(|_| {});
+        shared.portfolio.set_pnl_price(265598, 250.0);
+        let kinds: Vec<String> = rx.try_iter().map(|e| format!("{e:?}")).collect();
+        assert_eq!(kinds, ["DepthUpdate { req_id: 7 }", "GenericTicks(3)", "MarketDataParams(3)", "AccountUpdate",
+            "PnlPrice { con_id: 265598 }"]);
+    }
 
     /// An error written by the thread of a caller waits for the engine to
     /// handle the commands sent before it, so the answers come in the
