@@ -394,14 +394,16 @@ fn combo_symbol_refusal_then_order_modify_and_cancel_are_the_captured_ones() {
 // ibx#470 (captured 26/09/2026, i105_combo_leg_prices): per-leg prices
 // and no limit price give the combo price (721.35 - 794.50) and one leg
 // price field per leg after it; the price change of a leg keeps the placed
-// prices on the replace message, with the leg block. openOrder shows the
-// reported leg prices and no limit price.
+// prices on the replace message of 10.40, with the leg block (10.51 sends
+// the new ones: tests/scenario_replay.rs `combo_orders_on_10_51`, ibx#604).
+// openOrder shows the reported leg prices and no limit price.
 #[test]
 fn combo_leg_prices_are_the_captured_ones() {
     crate::client_core::set_session_level_for_test(Some(214)); // a capture at level 214 (ibx#602)
     let first = fixture("20260926/i105_combo_stock_smart.jsonl");
     let frames = fixture("20260926b/i105_combo_leg_prices.jsonl");
     let mut s = Session::new();
+    s.engine.shared.reference.set_form_10_40(true); // a capture of 10.40
     // The session of the capture had the combo preset already (ibx#660).
     s.engine.context.order_presets.insert("COMB".into(), None);
     // The session's set-up, as in the capture's session.

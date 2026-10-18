@@ -1785,7 +1785,11 @@ fn send_orders(
                     &sec_type_str, &con_id_str, kind, tif, &attrs, trail_limit_offset,
                     reported_stop, bracket_key.as_deref(), context.price_mgmt_send);
                 if let Some(combo) = context.combos.orders.get(&order_id) {
-                    combo_modify_fields(&mut fields, combo);
+                    // The per-leg prices of the modify, as 10.51 sends them;
+                    // the 10.40 form restates the placed ones (ibx#604).
+                    let new_prices = attrs.combo.as_ref().filter(|_| !shared.reference.form_10_40())
+                        .map(|c| c.leg_prices.as_slice());
+                    combo_modify_fields(&mut fields, combo, new_prices);
                 }
                 let refs: Vec<(u32, &str)> = fields.iter().map(|(t, s)| (*t, s.as_str())).collect();
                 conn.send_fix(&refs)
@@ -3097,10 +3101,13 @@ fn modify_fields(
 /// The replace of a combo order as the reference writes it (ibx#470;
 /// captured 26/09/2026): the legs' symbols, the smartComboRoutingParams
 /// after the other attributes, and no combo block, except for an order
-/// with per-leg prices, which restates the price and the leg prices it was
-/// placed with (a new leg price does not reach the wire) and the combo
-/// block after the conId.
-fn combo_modify_fields(fields: &mut Vec<(u32, String)>, combo: &crate::engine::combo::ComboOrder) {
+/// with per-leg prices, which restates the price and the leg prices and
+/// the combo block after the conId. The leg prices are the modify's,
+/// `new_prices` in the caller's leg order, and the price they give (the
+/// reference 10.51, recorded 18/10/2026, ibx#604); without them, and in
+/// the 10.40 form, the ones the order was placed with (a new leg price did
+/// not reach the wire on 10.40).
+fn combo_modify_fields(fields: &mut Vec<(u32, String)>, combo: &crate::engine::combo::ComboOrder, new_prices: Option<&[crate::types::Price]>) {
     let symbol = combo.combo.symbol();
     for (tag, value) in fields.iter_mut() {
         if matches!(*tag, 55 | 6035) { *value = symbol.clone(); }
@@ -3111,7 +3118,14 @@ fn combo_modify_fields(fields: &mut Vec<(u32, String)>, combo: &crate::engine::c
         }
     }
     if combo.leg_prices.is_empty() { return; }
-    if let Some(price) = combo.price {
+    let modified = new_prices.map(|p| combo.combo.leg_prices(&crate::types::ComboSpec {
+        legs: combo.spec.legs.clone(), leg_prices: p.to_vec(), ..Default::default()
+    })).filter(|p| p.len() == combo.leg_prices.len());
+    let (leg_prices, price) = match &modified {
+        Some(p) => (p.as_slice(), combo.combo.price_of_legs(p)),
+        None => (combo.leg_prices.as_slice(), combo.price),
+    };
+    if let Some(price) = price {
         match fields.iter().position(|(t, _)| *t == 44) {
             Some(i) => fields[i].1 = format_price_ref(price).to_string(),
             None => if let Some(i) = fields.iter().position(|(t, _)| *t == 41) {
@@ -3120,7 +3134,7 @@ fn combo_modify_fields(fields: &mut Vec<(u32, String)>, combo: &crate::engine::c
         }
     }
     if let Some(at) = fields.iter().position(|(t, _)| *t == 44) {
-        for (i, p) in combo.leg_prices.iter().enumerate() {
+        for (i, p) in leg_prices.iter().enumerate() {
             fields.insert(at + 1 + i, (6879, format_price_ref(*p).to_string()));
         }
     }

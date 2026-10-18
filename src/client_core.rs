@@ -7865,9 +7865,24 @@ impl ClientCore {
                 order.tif_byte()
             },
             // The algo, restated by the reference's replace (ibx#263); the
-            // working order's parent kept (ibx#688).
-            attrs: crate::types::OrderAttrs { algo: Self::order_algo(order)?, parent_id: working.parent_id, ..order.attrs() },
+            // working order's parent kept (ibx#688); the per-leg prices of
+            // a combo's modify (ibx#604).
+            attrs: crate::types::OrderAttrs {
+                algo: Self::order_algo(order)?, parent_id: working.parent_id, combo: Self::modify_leg_prices(order),
+                ..order.attrs()
+            },
         })))
+    }
+
+    /// The per-leg prices a modify of a combo order gives, every leg
+    /// priced, in the caller's leg order; None otherwise. The reference
+    /// 10.51 sends them in its replace (recorded 18/10/2026, ibx#604).
+    fn modify_leg_prices(order: &ApiOrder) -> Option<Box<ComboSpec>> {
+        let prices = &order.order_combo_legs;
+        (!prices.is_empty() && prices.iter().all(|p| *p != f64::MAX)).then(|| Box::new(ComboSpec {
+            leg_prices: prices.iter().map(|p| (p * PRICE_SCALE_F).round() as Price).collect(),
+            ..Default::default()
+        }))
     }
 
     /// The order's algo, None when it has none: the Adaptive priority
