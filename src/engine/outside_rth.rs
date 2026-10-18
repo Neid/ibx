@@ -93,6 +93,9 @@ pub(crate) struct RthTypes {
     /// A treasury bill's face value: its order message gives the order's
     /// amount (quantity times face value) in place of the quantity.
     pub face_value: Option<u64>,
+    /// The server answered the lookup with no definition of the contract
+    /// on that exchange (ibx#743); false when none came in time.
+    pub not_found: bool,
 }
 
 impl RthTypes {
@@ -162,7 +165,7 @@ impl RthKind {
             OrderKind::Limit { .. } | OrderKind::MktPrt | OrderKind::SnapMkt { .. } | OrderKind::SnapMid { .. }
             | OrderKind::SnapPri { .. } | OrderKind::Rel { .. } | OrderKind::PegBench { .. }
             | OrderKind::PegBest { .. } | OrderKind::Rpi { .. } | OrderKind::PassvRel { .. }
-            | OrderKind::Volatility { .. } => (false, false, false),
+            | OrderKind::Volatility { .. } | OrderKind::PegStk => (false, false, false),
         };
         RthKind { market_like, stop_or_touched, moc_loc }
     }
@@ -192,13 +195,16 @@ pub(crate) fn outside_rth_applies(kind: RthKind, tif: u8, exchange: &str, types:
     let tif_ok = !kind.moc_loc
         && !matches!(tif, b'?' | b'4' | b'3')
         && (tif != b'2' || exchange == "ARCA");
-    // A combo (ibx#470, its BAG definition): never with a market-like
-    // type, else when the time in force allows it or the type is a stop
-    // or touched one.
-    // Whether the combo's exchange enables outside RTH for combos (A3) is
-    // not known here; it is taken as enabled.
+    // A combo (ibx#470, its BAG definition): only where its exchange and
+    // currency enable outside RTH for combos (A3), which the reference
+    // learns from the server after the first combo order of each; the
+    // first order loses the flag whatever the answer. A stock combo on
+    // SMART in USD lost it on every order, the first and the later ones
+    // (ibx#744; the reference 10.51, paper, 17/10 and 18/10/2026, market
+    // closed: 2109 on three LMT DAY orders of one session). No combo is
+    // known to keep it, so none does.
     if types.sec_type == "BAG" {
-        if kind.market_like || !(tif_ok || kind.stop_or_touched) { return false; }
+        return false;
     } else if !((types.rth && tif_ok) || (types.lth && kind.stop_or_touched)) {
         return false;
     }
@@ -363,6 +369,18 @@ mod tests {
         ];
         for (label, kind, tif, exch, keep) in cases {
             assert_eq!(outside_rth_applies(kind, tif, exch, &t), keep, "{label}");
+        }
+    }
+
+    // ibx#744 (the reference 10.51, paper, 18/10/2026, market closed): a
+    // stock combo on SMART loses outside RTH on its first and later LMT DAY
+    // orders, whose time in force would keep it on a stock.
+    #[test]
+    fn a_combo_never_keeps_outside_rth() {
+        let bag = RthTypes { sec_type: "BAG".into(), currency: "USD".into(), rth: true, lth: true, ..Default::default() };
+        for kind in [OrderKind::Limit { price: 1 }, OrderKind::StopLimit { price: 1, stop_price: 1 }] {
+            assert!(!outside_rth_applies(RthKind::of(&kind), b'0', "BEST", &bag), "{kind:?}");
+            assert!(!outside_rth_applies(RthKind::of(&kind), b'1', "BEST", &bag), "{kind:?}");
         }
     }
 

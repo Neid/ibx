@@ -339,6 +339,25 @@ fn send_orders(
             // reference prices it from the market (an AAPL stock order went
             // out as a limit order at the ask, paper 16/10/2026); not
             // modelled yet (ibx#673).
+            // A pegged-to-stock order: on a stock, whose order types do not
+            // include it, refused with 387 at once and kept for its cancel
+            // (Cancelled, 202, 161), as the reference 10.51 (ibx#745;
+            // paper, 17/10/2026, market closed, AAPL); on the contracts
+            // that take it, its message is not written yet.
+            if matches!(&order_req, OrderRequest::SubmitEx { kind: crate::types::OrderKind::PegStk, .. }) {
+                let oid = order_req.order_id();
+                if sec_type == "STK" {
+                    log::warn!("Order {} refused: PEG STK on a stock", oid);
+                    shared.orders.push_order_error(oid, 387, crate::engine::outside_rth::UNSUPPORTED_ORDER_TYPE.to_string());
+                    let parent = order_req.new_order_side().and_then(|(_, a)| a).map_or(0, |a| a.parent_id);
+                    context.unsent.insert(oid, (instrument, order_req.new_order_qty().unwrap_or(0), parent));
+                } else {
+                    log::warn!("Order {} refused: PEG STK order on {}", oid, sec_type);
+                    shared.orders.push_order_error(oid, 321, format!(
+                        "Error validating request.-'PlaceOrder(3)' : cause - PEG STK orders on {sec_type} are not written by ibx yet (ibx#745)"));
+                }
+                continue;
+            }
             if is_volatility(&order_req) && !matches!(sec_type.as_str(), "OPT" | "FOP") {
                 let oid = order_req.order_id();
                 log::warn!("Order {} refused: VOL order on {}", oid, sec_type);
@@ -3007,8 +3026,9 @@ fn modify_fields(
             after_type.push((211, p(offset)));
             "RPI"
         }
-        // Refused before anything is sent (ibx#673): never written.
+        // Refused before anything is sent (ibx#673, ibx#745): never written.
         K::Volatility { .. } => "VOL",
+        K::PegStk => "PEG STK",
         K::PassvRel { price, offset } => {
             if price > 0 { before_account.push((44, p(price))); }
             before_account.push((99, p(offset)));
@@ -3963,12 +3983,17 @@ pub(crate) fn rth_definition_reply(context: &mut Context, req_id: &str, msg: &[u
     let Some(idx) = context.rth_lookups.iter().position(|(id, _, _)| id == req_id) else { return false };
     let (_, key, _) = context.rth_lookups.swap_remove(idx);
     // A record of the contract on the exchange the answer names (ibx#706).
-    for def in crate::control::contracts::parse_secdef_records(msg).unwrap_or_default() {
+    let records = crate::control::contracts::parse_secdef_records(msg).unwrap_or_default();
+    for def in &records {
         if def.con_id == key.0 && !def.exchange.is_empty() {
             context.order_records.insert((key.0, def.exchange.clone()));
         }
     }
-    store_rth_types(context, key, msg);
+    let not_found = records.is_empty() && crate::control::contracts::parse_secdef_response(msg).is_none();
+    store_rth_types(context, key.clone(), msg);
+    if not_found && let Some(types) = context.rth_types.get_mut(&key) {
+        types.not_found = true;
+    }
     release_rth_parked(context);
     true
 }
@@ -4948,6 +4973,17 @@ fn invalid_exchange_refusal(
         Definition::NoContract => None,
         Definition::Waiting => Some(false),
         Definition::Known(types, _) => {
+            if types.not_found {
+                // The contract has no definition on that exchange: 200 and
+                // nothing sent, the order gone (its cancel 10147), as the
+                // reference 10.51 (ibx#743; paper, 17/10/2026, market
+                // closed: AAPL by conId on a made-up exchange).
+                let oid = req.order_id();
+                log::warn!("Order {} refused: no definition of its contract on {}", oid, exchange);
+                shared.orders.push_order_error(oid, crate::engine::combo::NO_DEFINITION.0, crate::engine::combo::NO_DEFINITION.1.to_string());
+                drop_refused_at_lookup(context, shared, req);
+                return Some(true);
+            }
             let listed = types.valid_exchanges.as_ref()?.iter().any(|e| e.eq_ignore_ascii_case(&exchange));
             if listed {
                 return None;
@@ -5532,6 +5568,7 @@ fn send_order_ex(
         K::Rpi { price, offset } => (crate::types::ORD_RPI, price, offset),
         K::PassvRel { price, offset } => (crate::types::ORD_PASSV_REL, price, offset),
         K::Volatility { .. } => (b'V', 0, 0),
+        K::PegStk => (b'V', 0, 0),
     };
     context.insert_order(crate::types::Order::new(
         order_id, instrument, side, qty, track_price, ord_type_byte, tif, track_stop,
@@ -5735,8 +5772,9 @@ fn send_order_ex(
         // Passive relative (not observed yet): its own order type, the limit
         // price when set, the offset in both fields like the retail price
         // improvement type, no instruction.
-        // Refused before anything is sent (ibx#673): never written.
+        // Refused before anything is sent (ibx#673, ibx#745): never written.
         K::Volatility { .. } => fields.push((40, "VOL".to_string())),
+        K::PegStk => fields.push((40, "PEG STK".to_string())),
         K::PassvRel { price, offset } => {
             let o = format_price_ref(offset).to_string();
             fields.push((40, "PSVR".to_string()));
@@ -8981,6 +9019,36 @@ mod tests {
         }
     }
 
+    // ibx#743 (the reference 10.51, paper, 17/10/2026, market closed): AAPL
+    // by conId on an exchange it has no definition on is refused with 200,
+    // nothing sent, the order gone: its cancel gives 10147.
+    #[test]
+    fn an_order_on_an_exchange_without_a_definition_gets_200() {
+        let (client, mut server) = crate::protocol::connection::mem_pair();
+        let mut conn = Some(Connection::new_mem(client));
+        let shared = Arc::new(SharedState::new());
+        let mut context = order_context();
+        context.bypass_redirect_warning = true;
+        context.market.register(265598);
+        context.order_records_any.insert(265598);
+        context.set_symbol(0, "AAPL".to_string());
+        context.market.set_routing(0, "STK", "XYZ");
+        context.pending_orders.push(OrderRequest::SubmitLimit {
+            order_id: 72, instrument: 0, side: Side::Buy, qty: 1, price: px(100.0) });
+        let frames = drain_frames(&mut context, &shared, &mut conn, &mut server);
+        assert_eq!(tag(&frames[0], 35), Some("c"), "the definition is asked: {frames:?}");
+        let id = tag(&frames[0], 320).unwrap().to_string();
+        assert!(rth_definition_reply(&mut context, &id, &fix::fix_build(&[(35, "d"), (320, id.as_str())], 1)));
+        assert!(drain_frames(&mut context, &shared, &mut conn, &mut server).is_empty(), "nothing sent");
+        assert_eq!(shared.orders.drain_order_errors(),
+            [(72, 200, "No security definition has been found for the request".to_string())]);
+        assert!(shared.orders.drain_order_updates().is_empty(), "no status with the refusal");
+        assert_eq!(shared.orders.drain_forgotten_orders(), [72], "not an open order any more");
+        context.pending_orders.push(OrderRequest::Cancel { order_id: 72 });
+        assert!(drain_frames(&mut context, &shared, &mut conn, &mut server).is_empty(), "nothing sent");
+        assert_eq!(shared.orders.drain_order_errors().iter().map(|e| (e.0, e.1)).collect::<Vec<_>>(), [(72, 10147)]);
+    }
+
     // ibx#666 (the reference 10.51, paper, regular hours 14/10/2026): an
     // option order asks the trading permission of the class its definition
     // names, once; without it the order is refused with 460, nothing sent,
@@ -9456,6 +9524,30 @@ mod tests {
     // permission of the option's class: without it 460, nothing sent; with
     // it ibx refuses it (its message is not written). On a stock ibx
     // refuses it (the reference prices it from the market).
+    // ibx#745 (the reference 10.51, paper, 17/10 and 18/10/2026, market
+    // closed): PEG STK on AAPL is refused with 387 at once, nothing sent;
+    // its cancel gives Cancelled, 202 and 161. On a contract that takes it
+    // its message is not written yet.
+    #[test]
+    fn a_pegged_to_stock_order_on_a_stock_is_refused_with_387_and_kept() {
+        let peg_stk = |id| OrderRequest::SubmitEx { order_id: id, instrument: 0, side: Side::Buy, qty: 1,
+            kind: crate::types::OrderKind::PegStk, tif: b'0', attrs: crate::types::OrderAttrs::default() };
+        let stock = [(55, "AAPL"), (167, "STK"), (15, "USD"), (207, "SMART"), (6431, "DAY/3,LMT/3")];
+        let (frames, shared, mut context, mut conn, mut server) = order_by_con_id("265598", "SMART", peg_stk(93), &stock);
+        assert!(frames.iter().all(|f| tag(f, 35) != Some("D")), "nothing sent: {frames:?}");
+        assert_eq!(shared.orders.drain_order_errors(),
+            [(93, 387, "Unsupported order type for this exchange and security type.".to_string())]);
+        context.pending_orders.push(OrderRequest::Cancel { order_id: 93 });
+        assert!(drain_frames(&mut context, &shared, &mut conn, &mut server).is_empty(), "nothing sent");
+        assert_eq!(shared.orders.drain_order_updates().iter().map(|u| (u.order_id, u.status)).collect::<Vec<_>>(),
+            [(93, OrderStatus::Cancelled)]);
+        assert_eq!(shared.orders.drain_order_notices().iter().map(|n| (n.0, n.1)).collect::<Vec<_>>(), [(93, 202), (93, 161)]);
+
+        let (frames, shared, ..) = order_by_con_id("123456", "FWB", peg_stk(94), &SAP_WARRANT);
+        assert!(frames.iter().all(|f| tag(f, 35) != Some("D")), "nothing sent: {frames:?}");
+        assert_eq!(shared.orders.drain_order_errors().iter().map(|e| (e.0, e.1)).collect::<Vec<_>>(), [(94, 321)]);
+    }
+
     #[test]
     fn volatility_orders_as_far_as_written() {
         let vol = |id| OrderRequest::SubmitEx { order_id: id, instrument: 0, side: Side::Buy, qty: 1,

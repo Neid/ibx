@@ -2041,17 +2041,17 @@ const ORDER_TYPE_ALIASES: [(&str, &str); 15] = [
 ];
 
 /// The order types ibx sends, under the names ibx uses.
-const ORDER_TYPES_SENT: [&str; 32] = [
+const ORDER_TYPES_SENT: [&str; 33] = [
     "MKT", "LMT", "STP", "STP LMT", "TRAIL", "TRAIL LIMIT", "MOC", "LOC", "MIT", "LIT", "MTL", "MKT PRT", "STP PRT",
     "REL", "PEG MKT", "PEG MID", "PEG MIDPT", "MIDPX", "MIDPRICE", "SNAP MKT", "SNAP MID", "SNAP MIDPT", "SNAP PRI",
-    "SNAP PRIM", "BOX TOP", "PEG BENCH", "TRAIL MIT", "TRAIL LIT", "PEG BEST", "RPI", "PASSV REL", "VOL",
+    "SNAP PRIM", "BOX TOP", "PEG BENCH", "TRAIL MIT", "TRAIL LIT", "PEG BEST", "RPI", "PASSV REL", "VOL", "PEG STK",
 ];
 
 /// Order types of the API's documentation that ibx does not send: placed,
 /// they fail in the call. Any other name is no order type: the reference
 /// refuses it with 321 (ibx#688; observed on paper, 17/10/2026).
-const ORDER_TYPES_NOT_SENT: [&str; 12] = [
-    "LMT + MKT", "REL + LMT", "REL + MKT", "PEG STK", "VWAP", "TRAIL REL + MKT", "TRAIL LMT + MKT", "QUOTE",
+const ORDER_TYPES_NOT_SENT: [&str; 11] = [
+    "LMT + MKT", "REL + LMT", "REL + MKT", "VWAP", "TRAIL REL + MKT", "TRAIL LMT + MKT", "QUOTE",
     "PEG PRIM VOL", "PEG MID VOL", "PEG MKT VOL", "PEG SRF VOL",
 ];
 
@@ -7737,6 +7737,8 @@ impl ClientCore {
             "PEG BENCH" => Self::peg_bench_kind(order),
             "TRAIL MIT" | "TRAIL LIT" | "PEG BEST" | "RPI" | "PASSV REL" => Self::new_type_kind(order),
             "VOL" => Self::volatility_kind(order),
+            // Refused by the engine before anything is sent (ibx#745).
+            "PEG STK" => OrderKind::PegStk,
             _ => return Err(format!("Unsupported order type: '{}'", order.order_type)),
         })
     }
@@ -8143,6 +8145,8 @@ impl ClientCore {
             // One encoder for each of these types too (ibx#469).
             "TRAIL MIT" | "TRAIL LIT" | "PEG BEST" | "RPI" | "PASSV REL" => ex(Self::new_type_kind(order)),
             "VOL" => ex(Self::volatility_kind(order)),
+            // Refused by the engine before anything is sent (ibx#745).
+            "PEG STK" => ex(OrderKind::PegStk),
             // The offset is the API auxPrice, 0.00 when unset (ibx#413).
             "SNAP MKT" => {
                 let offset = price_or_zero(order.aux_price);
