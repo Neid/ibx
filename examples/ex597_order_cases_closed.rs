@@ -953,6 +953,7 @@ fn session(case: &str, base: Option<i64>, out_dir: &str) -> Result<(), Box<dyn s
         // The case scripts connect as client 198 (ibx#704).
         client_id: 198,
         copied_waits: false,
+        code_provider: None,
     };
     let client = match EClient::connect(&config) {
         Ok(c) => c,

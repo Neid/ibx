@@ -46,9 +46,36 @@ fn connect_caches_reconnect_credentials() {
         core_id: None,
         client_id: 0,
         copied_waits: false,
+        code_provider: None,
     };
     cache_reconnect_credentials(&mut hot_loop, &config);
     assert!(hot_loop.has_reconnect_host());
+}
+
+/// The second-factor code provider of the client's config reaches the
+/// login, as the Python connect's does (ibx#350).
+#[test]
+fn code_provider_of_the_config_reaches_the_login() {
+    let provider: crate::auth::session::CodeProvider =
+        Arc::new(|c: crate::auth::session::IbKeyChallenge| Ok(format!("code-{}", c.display_id)));
+    let mut config = EClientConfig {
+        username: "user".into(),
+        password: "pass".into(),
+        host: "gw.example".into(),
+        paper: false,
+        core_id: None,
+        client_id: 0,
+        copied_waits: false,
+        code_provider: Some(provider),
+    };
+    let gw = gateway_config(&config);
+    let given = gw.code_provider.expect("provider forwarded");
+    let challenge = crate::auth::session::IbKeyChallenge { display_id: "123 456".into(), avth_url: String::new() };
+    assert_eq!(given(challenge).unwrap(), "code-123 456");
+    assert!(!gw.paper);
+
+    config.code_provider = None;
+    assert!(gateway_config(&config).code_provider.is_none());
 }
 
 /// Helper: create a test EClient backed by SharedState + channel.

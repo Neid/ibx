@@ -46,6 +46,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         core_id: None,
         client_id: 0,
         copied_waits: false,
+        code_provider: None,
     })?;
 
     let state = Arc::new(Mutex::new(State::default()));

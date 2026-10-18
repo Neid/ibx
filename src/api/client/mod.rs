@@ -22,6 +22,7 @@
 //!     core_id: None,
 //!     client_id: 0,
 //!     copied_waits: false,
+//!     code_provider: None,
 //! }).unwrap();
 //!
 //! client.req_mkt_data(1, &Contract { con_id: 756733, symbol: "SPY".into(), sec_type: "STK".into(), exchange: "SMART".into(), currency: "USD".into(), ..Default::default() },
@@ -76,7 +77,7 @@ pub use orders::parse_algo_params;
 /// timeout by default. This is expected — it is a human
 /// approval gate, not a hang. Bound or avoid it by using `paper: true`, setting
 /// a timeout (via [`GatewayConfig::ib_key_timeout_secs`] when building through
-/// the lower-level API), or supplying a `code_provider`. Paper logins skip the
+/// the lower-level API), or supplying a [`code_provider`](EClientConfig::code_provider). Paper logins skip the
 /// gate entirely. An `info`-level log line is emitted when the wait begins
 /// (`RUST_LOG=info`). See ibx#203 / ibx#207.
 ///
@@ -117,6 +118,13 @@ pub struct EClientConfig {
     /// keeps a session's timing comparable with the reference's (ibx#564).
     /// The pacing of requests is not one of them: it stays on.
     pub copied_waits: bool,
+    /// Source of the code for the typed-code variant of the second factor
+    /// of a live login, as the Python `connect(code_provider=...)`: called
+    /// once, on its own thread, when the server sends the challenge, while
+    /// the login keeps answering the server's keepalives; an error it
+    /// returns ends the login. `None` (default): wait for the mobile push
+    /// approval (ibx#350).
+    pub code_provider: Option<crate::auth::session::CodeProvider>,
 }
 
 /// Give the engine the caller's host and credentials for auto-reconnect. The
@@ -129,6 +137,20 @@ fn cache_reconnect_credentials(hot_loop: &mut crate::engine::hot_loop::HotLoop, 
         zeroize::Zeroizing::new(config.password.clone()),
         config.paper,
     );
+}
+
+/// The login settings of a client's config.
+fn gateway_config(config: &EClientConfig) -> GatewayConfig {
+    GatewayConfig {
+        username: config.username.clone(),
+        password: zeroize::Zeroizing::new(config.password.clone()),
+        host: config.host.clone(),
+        paper: config.paper,
+        accept_invalid_certs: false,
+        ib_key_timeout_secs: crate::auth::session::IB_KEY_DEFAULT_TIMEOUT_SECS,
+        ib_key_token_sub_type: crate::auth::session::IB_KEY_DEFAULT_TOKEN_SUB_TYPE.into(),
+        code_provider: config.code_provider.clone(),
+    }
 }
 
 /// ibapi-compatible EClient. Matches C++ `EClientSocket` method signatures.
@@ -247,16 +269,7 @@ impl EClient {
         config: &EClientConfig,
         event_tx: Option<Sender<Event>>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
-        let gw_config = GatewayConfig {
-            username: config.username.clone(),
-            password: zeroize::Zeroizing::new(config.password.clone()),
-            host: config.host.clone(),
-            paper: config.paper,
-            accept_invalid_certs: false,
-            ib_key_timeout_secs: crate::auth::session::IB_KEY_DEFAULT_TIMEOUT_SECS,
-            ib_key_token_sub_type: crate::auth::session::IB_KEY_DEFAULT_TOKEN_SUB_TYPE.into(),
-            code_provider: None,
-        };
+        let gw_config = gateway_config(config);
 
         let (gw, farm_conn, ccp_conn, hmds_conn) = Gateway::connect(&gw_config)?;
         let account_id = gw.account_id.clone();

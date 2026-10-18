@@ -45,6 +45,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         paper: true, core_id: None,
         client_id: 0,
         copied_waits: false,
+        code_provider: None,
     })?;
     if !client.account_id.starts_with("DU") { client.disconnect(); return Err("not a paper account".into()); }
     let aapl = Contract { con_id: 265598, symbol: "AAPL".into(), sec_type: "STK".into(), exchange: "SMART".into(), currency: "USD".into(), ..Default::default() };

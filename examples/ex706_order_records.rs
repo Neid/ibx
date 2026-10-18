@@ -61,6 +61,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         client_id: 0,
         // The records are asked with the copied waits only (ibx#564).
         copied_waits: env::var("IBX_COPIED_WAITS").is_ok_and(|v| v == "1"),
+        code_provider: None,
     })?;
     if !client.account_id.starts_with("DU") {
         client.disconnect();

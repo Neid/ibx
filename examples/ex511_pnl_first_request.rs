@@ -51,6 +51,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         paper: true, core_id: None,
         client_id: 198,
         copied_waits: false,
+        code_provider: None,
     })?;
     let account = client.account_id.clone();
     if !account.starts_with("DU") {

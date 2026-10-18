@@ -386,6 +386,7 @@ fn get_config() -> Option<EClientConfig> {
         core_id: None,
         client_id: 0,
         copied_waits: false,
+        code_provider: None,
     })
 }
 
