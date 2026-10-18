@@ -218,9 +218,12 @@ fn pnl_rows(shared: &SharedState) -> Vec<PnlRow> {
         let money = money_traded_today(seed, money_since.get(&con_id).copied(), qty, avg_cost);
         let daily = match (price, qty_midnight != 0.0) {
             (None, _) => PnlValue::Invalid,
+            // The server writes "nan" for a price at midnight it does not
+            // have (a Sunday): not valid, with its 2150 (ibx#737; the
+            // reference 10.51 at level 225, paper, 18/10/2026).
             (Some(p), true) => match midnight.get(&con_id) {
-                Some(&m) => PnlValue::Valid(qty * p - qty_midnight * m + money),
-                None => PnlValue::Invalid,
+                Some(&m) if m.is_finite() => PnlValue::Valid(qty * p - qty_midnight * m + money),
+                _ => PnlValue::Invalid,
             },
             (Some(p), false) => PnlValue::Valid(qty * p - 0.0 + money),
         };
@@ -8400,6 +8403,23 @@ mod tests {
         // is 0.0, never unset with rows (ibx#737).
         assert_eq!(update.realized_pnl, 0.0);
         assert_eq!(update.errors, 0);
+    }
+
+    // ibx#737 (the reference 10.51 at level 225, paper, 18/10/2026, a
+    // Sunday): a price at midnight given as "nan" makes the daily P&L of a
+    // position held at midnight not valid: 2150, then the unset value.
+    #[test]
+    fn a_price_at_midnight_that_is_not_a_number_makes_the_daily_not_valid() {
+        let core = ClientCore::new();
+        let shared = SharedState::new();
+        core.subscribe_pnl(99);
+        seed_pnl_position(&core, &shared, 756733, 0, 10, 700.00, 735.00, f64::NAN);
+        shared.portfolio.set_midnight_seeds(vec![MidnightSeed {
+            con_id: 756733, qty_midnight_fixed: 10 * crate::types::QTY_SCALE, money_traded: 0.0, realized_pnl: 0.0,
+        }]);
+        let update = core.poll_pnl(&shared).pop().expect("callback must fire");
+        assert_eq!((update.daily_pnl, update.errors), (f64::MAX, 1));
+        assert!((update.unrealized_pnl - 350.0).abs() < 1e-6);
     }
 
     #[test]
