@@ -1650,7 +1650,7 @@ local_rule,321-8,"321 check: deltaNeutralOrderType given (the client sends the d
 local_rule,378-1,"378 check: a delta-neutral order type allowed as one (REL, RPI, LMT, MKT, PASSV REL) that needs an aux price, and deltaNeutralAuxPrice unset; none of the allowed types needs one, so the rule does not fire",open #739
 local_rule,10115-1,"10115 check: auxPrice 0 on an order type that is not trailing, takes an aux price and does not take 0: STP, STP LMT, STP PRT, MIT, LIT, PEG MKT, PEG BENCH, PEG STK, RPI, PEG MKT VOL",tests/gw_catalog/refusals.rs::zero_offset_on_a_type_without_one
 local_rule,10115-2,10115 check: auxPrice below 0 on PEG PRM VOL or PEG MKT VOL (PEG MID VOL and PEG SURF VOL take it),open #673
-local_rule,321-9,"321 check: order type QUOTE (a request for quote) and already 2 of them in the same second on the client's connection; text = 2, then 1",open #688
+local_rule,321-9,"321 check: order type QUOTE (a request for quote) and already 2 of them in the same second on the client's connection; text = 2, then 1",tests/gw_catalog/refusals.rs::requests_for_quote_beyond_two_a_second
 local_rule,10136-2,10136 check: FA session: the order is allocated to one account whose application is not approved (after 'Invalid account specified' for an account not known and 10132 for a read-only one),open #507
 local_rule,10226-2,"10226 check: FA session with the allocation checks on: an FA method, and a group that exists whose own method is set and is another; an exemption of some orders not identified",open #507
 local_rule,10226-3,"10226 check: FA session with the allocation checks on: an FA method, no group that exists, and an allocation profile that exists; an exemption of some orders not identified",open #507

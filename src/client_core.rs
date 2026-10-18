@@ -1369,6 +1369,10 @@ pub const DUPLICATE_ORDER_ID: (i64, &str) = (103, "Duplicate order id");
 
 /// Error 103 with the order id after the text, as the reference 10.51
 /// gives it (ibx#625, paper 12/10/2026: "Duplicate order id: 57639").
+/// The reference's refusal of a request for quote on a contract that takes
+/// none (ibx#688).
+pub const RFQ_NOT_APPLICABLE: i64 = 416;
+
 pub fn duplicate_order_id(order_id: OrderId) -> (i64, String) {
     (DUPLICATE_ORDER_ID.0, format!("{}: {}", DUPLICATE_ORDER_ID.1, order_id))
 }
@@ -1753,6 +1757,8 @@ pub struct ClientCore {
     /// answered yet: put back when the engine answers 103, the order not
     /// sent yet (ibx#688).
     modify_undo: Mutex<HashMap<OrderId, (ApiContract, ApiOrder, InstrumentId)>>,
+    /// When the requests for quote of the last second were read (ibx#688).
+    quote_times: Mutex<std::collections::VecDeque<(OrderId, std::time::Instant)>>,
     /// Executions of other clients' orders, by execution id without its
     /// revision: their commission reports are not given.
     pub silent_executions: Mutex<HashSet<String>>,
@@ -2061,17 +2067,18 @@ const ORDER_TYPE_ALIASES: [(&str, &str); 15] = [
 ];
 
 /// The order types ibx sends, under the names ibx uses.
-const ORDER_TYPES_SENT: [&str; 33] = [
+const ORDER_TYPES_SENT: [&str; 34] = [
     "MKT", "LMT", "STP", "STP LMT", "TRAIL", "TRAIL LIMIT", "MOC", "LOC", "MIT", "LIT", "MTL", "MKT PRT", "STP PRT",
     "REL", "PEG MKT", "PEG MID", "PEG MIDPT", "MIDPX", "MIDPRICE", "SNAP MKT", "SNAP MID", "SNAP MIDPT", "SNAP PRI",
     "SNAP PRIM", "BOX TOP", "PEG BENCH", "TRAIL MIT", "TRAIL LIT", "PEG BEST", "RPI", "PASSV REL", "VOL", "PEG STK",
+    "QUOTE",
 ];
 
 /// Order types of the API's documentation that ibx does not send: placed,
 /// they fail in the call. Any other name is no order type: the reference
 /// refuses it with 321 (ibx#688; observed on paper, 17/10/2026).
-const ORDER_TYPES_NOT_SENT: [&str; 11] = [
-    "LMT + MKT", "REL + LMT", "REL + MKT", "VWAP", "TRAIL REL + MKT", "TRAIL LMT + MKT", "QUOTE",
+const ORDER_TYPES_NOT_SENT: [&str; 10] = [
+    "LMT + MKT", "REL + LMT", "REL + MKT", "VWAP", "TRAIL REL + MKT", "TRAIL LMT + MKT",
     "PEG PRIM VOL", "PEG MID VOL", "PEG MKT VOL", "PEG SRF VOL",
 ];
 
@@ -2458,6 +2465,7 @@ impl ClientCore {
             unknown_parent_refused: Mutex::new(HashMap::new()),
             modified_orders: Mutex::new(HashSet::new()),
             modify_undo: Mutex::new(HashMap::new()),
+            quote_times: Mutex::new(std::collections::VecDeque::new()),
             silent_executions: Mutex::new(HashSet::new()),
             observed_fills: Mutex::new(HashSet::new()),
             highest_order_id: Arc::new(AtomicI64::new(0)),
@@ -4884,6 +4892,12 @@ impl ClientCore {
     /// TRAIL orders of premarket_order_types, 28/09/2026: openOrder shows
     /// outsideRth false, also after a replace).
     pub fn note_order_error(&self, order_id: OrderId, code: i64, message: &str) {
+        // A request for quote refused once its contract is known: not
+        // kept, as the reference (ibx#688: absent from the open orders, its
+        // cancel 10147).
+        if code == RFQ_NOT_APPLICABLE && message.starts_with("RFQ is not applicable") {
+            self.open_orders.lock().unwrap().remove(&order_id);
+        }
         // A modify refused while the order was not sent yet: the order
         // stays as placed (ibx#688).
         if code == DUPLICATE_ORDER_ID.0
@@ -7620,6 +7634,7 @@ impl ClientCore {
                 Self::refusal_before_sending_with(order, exchange, contract_month, account_pending,
                     shared.reference.form_10_40(), super_user || omnibus)
             })
+            .or_else(|| self.quote_limit_refusal(order_id, order))
             .or_else(|| Self::combo_discretionary_refusal(sec_type, order))
             .or_else(|| self.parent_refusal(order, shared))
             .or_else(|| Self::scale_size_refusal(order))
@@ -7629,6 +7644,30 @@ impl ClientCore {
             .or_else(|| Self::order_id_refusal(order_id))
             .or_else(|| self.refusal_for_order_id(order_id, order, shared))
             .or_else(|| self.attached_orders_id_refusal(order_id, order, shared))
+    }
+
+    /// A request for quote when two were read in the last second: 321, as
+    /// the reference 10.51 (rule 321-9; paper, 19/10/2026, market closed:
+    /// the third of three AAPL option requests placed within 46 ms, the
+    /// first two going on).
+    /// An order read again (after its contract's lookup) counts once.
+    fn quote_limit_refusal(&self, order_id: OrderId, order: &ApiOrder) -> Option<(i64, String)> {
+        if !order.order_type.eq_ignore_ascii_case("QUOTE") {
+            return None;
+        }
+        let now = std::time::Instant::now();
+        let mut times = self.quote_times.lock().unwrap();
+        while times.front().is_some_and(|(_, t)| now.duration_since(*t) >= std::time::Duration::from_secs(1)) {
+            times.pop_front();
+        }
+        if times.iter().any(|(id, _)| *id == order_id) {
+            return None;
+        }
+        if times.len() >= 2 {
+            return Some((321, "Error validating request.-'PlaceOrder(3)' : cause - Rfq requests limitation exceeded:2 per 1 second(s)".into()));
+        }
+        times.push_back((order_id, now));
+        None
     }
 
     /// The refusals the reference gives once the order's contract is
@@ -7951,6 +7990,7 @@ impl ClientCore {
             "VOL" => Self::volatility_kind(order),
             // Refused by the engine before anything is sent (ibx#745).
             "PEG STK" => OrderKind::PegStk { delta: order.delta },
+            "QUOTE" => OrderKind::Quote,
             _ => return Err(format!("Unsupported order type: '{}'", order.order_type)),
         })
     }
@@ -8360,6 +8400,7 @@ impl ClientCore {
             "VOL" => ex(Self::volatility_kind(order)),
             // Refused by the engine before anything is sent (ibx#745).
             "PEG STK" => ex(OrderKind::PegStk { delta: order.delta }),
+            "QUOTE" => ex(OrderKind::Quote),
             // The offset is the API auxPrice, 0.00 when unset (ibx#413).
             "SNAP MKT" => {
                 let offset = price_or_zero(order.aux_price);

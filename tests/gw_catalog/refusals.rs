@@ -1181,6 +1181,31 @@ fn delta_neutral_open_close_not_open_or_close() {
     });
 }
 
+// A request for quote when two were read in the last second (ibx#688; the
+// reference 10.51, paper, 19/10/2026, market closed: the third of three
+// within 46 ms), nothing sent; the first two get 416 once their contract is
+// known, nothing sent either.
+#[test]
+fn requests_for_quote_beyond_two_a_second() {
+    let mut engine = Engine::start();
+    let quote = Order { lmt_price: 0.0, ..order("QUOTE") };
+    for id in [5, 6, REFUSED] {
+        engine.client.place_order(id, &aapl(), &quote).unwrap();
+    }
+    assert_refused(&mut engine, REFUSED, "321-9");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let mut errors = engine.errors();
+    while errors.iter().filter(|e| e.1 == 416).count() < 2 && std::time::Instant::now() < deadline {
+        engine.orders(0);
+        errors.extend(engine.errors());
+    }
+    for id in [5, 6] {
+        assert!(errors.iter().any(|e| e.0 == id && e.1 == 416 && e.2 == format!("RFQ is not applicable for the contract. Order ID:{id}")), "{errors:?}");
+    }
+    let sent = engine.orders(1);
+    assert!(sent.iter().all(|f| !matches!(field(f, 6121), Some("5" | "6" | "7"))), "nothing sent: {sent:?}");
+}
+
 // An offset (the auxPrice) of 0: the table's rule is not applied by the
 // reference 10.51, which sends the order (ibx#688; paper, 18/10/2026,
 // market closed: STP, STP LMT, STP PRT, MIT, LIT and RPI sent, the server's

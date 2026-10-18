@@ -165,7 +165,7 @@ impl RthKind {
             OrderKind::Limit { .. } | OrderKind::MktPrt | OrderKind::SnapMkt { .. } | OrderKind::SnapMid { .. }
             | OrderKind::SnapPri { .. } | OrderKind::Rel { .. } | OrderKind::PegBench { .. }
             | OrderKind::PegBest { .. } | OrderKind::Rpi { .. } | OrderKind::PassvRel { .. }
-            | OrderKind::Volatility { .. } | OrderKind::PegStk { .. } => (false, false, false),
+            | OrderKind::Volatility { .. } | OrderKind::PegStk { .. } | OrderKind::Quote => (false, false, false),
         };
         RthKind { market_like, stop_or_touched, moc_loc }
     }

@@ -397,6 +397,19 @@ fn send_orders(
                     continue;
                 }
             }
+            // A request for quote, once its contract is known: 416, nothing
+            // sent and nothing kept (a cancel gives 10147), as the reference
+            // 10.51 (paper, 19/10/2026, market closed: an AAPL option given
+            // by its terms, after its lookup, and the stock by conId, at
+            // once). A contract on which the reference takes one is not
+            // observed yet.
+            if let OrderRequest::SubmitEx { kind: crate::types::OrderKind::Quote, .. } = &order_req {
+                let oid = order_req.order_id();
+                log::warn!("Order {} refused: request for quote", oid);
+                shared.orders.push_order_error(oid, crate::client_core::RFQ_NOT_APPLICABLE,
+                    format!("RFQ is not applicable for the contract. Order ID:{}", oid));
+                continue;
+            }
             if is_volatility(&order_req) && !matches!(sec_type.as_str(), "OPT" | "FOP") {
                 let oid = order_req.order_id();
                 log::warn!("Order {} refused: VOL order on {}", oid, sec_type);
@@ -3223,6 +3236,7 @@ fn modify_fields(
         // Refused before anything is sent (ibx#673, ibx#745): never written.
         K::Volatility { .. } => "VOL",
         K::PegStk { .. } => "PEG STK",
+        K::Quote => "QUOTE",
         K::PassvRel { price, offset } => {
             if price > 0 { before_account.push((44, p(price))); }
             before_account.push((99, p(offset)));
@@ -5791,7 +5805,7 @@ fn send_order_ex(
         K::Rpi { price, offset } => (crate::types::ORD_RPI, price, offset),
         K::PassvRel { price, offset } => (crate::types::ORD_PASSV_REL, price, offset),
         K::Volatility { .. } => (b'V', 0, 0),
-        K::PegStk { .. } => (b'V', 0, 0),
+        K::PegStk { .. } | K::Quote => (b'V', 0, 0),
     };
     context.insert_order(crate::types::Order::new(
         order_id, instrument, side, qty, track_price, ord_type_byte, tif, track_stop,
@@ -6001,6 +6015,7 @@ fn send_order_ex(
         // Refused before anything is sent (ibx#673, ibx#745): never written.
         K::Volatility { .. } => fields.push((40, "VOL".to_string())),
         K::PegStk { .. } => fields.push((40, "PEG STK".to_string())),
+        K::Quote => fields.push((40, "QUOTE".to_string())),
         K::PassvRel { price, offset } => {
             let o = format_price_ref(offset).to_string();
             fields.push((40, "PSVR".to_string()));
