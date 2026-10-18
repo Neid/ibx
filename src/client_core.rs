@@ -6835,9 +6835,9 @@ impl ClientCore {
     /// (ibx#602; the reference 10.51, paper, regular hours 16/10/2026,
     /// precaution message 731 on as the paper installation has it): a
     /// beta hedge whose hedge sells, on its parent's contract, with a max
-    /// size below the hedge's size (the parent's quantity times the beta,
-    /// the beta 1 when the hedge has none, in whole shares) stops the
-    /// tree. The parent is discarded with 2185 (Cancelled, then 201) and
+    /// size below the reference's estimate (the hedge's size, the parent's
+    /// quantity times the beta, the beta 1 when the hedge has none, rounded
+    /// up to whole shares, divided by 0.75) stops the tree. The parent is discarded with 2185 (Cancelled, then 201) and
     /// the hedge is kept unsent, without a message, for its cancel. A
     /// hedge on another contract is sized from the beta's market data:
     /// not checked here.
@@ -6861,8 +6861,14 @@ impl ClientCore {
             if !sells || !same_contract(contract, parent_contract) {
                 continue;
             }
-            let size = (parent.total_quantity * hedge.beta.unwrap_or(1.0)).abs().floor();
-            if (max_size as f64) < size {
+            // The system estimate: the hedge's size in whole shares,
+            // rounded up, divided by 0.75 (ibx#602; the reference 10.51 at
+            // level 225, paper, 18/10/2026, market closed, fourteen forms:
+            // 150 shares and beta 1 refused with a max size of 199 and sent
+            // with 200, beta 0.5 sent with 199; 3 shares and beta 0.7
+            // refused with 3; whatever the parent's limit price).
+            let size = (parent.total_quantity * hedge.beta.unwrap_or(1.0)).abs().ceil();
+            if (max_size as f64) * 3.0 < size * 4.0 {
                 stopped.push((*parent_id, true));
                 stopped.push((*id, false));
             }
@@ -9390,8 +9396,9 @@ mod tests {
             action: "SELL".into(), order_type: "MKT".into(), total_quantity: 0.0, lmt_price: f64::MAX, transmit: true,
             parent_id: 10, hedge_type: "B".into(), hedge_param: param.into(), hedge_max_size: max_size, ..Default::default()
         };
+        let parent_qty = std::cell::Cell::new(10.0);
         let outcome = |contract: &ApiContract, order: ApiOrder| {
-            core.hold_order(10, aapl.clone(), parent.clone(), 1);
+            core.hold_order(10, aapl.clone(), ApiOrder { total_quantity: parent_qty.get(), ..parent.clone() }, 1);
             let tree = core.orders_to_transmit_checked(11, contract, &order, &shared, "DU1");
             let marks: Vec<(OrderId, Option<bool>)> = tree.iter().map(|(id, _, o, _)| {
                 // A plain order: the precaution takes its form with attributes.
@@ -9405,9 +9412,25 @@ mod tests {
         };
         let (p, h) = (OrderId::from(10), OrderId::from(11));
         assert_eq!(outcome(&aapl, hedge("1", 2)), [(p, Some(true)), (h, Some(false))], "the observed case");
-        assert_eq!(outcome(&aapl, hedge("1", 10)), [(p, None), (h, None)], "a max size of the hedge's size");
-        assert_eq!(outcome(&aapl, hedge("0.5", 5)), [(p, None), (h, None)], "beta 0.5: a hedge of 5");
-        assert_eq!(outcome(&aapl, hedge("0.5", 4)), [(p, Some(true)), (h, Some(false))]);
+        // The estimate is the size over 0.75 (ibx#602, 18/10/2026): 13.3
+        // for 10 shares, 6.7 with beta 0.5.
+        let (stop, go) = ([(p, Some(true)), (h, Some(false))], [(p, None), (h, None)]);
+        assert_eq!(outcome(&aapl, hedge("1", 10)), stop, "a max size of the hedge's size");
+        assert_eq!(outcome(&aapl, hedge("1", 11)), stop);
+        assert_eq!(outcome(&aapl, hedge("1", 14)), go);
+        assert_eq!(outcome(&aapl, hedge("0.5", 5)), stop, "beta 0.5: a hedge of 5");
+        assert_eq!(outcome(&aapl, hedge("0.5", 4)), stop);
+        assert_eq!(outcome(&aapl, hedge("0.5", 7)), go);
+        // 150 shares: refused with 199, sent with 200; beta 0.5 sent with
+        // 199. 3 shares, beta 0.7: 2.1 rounded up to 3, refused with 3.
+        parent_qty.set(150.0);
+        assert_eq!(outcome(&aapl, hedge("1", 199)), stop);
+        assert_eq!(outcome(&aapl, hedge("1", 200)), go);
+        assert_eq!(outcome(&aapl, hedge("0.5", 199)), go);
+        parent_qty.set(3.0);
+        assert_eq!(outcome(&aapl, hedge("0.7", 3)), stop);
+        assert_eq!(outcome(&aapl, hedge("0.7", 4)), go);
+        parent_qty.set(10.0);
         let msft = ApiContract { symbol: "MSFT".into(), ..aapl.clone() };
         assert_eq!(outcome(&msft, hedge("1", 2)), [(p, None), (h, None)], "another contract: sized from market data");
         assert!(core.hedge_precaution.lock().unwrap().is_empty(), "taken as the commands are built");
