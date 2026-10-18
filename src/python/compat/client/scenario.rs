@@ -64,16 +64,17 @@ impl EClient {
     /// `farms` (other market data farms played on the farm link),
     /// `hmds_farms` (farms played on the historical link),
     /// `positions_of_the_recording` (the account's positions of the
-    /// reference's first reqPositions answer, ibx#707).
+    /// reference's first reqPositions answer, ibx#707), `replies_from` (a
+    /// scenario whose lookups also answer ibx's, ibx#604).
     /// Returns a dict: `frame_error`, `frames_compared`, `ours`, `theirs`
     /// (callback lines), `unsent`, `not_made`.
     #[doc(hidden)]
-    #[pyo3(signature = (name, driver, codec=false, until=None, skip_seqs=Vec::new(), skip_orders=Vec::new(), compare=None, farms=Vec::new(), hmds_farms=Vec::new(), positions_of_the_recording=false))]
+    #[pyo3(signature = (name, driver, codec=false, until=None, skip_seqs=Vec::new(), skip_orders=Vec::new(), compare=None, farms=Vec::new(), hmds_farms=Vec::new(), positions_of_the_recording=false, replies_from=None))]
     #[allow(clippy::too_many_arguments)]
     fn _test_replay_scenario<'py>(
         &self, py: Python<'py>, name: &str, driver: Bound<'py, PyAny>, codec: bool, until: Option<u64>,
         skip_seqs: Vec<u64>, skip_orders: Vec<i64>, compare: Option<Vec<String>>, farms: Vec<String>,
-        hmds_farms: Vec<String>, positions_of_the_recording: bool,
+        hmds_farms: Vec<String>, positions_of_the_recording: bool, replies_from: Option<String>,
     ) -> PyResult<Bound<'py, PyDict>> {
         if self.connected.load(Ordering::Acquire) {
             return Err(PyRuntimeError::new_err("Already connected"));
@@ -94,6 +95,9 @@ impl EClient {
         }
         if positions_of_the_recording {
             opts = opts.positions_of_the_recording();
+        }
+        if let Some(first) = replies_from {
+            opts = opts.replies_from(&load_scenario(&first));
         }
         if let Some(kinds) = compare {
             let known = [

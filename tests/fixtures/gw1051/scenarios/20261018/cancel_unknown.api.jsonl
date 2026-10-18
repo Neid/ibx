@@ -1,0 +1,9 @@
+{"type":"header","format":"four-leg-api/1","source":"20261018/cancel_unknown.jsonl","scenario":"cancel_unknown","decoder":"official client library 10.46.01","machine_zone":"Europe/Paris"}
+{"seq":1974,"leg":"api_out","msg_name":"START_API","request":{"clientId":198}}
+{"seq":1975,"leg":"api_in","msg_name":"MANAGED_ACCTS","callbacks":[["managedAccounts","DUXXXXXXX"]]}
+{"seq":1976,"leg":"api_in","msg_name":"NEXT_VALID_ID","callbacks":[["nextValidId",58285]]}
+{"seq":1977,"leg":"api_in","msg_name":"ERR_MSG","callbacks":[["error",-1,null,2104,"Market data farm connection is OK:usfarm",""]]}
+{"seq":1978,"leg":"api_in","msg_name":"ERR_MSG","callbacks":[["error",-1,null,2106,"HMDS data farm connection is OK:ushmds",""]]}
+{"seq":1979,"leg":"api_in","msg_name":"ERR_MSG","callbacks":[["error",-1,null,2158,"Sec-def data farm connection is OK:secdefil",""]]}
+{"seq":1980,"leg":"api_out","msg_name":"CANCEL_ORDER","request":{"orderId":63285,"orderCancel":{}}}
+{"seq":1981,"leg":"api_in","msg_name":"ERR_MSG","callbacks":[["error",63285,null,10147,"OrderId 63285 that needs to be cancelled is not found.",""]]}

@@ -376,11 +376,12 @@ def main():
                     help="write the decoded API side of every scenario file (<name>.api.jsonl)")
     a = ap.parse_args()
     if a.scenarios:
-        # The scenarios of the reference 10.40, and of 10.51 recorded with
-        # the client at level 214 (ibx#515).
+        # The scenarios of the reference 10.40, and of 10.51 (with the
+        # client at level 214, ibx#515, then uncapped, ibx#604). --only
+        # matches "<folder>/<name>", so that "20261018/" takes one folder.
         sources = sorted(SCENARIOS.glob("*/*.jsonl")) + sorted(SCENARIOS_1051.glob("*/*.jsonl"))
         for src in sources:
-            if src.name.endswith(".api.jsonl") or (a.only and a.only not in src.stem):
+            if src.name.endswith(".api.jsonl") or (a.only and a.only not in f"{src.parent.name}/{src.stem}"):
                 continue
             api_sidecar(src)
         return

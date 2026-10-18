@@ -1,0 +1,16 @@
+{"type":"header","format":"four-leg-api/1","source":"20261018/pnl.jsonl","scenario":"pnl","decoder":"official client library 10.46.01","machine_zone":"Europe/Paris"}
+{"seq":2733,"leg":"api_out","msg_name":"START_API","request":{"clientId":198}}
+{"seq":2734,"leg":"api_in","msg_name":"MANAGED_ACCTS","callbacks":[["managedAccounts","DUXXXXXXX"]]}
+{"seq":2735,"leg":"api_in","msg_name":"NEXT_VALID_ID","callbacks":[["nextValidId",58290]]}
+{"seq":2736,"leg":"api_in","msg_name":"ERR_MSG","callbacks":[["error",-1,null,2104,"Market data farm connection is OK:usfarm",""]]}
+{"seq":2737,"leg":"api_in","msg_name":"ERR_MSG","callbacks":[["error",-1,null,2106,"HMDS data farm connection is OK:ushmds",""]]}
+{"seq":2738,"leg":"api_out","msg_name":"REQ_PNL","request":{"reqId":9003,"account":"DUXXXXXXX"}}
+{"seq":2739,"leg":"api_out","msg_name":"REQ_PNL_SINGLE","request":{"reqId":9004,"account":"DUXXXXXXX","conId":265598}}
+{"seq":2740,"leg":"api_in","msg_name":"ERR_MSG","callbacks":[["error",-1,null,2158,"Sec-def data farm connection is OK:secdefil",""]]}
+{"seq":2741,"leg":"api_in","msg_name":"PNL","callbacks":[["pnl",9003,0.0,142.88569999999982,0.0]]}
+{"seq":2898,"leg":"api_in","msg_name":"PNL","callbacks":[["pnl",9003,0.0,145.68599296874982,0.0]]}
+{"seq":2899,"leg":"api_in","msg_name":"PNL","callbacks":[["pnl",9003,-13.3509,-1448.013612005863,-23.9126623]]}
+{"seq":2900,"leg":"api_in","msg_name":"ERR_MSG","callbacks":[["error",9004,null,2150,"Invalid position trade derived value",""]]}
+{"seq":2901,"leg":"api_in","msg_name":"PNL_SINGLE","callbacks":[["pnlSingle",9004,"0",-13.3509,"MAX",-13.3510601,"MAX"]]}
+{"seq":2980,"leg":"api_out","msg_name":"CANCEL_PNL","request":{"reqId":9003}}
+{"seq":2981,"leg":"api_out","msg_name":"CANCEL_PNL_SINGLE","request":{"reqId":9004}}

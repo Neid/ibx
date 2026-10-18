@@ -16,8 +16,8 @@ import sys
 
 import pytest
 
-from ibx import (BarData, ComboLeg, CommissionAndFeesReport, Contract, EClient, EWrapper, Execution, Order, TagValue,
-                 TickAttrib)
+from ibx import (BarData, ComboLeg, CommissionAndFeesReport, Contract, EClient, EWrapper, Execution, Order,
+                 OrderComboLeg, TagValue, TickAttrib)
 
 if not hasattr(EClient, "_test_replay_scenario"):
     pytest.skip("built without the test-support feature", allow_module_level=True)
@@ -164,6 +164,12 @@ NUMBERS = {"totalQuantity", "lmtPrice", "auxPrice", "trailingPercent", "trailSto
            "stockRefPrice", "peggedChangeAmount", "referenceChangeAmount", "lmtPriceOffset"}
 
 
+def order_combo_leg(price):
+    leg = OrderComboLeg()
+    leg.price = UNSET if price == "MAX" else float(price)
+    return leg
+
+
 def make_order(q):
     o = Order()
     for k, v in q.items():
@@ -171,6 +177,8 @@ def make_order(q):
             continue
         if k in ("algoParams", "smartComboRoutingParams"):
             v = [TagValue(t["tag"], t["value"]) for t in v]
+        elif k == "orderComboLegs":
+            v = [order_combo_leg(l.get("price", "MAX")) for l in v]
         elif k in NUMBERS:
             v = UNSET if v == "MAX" else float(v)
         setattr(o, k, v)
@@ -275,25 +283,64 @@ def assert_same(out, keep=lambda l: True, mask=known):
     return theirs
 
 
+# The closed-market scenarios recorded again on 10.51 with the official client
+# at its own level, 225 (18/10/2026, ibx#604), next to their 10.40 recordings.
+CLOSED = ["gw1051/20261018", "20260926"]
+
+
 # A LMT order before the open, then its cancel (26/09/2026, ibx#472, ibx#465).
-def test_lmt_order_then_cancel():
-    out = replay("20260926/lmt_cancel", compare=["order"])
+@pytest.mark.parametrize("day", CLOSED)
+def test_lmt_order_then_cancel(day):
+    out = replay(f"{day}/lmt_cancel", compare=["order"])
     assert out["frames_compared"] == 2
     assert len(assert_same(out)) == 9
 
 
 # Two orders in one OCA group, both cancelled (26/09/2026, ibx#311, ibx#329).
-def test_oca_group_and_the_refused_second_cancel():
-    out = replay("20260926/oca_group", compare=["order"])
+@pytest.mark.parametrize("day", CLOSED)
+def test_oca_group_and_the_refused_second_cancel(day):
+    out = replay(f"{day}/oca_group", compare=["order"])
     assert out["frames_compared"] == 3
     theirs = assert_same(out)
     assert any("|10148|" in l for l in theirs)
 
 
 # The cancel of an unknown order (26/09/2026, ibx#464).
-def test_cancel_of_an_unknown_order():
-    out = replay("20260926/cancel_unknown", compare=["order"])
+@pytest.mark.parametrize("day", CLOSED)
+def test_cancel_of_an_unknown_order(day):
+    out = replay(f"{day}/cancel_unknown", compare=["order"])
     assert assert_same(out)[0].startswith("error|")
+
+
+# A far LMT, its cancel, then a modify of the cancelled order (10.51 at level
+# 225, market closed, 18/10/2026, ibx#604): PendingCancel twice, Cancelled,
+# 202, then 104 and nothing sent.
+def test_cancel_then_modify_of_the_cancelled_order():
+    out = replay("gw1051/20261018/modify_cancelled", compare=["order"])
+    assert out["frames_compared"] == 2
+    theirs = assert_same(out)
+    assert [l.split("|")[2] for l in theirs if l.startswith("orderStatus|")] ==         ["PreSubmitted", "PendingCancel", "PendingCancel", "Cancelled"]
+    assert theirs[-1].startswith("error|") and "|104|" in theirs[-1]
+
+
+# A bracket in the client library's form, as the Rust test.
+@pytest.mark.parametrize("name", ["gw1051/20261018/bracket", "gw1051/20261018b/bracket"])
+def test_bracket(name):
+    out = replay(name, compare=["order"])
+    assert out["frames_compared"] == 4
+    assert_same(out)
+
+
+# Combo orders on 10.51 (18/10/2026, ibx#604): the first of the gateway's
+# process with its set-up, then, the definitions known, another one and one
+# with per-leg prices, whose modify sends the new leg prices.
+def test_combo_orders_on_10_51():
+    first = "gw1051/20261018/i105_combo_stock_smart"
+    assert any("|399|" in l for l in assert_same(replay(first)))
+    for name in ["gw1051/20261018b/i105_combo_stock_smart", "gw1051/20261018b/i105_combo_leg_prices"]:
+        out = replay(name, replies_from=first)
+        assert out["frames_compared"] >= 2, name
+        assert_same(out)
 
 
 # Orders of client 0 of earlier sessions known from the logon replay
@@ -378,6 +425,11 @@ def test_account_summary_tag_rows():
     out = replay("20260926/account_summary", compare=["account_subscription"])
     assert out["frame_error"] is None and out["frames_compared"] == 2
     assert out["ours"][:4] == out["theirs"][:4]
+    # 10.51 at level 225 (18/10/2026, ibx#604): the cancel sends nothing; the
+    # server's cancel at the disconnect is not replayed.
+    out = replay("gw1051/20261018/account_summary", compare=["account_subscription"], until=2717)
+    assert out["frame_error"] is None and out["frames_compared"] == 1
+    assert out["ours"][:4] == out["theirs"][:4]
 
 
 # The whole answer (ibx#486): the tag rows, the $LEDGER:ALL rows of the
@@ -389,6 +441,20 @@ def test_account_summary_whole_answer():
     assert any(l.startswith("accountSummary|9002|All|CashBalance|933115.05|USD") for l in theirs)
 
 
+# The whole answer on 10.51 at level 225, in a gateway process where no
+# session had asked the account updates (18/10/2026, ibx#604): each frame once.
+def test_account_summary_whole_answer_on_10_51():
+    theirs = assert_same(replay("gw1051/20261018c/account_summary", until=1413))
+    assert sum(l.startswith("accountSummaryEnd|") for l in theirs) == 1
+
+
+# A combo whose BAG symbol is not in the legs' order (10.51 at level 225,
+# 18/10/2026, ibx#604): 478.
+def test_combo_symbol_conflict_on_10_51():
+    theirs = assert_same(replay("gw1051/20261018c/i105_combo_symbol_conflict"))
+    assert sum("|478|" in l for l in theirs) == 1
+
+
 # A combo directed to ARCA with no definition (26/09/2026): 200, then its
 # cancel gives orderStatus ApiCancelled (the order id stays pending)
 # (ibx#487).
@@ -396,11 +462,16 @@ def test_directed_combo_without_definition_then_cancel():
     out = replay("20260926b/i105_combo_directed")
     theirs = assert_same(out)
     assert any(l.startswith("orderStatus|31|ApiCancelled|") for l in theirs)
+    # 10.51 at level 225, market closed (18/10/2026, ibx#604).
+    theirs = assert_same(replay("gw1051/20261018b/i105_combo_directed"))
+    assert any("|200|" in l for l in theirs) and any("|ApiCancelled|" in l for l in theirs)
 
 
 # keepUpToDate bars then their cancel (26/09/2026, ibx#429, ibx#431).
-def test_historical_keep_up_to_date_then_cancel():
-    out = replay("20260926b/hist_keep_up_to_date")
+@pytest.mark.parametrize("name", ["gw1051/20261018/hist_keep_up_to_date", "gw1051/20261018b/hist_keep_up_to_date",
+                                  "20260926b/hist_keep_up_to_date"])
+def test_historical_keep_up_to_date_then_cancel(name):
+    out = replay(name)
     assert len(assert_same(out)) == 32
 
 

@@ -1,5 +1,7 @@
 //! Scenario replay (ibx#487, tests layer C): the scenarios recorded from
-//! the reference gateway (tests/fixtures/gw1040/scenarios/, four legs in
+//! the reference gateway (tests/fixtures/gw1040/scenarios/ for 10.40 at
+//! level 214, tests/fixtures/gw1051/scenarios/ for 10.51, whose folders of
+//! 18/10/2026 on are at the client's own level 225, ibx#604; four legs in
 //! one order) replayed through the Rust API client and the engine against
 //! a scripted peer that plays the recorded servers
 //! (`ibx::test_support::scenario`). Two checks per scenario:
@@ -63,12 +65,16 @@ fn exchange_map(f: &Fields) -> bool {
 // A LMT order before the open, then its cancel (26/09/2026, ibx#472,
 // ibx#465): the new order and the cancel as the reference's; openOrder and
 // orderStatus for each report (PreSubmitted three times), the cancel acted
-// on after the next report, then Cancelled and 202.
+// on after the next report, then Cancelled and 202. Recorded again on
+// 10.51 with the official client at its own level, 225, market closed
+// (18/10/2026, ibx#604): the same answers, 399 first.
 #[test]
 fn lmt_order_then_cancel() {
-    let o = check("20260926/lmt_cancel", orders());
-    assert_eq!(o.frames_compared, 2);
-    assert_eq!(o.theirs.len(), 9);
+    for name in ["gw1051/20261018/lmt_cancel", "20260926/lmt_cancel"] {
+        let o = check(name, orders());
+        assert_eq!(o.frames_compared, 2, "{name}");
+        assert_eq!(o.theirs.len(), 9, "{name}");
+    }
 }
 
 // A LMT order, its cancel, a modify after the cancel (26/09/2026, ibx#463,
@@ -81,6 +87,20 @@ fn lmt_order_then_cancel() {
 fn cancel_gives_pending_cancel_then_cancelled() {
     let o = check("20260926/modify_cancelled", orders().skip_seqs(&[2441]));
     assert!(o.theirs.iter().any(|(_, l)| l.starts_with("orderStatus|2|PendingCancel")));
+}
+
+// The same on 10.51 at level 225, market closed (18/10/2026, ibx#604),
+// with the answer to the modify: PendingCancel twice, Cancelled, 202, then
+// 104 for the modify and nothing sent.
+#[test]
+fn cancel_gives_pending_cancel_then_cancelled_and_the_modify_104() {
+    let o = check("gw1051/20261018/modify_cancelled", orders());
+    assert_eq!(o.frames_compared, 2);
+    let status: Vec<&str> = o.theirs.iter().filter(|(_, l)| l.starts_with("orderStatus|"))
+        .map(|(_, l)| l.split('|').nth(2).unwrap_or("")).collect();
+    assert_eq!(status, ["PreSubmitted", "PendingCancel", "PendingCancel", "Cancelled"]);
+    let last = &o.theirs.last().expect("callbacks").1;
+    assert!(last.starts_with("error|") && last.contains("|104|"), "{last}");
 }
 
 // The modify of a cancelled order, with its answer (14/10/2026 in RTH, the
@@ -108,10 +128,12 @@ fn modify_of_a_cancelled_order() {
 // the wire.
 #[test]
 fn cancel_of_an_unknown_order() {
-    let o = check("20260926/cancel_unknown", orders());
-    assert_eq!(o.frames_compared, 0);
-    assert_eq!(o.theirs.len(), 1);
-    assert!(o.theirs[0].1.starts_with("error|"), "{:?}", o.theirs);
+    for name in ["gw1051/20261018/cancel_unknown", "20260926/cancel_unknown"] {
+        let o = check(name, orders());
+        assert_eq!(o.frames_compared, 0, "{name}");
+        assert_eq!(o.theirs.len(), 1, "{name}");
+        assert!(o.theirs[0].1.starts_with("error|"), "{name}: {:?}", o.theirs);
+    }
 }
 
 // Two orders in one OCA group, both cancelled (26/09/2026, ibx#311,
@@ -119,8 +141,10 @@ fn cancel_of_an_unknown_order() {
 // cancelled the group, refused with 10148.
 #[test]
 fn oca_group_and_the_refused_second_cancel() {
-    let o = check("20260926/oca_group", orders());
-    assert_eq!(o.frames_compared, 3);
+    for name in ["gw1051/20261018/oca_group", "20260926/oca_group"] {
+        let o = check(name, orders());
+        assert_eq!(o.frames_compared, 3, "{name}");
+    }
 }
 
 // Stop, trailing, IOC, FOK, time in force values, a customer account
@@ -221,11 +245,14 @@ fn partial_fills_then_executions() {
 // A SMART stock combo whose symbol does not match its legs (26/09/2026,
 // ibx#470): the definition lookups of the combo and its legs, the
 // multiplier and leg confirmation queries, then 478; the cancels give
-// 10147.
+// 10147. Recorded again on 10.51 at level 225, market closed, one order
+// and its cancel (18/10/2026, ibx#604).
 #[test]
 fn combo_symbol_conflict() {
     let o = check("20260926/i105_combo_stock_smart", Options::default());
     assert_eq!(o.theirs.iter().filter(|(_, l)| l.contains("|478|")).count(), 2);
+    let o = check("gw1051/20261018c/i105_combo_symbol_conflict", Options::default());
+    assert_eq!(o.theirs.iter().filter(|(_, l)| l.contains("|478|")).count(), 1);
 }
 
 // The combo orders of the second session (26/09/2026, ibx#470): the
@@ -243,6 +270,22 @@ fn combo_per_leg_prices() {
     check("20260926b/i105_combo_leg_prices", Options::default().mask(known).replies_from(&first));
 }
 
+// The combo orders on 10.51 at level 225, market closed (18/10/2026,
+// ibx#604): SMART, SPY and QQQ with the symbol in the legs' order (no
+// conflict: 399, PreSubmitted, the price change, the cancel) in the first
+// session of the gateway's process, then in the second one with the
+// definitions known, and per-leg prices.
+#[test]
+fn combo_orders_on_10_51() {
+    let first = load_scenario("gw1051/20261018/i105_combo_stock_smart");
+    let o = check("gw1051/20261018/i105_combo_stock_smart", Options::default().mask(known));
+    assert!(o.theirs.iter().any(|(_, l)| l.contains("|399|")), "{:?}", o.theirs);
+    for name in ["gw1051/20261018b/i105_combo_stock_smart", "gw1051/20261018b/i105_combo_leg_prices"] {
+        let o = check(name, Options::default().mask(known).replies_from(&first));
+        assert!(o.frames_compared >= 2, "{name}: {}", o.frames_compared);
+    }
+}
+
 // A combo directed to ARCA (26/09/2026): no definition, 200. The cancel
 // that follows gives orderStatus ApiCancelled (the order id stays in the
 // reference's API pending map, ORDER-CANCEL 1: permId 0, remaining 1, the
@@ -251,14 +294,19 @@ fn combo_per_leg_prices() {
 fn directed_combo_without_definition_then_cancel() {
     let o = check("20260926b/i105_combo_directed", Options::default());
     assert!(o.theirs.iter().any(|(_, l)| l.starts_with("orderStatus|31|ApiCancelled|")));
+    // 10.51 at level 225, market closed (18/10/2026, ibx#604).
+    let o = check("gw1051/20261018b/i105_combo_directed", Options::default());
+    assert!(o.theirs.iter().any(|(_, l)| l.contains("|200|")), "{:?}", o.theirs);
+    assert!(o.theirs.iter().any(|(_, l)| l.contains("|ApiCancelled|")), "{:?}", o.theirs);
 }
 
 // A bracket in the client library's form (26/09/2026): parent and
 // take-profit with transmit off, the stop with transmit on.
 #[test]
 fn bracket() {
-    check("20260926/bracket", orders());
-    check("20260926b/bracket", orders());
+    for name in ["gw1051/20261018/bracket", "gw1051/20261018b/bracket", "20260926/bracket", "20260926b/bracket"] {
+        check(name, orders());
+    }
 }
 
 // ── Account ──
@@ -278,6 +326,36 @@ fn account_summary_subscription_and_tag_rows() {
 #[test]
 fn account_summary_whole_answer() {
     check("20260926/account_summary", Options::default());
+}
+
+// The same request on 10.51 at level 225, market closed (18/10/2026,
+// ibx#604): the subscription; the cancel sends nothing (the server's
+// cancel comes at the client's disconnect, which the replay has not); the
+// four tag rows.
+#[test]
+fn account_summary_subscription_and_tag_rows_on_10_51() {
+    let o = replay(&load_scenario("gw1051/20261018/account_summary"), &Options::default().compare(&[SUBSCRIPTION]).until(2717));
+    assert_eq!((o.frame_error.as_deref(), o.frames_compared), (None, 1));
+    let theirs: Vec<String> = o.theirs.iter().map(|(_, l)| l.clone()).collect();
+    ibx::test_support::scenario::assert_same_callbacks(&o.ours[..4], &theirs[..4]);
+}
+
+// The whole answer on 10.51, in a gateway process where no session had
+// asked the account updates (18/10/2026, 20261018c): each frame once, the
+// tag rows, the $LEDGER:ALL rows of the account "All", the end.
+#[test]
+fn account_summary_whole_answer_on_10_51() {
+    let o = check("gw1051/20261018c/account_summary", Options::default().until(1413));
+    assert_eq!(o.theirs.iter().filter(|(_, l)| l.starts_with("accountSummaryEnd|")).count(), 1);
+}
+
+// The same request after an earlier session of the gateway's process had
+// asked the account updates (20261018): the reference gives each frame
+// twice, ibx once (ibx#752).
+#[test]
+#[ignore = "ibx#752: the account summary frames given twice by the reference after account updates were asked"]
+fn account_summary_whole_answer_after_account_updates() {
+    check("gw1051/20261018/account_summary", Options::default().until(2717));
 }
 
 // reqPnL and reqPnLSingle (26/09/2026, ibx#478): the reference subscribes
@@ -312,8 +390,10 @@ fn global_cancel_of_orders_of_earlier_sessions() {
 // cancel.
 #[test]
 fn historical_keep_up_to_date_then_cancel() {
-    let o = check("20260926b/hist_keep_up_to_date", Options::default());
-    assert_eq!(o.theirs.len(), 32);
+    for name in ["gw1051/20261018/hist_keep_up_to_date", "gw1051/20261018b/hist_keep_up_to_date", "20260926b/hist_keep_up_to_date"] {
+        let o = check(name, Options::default());
+        assert_eq!(o.theirs.len(), 32, "{name}");
+    }
 }
 
 // Four keepUpToDate requests (02/10/2026, ibx#429): their bars, ends and
@@ -374,6 +454,19 @@ fn two_scanner_subscriptions() {
     assert_eq!(o.frames_compared, 24);
 }
 
+// The same on 10.51 at level 225, market closed, the first scanner request
+// of the gateway's process (18/10/2026, ibx#604): the parameters asked
+// first, the subscriptions without the manual flag of 10.40, the lookups
+// of the rows' contracts. The second session of that process
+// (20261018b) had the parameters already: not replayed, ibx asks for them
+// in each new session.
+#[test]
+fn two_scanner_subscriptions_on_10_51() {
+    let o = check("gw1051/20261018/scanner_two", Options::default().compare(&[SCANNER, LOOKUP])
+        .keep(|l| !l.starts_with("error|9006|162|")));
+    assert!(o.frames_compared > 20, "{}", o.frames_compared);
+}
+
 // News ticks on a contract asked twice, then on a second contract with
 // one provider (02/10/2026, ibx#458): the news subscription lists the
 // session's news providers, or the one asked (ibx#514). Stops before the
@@ -408,15 +501,18 @@ fn dump(name: &str, o: &Outcome) {
 fn dump_all_scenarios() {
     let Some(only) = std::env::var_os("IBX_SCENARIO_DUMP") else { return };
     let only = only.to_string_lossy().to_string();
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/gw1040/scenarios");
+    let fixtures = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
     let mut names = Vec::new();
-    for day in std::fs::read_dir(&root).unwrap() {
-        let day = day.unwrap().path();
-        for f in std::fs::read_dir(&day).unwrap() {
-            let f = f.unwrap().path();
-            let name = f.file_name().unwrap().to_string_lossy().to_string();
-            if name.ends_with(".api.jsonl") || !name.ends_with(".jsonl") { continue; }
-            names.push(format!("{}/{}", day.file_name().unwrap().to_string_lossy(), name.trim_end_matches(".jsonl")));
+    // The recordings of 10.40 by their folder, those of 10.51 under gw1051/.
+    for (version, prefix) in [("gw1040", ""), ("gw1051", "gw1051/")] {
+        for day in std::fs::read_dir(fixtures.join(version).join("scenarios")).unwrap() {
+            let day = day.unwrap().path();
+            for f in std::fs::read_dir(&day).unwrap() {
+                let f = f.unwrap().path();
+                let name = f.file_name().unwrap().to_string_lossy().to_string();
+                if name.ends_with(".api.jsonl") || !name.ends_with(".jsonl") { continue; }
+                names.push(format!("{prefix}{}/{}", day.file_name().unwrap().to_string_lossy(), name.trim_end_matches(".jsonl")));
+            }
         }
     }
     names.sort();
