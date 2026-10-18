@@ -1273,7 +1273,7 @@ error,10353,"Warning: setting ""Route marketable orders to exchanges at BBO only
 error,10354,"Attaching stop-loss or profit-taker is not allowed as part of a single placeOrder request, please submit such orders separately.",no test
 error,10355,Cannot auto-attach %s. Preset is not defined.,src/engine/hot_loop/order_builder.rs::attached_orders_from_an_undefined_preset_are_discarded ; live:tests/order_paths_paper.rs::order_paths_paper
 error,10356,Invalid value for %s order-id or order-type,no test
-error,10357,Configuration access via API is not available. Please refer to the application interface to view or update your settings.,src/client_core.rs::the_configuration_update_is_refused_below_level_221_and_without_configuration_access
+error,10357,Configuration access via API is not available. Please refer to the application interface to view or update your settings.,src/client_core.rs::the_configuration_update_is_refused_below_level_221_and_without_configuration_access ; src/client_core.rs::the_configuration_request_is_refused_below_level_219_and_without_configuration_access
 error,10358,Fundamentals data is not allowed,tests/gw_catalog/errors.rs::every_error_ibx_raises_is_the_gateways ; src/api/client/tests.rs::fundamentals_without_the_logon_permission_are_refused
 error,10359,Scan code %s is not allowed,no test
 error,10360,Scan filter %s is not allowed,no test
@@ -2154,7 +2154,8 @@ eclient,verify_request,,src/api/client/tests.rs::requests_the_reference_session_
 eclient,verify_message,,src/api/client/tests.rs::requests_the_reference_session_does_not_have
 eclient,verify_and_auth_request,,src/api/client/tests.rs::requests_the_reference_session_does_not_have
 eclient,verify_and_auth_message,,src/api/client/tests.rs::requests_the_reference_session_does_not_have
-eclient,update_config,,src/api/client/tests.rs::update_config_is_refused_below_level_221 ; src/client_core.rs::the_configuration_update_is_refused_below_level_221_and_without_configuration_access ; src/client_core/update_config.rs::invalid_values_are_listed_in_the_reference_order
+eclient,req_config,,src/api/client/tests.rs::req_config_is_refused_below_level_219 ; src/api/client/tests.rs::config_answers_come_from_process_msgs_and_keep_an_update ; src/client_core/session_config.rs::the_configuration_is_the_paper_installations
+eclient,update_config,,src/api/client/tests.rs::update_config_is_refused_below_level_221 ; src/client_core.rs::the_configuration_update_is_refused_below_level_221_and_without_configuration_access ; src/client_core/update_config.rs::invalid_values_are_listed_in_the_reference_order ; src/client_core/session_config.rs::a_value_ibx_cannot_follow_is_refused_with_the_field_named ; src/client_core/session_config.rs::a_new_value_of_a_setting_ibx_does_not_act_on_is_kept
 eclient,request_fa,,src/api/client/tests.rs::fa_requests_on_a_non_fa_session_are_refused
 eclient,replace_fa,,src/api/client/tests.rs::fa_requests_on_a_non_fa_session_are_refused
 eclient,query_display_groups,,src/api/client/tests.rs::display_group_requests_as_the_reference

@@ -1,12 +1,12 @@
 //! The configuration messages of session levels 219 and 221 in the form of
-//! the official client library (ibx#612): it gives them as its protobuf
+//! the official client library (ibx#610, ibx#612): it gives them as its protobuf
 //! objects only. A request is read from such an object, or from any object
 //! with the same attribute names (an attribute set to None is not set). An
 //! answer is built as the official object when the official library is
 //! installed, otherwise as a plain object with the same attributes.
 
 use pyo3::prelude::*;
-use pyo3::types::PyDict;
+use pyo3::types::{PyDict, PyList};
 
 use crate::api::config::*;
 
@@ -214,5 +214,174 @@ pub(crate) fn update_config_response<'py>(py: Python<'py>, r: &UpdateConfigRespo
             d.set_item("warnings", warnings)?;
             plain(py, &d)
         }
+    }
+}
+
+/// The request of `reqConfigProtoBuf` (a `ConfigRequest` of the official
+/// library, or an object with its attributes).
+pub(crate) fn config_request(o: &Bound<'_, PyAny>) -> PyResult<ConfigRequest> {
+    Ok(ConfigRequest { req_id: opt_i32(o, "reqId")? })
+}
+
+/// `v` without the entries set to None, in its dicts and lists.
+fn without_none<'py>(py: Python<'py>, v: &Bound<'py, PyAny>) -> PyResult<Bound<'py, PyAny>> {
+    if let Ok(d) = v.cast::<PyDict>() {
+        let out = PyDict::new(py);
+        for (k, x) in d.iter() {
+            if !x.is_none() {
+                out.set_item(k, without_none(py, &x)?)?;
+            }
+        }
+        return Ok(out.into_any());
+    }
+    if let Ok(l) = v.cast::<PyList>() {
+        let out = PyList::empty(py);
+        for x in l.iter() {
+            out.append(without_none(py, &x)?)?;
+        }
+        return Ok(out.into_any());
+    }
+    Ok(v.clone())
+}
+
+/// `v` with each of its dicts made a plain object.
+fn plain_tree<'py>(py: Python<'py>, v: &Bound<'py, PyAny>) -> PyResult<Bound<'py, PyAny>> {
+    if let Ok(d) = v.cast::<PyDict>() {
+        let out = PyDict::new(py);
+        for (k, x) in d.iter() {
+            out.set_item(k, plain_tree(py, &x)?)?;
+        }
+        return plain(py, &out);
+    }
+    if let Ok(l) = v.cast::<PyList>() {
+        let out = PyList::empty(py);
+        for x in l.iter() {
+            out.append(plain_tree(py, &x)?)?;
+        }
+        return Ok(out.into_any());
+    }
+    Ok(v.clone())
+}
+
+fn lock_and_exit_fields<'py>(py: Python<'py>, l: &LockAndExitConfig) -> PyResult<Bound<'py, PyDict>> {
+    let d = PyDict::new(py);
+    d.set_item("autoLogoffTime", &l.auto_logoff_time)?;
+    d.set_item("autoLogoffPeriod", &l.auto_logoff_period)?;
+    d.set_item("autoLogoffType", &l.auto_logoff_type)?;
+    Ok(d)
+}
+
+fn message_fields<'py>(py: Python<'py>, m: &MessageConfig) -> PyResult<Bound<'py, PyDict>> {
+    let d = PyDict::new(py);
+    d.set_item("id", m.id)?;
+    d.set_item("title", &m.title)?;
+    d.set_item("message", &m.message)?;
+    d.set_item("defaultAction", &m.default_action)?;
+    d.set_item("enabled", m.enabled)?;
+    Ok(d)
+}
+
+fn precautions_fields<'py>(py: Python<'py>, p: &ApiPrecautionsConfig) -> PyResult<Bound<'py, PyDict>> {
+    let d = PyDict::new(py);
+    d.set_item("bypassOrderPrecautions", p.bypass_order_precautions)?;
+    d.set_item("bypassBondWarning", p.bypass_bond_warning)?;
+    d.set_item("bypassNegativeYieldConfirmation", p.bypass_negative_yield_confirmation)?;
+    d.set_item("bypassCalledBondWarning", p.bypass_called_bond_warning)?;
+    d.set_item("bypassSameActionPairTradeWarning", p.bypass_same_action_pair_trade_warning)?;
+    d.set_item("bypassFlaggedAccountsWarning", p.bypass_flagged_accounts_warning)?;
+    d.set_item("bypassPriceBasedVolatilityWarning", p.bypass_price_based_volatility_warning)?;
+    d.set_item("bypassRedirectOrderWarning", p.bypass_redirect_order_warning)?;
+    d.set_item("bypassNoOverfillProtection", p.bypass_no_overfill_protection)?;
+    d.set_item("bypassRouteMarketableToBBO", p.bypass_route_marketable_to_bbo)?;
+    Ok(d)
+}
+
+fn settings_fields<'py>(py: Python<'py>, s: &ApiSettingsConfig) -> PyResult<Bound<'py, PyDict>> {
+    let d = PyDict::new(py);
+    d.set_item("readOnlyApi", s.read_only_api)?;
+    d.set_item("totalQuantityForMutualFunds", s.total_quantity_for_mutual_funds)?;
+    d.set_item("downloadOpenOrdersOnConnection", s.download_open_orders_on_connection)?;
+    d.set_item("includeVirtualFxPositions", s.include_virtual_fx_positions)?;
+    d.set_item("prepareDailyPnL", s.prepare_daily_pnl)?;
+    d.set_item("sendStatusUpdatesForVolatilityOrders", s.send_status_updates_for_volatility_orders)?;
+    d.set_item("encodeApiMessages", &s.encode_api_messages)?;
+    d.set_item("socketPort", s.socket_port)?;
+    d.set_item("useNegativeAutoRange", s.use_negative_auto_range)?;
+    d.set_item("createApiMessageLogFile", s.create_api_message_log_file)?;
+    d.set_item("includeMarketDataInLogFile", s.include_market_data_in_log_file)?;
+    d.set_item("exposeTradingScheduleToApi", s.expose_trading_schedule_to_api)?;
+    d.set_item("splitInsuredDepositFromCashBalance", s.split_insured_deposit_from_cash_balance)?;
+    d.set_item("sendZeroPositionsForTodayOnly", s.send_zero_positions_for_today_only)?;
+    d.set_item("letApiAccountRequestsSwitchSubscription", s.let_api_account_requests_switch_subscription)?;
+    d.set_item("useAccountGroupsWithAllocationMethods", s.use_account_groups_with_allocation_methods)?;
+    d.set_item("loggingLevel", &s.logging_level)?;
+    d.set_item("masterClientId", s.master_client_id)?;
+    d.set_item("bulkDataTimeout", s.bulk_data_timeout)?;
+    d.set_item("componentExchSeparator", &s.component_exch_separator)?;
+    d.set_item("showForexDataIn1_10Pips", s.show_forex_data_in_1_10_pips)?;
+    d.set_item("allowForexTradingIn1_10Pips", s.allow_forex_trading_in_1_10_pips)?;
+    d.set_item("roundAccountValuesToNearestWholeNumber", s.round_account_values_to_nearest_whole_number)?;
+    d.set_item("sendMarketDataInLotsForUsStocks", s.send_market_data_in_lots_for_us_stocks)?;
+    d.set_item("showAdvancedOrderRejectInUi", s.show_advanced_order_reject_in_ui)?;
+    d.set_item("rejectMessagesAboveMaxRate", s.reject_messages_above_max_rate)?;
+    d.set_item("maintainConnectionOnIncorrectFields", s.maintain_connection_on_incorrect_fields)?;
+    d.set_item("compatibilityModeNasdaqStocks", s.compatibility_mode_nasdaq_stocks)?;
+    d.set_item("sendInstrumentTimezone", &s.send_instrument_timezone)?;
+    d.set_item("sendForexDataInCompatibilityMode", s.send_forex_data_in_compatibility_mode)?;
+    d.set_item("maintainAndResubmitOrdersOnReconnect", s.maintain_and_resubmit_orders_on_reconnect)?;
+    d.set_item("historicalDataMaxSize", s.historical_data_max_size)?;
+    d.set_item("autoReportNettingEventContractTrades", s.auto_report_netting_event_contract_trades)?;
+    d.set_item("optionExerciseRequestType", &s.option_exercise_request_type)?;
+    d.set_item("allowLocalhostOnly", s.allow_localhost_only)?;
+    d.set_item("trustedIPs", s.trusted_ips.clone())?;
+    Ok(d)
+}
+
+fn smart_routing_fields<'py>(py: Python<'py>, s: &OrdersSmartRoutingConfig) -> PyResult<Bound<'py, PyDict>> {
+    let d = PyDict::new(py);
+    d.set_item("seekPriceImprovement", s.seek_price_improvement)?;
+    d.set_item("preOpenReroute", s.pre_open_reroute)?;
+    d.set_item("doNotRouteToDarkPools", s.do_not_route_to_dark_pools)?;
+    d.set_item("defaultAlgorithm", &s.default_algorithm)?;
+    Ok(d)
+}
+
+/// Every field of the configuration, unset ones None.
+fn config_fields<'py>(py: Python<'py>, r: &ConfigResponse) -> PyResult<Bound<'py, PyDict>> {
+    let top = PyDict::new(py);
+    top.set_item("reqId", r.req_id)?;
+    top.set_item("lockAndExit", r.lock_and_exit.as_ref().map(|l| lock_and_exit_fields(py, l)).transpose()?)?;
+    let messages = PyList::empty(py);
+    for m in &r.messages {
+        messages.append(message_fields(py, m)?)?;
+    }
+    top.set_item("messages", messages)?;
+    let api = r.api.as_ref().map(|a| -> PyResult<_> {
+        let d = PyDict::new(py);
+        d.set_item("precautions", a.precautions.as_ref().map(|p| precautions_fields(py, p)).transpose()?)?;
+        d.set_item("settings", a.settings.as_ref().map(|s| settings_fields(py, s)).transpose()?)?;
+        Ok(d)
+    }).transpose()?;
+    top.set_item("api", api)?;
+    let orders = r.orders.as_ref().map(|o| -> PyResult<_> {
+        let d = PyDict::new(py);
+        d.set_item("smartRouting", o.smart_routing.as_ref().map(|s| smart_routing_fields(py, s)).transpose()?)?;
+        Ok(d)
+    }).transpose()?;
+    top.set_item("orders", orders)?;
+    Ok(top)
+}
+
+/// The argument of `config_response_proto_buf`: the official
+/// `ConfigResponse` with the fields of `r` set, or a plain object with the
+/// same attributes (unset ones None, lists empty).
+pub(crate) fn config_response<'py>(py: Python<'py>, r: &ConfigResponse) -> PyResult<Bound<'py, PyAny>> {
+    let fields = config_fields(py, r)?;
+    match py.import("ibapi.protobuf.ConfigResponse_pb2").and_then(|m| m.getattr("ConfigResponse")) {
+        Ok(official) => {
+            let set = without_none(py, fields.as_any())?;
+            official.call((), Some(set.cast::<PyDict>()?))
+        }
+        Err(_) => plain_tree(py, fields.as_any()),
     }
 }

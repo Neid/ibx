@@ -7390,6 +7390,61 @@ fn update_config_is_refused_below_level_221() {
     assert_eq!(shared.orders.drain_order_errors(), [(7401, 503, text.clone()), (-1, 503, text)]);
 }
 
+// ibx#610: at session level 214 the configuration request is refused with
+// 503 for its id, or -1 without one, as the official client library does
+// below level 219, and nothing goes to the engine.
+#[test]
+fn req_config_is_refused_below_level_219() {
+    let (client, rx, shared) = test_client();
+    client.req_config(&crate::api::config::ConfigRequest { req_id: Some(7301) });
+    client.req_config(&crate::api::config::ConfigRequest::default());
+    assert!(rx.try_recv().is_err(), "nothing goes to the engine");
+    let text = "The TWS is out of date and must be upgraded.  It does not support config requests.".to_string();
+    assert_eq!(shared.orders.drain_order_errors(), [(7301, 503, text.clone()), (-1, 503, text)]);
+}
+
+// ibx#610, ibx#612 (decision of 18/10/2026): from levels 219 and 221 the
+// answers come from process_msgs, never inside the request; an update
+// that succeeds is kept and a later configuration request shows it; a
+// value ibx cannot follow is refused with the field named.
+#[test]
+fn config_answers_come_from_process_msgs_and_keep_an_update() {
+    use crate::api::config::*;
+    #[derive(Default)]
+    struct Config(Vec<String>);
+    impl Wrapper for Config {
+        fn config_response(&mut self, r: &ConfigResponse) {
+            let s = r.api.as_ref().unwrap().settings.as_ref().unwrap();
+            self.0.push(format!("config {:?} port {:?} messages {}", r.req_id, s.socket_port, r.messages.len()));
+        }
+        fn update_config_response(&mut self, r: &UpdateConfigResponse) {
+            self.0.push(format!("update {:?} {:?} {:?} {:?}", r.req_id, r.status, r.changed_fields, r.errors));
+        }
+    }
+    let (client, rx, _shared) = test_client();
+    let mut w = Config::default();
+    client.req_config_at(225, &ConfigRequest { req_id: Some(7301) });
+    let port = |id, port| UpdateConfigRequest {
+        req_id: Some(id),
+        api: Some(ApiConfig { settings: Some(ApiSettingsConfig { socket_port: Some(port), ..Default::default() }), precautions: None }),
+        ..Default::default()
+    };
+    client.update_config_at(225, &port(7302, 4003));
+    let mut read_only = port(7303, 4004);
+    read_only.api.as_mut().unwrap().settings.as_mut().unwrap().read_only_api = Some(true);
+    client.update_config_at(225, &read_only);
+    client.req_config_at(225, &ConfigRequest::default());
+    assert!(w.0.is_empty(), "nothing inside the requests");
+    assert!(rx.try_recv().is_err(), "nothing goes to the engine");
+    client.process_msgs(&mut w);
+    assert_eq!(w.0, [
+        "config Some(7301) port Some(4002) messages 22",
+        r#"update Some(7302) Some("success") ["configuration.api.settings.socketPort"] []"#,
+        r#"update Some(7303) Some("error") [] ["configuration.api.settings.readOnlyApi"]"#,
+        "config Some(0) port Some(4003) messages 22",
+    ]);
+}
+
 // ibx#561: on a paced session a market data request asks for its slot
 // first, which the engine tells at once, and sends its subscribe with no
 // reply to wait for.

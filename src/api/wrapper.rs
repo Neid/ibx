@@ -251,6 +251,10 @@ pub trait Wrapper {
 
     // ── Configuration ──
 
+    /// The configuration, as `configResponseProtoBuf` (ibx#610). It comes
+    /// from session level 219.
+    fn config_response(&mut self, response: &crate::api::config::ConfigResponse) {}
+
     /// The answer to an update of the configuration, as
     /// `updateConfigResponseProtoBuf` (ibx#612). It comes from session
     /// level 221.

@@ -156,6 +156,7 @@ pub fn epoch_text(secs: i64, buf: &mut [u8; 24]) -> &str {
 
 mod md_stream;
 pub(crate) mod inbox;
+pub mod session_config;
 pub mod update_config;
 pub use md_stream::{MdOut, StreamState};
 
@@ -1511,6 +1512,9 @@ pub struct ClientCore {
     /// The contracts whose data is frozen (ibx#447): real-time slot ->
     /// frozen slot, where their requests are while it lasts.
     pub md_frozen: Mutex<HashMap<InstrumentId, InstrumentId>>,
+    /// The configuration reqConfig gives and updateConfig changes
+    /// (ibx#610, ibx#612).
+    pub config: Mutex<session_config::SessionConfig>,
     /// The last request parameters of each instrument (minimum tick, BBO
     /// exchange, snapshot permissions): a request that joins gets them at
     /// once (ibx#444).
@@ -1769,13 +1773,46 @@ pub fn lookup_cancel_refusal(level: i32, ticks: bool) -> Option<(i64, &'static s
         .then_some(if ticks { CANCEL_HISTORICAL_TICKS_UNSUPPORTED } else { CANCEL_CONTRACT_DATA_UNSUPPORTED })
 }
 /// The session level from which the official client library sends
+/// reqConfig (ibx#610).
+pub const LEVEL_CONFIG: i32 = 219;
+/// The session level from which the official client library sends
 /// updateConfig (ibx#612).
 pub const LEVEL_UPDATE_CONFIG: i32 = 221;
 
-// The answer to an update that passes the reference's checks waits for the
-// decision asked on ibx#610: ibx answers level 221 only once it is made.
-const _: () = assert!(SERVER_VERSION < LEVEL_UPDATE_CONFIG,
-    "answer an update that passes the checks (decision of ibx#610) before raising the session level (ibx#612)");
+// Levels 219 and 221 are answered (ibx#610, ibx#612). Level 222 is not
+// finished: ibx answers it only once the fractional last size is (ibx#613).
+const _: () = assert!(SERVER_VERSION < LEVEL_FRACTIONAL_LAST_SIZE,
+    "finish the fractional last size of level 222 (ibx#613) before raising the session level (ibx#602)");
+
+pub const CONFIG_UNSUPPORTED: (i64, &str) =
+    (503, "The TWS is out of date and must be upgraded.  It does not support config requests.");
+
+/// reqConfig on a session whose logon does not allow configuration
+/// access: error 321 with the cause 10357, for the request's id (ibx#610).
+pub const CONFIG_NOT_AVAILABLE: (i64, &str) =
+    (321, "Error validating request.-'ReqConfig(108)' : cause - Configuration access via API is not available. Please refer to the application interface to view or update your settings.");
+
+/// The error that refuses a reqConfig on a session of level `level` with
+/// logon features `logon_features`, as (id, code, text), or `None` when
+/// the request is taken (ibx#610).
+///
+/// Below level 219 the official client library refuses it itself with
+/// 503, for the request's id or -1 without one, and sends nothing. From
+/// 219 a logon whose features forbid configuration access gets 321 with
+/// the cause 10357, for the request's id or 0 without one (not observed
+/// yet: the paper account's logon allows it).
+pub fn config_refusal(
+    level: i32, request: &crate::api::config::ConfigRequest, logon_features: &str,
+) -> Option<(i64, i64, &'static str)> {
+    if level < LEVEL_CONFIG {
+        let (code, text) = CONFIG_UNSUPPORTED;
+        return Some((request.req_id.map_or(-1, i64::from), code, text));
+    }
+    crate::control::logon::has_feature(logon_features, NO_CONFIG_API_FEATURE).then(|| {
+        let (code, text) = CONFIG_NOT_AVAILABLE;
+        (request.req_id.map_or(0, i64::from), code, text)
+    })
+}
 
 pub const UPDATE_CONFIG_UNSUPPORTED: (i64, &str) =
     (503, "The TWS is out of date and must be upgraded.  It does not support update config requests.");
@@ -1806,6 +1843,32 @@ pub fn update_config_refusal(
         return Some((request.req_id.map_or(-1, i64::from), code, text));
     }
     crate::control::logon::has_feature(logon_features, NO_CONFIG_API_FEATURE).then_some(UPDATE_CONFIG_NOT_AVAILABLE)
+}
+
+impl ClientCore {
+    /// The answer to reqConfig on a session of level `level`: the
+    /// session's configuration, or the error that refuses the request
+    /// (ibx#610).
+    pub fn config_answer(
+        &self, level: i32, request: &crate::api::config::ConfigRequest, logon_features: &str,
+    ) -> Result<crate::api::config::ConfigResponse, (i64, i64, &'static str)> {
+        if let Some(refusal) = config_refusal(level, request, logon_features) {
+            return Err(refusal);
+        }
+        Ok(self.config.lock().unwrap().response(request.req_id))
+    }
+
+    /// The answer to updateConfig on a session of level `level`: the
+    /// update answered as the decision of ibx#610 says (and kept when it
+    /// succeeds), or the error that refuses the request (ibx#612).
+    pub fn update_config_answer(
+        &self, level: i32, request: &crate::api::config::UpdateConfigRequest, logon_features: &str,
+    ) -> Result<crate::api::config::UpdateConfigResponse, (i64, i64, &'static str)> {
+        if let Some(refusal) = update_config_refusal(level, request, logon_features) {
+            return Err(refusal);
+        }
+        Ok(self.config.lock().unwrap().update(request))
+    }
 }
 
 pub const VERIFY_REQUEST_NO_INTENT: (i64, i64, &str) =
@@ -2212,6 +2275,7 @@ impl ClientCore {
             md_generic_last: Mutex::new(HashMap::new()),
             md_delayed_known: Mutex::new(HashSet::new()),
             md_frozen: Mutex::new(HashMap::new()),
+            config: Mutex::new(session_config::SessionConfig::paper()),
             instrument_params: Mutex::new(HashMap::new()),
             instrument_news: Mutex::new(HashMap::new()),
             md_joins: Mutex::new(Vec::new()),
@@ -9930,7 +9994,32 @@ mod session_tests {
         assert_eq!(update_config_refusal(221, &with_id, "APIELOG,SECDEFTA"), None);
         assert_eq!(update_config_refusal(225, &with_id, "APIELOG,NOCONFIGAPI,SECDEFTA"), Some(UPDATE_CONFIG_NOT_AVAILABLE));
         assert_eq!(update_config_refusal(225, &with_id, "NOCONFIGAPIX"), None);
-        assert!(SERVER_VERSION < LEVEL_UPDATE_CONFIG);
+    }
+
+    // ibx#610: the official client refuses reqConfig below level 219 with
+    // 503 (for the request's id, or -1 without one); from 219 only a
+    // logon without configuration access refuses it, with 321 for the
+    // request's id (0 without one).
+    #[test]
+    fn the_configuration_request_is_refused_below_level_219_and_without_configuration_access() {
+        use crate::api::config::ConfigRequest;
+        let with_id = ConfigRequest { req_id: Some(7301) };
+        let (code, text) = CONFIG_UNSUPPORTED;
+        assert_eq!(text, "The TWS is out of date and must be upgraded.  It does not support config requests.");
+        assert_eq!(config_refusal(214, &with_id, ""), Some((7301, code, text)));
+        assert_eq!(config_refusal(218, &ConfigRequest::default(), "NOCONFIGAPI"), Some((-1, code, text)));
+        assert_eq!(config_refusal(219, &with_id, "APIELOG,SECDEFTA"), None);
+        let (code, text) = CONFIG_NOT_AVAILABLE;
+        assert_eq!(config_refusal(225, &with_id, "APIELOG,NOCONFIGAPI"), Some((7301, code, text)));
+        assert_eq!(config_refusal(225, &ConfigRequest::default(), "NOCONFIGAPI"), Some((0, code, text)));
+        // The client core answers from level 219 with the session's
+        // configuration, and keeps an update.
+        let core = ClientCore::new();
+        assert!(core.config_answer(214, &with_id, "").is_err());
+        assert_eq!(core.config_answer(225, &with_id, "").unwrap().req_id, Some(7301));
+        let update = crate::api::config::UpdateConfigRequest { req_id: Some(7302), ..Default::default() };
+        assert_eq!(core.update_config_answer(214, &update, "").unwrap_err().1, 503);
+        assert_eq!(core.update_config_answer(225, &update, "").unwrap().status.as_deref(), Some("success"));
     }
 
     // ibx#426: `yyyyMMdd HH:mm:ss {zone}`, local time.

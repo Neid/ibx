@@ -1,17 +1,21 @@
-//! ibx#612 probe. Paper account only. Changes nothing: at the session level
-//! ibx answers (214) an update of the configuration is refused with 503 for
-//! its id, or -1 without one, and nothing is sent.
+//! ibx#610 / ibx#612 probe. Paper account only. Changes nothing: at the
+//! session level ibx answers (214) a configuration request and an update
+//! are refused with 503 for their id, or -1 without one, and nothing is
+//! sent.
 //!
 //! Env: IB_USERNAME, IB_PASSWORD.
 use std::env;
 use std::time::{Duration, Instant};
 
 use ibx::api::client::{EClient, EClientConfig};
-use ibx::api::config::UpdateConfigRequest;
+use ibx::api::config::{ConfigRequest, UpdateConfigRequest};
 use ibx::api::wrapper::Wrapper;
 
 struct W { start: Instant }
 impl Wrapper for W {
+    fn config_response(&mut self, response: &ibx::api::config::ConfigResponse) {
+        println!("{:6.3}s config_response {:?}", self.start.elapsed().as_secs_f64(), response.req_id);
+    }
     fn update_config_response(&mut self, response: &ibx::api::config::UpdateConfigResponse) {
         println!("{:6.3}s update_config_response {:?}", self.start.elapsed().as_secs_f64(), response);
     }
@@ -42,6 +46,8 @@ fn main() {
     w.start = Instant::now();
     client.update_config(&UpdateConfigRequest { req_id: Some(7401), ..Default::default() });
     client.update_config(&UpdateConfigRequest::default());
+    client.req_config(&ConfigRequest { req_id: Some(7301) });
+    client.req_config(&ConfigRequest::default());
     pump(&client, &mut w, 3);
     client.disconnect();
 }

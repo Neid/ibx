@@ -1,7 +1,7 @@
 //! The configuration requests of session levels 219 and 221: the
 //! configuration as the official client library gives it (its message
-//! classes, one field each, `None` when not set), the update request and its
-//! answer (ibx#612; the configuration answer itself is ibx#610).
+//! classes, one field each, `None` when not set), its request and answer
+//! (ibx#610), the update request and its answer (ibx#612).
 
 /// The lock-and-exit section (auto log-off).
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -97,6 +97,22 @@ pub struct OrdersSmartRoutingConfig {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct OrdersConfig {
     pub smart_routing: Option<OrdersSmartRoutingConfig>,
+}
+
+/// The configuration request. Matches `reqConfigProtoBuf`'s argument.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ConfigRequest {
+    pub req_id: Option<i32>,
+}
+
+/// The configuration. Matches `configResponseProtoBuf`'s argument.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ConfigResponse {
+    pub req_id: Option<i32>,
+    pub lock_and_exit: Option<LockAndExitConfig>,
+    pub messages: Vec<MessageConfig>,
+    pub api: Option<ApiConfig>,
+    pub orders: Option<OrdersConfig>,
 }
 
 /// A warning of an update: the message whose change needs its warning

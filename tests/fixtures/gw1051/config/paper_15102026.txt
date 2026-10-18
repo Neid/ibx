@@ -1,0 +1,214 @@
+reqId: 7301
+lockAndExit {
+  autoLogoffTime: "11:45"
+  autoLogoffPeriod: "PM"
+  autoLogoffType: "logoff"
+}
+messages {
+  id: 118
+  title: "Confirm auto cancel date"
+  defaultAction: "Hidden"
+  enabled: false
+}
+messages {
+  id: 131
+  title: "Confirm Mandatory Cap Price"
+  defaultAction: "Hidden"
+  enabled: true
+}
+messages {
+  id: 432
+  title: "Cross side warning"
+  message: "The closing order quantity is greater than your current position."
+  defaultAction: "Hidden"
+  enabled: true
+}
+messages {
+  id: 444
+  title: "Market Order Confirmation"
+  message: "Market Order Confirmation"
+  defaultAction: "Yes"
+  enabled: true
+}
+messages {
+  id: 445
+  title: "Stop Variant Order Confirmation"
+  message: "Stop Variant Order Confirmation"
+  defaultAction: "Yes"
+  enabled: true
+}
+messages {
+  id: 449
+  title: "Cash Quantity Order Warning"
+  message: "Cash Quantity Order Warning"
+  defaultAction: "Yes"
+  enabled: true
+}
+messages {
+  id: 458
+  title: "Group Allocation Warning"
+  message: "This order will be distributed over multiple accounts.<br>We strongly suggest you familiarize yourself with our allocation<br> facilities at the link below before submitting orders."
+  defaultAction: "Yes"
+  enabled: true
+}
+messages {
+  id: 530
+  title: "Cash Quantity Order Confirmation"
+  message: "Cash Quantity Order Confirmation"
+  defaultAction: "Yes"
+  enabled: true
+}
+messages {
+  id: 537
+  title: "API does not support trading in fractions for CashQty orders."
+  message: "API does not support trading in fractions for CashQty orders."
+  defaultAction: "Hidden"
+  enabled: true
+}
+messages {
+  id: 580
+  title: "Fractions trading no support outside of regular trading hours."
+  message: "This instrument does not support trading in fractions on %s outside of regular trading hours."
+  defaultAction: "Hidden"
+  enabled: true
+}
+messages {
+  id: 586
+  title: "Order using account belonging to pair of linked hedge fund accounts"
+  message: "Warning: Please select %s to trade using %s"
+  defaultAction: "Hidden"
+  enabled: true
+}
+messages {
+  id: 589
+  title: "Order using Group/Profile containing some linked hedge fund accounts"
+  message: "Warning: %s contains accounts: %s that require all other accounts to be added from: %s.\nPlease use Advisor Setup to edit the list of accounts and try again.\nYou may select %s to trade using %s."
+  defaultAction: "Hidden"
+  enabled: true
+}
+messages {
+  id: 605
+  title: "Cryptocurrency order confirmation for API"
+  message: "Cryptocurrency order confirmation"
+  defaultAction: "Yes"
+  enabled: false
+}
+messages {
+  id: 606
+  title: "Cryptocurrency Market Order Confirmation"
+  message: "Cryptocurrency Market Order Confirmation"
+  defaultAction: "Yes"
+  enabled: true
+}
+messages {
+  id: 616
+  title: "Cryptocurrency volatility warning for API"
+  message: "OSL Digital Securities Limited is a Hong Kong Securities and Futures Commission (SFC)-licensed digital asset platform.\nSpot cryptocurrencies are volatile and you may lose all your investments."
+  defaultAction: "Yes"
+  enabled: true
+}
+messages {
+  id: 621
+  title: "This order will be directly routed to %s. Direct routed orders may result in higher trade fees."
+  message: "This order will be directly routed to %s. Direct routed orders may result in higher trade fees."
+  defaultAction: "Hidden"
+  enabled: true
+}
+messages {
+  id: 645
+  title: "Prompt to preserve sorted column on Orders panel."
+  message: "<html>The Orders Page is now in sorted view, which sorts and displays our orders based on the order column you clicked.&nbsp<br>Do you want to preserve sorted column on restart?</html>"
+  defaultAction: "Yes"
+  enabled: true
+}
+messages {
+  id: 675
+  title: "This order will be directly routed to %s."
+  message: "This order will be directly routed to %s."
+  defaultAction: "Hidden"
+  enabled: true
+}
+messages {
+  id: 710
+  title: "Model Offsetting Position Warning"
+  message: "Checking Model offsetting position for this order..."
+  defaultAction: "Hidden"
+  enabled: true
+}
+messages {
+  id: 723
+  title: "Allocation Preset Mismatch Warning"
+  message: "<html>Please review Allowed Allocation as they may be different from Group Allocation because of your current Allocation Preferences - <br/> %s. <br/> You can adjust that in Advisor Setup - <a href=\'tws://preset\'>Preset</a>. <a href=\'%s\'>Click here</a> for more details."
+  defaultAction: "Hidden"
+  enabled: true
+}
+messages {
+  id: 728
+  title: "Allocation Order Tool Promotion"
+  message: "<html>You may use <a href=\'tws://alloc_order_tool\'>Allocation Order Tool</a> to customize per account quantity for this order.</html>"
+  defaultAction: "Hidden"
+  enabled: true
+}
+messages {
+  id: 731
+  title: "Max Hedging Size Warning"
+  message: "Warning: Max Hedging Size value %s set on the beta hedge order is lower than the system estimate of %s."
+  defaultAction: "Hidden"
+  enabled: true
+}
+api {
+  precautions {
+    bypassOrderPrecautions: true
+    bypassBondWarning: true
+    bypassNegativeYieldConfirmation: true
+    bypassCalledBondWarning: false
+    bypassSameActionPairTradeWarning: false
+    bypassPriceBasedVolatilityWarning: false
+    bypassRedirectOrderWarning: false
+    bypassNoOverfillProtection: false
+    bypassRouteMarketableToBBO: false
+  }
+  settings {
+    readOnlyApi: false
+    totalQuantityForMutualFunds: false
+    downloadOpenOrdersOnConnection: true
+    includeVirtualFxPositions: true
+    prepareDailyPnL: true
+    sendStatusUpdatesForVolatilityOrders: true
+    encodeApiMessages: "ascii7"
+    socketPort: 4002
+    useNegativeAutoRange: true
+    createApiMessageLogFile: true
+    includeMarketDataInLogFile: true
+    exposeTradingScheduleToApi: true
+    splitInsuredDepositFromCashBalance: false
+    sendZeroPositionsForTodayOnly: false
+    useAccountGroupsWithAllocationMethods: true
+    loggingLevel: "system"
+    bulkDataTimeout: 30
+    componentExchSeparator: ""
+    showForexDataIn1_10Pips: true
+    allowForexTradingIn1_10Pips: true
+    roundAccountValuesToNearestWholeNumber: false
+    showAdvancedOrderRejectInUi: true
+    rejectMessagesAboveMaxRate: false
+    maintainConnectionOnIncorrectFields: true
+    compatibilityModeNasdaqStocks: false
+    sendInstrumentTimezone: "instrument"
+    sendForexDataInCompatibilityMode: false
+    maintainAndResubmitOrdersOnReconnect: true
+    historicalDataMaxSize: 16
+    autoReportNettingEventContractTrades: true
+    optionExerciseRequestType: "editable"
+    allowLocalhostOnly: true
+    trustedIPs: "127.0.0.1"
+  }
+}
+orders {
+  smartRouting {
+    seekPriceImprovement: false
+    preOpenReroute: false
+    doNotRouteToDarkPools: false
+    defaultAlgorithm: "SMART"
+  }
+}

@@ -7,8 +7,8 @@
 //! official client at level 225; 39 cases, three fresh processes). What a
 //! request that passes the checks is answered, and the configuration the
 //! rules read (its messages, the settings the session cannot change, the
-//! routing strategies), are the decision asked on ibx#610: they come in
-//! `ConfigRules`.
+//! routing strategies), follow the decision of 18/10/2026 on ibx#610: see
+//! `session_config`.
 
 use crate::api::config::{UpdateConfigRequest, UpdateConfigResponse, UpdateConfigWarning};
 

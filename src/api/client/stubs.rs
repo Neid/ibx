@@ -135,20 +135,45 @@ impl EClient {
 
     // ── Configuration ──
 
+    /// Request the configuration. Matches `reqConfigProtoBuf` in C++
+    /// (session level 219); the answer is `config_response`, the paper
+    /// installation's configuration with the changes kept from
+    /// `update_config` (ibx#610). Below level 219, error 503 for the
+    /// request, as the official client library answers, and nothing sent.
+    /// From 219 a logon that forbids configuration access gets 321.
+    pub fn req_config(&self, request: &crate::api::config::ConfigRequest) {
+        // One API request for the pacing, whatever it sends (ibx#565).
+        let _request = crate::engine::park::one_request();
+        self.req_config_at(crate::client_core::SERVER_VERSION, request);
+    }
+
+    /// `req_config` on a session of level `level`.
+    pub(crate) fn req_config_at(&self, level: i32, request: &crate::api::config::ConfigRequest) {
+        match self.core.config_answer(level, request, &self.shared.reference.logon_features()) {
+            Err((id, code, text)) => self.shared.orders.push_order_error(id, code, text.to_string()),
+            Ok(response) => self.later(move |_, wrapper| wrapper.config_response(&response)),
+        }
+    }
+
     /// Update the configuration. Matches `updateConfigProtoBuf` in C++
     /// (session level 221); the answer is `update_config_response`. Below
     /// level 221, error 503 for the request, as the official client library
     /// answers, and nothing sent (ibx#612). From 221 a logon that forbids
-    /// configuration access gets 321; the answer to an update taken is
-    /// still to decide (ibx#610), and ibx answers level 214 until then.
+    /// configuration access gets 321; otherwise the update is checked as
+    /// the reference checks it, then a value ibx cannot follow is refused
+    /// with the field named, and the rest is kept (decision of 18/10/2026
+    /// on ibx#610).
     pub fn update_config(&self, request: &crate::api::config::UpdateConfigRequest) {
         // One API request for the pacing, whatever it sends (ibx#565).
         let _request = crate::engine::park::one_request();
-        let features = self.shared.reference.logon_features();
-        if let Some((id, code, text)) =
-            crate::client_core::update_config_refusal(crate::client_core::SERVER_VERSION, request, &features)
-        {
-            self.shared.orders.push_order_error(id, code, text.to_string());
+        self.update_config_at(crate::client_core::SERVER_VERSION, request);
+    }
+
+    /// `update_config` on a session of level `level`.
+    pub(crate) fn update_config_at(&self, level: i32, request: &crate::api::config::UpdateConfigRequest) {
+        match self.core.update_config_answer(level, request, &self.shared.reference.logon_features()) {
+            Err((id, code, text)) => self.shared.orders.push_order_error(id, code, text.to_string()),
+            Ok(response) => self.later(move |_, wrapper| wrapper.update_config_response(&response)),
         }
     }
 

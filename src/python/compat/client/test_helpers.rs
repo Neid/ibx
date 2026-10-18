@@ -822,4 +822,20 @@ impl EClient {
         self.wrapper.call_method1(py, "update_config_response_proto_buf", (object,))?;
         Ok(())
     }
+
+    /// `req_config_proto_buf` on a session of level `level` (ibx#610,
+    /// test-only: ibx answers level 214 until every level up to 225 is).
+    #[doc(hidden)]
+    fn _test_req_config_at(&self, py: Python<'_>, level: i32, request: Bound<'_, PyAny>) -> PyResult<()> {
+        let request = super::super::config::config_request(&request)?;
+        self.req_config_at(py, level, &request)
+    }
+
+    /// `update_config_proto_buf` on a session of level `level` (ibx#612,
+    /// test-only).
+    #[doc(hidden)]
+    fn _test_update_config_at(&self, py: Python<'_>, level: i32, request: Bound<'_, PyAny>) -> PyResult<()> {
+        let request = super::super::config::update_config_request(&request)?;
+        self.update_config_at(py, level, &request)
+    }
 }

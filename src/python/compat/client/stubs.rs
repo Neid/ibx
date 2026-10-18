@@ -257,14 +257,33 @@ impl EClient {
 
     // ── Configuration ──
 
+    /// Request the configuration, as the official `reqConfigProtoBuf`
+    /// (session level 219): a `ConfigRequest` of the official library, or
+    /// an object with its attributes; None does nothing. The answer is
+    /// `config_response_proto_buf`: the paper installation's configuration
+    /// with the changes kept from `update_config_proto_buf` (ibx#610).
+    /// Below level 219, error 503 for the request, as the official client
+    /// library answers, and nothing sent. From 219 a logon that forbids
+    /// configuration access gets 321.
+    #[pyo3(signature = (config_request_proto))]
+    fn req_config_proto_buf(&self, py: Python<'_>, config_request_proto: Option<Bound<'_, PyAny>>) -> PyResult<()> {
+        let Some(proto) = config_request_proto.filter(|p| !p.is_none()) else { return Ok(()) };
+        let request = super::super::config::config_request(&proto)?;
+        // One API request for the pacing, whatever it sends (ibx#565).
+        let _request = crate::engine::park::one_request();
+        if let Some(r) = self.not_connected(request.req_id.map_or(-1, i64::from)) { return r; }
+        self.req_config_at(py, crate::client_core::SERVER_VERSION, &request)
+    }
+
     /// Update the configuration, as the official `updateConfigProtoBuf`
     /// (session level 221): an `UpdateConfigRequest` of the official
     /// library, or an object with its attributes; None does nothing. The
     /// answer is `update_config_response_proto_buf`. Below level 221, error
     /// 503 for the request, as the official client library answers, and
     /// nothing sent (ibx#612). From 221 a logon that forbids configuration
-    /// access gets 321; the answer to an update taken is still to decide
-    /// (ibx#610), and ibx answers level 214 until then.
+    /// access gets 321; otherwise the update is checked as the reference
+    /// checks it, then a value ibx cannot follow is refused with the field
+    /// named, and the rest is kept (decision of 18/10/2026 on ibx#610).
     #[pyo3(signature = (update_config_request_proto))]
     fn update_config_proto_buf(&self, py: Python<'_>, update_config_request_proto: Option<Bound<'_, PyAny>>) -> PyResult<()> {
         let Some(proto) = update_config_request_proto.filter(|p| !p.is_none()) else { return Ok(()) };
@@ -272,20 +291,7 @@ impl EClient {
         // One API request for the pacing, whatever it sends (ibx#565).
         let _request = crate::engine::park::one_request();
         if let Some(r) = self.not_connected(request.req_id.map_or(-1, i64::from)) { return r; }
-        let shared = self.shared_state()?;
-        let level = crate::client_core::SERVER_VERSION;
-        if let Some((id, code, text)) =
-            crate::client_core::update_config_refusal(level, &request, &shared.reference.logon_features())
-        {
-            if level < crate::client_core::LEVEL_UPDATE_CONFIG {
-                // The official client library's own check, on the caller's
-                // thread before anything is sent: never put off (ibx#532).
-                self.wrapper.call_method1(py, "error", (id, code, text, ""))?;
-            } else {
-                shared.orders.push_order_error(id, code, text.to_string());
-            }
-        }
-        Ok(())
+        self.update_config_at(py, crate::client_core::SERVER_VERSION, &request)
     }
 
     // ── FA (Financial Advisor) ──
@@ -555,6 +561,57 @@ impl EClient {
         let _request = crate::engine::park::one_request();
         let _ = req_id;
         if let Some(r) = self.not_connected(-1) { return r; }
+        Ok(())
+    }
+}
+
+impl EClient {
+    /// `req_config_proto_buf` on a session of level `level` (ibx#610).
+    pub(crate) fn req_config_at(&self, py: Python<'_>, level: i32, request: &crate::api::config::ConfigRequest) -> PyResult<()> {
+        let shared = self.shared_state()?;
+        match self.core.config_answer(level, request, &shared.reference.logon_features()) {
+            Err((id, code, text)) if level < crate::client_core::LEVEL_CONFIG => {
+                // The official client library's own check, on the caller's
+                // thread before anything is sent: never put off (ibx#532).
+                self.wrapper.call_method1(py, "error", (id, code, text, ""))?;
+            }
+            Err((id, code, text)) => shared.orders.push_order_error(id, code, text.to_string()),
+            Ok(response) => self.give_config(py, response)?,
+        }
+        Ok(())
+    }
+
+    /// `update_config_proto_buf` on a session of level `level` (ibx#612).
+    pub(crate) fn update_config_at(
+        &self, py: Python<'_>, level: i32, request: &crate::api::config::UpdateConfigRequest,
+    ) -> PyResult<()> {
+        let shared = self.shared_state()?;
+        match self.core.update_config_answer(level, request, &shared.reference.logon_features()) {
+            Err((id, code, text)) if level < crate::client_core::LEVEL_UPDATE_CONFIG => {
+                // The official client library's own check, as above.
+                self.wrapper.call_method1(py, "error", (id, code, text, ""))?;
+            }
+            Err((id, code, text)) => shared.orders.push_order_error(id, code, text.to_string()),
+            Ok(response) => self.give_update_config(py, response)?,
+        }
+        Ok(())
+    }
+
+    /// The configuration to the wrapper, from the event loop (ibx#532).
+    fn give_config(&self, py: Python<'_>, response: crate::api::config::ConfigResponse) -> PyResult<()> {
+        let again = response.clone();
+        if self.later(move |this, py| this.give_config(py, again)) { return Ok(()); }
+        let object = super::super::config::config_response(py, &response)?;
+        self.wrapper.call_method1(py, "config_response_proto_buf", (object,))?;
+        Ok(())
+    }
+
+    /// The answer to an update to the wrapper, from the event loop.
+    fn give_update_config(&self, py: Python<'_>, response: crate::api::config::UpdateConfigResponse) -> PyResult<()> {
+        let again = response.clone();
+        if self.later(move |this, py| this.give_update_config(py, again)) { return Ok(()); }
+        let object = super::super::config::update_config_response(py, &response)?;
+        self.wrapper.call_method1(py, "update_config_response_proto_buf", (object,))?;
         Ok(())
     }
 }

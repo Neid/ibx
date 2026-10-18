@@ -277,6 +277,11 @@ impl EWrapper {
 
     // ── Configuration ──
 
+    /// The answer to `req_config_proto_buf`, as the official
+    /// `configResponseProtoBuf`: its `ConfigResponse` object (ibx#610). It
+    /// comes from session level 219.
+    fn config_response_proto_buf(&self, _config_response_proto: Py<PyAny>) {}
+
     /// The answer to `update_config_proto_buf`, as the official
     /// `updateConfigResponseProtoBuf`: its `UpdateConfigResponse` object
     /// (ibx#612). It comes from session level 221.
