@@ -1223,3 +1223,110 @@ fn zero_offset_on_a_type_without_one() {
     }
 }
 
+
+// ── Rules of the 10.51 table the reference was seen not applying, or
+// answering with another rule first (ibx#688; paper, 17/10 and 18/10/2026,
+// market closed, levels 214 and 225, one far AAPL order each; ibx equal on
+// the same runs) ──
+
+/// `order` on `contract` goes out as order 6, the stock order preset asked
+/// and answered first.
+fn sent_on(contract: &Contract, order: &Order) {
+    let mut engine = Engine::start();
+    engine.client.place_order(6, contract, order).unwrap();
+    engine.answer_preset("STK", "DAY");
+    let frames = engine.orders(1);
+    assert!(frames.iter().any(|f| field(f, 6121) == Some("6")), "sent: {frames:?} {:?}", engine.errors());
+}
+
+// A time in force in minutes with a start time (10366-1): sent, the server
+// refuses the time in force.
+#[test]
+fn minutes_with_a_start_time() {
+    sent_on(&aapl(), &Order { tif: "Minutes".into(), good_after_time: "20261120 10:00:00 US/Eastern".into(), ..order("LMT") });
+}
+
+// A short sale slot on an order that is not a short sale (348-1) nor a
+// delta hedge (393-1): sent.
+#[test]
+fn short_sale_slot_on_a_buy() {
+    sent_on(&aapl(), &Order { short_sale_slot: 1, ..order("LMT") });
+    sent_on(&aapl(), &Order { short_sale_slot: 2, designated_location: "XYZ".into(), ..order("LMT") });
+}
+
+// An exempt code that is not valid (495-1): sent.
+#[test]
+fn exempt_code_not_valid() {
+    sent_on(&aapl(), &Order { exempt_code: 99, ..order("LMT") });
+}
+
+// An adjusted stop price (362-1) or stop-limit price (363-1) that is not
+// valid: sent.
+#[test]
+fn adjusted_stop_prices_not_valid() {
+    let stop = Order { aux_price: 500.0, lmt_price: 0.0, trigger_price: 600.0, ..order("STP") };
+    sent_on(&aapl(), &Order { adjusted_order_type: "STP".into(), adjusted_stop_price: -1.0, ..stop.clone() });
+    sent_on(&aapl(), &Order {
+        adjusted_order_type: "STP LMT".into(), adjusted_stop_price: 600.0, adjusted_stop_limit_price: -1.0, ..stop
+    });
+}
+
+// postToAts out of range (10274-2): sent.
+#[test]
+fn post_to_ats_out_of_range() {
+    sent_on(&aapl(), &Order { post_to_ats: 5, ..order("LMT") });
+}
+
+// A minimum trade quantity below 0 (10303-1): sent.
+#[test]
+fn min_trade_quantity_below_zero() {
+    sent_on(&aapl(), &Order { min_trade_qty: -5, ..order("LMT") });
+}
+
+// A limit order at 0 (463-1, no valid price): sent, the server refuses it.
+#[test]
+fn limit_order_at_zero() {
+    sent_on(&aapl(), &Order { lmt_price: 0.0, ..order("LMT") });
+}
+
+// A time in force the server does not take on the destination (10052-8):
+// sent, the server refuses it.
+#[test]
+fn time_in_force_not_valid_on_the_destination() {
+    sent_on(&aapl(), &Order { tif: "AUC".into(), ..order("LMT") });
+}
+
+// A negative offset on a snap order (10098-1): the price variation rule
+// first, 110.
+#[test]
+fn snap_order_with_a_negative_offset() {
+    refused_seen_as("10098-1", &aapl(), &Order { lmt_price: 0.0, aux_price: -0.1, ..order("SNAP MID") }, 110,
+        "The price does not conform to the minimum price variation for this contract.");
+}
+
+// A quantity with more decimals than allowed (10208-1, 10286-1) or a
+// fractional one (10318-1): the fractional rule first, 10243.
+#[test]
+fn quantity_decimals_and_fractions() {
+    let seen = "Fractional-sized order cannot be placed via API. Please use desktop version to place this order.";
+    refused_seen_as("10208-1", &aapl(), &Order { total_quantity: 1.123456789, ..order("LMT") }, 10243, seen);
+    refused_seen_as("10318-1", &aapl(), &Order { total_quantity: 0.5, ..order("LMT") }, 10243, seen);
+}
+
+// A combo leg that cannot be read (313-1): 321 with the leg's details.
+#[test]
+fn combo_leg_not_read() {
+    let mut engine = Engine::start();
+    engine.shared.reference.set_smart_combo_con_ids("USD:28812380");
+    let contract = bag(vec![leg(265598, "XYZ"), leg(272093, "SELL")]);
+    engine.client.place_order(REFUSED, &contract, &Order { lmt_price: -500.0, ..order("LMT") }).unwrap();
+    assert_refused_as(&mut engine, REFUSED, "313-1", Some(321), Some(
+        "Error validating request.-'PlaceOrder(3)' : cause - The combo details for leg '0' are invalid. -  conid, ratio, side: 265598, 1, 0"));
+}
+
+// SELL LONG with a short sale slot other than -100 (10105-1): 320.
+#[test]
+fn sell_long_without_the_slot() {
+    refused_seen_as("10105-1", &aapl(), &Order { action: "SELL LONG".into(), short_sale_slot: 1, ..order("LMT") }, 320,
+        "Error reading request. Sell Long orders must have short sale slot with value -100");
+}
