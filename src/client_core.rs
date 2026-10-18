@@ -110,10 +110,11 @@ pub fn split_bbo_exchange(bbo: &str) -> (String, Option<u8>) {
 }
 
 /// Error text of a reqSmartComponents whose exchange map did not come in
-/// time (ibx#441).
-fn smart_components_timeout(code: &str, sec_type_id: Option<u8>) -> (i64, String) {
+/// time (ibx#441). Its code is 0 on the reference 10.51 (ibx#605, paper,
+/// 18/10/2026), the unset value on 10.40.
+fn smart_components_timeout(code: &str, sec_type_id: Option<u8>, form_10_40: bool) -> (i64, String) {
     let sec_type = sec_type_id.and_then(sec_type_by_id).unwrap_or("null");
-    (2147483647, format!("Unable to retrieve smart components for BBO exchange {} and security type {}", code, sec_type))
+    (if form_10_40 { 2147483647 } else { 0 }, format!("Unable to retrieve smart components for BBO exchange {} and security type {}", code, sec_type))
 }
 
 // ── Intermediate dispatch structs ──
@@ -1533,7 +1534,11 @@ pub const MD_NOT_SUBSCRIBED: &str = "Requested market data is not subscribed. Ch
 /// tick (10094) gets it `MD_NO_DATA_WAIT` later, unless a request of its
 /// contract runs then.
 pub const MD_NO_DATA: (i64, &str) = (10197, "No market data during competing live session");
-pub const MD_NO_DATA_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+/// 10 s on the reference 10.51 (ibx#605; paper, 18/10/2026: 10.001 s, and
+/// none for a request cancelled 5 s after its 10094); 5 s on 10.40 (five
+/// recordings, 5.002 to 5.014 s), `MD_NO_DATA_WAIT_10_40`.
+pub const MD_NO_DATA_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
+pub const MD_NO_DATA_WAIT_10_40: std::time::Duration = std::time::Duration::from_secs(5);
 /// One pass of the reference's quick market data timer (ibx#501).
 pub const MD_NO_DATA_PASS: std::time::Duration = std::time::Duration::from_millis(5);
 
@@ -2912,7 +2917,7 @@ impl ClientCore {
         if !shared.reference.paper_session() {
             return;
         }
-        let due = asked + MD_NO_DATA_WAIT;
+        let due = asked + if shared.reference.form_10_40() { MD_NO_DATA_WAIT_10_40 } else { MD_NO_DATA_WAIT };
         let mut waits = self.md_no_data.lock().unwrap();
         if waits.iter().any(|&(_, at, c)| c == con_id && at.max(due) - at.min(due) < MD_NO_DATA_PASS) {
             return;
@@ -4098,7 +4103,7 @@ impl ClientCore {
         waiting.retain(|(req_id, code, sec_type_id, deadline)| {
             match shared.reference.exchange_map(code, *sec_type_id) {
                 crate::bridge::ExchangeMapState::Ready(map) => out.push((*req_id, Ok(map))),
-                _ if now >= *deadline => out.push((*req_id, Err(smart_components_timeout(code, *sec_type_id)))),
+                _ if now >= *deadline => out.push((*req_id, Err(smart_components_timeout(code, *sec_type_id, shared.reference.form_10_40())))),
                 _ => return true,
             }
             false
@@ -4190,16 +4195,19 @@ impl ClientCore {
     /// reference computes them once.
     pub fn generic_tick_list_refusal(&self, generic_tick_list: &str, snapshot: bool, sec_type: &str, fundamentals_allowed: bool) -> Option<(i64, String)> {
         use crate::control::generic_tick;
-        // Fundamental ratios (258) without the logon's permission: 10358
-        // before any other check of the list, snapshot or not (ibx#674;
-        // 10.51; paper 13/10/2026, BMW with "233,236,258").
-        if !fundamentals_allowed && generic_tick_list.split(',').any(|t| t.trim() == "258") {
-            return Some((FUNDAMENTALS_NOT_ALLOWED.0, FUNDAMENTALS_NOT_ALLOWED.1.to_string()));
-        }
+        // Fundamental ratios (258) without the logon's permission: 10358,
+        // snapshot or not (ibx#674; 10.51; paper 13/10/2026, BMW with
+        // "233,236,258"), once the list is valid: an invalid list is
+        // refused with its 321 first (ibx#605; 10.51, paper, 18/10/2026).
+        let fundamentals_refused = !fundamentals_allowed && generic_tick_list.split(',').any(|t| t.trim() == "258");
+        let fundamentals = || Some((FUNDAMENTALS_NOT_ALLOWED.0, FUNDAMENTALS_NOT_ALLOWED.1.to_string()));
         if snapshot || generic_tick_list.is_empty() {
-            return None;
+            return if fundamentals_refused { fundamentals() } else { None };
         }
         if let Some(ticks) = generic_tick::parse(generic_tick_list, sec_type) {
+            if fundamentals_refused {
+                return fundamentals();
+            }
             // The odd-lot quotes need session level 225 and no `mdoff`
             // (ibx#616, 13/10/2026).
             let mdoff = generic_tick_list.split(',').any(|t| t.trim().eq_ignore_ascii_case("mdoff"));
@@ -4208,7 +4216,7 @@ impl ClientCore {
             }
             return None;
         }
-        let legal = self.generic_legal.lock().unwrap().get_or_insert_with(|| generic_tick::legal_ones(sec_type)).clone();
+        let legal = self.generic_legal.lock().unwrap().get_or_insert_with(|| generic_tick::legal_ones_at(sec_type, session_level() >= LEVEL_ODD_LOT_QUOTES)).clone();
         Some((321, generic_tick::refusal(generic_tick_list, sec_type, &legal)))
     }
 
@@ -8195,6 +8203,20 @@ mod tests {
         assert_eq!(core.generic_tick_list_refusal("787", false, "STK", true), None);
     }
 
+    // ibx#605 (10.51, paper, 18/10/2026, market closed): without the
+    // fundamentals permission a valid list with 258 gives 10358, an invalid
+    // one its 321 first; a snapshot's list is not read, so 10358.
+    #[test]
+    fn an_invalid_list_is_refused_before_the_fundamentals() {
+        let core = ClientCore::new();
+        let list = "162,221,232,258,460,577,586,587,595,614,619,623";
+        assert_eq!(core.generic_tick_list_refusal(list, false, "STK", false).map(|r| r.0), Some(321));
+        assert_eq!(core.generic_tick_list_refusal(&list[4..], false, "CASH", false).map(|r| r.0), Some(321));
+        assert_eq!(core.generic_tick_list_refusal(&list[4..], false, "STK", false).map(|r| r.0), Some(10358));
+        assert_eq!(core.generic_tick_list_refusal(list, true, "STK", false).map(|r| r.0), Some(10358));
+        assert_eq!(core.generic_tick_list_refusal(&list[4..], false, "STK", true), None);
+    }
+
     // ibx#505: the provider names of the logon list; a modify of an order
     // for one of them is refused with 105 unless it names SMART.
     #[test]
@@ -8365,9 +8387,14 @@ mod tests {
         shared.reference.observe_exchange_map(1, "a6", 1);
         assert_eq!(core.req_smart_components(7, "a60001", &shared), None);
         core.smart_components_waiting.lock().unwrap()[0].3 = std::time::Instant::now();
-        assert_eq!(core.take_smart_components(&shared), vec![(7, Err((2147483647,
+        assert_eq!(core.take_smart_components(&shared), vec![(7, Err((0,
             "Unable to retrieve smart components for BBO exchange a6 and security type STK".to_string())))]);
         assert!(core.take_smart_components(&shared).is_empty());
+        // The reference 10.40 gave the unset code.
+        shared.reference.set_form_10_40(true);
+        assert_eq!(core.req_smart_components(8, "a60001", &shared), None);
+        core.smart_components_waiting.lock().unwrap()[0].3 = std::time::Instant::now();
+        assert!(matches!(core.take_smart_components(&shared).as_slice(), [(8, Err((2147483647, _)))]));
     }
 
     #[test]

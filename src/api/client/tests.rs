@@ -7946,7 +7946,9 @@ fn an_invalid_generic_tick_list_is_refused() {
     assert!(rx.try_recv().is_err(), "nothing sent");
     let mut w = RecordingWrapper::default();
     client.process_msgs(&mut w);
-    let legal = crate::control::generic_tick::legal_ones("STK");
+    // At session level 225 the list ends with the odd-lot entry (ibx#605).
+    let legal = crate::control::generic_tick::legal_ones_at("STK", true);
+    assert!(legal.ends_with(",623(EtfFrozenNavLast(fznavlast)),787(OddLotBidAskQuotesTickTag(mdbaodd))"));
     assert_eq!(w.events, [
         format!("error:9570:321:Error validating request.-'ReqMktData(1)' : cause - Incorrect generic tick list of mdoff,292:.  Legal ones for (STK) are: {legal}"),
         format!("error:7:321:Error validating request.-'ReqMktData(1)' : cause - Incorrect generic tick list of 999.  Legal ones for (CASH) are: {legal}"),

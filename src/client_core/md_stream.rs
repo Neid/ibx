@@ -1830,5 +1830,11 @@ mod tests {
         // A request asked earlier but refused later goes first.
         core.note_news_refused(&shared, 5, 800, t0 - ms(50));
         assert_eq!(no_data(t0 + MD_NO_DATA_WAIT + ms(200)), [5, 2, 4]);
+
+        // 10 s on 10.51 (ibx#605), 5 s on 10.40.
+        assert_eq!(MD_NO_DATA_WAIT, std::time::Duration::from_secs(10));
+        shared.reference.set_form_10_40(true);
+        core.note_news_refused(&shared, 6, 900, t0);
+        assert_eq!(no_data(t0 + crate::client_core::MD_NO_DATA_WAIT_10_40), [6]);
     }
 }
