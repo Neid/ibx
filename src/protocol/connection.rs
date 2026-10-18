@@ -3,7 +3,7 @@
 //! Maintains per-connection state: buffer, seq counter,
 //! HMAC sign/read IVs (chained per message).
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::io::{self, Read, Write};
 use std::net::TcpStream;
 
@@ -960,12 +960,17 @@ mod mem {
 struct QueryNames {
     next: u32,
     next_by_con_id: u32,
-    sent: VecDeque<(String, String)>,
+    /// The wire names in the order sent, the oldest forgotten first.
+    sent: VecDeque<String>,
+    /// The internal name of each wire name kept.
+    internal: HashMap<String, String>,
 }
 
 impl QueryNames {
-    /// The names kept for answers (a lookup answers within seconds).
-    const KEPT: usize = 4096;
+    /// The names kept for answers: every request of a fan-out still
+    /// unanswered (an option chain sends about 71,000, answered up to half
+    /// a minute behind; with 4,096 kept most answers were lost, ibx#740).
+    const KEPT: usize = 1 << 18;
     const PREFIXES: [&'static str; 2] = ["FixSecDefReqBySymbol", "SubMsgXMLQuery"];
     const BY_CON_ID: &'static str = "ReqByConid";
 
@@ -990,16 +995,17 @@ impl QueryNames {
         let number = if by_con_id { &mut self.next_by_con_id } else { &mut self.next };
         *number += 1;
         let wire = format!("{prefix}{number}");
-        if self.sent.len() >= Self::KEPT {
-            self.sent.pop_front();
+        if self.sent.len() >= Self::KEPT && let Some(old) = self.sent.pop_front() {
+            self.internal.remove(&old);
         }
-        self.sent.push_back((wire.clone(), fields[at].1.to_string()));
+        self.sent.push_back(wire.clone());
+        self.internal.insert(wire.clone(), fields[at].1.to_string());
         Some(fields.iter().enumerate()
             .map(|(i, &(t, v))| (t, if i == at { wire.clone() } else { v.to_string() })).collect())
     }
 
     fn internal(&self, wire: &str) -> Option<&str> {
-        self.sent.iter().rev().find(|(w, _)| w == wire).map(|(_, internal)| internal.as_str())
+        self.internal.get(wire).map(String::as_str)
     }
 }
 
@@ -1033,6 +1039,19 @@ mod tests {
         assert_eq!(names.internal("SubMsgXMLQuery2"), Some("SubMsgXMLQuery1"));
         assert_eq!(names.internal("FixSecDefReqBySymbol3"), Some("FixSecDefReqBySymbol3221225472"));
         assert_eq!(names.internal("FixSecDefReqBySymbol7"), None, "an unknown name is not mapped");
+    }
+
+    // ibx#740: every request of a whole option chain's fan-out keeps its
+    // name until answered (about 71,000, answered up to half a minute
+    // behind); 4,096 kept lost the answers of the older ones.
+    #[test]
+    fn a_whole_chain_of_names_is_kept() {
+        let mut names = QueryNames::default();
+        for i in 0..80_000 {
+            names.rename(&[(35, "c"), (320, &format!("getECsForConidExchangePairsReqByConid{}", i + 100))]);
+        }
+        assert_eq!(names.internal("getECsForConidExchangePairsReqByConid1"), Some("getECsForConidExchangePairsReqByConid100"));
+        assert_eq!(names.internal("getECsForConidExchangePairsReqByConid80000"), Some("getECsForConidExchangePairsReqByConid80099"));
     }
     use crate::protocol::fix::fix_build;
     use crate::protocol::fixcomp::fixcomp_build;
