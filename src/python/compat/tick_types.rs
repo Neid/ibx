@@ -48,6 +48,12 @@ impl TickAttrib {
             self.can_auto_execute, self.past_limit, self.pre_open)
     }
 
+    /// The official library's text (ibx#750): the flags as 0 or 1.
+    fn __str__(&self) -> String {
+        format!("CanAutoExecute: {}, PastLimit: {}, PreOpen: {}",
+            self.can_auto_execute as i32, self.past_limit as i32, self.pre_open as i32)
+    }
+
     // ibapi camelCase aliases (ibx#487: the official client library's names)
     #[getter(canAutoExecute)]
     fn get_can_auto_execute_alias(&self) -> bool { self.can_auto_execute }

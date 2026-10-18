@@ -160,6 +160,32 @@ impl Contract {
             self.con_id, self.symbol, self.sec_type, self.exchange)
     }
 
+    /// The official library's text (ibx#750): the fields, then "Combo:"
+    /// with no separator before it, the combo legs and the delta neutral
+    /// contract when there are some.
+    fn __str__(&self, py: Python<'_>) -> PyResult<String> {
+        let mut s = format!("ConId: {}, Symbol: {}, SecType: {}, LastTradeDateOrContractMonth: {}, Strike: {}, Right: {}, Multiplier: {}, Exchange: {}, PrimaryExchange: {}, Currency: {}, LocalSymbol: {}, TradingClass: {}, IncludeExpired: {}, SecIdType: {}, SecId: {}, Description: {}, IssuerId: {}",
+            int_max_string(self.con_id), self.symbol, self.sec_type, self.last_trade_date_or_contract_month,
+            float_max_string(self.strike), self.right, self.multiplier, self.exchange, self.primary_exchange,
+            self.currency, self.local_symbol, self.trading_class, py_bool_text(self.include_expired), self.sec_id_type,
+            self.sec_id, self.description, self.issuer_id);
+        s.push_str("Combo:");
+        s.push_str(&self.combo_legs_descrip);
+        let legs = self.combo_legs.bind(py);
+        if legs.is_truthy()? {
+            for leg in legs.try_iter()? {
+                s.push(';');
+                s.push_str(&leg?.str()?.to_string());
+            }
+        }
+        let delta_neutral = self.delta_neutral_contract.bind(py);
+        if delta_neutral.is_truthy()? {
+            s.push(';');
+            s.push_str(&delta_neutral.str()?.to_string());
+        }
+        Ok(s)
+    }
+
     // ibapi camelCase aliases
     #[getter(conId)]
     fn get_con_id_alias(&self) -> i64 { self.con_id }
@@ -2196,6 +2222,13 @@ impl ComboLeg {
         format!("ComboLeg(conId={}, ratio={}, action='{}', exchange='{}')", self.con_id, self.ratio, self.action, self.exchange)
     }
 
+    /// The official library's text (ibx#750): the fields joined by commas.
+    fn __str__(&self) -> String {
+        [int_max_string(self.con_id), int_max_string(self.ratio as i64), self.action.clone(), self.exchange.clone(),
+            int_max_string(self.open_close as i64), int_max_string(self.short_sale_slot as i64),
+            self.designated_location.clone(), int_max_string(self.exempt_code as i64)].join(",")
+    }
+
     #[getter(conId)]
     fn get_con_id_alias(&self) -> i64 { self.con_id }
     #[setter(conId)]
@@ -2270,8 +2303,15 @@ impl TagValue {
         Ok(Self { tag: text(tag)?, value: text(value)? })
     }
 
-    fn __repr__(&self) -> String {
-        format!("TagValue(tag='{}', value='{}')", self.tag, self.value)
+    /// The official library's form: the object's id, then its text, as a
+    /// list of them prints in a contract row (ibx#750).
+    fn __repr__(slf: &Bound<'_, Self>) -> String {
+        format!("{}: {}", slf.as_ptr() as usize, slf.borrow().__str__())
+    }
+
+    /// The official library's text (ibx#750): "tag=value;".
+    fn __str__(&self) -> String {
+        format!("{}={};", self.tag, self.value)
     }
 }
 
@@ -2527,6 +2567,33 @@ impl OrderState {
 
     fn __repr__(&self) -> String {
         format!("OrderState(status='{}')", self.status)
+    }
+
+    /// The official library's text (ibx#750), with the allocations after it
+    /// when there are some.
+    fn __str__(&self, py: Python<'_>) -> PyResult<String> {
+        let mut s = format!("Status: {}, InitMarginBefore: {}, MaintMarginBefore: {}, EquityWithLoanBefore: {}, InitMarginChange: {}, MaintMarginChange: {}, EquityWithLoanChange: {}, InitMarginAfter: {}, MaintMarginAfter: {}, EquityWithLoanAfter: {}, CommissionAndFees: {}, MinCommissionAndFees: {}, MaxCommissionAndFees: {}, CommissionAndFeesCurrency: {}, MarginCurrency: {}, InitMarginBeforeOutsideRTH: {}, MaintMarginBeforeOutsideRTH: {}, EquityWithLoanBeforeOutsideRTH: {}, InitMarginChangeOutsideRTH: {}, MaintMarginChangeOutsideRTH: {}, equityWithLoanChangeOutsideRTH: {}, InitMarginAfterOutsideRTH: {}, MaintMarginAfterOutsideRTH: {}, equityWithLoanAfterOutsideRTH: {}, SuggestedSize: {}, RejectReason: {}, WarningText: {}, CompletedTime: {}, CompletedStatus: {}",
+            self.status, self.init_margin_before, self.maint_margin_before, self.equity_with_loan_before,
+            self.init_margin_change, self.maint_margin_change, self.equity_with_loan_change,
+            self.init_margin_after, self.maint_margin_after, self.equity_with_loan_after,
+            float_max_string(self.commission_and_fees), float_max_string(self.min_commission_and_fees),
+            float_max_string(self.max_commission_and_fees), self.commission_and_fees_currency, self.margin_currency,
+            float_max_string(self.init_margin_before_outside_rth), float_max_string(self.maint_margin_before_outside_rth),
+            float_max_string(self.equity_with_loan_before_outside_rth), float_max_string(self.init_margin_change_outside_rth),
+            float_max_string(self.maint_margin_change_outside_rth), float_max_string(self.equity_with_loan_change_outside_rth),
+            float_max_string(self.init_margin_after_outside_rth), float_max_string(self.maint_margin_after_outside_rth),
+            float_max_string(self.equity_with_loan_after_outside_rth), self.suggested_size, self.reject_reason,
+            self.warning_text, self.completed_time, self.completed_status);
+        let allocations = self.order_allocations.bind(py);
+        if allocations.is_truthy()? {
+            s.push_str(" OrderAllocations(");
+            for allocation in allocations.try_iter()? {
+                s.push_str(&allocation?.str()?.to_string());
+                s.push_str("; ");
+            }
+            s.push(')');
+        }
+        Ok(s)
     }
 
     #[getter(suggested_size)]
@@ -3164,8 +3231,15 @@ impl IneligibilityReasonPy {
         Ok(Self { id_: text(id_)?, description: text(description)? })
     }
 
-    fn __repr__(&self) -> String {
-        format!("IneligibilityReason(id_='{}', description='{}')", self.id_, self.description)
+    /// The official library's form: the object's id, then its text, as a
+    /// list of them prints in a contract row (ibx#750).
+    fn __repr__(slf: &Bound<'_, Self>) -> String {
+        format!("{}: {}", slf.as_ptr() as usize, slf.borrow().__str__())
+    }
+
+    /// The official library's text (ibx#750).
+    fn __str__(&self) -> String {
+        format!("[id: {}, description: {}];", self.id_, self.description)
     }
 }
 
@@ -3320,6 +3394,65 @@ impl ContractDetails {
             self.contract.borrow(py).symbol, self.long_name)
     }
 
+    /// The official library's text (ibx#750): the contract's text, then the
+    /// row's fields joined by commas; the lists as Python prints them.
+    fn __str__(&self, py: Python<'_>) -> PyResult<String> {
+        let text = |v: &Py<PyAny>| -> PyResult<String> { Ok(v.bind(py).str()?.to_string()) };
+        let ev_multiplier = if self.ev_multiplier == i32::MAX as f64 { String::new() } else { text(&zero_as_int(py, self.ev_multiplier)?)? };
+        let fields: Vec<String> = vec![
+            self.contract.bind(py).str()?.to_string(),
+            self.market_name.clone(),
+            float_max_string(self.min_tick),
+            self.order_types.clone(),
+            self.valid_exchanges.clone(),
+            int_max_string(self.price_magnifier as i64),
+            int_max_string(self.under_con_id as i64),
+            self.long_name.clone(),
+            self.contract_month.clone(),
+            self.industry.clone(),
+            self.category.clone(),
+            self.subcategory.clone(),
+            self.time_zone_id.clone(),
+            self.trading_hours.clone(),
+            self.liquid_hours.clone(),
+            self.ev_rule.clone(),
+            ev_multiplier,
+            self.under_symbol.clone(),
+            self.under_sec_type.clone(),
+            self.market_rule_ids.clone(),
+            int_max_string(self.agg_group as i64),
+            text(&self.sec_id_list)?,
+            self.real_expiration_date.clone(),
+            self.stock_type.clone(),
+            self.cusip.clone(),
+            self.ratings.clone(),
+            self.desc_append.clone(),
+            self.bond_type.clone(),
+            self.coupon_type.clone(),
+            py_bool_text(self.callable).to_string(),
+            py_bool_text(self.putable).to_string(),
+            text(&zero_as_int(py, self.coupon)?)?,
+            py_bool_text(self.convertible).to_string(),
+            self.maturity.clone(),
+            self.issue_date.clone(),
+            self.next_option_date.clone(),
+            self.next_option_type.clone(),
+            py_bool_text(self.next_option_partial).to_string(),
+            self.notes.clone(),
+            decimal_max_string(self.min_size),
+            decimal_max_string(self.size_increment),
+            decimal_max_string(self.suggested_size_increment),
+            decimal_max_string(self.min_algo_size),
+            decimal_max_string(self.last_price_precision),
+            decimal_max_string(self.last_size_precision),
+            text(&self.ineligibility_reason_list)?,
+            self.event_contract1.clone(),
+            self.event_contract_description1.clone(),
+            self.event_contract_description2.clone(),
+        ];
+        Ok(fields.join(","))
+    }
+
     #[getter(min_size)]
     fn get_min_size(&self, py: Python<'_>) -> PyResult<Py<PyAny>> { decimal_to_py(py, self.min_size) }
     #[setter(min_size)]
@@ -3419,6 +3552,11 @@ fn fund_enum_code(v: &Bound<'_, PyAny>) -> PyResult<String> {
     }
     let code: String = code.extract()?;
     Ok(if code == "None" { String::new() } else { code })
+}
+
+/// A boolean as Python prints it.
+fn py_bool_text(v: bool) -> &'static str {
+    if v { "True" } else { "False" }
 }
 
 /// 0 as the integer the official object starts with, any other value as a
@@ -3784,6 +3922,11 @@ impl SmartComponentPy {
     #[new]
     #[pyo3(signature = ())]
     fn new() -> Self { Self::default() }
+
+    /// The official library's text (ibx#750).
+    fn __str__(&self) -> String {
+        format!("BitNumber: {}, Exchange: {}, ExchangeLetter: {}", self.bit_number, self.exchange, self.exchange_letter)
+    }
 }
 
 official_names!(SmartComponentPy, [("bitNumber", "bit_number"), ("exchangeLetter", "exchange_letter")]);
@@ -3805,6 +3948,11 @@ impl NewsProviderPy {
     #[new]
     #[pyo3(signature = ())]
     fn new() -> Self { Self::default() }
+
+    /// The official library's text (ibx#750).
+    fn __str__(&self) -> String {
+        format!("Code: {}, Name: {}", self.code, self.name)
+    }
 }
 
 // ── WshEventData ──
@@ -3848,6 +3996,14 @@ impl WshEventDataPy {
             total_limit: d.total_limit,
         }
     }
+
+    /// The official library's text (ibx#750): the dates and the limit are
+    /// not in it, the flags are 0 or 1.
+    fn __str__(&self) -> String {
+        format!("WshEventData. ConId: {}, Filter: {}, Fill Watchlist: {}, Fill Portfolio: {}, Fill Competitors: {}",
+            int_max_string(self.con_id as i64), self.filter, self.fill_watchlist as i32, self.fill_portfolio as i32,
+            self.fill_competitors as i32)
+    }
 }
 
 official_names!(WshEventDataPy, [
@@ -3879,6 +4035,11 @@ impl SoftDollarTierPy {
     fn new(name: String, val: String, displayName: String) -> Self {
         Self { name, val, display_name: displayName }
     }
+
+    /// The official library's text (ibx#750).
+    fn __str__(&self) -> String {
+        format!("Name: {}, Value: {}, DisplayName: {}", self.name, self.val, self.display_name)
+    }
 }
 
 official_names!(SoftDollarTierPy, [("displayName", "display_name")]);
@@ -3908,6 +4069,13 @@ impl CommissionAndFeesReport {
     #[new]
     #[pyo3(signature = ())]
     fn new() -> Self { Self::default() }
+
+    /// The official library's text (ibx#750).
+    fn __str__(&self) -> String {
+        format!("ExecId: {}, CommissionAndFees: {}, Currency: {}, RealizedPnL: {}, Yield: {}, YieldRedemptionDate: {}",
+            self.exec_id, float_max_string(self.commission_and_fees), self.currency, float_max_string(self.realized_pnl),
+            float_max_string(self.yield_amount), int_max_string(self.get_yield_redemption_date()))
+    }
 
     // ibapi camelCase aliases (ibx#487: the official client library's names)
     #[getter(execId)]
@@ -3974,6 +4142,12 @@ impl ContractDescription {
             self.con_id, self.symbol, self.sec_type, self.currency)
     }
 
+    /// The official class has no text of its own: the base object's
+    /// (ibx#750).
+    fn __str__(&self) -> &'static str {
+        "Object"
+    }
+
     /// The official API's shape: the described contract.
     #[getter(contract)]
     fn get_contract(&self) -> Contract {
@@ -4019,6 +4193,12 @@ impl DepthMktDataDescriptionPy {
     fn __repr__(&self) -> String {
         format!("DepthMktDataDescription(exchange='{}', secType='{}', listingExch='{}', serviceDataType='{}', aggGroup={})",
             self.exchange, self.sec_type, self.listing_exch, self.service_data_type, self.agg_group)
+    }
+
+    /// The official library's text (ibx#750), with its ", " at the end.
+    fn __str__(&self) -> String {
+        format!("Exchange: {}, SecType: {}, ListingExchange: {}, ServiceDataType: {}, AggGroup: {}, ",
+            self.exchange, self.sec_type, self.listing_exch, self.service_data_type, int_max_string(self.agg_group as i64))
     }
 }
 
