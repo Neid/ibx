@@ -1085,6 +1085,24 @@ fn push_contract_row(
     }
 }
 
+/// Code of the warning given with a contract details answer whose records
+/// trade on the basis of a currency price with a factor (ibx#754).
+pub(crate) const FACTOR_WARNING: i32 = 2130;
+
+/// The warning of an answer's records whose EV rule is a factor, as the
+/// reference 10.51 gives it once per answer (paper, 18/10/2026, market
+/// closed: bond lists of 49, 26 and 1481 records with 1, 6 and 660 such
+/// records, and one bond by conId): the symbol for one record, the count
+/// for several. None when no record has one.
+fn factor_warning(records: &[crate::control::contracts::ContractDefinition]) -> Option<String> {
+    let with: Vec<&crate::control::contracts::ContractDefinition> = records.iter().filter(|d| d.ev_rule == "factor").collect();
+    match with.as_slice() {
+        [] => None,
+        [one] => Some(format!("Warning: {} product is trading on the basis of currency price with factor", one.symbol)),
+        many => Some(format!("Warning: {} products are trading on the basis of currency price with factor", many.len())),
+    }
+}
+
 /// Error 200 for a user lookup that found no contract, with no end, as
 /// the reference (ibx#400). Internal lookups end silently.
 fn push_not_found(req_id: ReqId, shared: &SharedState) {
@@ -3180,7 +3198,7 @@ impl CcpState {
             );
             if !fanout.records.is_empty() {
                 // The rows go to the cache with the market rules known so far.
-                self.deliver_contract_rows(fanout.api_req_id, fanout.records.into(), shared, event_tx, ccp_conn, hb);
+                self.deliver_contract_rows(fanout.api_req_id, fanout.records.into(), None, shared, event_tx, ccp_conn, hb);
             }
         }
     }
@@ -3818,9 +3836,9 @@ impl CcpState {
             if done {
                 let fanout = self.pending_fanout.swap_remove(idx);
                 let rows: Vec<_> = ready.into_iter().chain(fanout.records).collect();
-                self.deliver_contract_rows(api_req_id, rows, shared, event_tx, ccp_conn, hb);
+                self.deliver_contract_rows(api_req_id, rows, None, shared, event_tx, ccp_conn, hb);
             } else if !ready.is_empty() {
-                self.deliver_contract_rows(api_req_id, ready, shared, event_tx, ccp_conn, hb);
+                self.deliver_contract_rows(api_req_id, ready, None, shared, event_tx, ccp_conn, hb);
             }
             return;
         }
@@ -4139,8 +4157,14 @@ impl CcpState {
             }
         }
         if outstanding.is_empty() {
-            self.deliver_contract_rows(req_id, records, shared, event_tx, ccp_conn, hb);
+            let factor = factor_warning(&records);
+            self.deliver_contract_rows(req_id, records, factor, shared, event_tx, ccp_conn, hb);
         } else {
+            // The records wait for their exchanges' rules: the warning
+            // comes first (ibx#754).
+            if let Some(text) = factor_warning(&records) {
+                shared.reference.push_historical_error(req_id, FACTOR_WARNING, text);
+            }
             log::info!(
                 "Secdef by-symbol fan-out: api_req_id={} records={} requests={}",
                 req_id, records.len(), outstanding.len(),
@@ -4483,10 +4507,13 @@ impl CcpState {
     /// As the reference (ibx#527): a record whose schedule was received
     /// earlier in the session is given at once, before the records that
     /// wait, and asks nothing; the waiting ones follow in record order.
+    /// `factor`: the answer's factor warning (ibx#754), None for the rows
+    /// of a fan-out, whose warning went when it started.
     fn deliver_contract_rows(
         &mut self,
         req_id: ReqId,
         records: Vec<crate::control::contracts::ContractDefinition>,
+        factor: Option<String>,
         shared: &SharedState,
         event_tx: &Option<Sender<Event>>,
         ccp_conn: &mut Option<Connection>,
@@ -4520,7 +4547,18 @@ impl CcpState {
                 });
             }
         }
+        // The warning of the records trading on a price with a factor
+        // follows the rows given at once: before the rows that wait for
+        // their schedule, after the end when none waits (ibx#754).
+        let waits = self.pending_schedule_pair.iter().any(|p| p.api_req_id == req_id)
+            || self.pending_fanout.iter().any(|p| p.api_req_id == req_id);
+        if let Some(text) = factor.as_ref().filter(|_| waits) {
+            shared.reference.push_historical_error(req_id, FACTOR_WARNING, text.clone());
+        }
         self.end_if_complete(req_id, shared, event_tx);
+        if let Some(text) = factor.filter(|_| !waits) {
+            shared.reference.push_historical_error(req_id, FACTOR_WARNING, text);
+        }
     }
 
     /// contract_details_end once no row of the lookup waits for its schedule.
@@ -7961,7 +7999,7 @@ mod tests {
         let ids = |shared: &SharedState| shared.reference.drain_contract_details().iter()
             .map(|(req, d)| (*req, d.con_id)).collect::<Vec<_>>();
 
-        ccp.deliver_contract_rows(41, records(&["A", "B", "A", "C"]), &shared, &None, &mut conn, &mut hb);
+        ccp.deliver_contract_rows(41, records(&["A", "B", "A", "C"]), None, &shared, &None, &mut conn, &mut hb);
         assert_eq!(asked(&mut server), 3, "one request per key");
         // The answers of the later rows first: nothing leaves before the first row.
         ccp.process_ccp_message(&schedule("C"), &mut conn, &mut context, &shared, &None, &mut hb, "DU1");
@@ -7973,7 +8011,7 @@ mod tests {
         assert_eq!(shared.reference.drain_contract_details_end(), vec![41]);
 
         // A second lookup: the rows of the known keys at once, the new key waits.
-        ccp.deliver_contract_rows(42, records(&["D", "A", "B"]), &shared, &None, &mut conn, &mut hb);
+        ccp.deliver_contract_rows(42, records(&["D", "A", "B"]), None, &shared, &None, &mut conn, &mut hb);
         assert_eq!(asked(&mut server), 1, "the new key only");
         assert_eq!(ids(&shared), [(42, 101), (42, 102)]);
         assert!(shared.reference.drain_contract_details_end().is_empty());
@@ -7983,12 +8021,46 @@ mod tests {
         assert!(ccp.pending_schedule_pair.is_empty());
 
         // A row out of time leaves without its schedule, and frees the rows behind it.
-        ccp.deliver_contract_rows(43, records(&["E", "A"]), &shared, &None, &mut conn, &mut hb);
+        ccp.deliver_contract_rows(43, records(&["E", "A"]), None, &shared, &None, &mut conn, &mut hb);
         assert_eq!(ids(&shared), [(43, 101)]);
         ccp.pending_schedule_pair[0].deadline = Instant::now();
         ccp.sweep_pending_schedule_pairs(&shared, &None);
         assert_eq!(ids(&shared), [(43, 100)]);
         assert_eq!(shared.reference.drain_contract_details_end(), vec![43]);
+    }
+
+    // ibx#754 (the reference 10.51, paper, 18/10/2026, market closed): an
+    // answer whose records trade on a price with a factor gets 2130 once,
+    // naming the product for one record and the count for several; it
+    // comes before the rows that wait for their schedule, after the end
+    // when none waits.
+    #[test]
+    fn records_with_a_factor_get_one_warning() {
+        let (mut ccp, _context, shared) = u186_test_state();
+        let (client, _server) = socket_pair();
+        let mut conn = Some(Connection::new_mem(client));
+        let mut hb = HeartbeatState::new();
+        let def = |symbol: &str, ev: &str, key: &str| crate::control::contracts::ContractDefinition {
+            con_id: 1, symbol: symbol.into(), ev_rule: ev.into(), join_key: key.into(), ..Default::default()
+        };
+        assert_eq!(factor_warning(&[def("SIEGR", "factor", ""), def("SIEGR", "", "")]).as_deref(),
+            Some("Warning: SIEGR product is trading on the basis of currency price with factor"));
+        assert_eq!(factor_warning(&[def("BACR", "factor", ""), def("BACR", "factor", "")]).as_deref(),
+            Some("Warning: 2 products are trading on the basis of currency price with factor"));
+        assert_eq!(factor_warning(&[def("IBM", "", "")]), None);
+
+        let records = vec![def("SIEGR", "factor", "")];
+        let factor = factor_warning(&records);
+        ccp.deliver_contract_rows(51, records, factor, &shared, &None, &mut conn, &mut hb);
+        assert_eq!(shared.reference.drain_contract_details_end(), vec![51], "no row waits: the end is given");
+        assert_eq!(shared.reference.drain_historical_errors().iter().map(|e| (e.0, e.1)).collect::<Vec<_>>(), [(51, 2130)]);
+
+        let records = vec![def("BACR", "factor", ""), def("BACR", "factor", "K")];
+        let factor = factor_warning(&records);
+        ccp.deliver_contract_rows(52, records, factor, &shared, &None, &mut conn, &mut hb);
+        assert!(shared.reference.drain_contract_details_end().is_empty(), "a row waits for its schedule");
+        assert_eq!(shared.reference.drain_historical_errors(),
+            [(52, 2130, "Warning: 2 products are trading on the basis of currency price with factor".to_string())]);
     }
 
     // Captured 02/10/2026 (b1_438_lookups): CONTFUT ES CME goes out as the

@@ -184,6 +184,9 @@ fn rows_match_the_captured_gateway_rows_field_by_field() {
         let details = ContractDetails::from_definition(&def);
         assert_eq!(def.is_bond(), row["callback"] == "bondContractDetails", "callback of {}", row["req_id"]);
         for (name, want, got) in compare(&row["expected"], &details) {
+            // These rows were recorded on 10.40, which gave a bond the size
+            // increment of its rule; 10.51 gives every bond row 1 (ibx#754).
+            let want = if name == "sizeIncrement" && def.is_bond() && want.as_f64().is_some() { json!(1.0) } else { want };
             if !same(&want, &got) && !known_gaps(row, &name) {
                 mismatches.push(format!("{} req {} conId {}: {}: gateway {} ibx {}",
                     row["scenario"], row["req_id"], row["expected"]["contract"]["conId"], name, want, got));

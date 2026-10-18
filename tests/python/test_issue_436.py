@@ -102,6 +102,10 @@ def test_rows_match_the_captured_gateway_rows_field_by_field():
         callback, d = ibx_row(c, w, fixture, row)
         assert callback == row["callback"], (row["req_id"], callback)
         for name, want, got in compare(row["expected"], d):
+            # Recorded on 10.40, which gave a bond the size increment of its
+            # rule; 10.51 gives every bond row 1 (ibx#754).
+            if name == "sizeIncrement" and row["callback"] == "bondContractDetails" and want is not None:
+                want = type(want)(1)
             same = abs(want - got) < 1e-12 if isinstance(want, float) else want == got
             if not same and not gap(row, name):
                 mismatches.append(f"{row['scenario']} req {row['req_id']} conId {row['expected']['contract']['conId']}: "

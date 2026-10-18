@@ -1195,7 +1195,15 @@ impl ContractDetails {
             sec_id_list.push(TagValue { tag: "CUSIP".into(), value: def.cusip.clone() });
         }
         let fund = sec_type == "FUND";
-        let (min_size, size_increment, suggested_size_increment) = size_fields(def, fund);
+        let (min_size, mut size_increment, suggested_size_increment) = size_fields(def, fund);
+        // A bond row's size increment is 1, whatever its rule's increment
+        // (the reference 10.51, paper, 18/10/2026, market closed: 2,000
+        // bond rows of ten issuers, minimum sizes 1 to 1,000,000; the
+        // reference 10.40 gave the rule's, ibx#754). The rule still sizes
+        // the bond's orders.
+        if sec_type == "BOND" && size_increment != f64::MAX {
+            size_increment = 1.0;
+        }
         let mut d = Self {
             contract: c,
             market_name: shown(&def.market_name),
@@ -1685,6 +1693,14 @@ mod tests {
         def.size_increments.clear();
         assert_eq!(ContractDetails::from_definition(&def).min_size, f64::MAX);
         assert_eq!(ContractDetails::default().min_algo_size, f64::MAX);
+
+        // ibx#754 (the reference 10.51, paper, 18/10/2026): a bond row's
+        // size increment is 1 (the JPY bond 253849463: minimum 100000,
+        // suggested 10000); its orders keep the rule's step.
+        let bond = ContractDefinition { wire_sec_type: "BOND".into(), size_increments: set(&[(100000.0, 10000.0)]), ..Default::default() };
+        let d = ContractDetails::from_definition(&bond);
+        assert_eq!((d.min_size, d.size_increment, d.suggested_size_increment), (100000.0, 1.0, 10000.0));
+        assert_eq!(definition_size_increment(&bond), 10000.0);
     }
 
     // ibx#605 (the reference 10.51, paper, 18/10/2026, levels 214 to 225):

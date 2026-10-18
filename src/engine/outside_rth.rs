@@ -195,14 +195,11 @@ pub(crate) fn outside_rth_applies(kind: RthKind, tif: u8, exchange: &str, types:
     let tif_ok = !kind.moc_loc
         && !matches!(tif, b'?' | b'4' | b'3')
         && (tif != b'2' || exchange == "ARCA");
-    // A combo (ibx#470, its BAG definition): only where its exchange and
-    // currency enable outside RTH for combos (A3), which the reference
-    // learns from the server after the first combo order of each; the
-    // first order loses the flag whatever the answer. A stock combo on
-    // SMART in USD lost it on every order, the first and the later ones
+    // A combo (ibx#470, its BAG definition) never keeps it: a stock combo
+    // on SMART in USD lost it on every order, the first and the later ones
     // (ibx#744; the reference 10.51, paper, 17/10 and 18/10/2026, market
-    // closed: 2109 on three LMT DAY orders of one session). No combo is
-    // known to keep it, so none does.
+    // closed: 2109 on three LMT DAY orders of one session). No combo has
+    // been seen keeping it.
     if types.sec_type == "BAG" {
         return false;
     } else if !((types.rth && tif_ok) || (types.lth && kind.stop_or_touched)) {
