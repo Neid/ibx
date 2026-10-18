@@ -2683,6 +2683,9 @@ pub struct PortfolioState {
     positions: [AtomicU64; MAX_INSTRUMENTS],
     /// Midnight seeds from the P&L seed answer for client-side daily P&L computation.
     midnight_seeds: Mutex<HashMap<i64, MidnightSeed>>,
+    /// Contracts only the P&L seeds carry that a positions request listed
+    /// (ibx#737): from then on they are rows of the account's P&L.
+    seeds_listed: Mutex<std::collections::HashSet<i64>>,
     /// Realized P&L of this session's fills since the last seed, by conId,
     /// from the commission frames (ibx#478). A new seed includes them.
     realized_since_seed: Mutex<HashMap<i64, f64>>,
@@ -2714,6 +2717,7 @@ impl PortfolioState {
             feed_moves: Mutex::new(Vec::new()),
             positions: std::array::from_fn(|_| AtomicU64::new(0)),
             midnight_seeds: Mutex::new(HashMap::new()),
+            seeds_listed: Mutex::new(std::collections::HashSet::new()),
             realized_since_seed: Mutex::new(HashMap::new()),
             money_since_seed: Mutex::new(HashMap::new()),
             midnight_prices: Mutex::new(HashMap::new()),
@@ -2967,6 +2971,17 @@ impl PortfolioState {
     /// Read midnight seeds for client-side P&L computation.
     pub fn midnight_seeds(&self) -> Vec<MidnightSeed> {
         self.midnight_seeds.lock().unwrap().values().copied().collect()
+    }
+
+    /// A positions request listed these contracts that only the P&L seeds
+    /// carry (ibx#737).
+    pub fn mark_seeds_listed(&self, con_ids: &[i64]) {
+        self.seeds_listed.lock().unwrap().extend(con_ids.iter().copied());
+    }
+
+    /// The contracts of [`Self::mark_seeds_listed`].
+    pub fn seeds_listed(&self) -> std::collections::HashSet<i64> {
+        self.seeds_listed.lock().unwrap().clone()
     }
 
     /// The prices at midnight of a server message (ibx#511); each message

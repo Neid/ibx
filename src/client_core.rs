@@ -193,16 +193,25 @@ fn auto_execution_from_farm(sec_type: &str, exchange: &str) -> bool {
 /// so the seed of a contract the list no longer carries is left out of the
 /// sums (ibx#737; the reference 10.51 on paper, recorded 15/10, 16/10 and
 /// 17/10/2026).
-fn pnl_rows(shared: &SharedState) -> Vec<PnlRow> {
+///
+/// A contract only the seeds carry (closed since midnight, after the day
+/// change) is a row too when a positions request listed it, or for a
+/// single request of it alone (ibx#737; the reference 10.51 at level 225,
+/// paper, 18/10/2026, two runs each): position 0, the daily P&L the cash
+/// traded today, the unrealized P&L not valid, no value.
+fn pnl_rows(shared: &SharedState, single_con_ids: &HashSet<i64>) -> Vec<PnlRow> {
     let seeds: HashMap<i64, MidnightSeed> = shared.portfolio.midnight_seeds()
         .into_iter().map(|s| (s.con_id, s)).collect();
     let infos: HashMap<i64, PositionInfo> = shared.portfolio.position_infos()
         .into_iter().map(|p| (p.con_id, p)).collect();
+    let listed = shared.portfolio.seeds_listed();
     let prices = shared.portfolio.pnl_prices();
     let midnight = shared.portfolio.midnight_prices();
     let realized_since = shared.portfolio.realized_since_seed();
     let money_since = shared.portfolio.money_since_seed();
     let mut con_ids: Vec<i64> = infos.keys().copied().filter(|&c| c != 0).collect();
+    con_ids.extend(seeds.keys().copied()
+        .filter(|c| *c != 0 && !infos.contains_key(c) && (listed.contains(c) || single_con_ids.contains(c))));
     con_ids.sort_unstable();
     let qty_of = |c: &i64| infos.get(c).map_or(0, |p| p.position_fixed);
     con_ids.sort_by_key(|c| qty_of(c));
@@ -216,7 +225,9 @@ fn pnl_rows(shared: &SharedState) -> Vec<PnlRow> {
         let price = prices.get(&con_id).copied().filter(|&p| p != f64::MAX)
             .or_else(|| pi.map(|p| p.market_price).filter(|&p| p != 0).map(|p| p as f64 / PRICE_SCALE_F));
         let money = money_traded_today(seed, money_since.get(&con_id).copied(), qty, avg_cost);
+        let seed_only = pi.is_none();
         let daily = match (price, qty_midnight != 0.0) {
+            _ if seed_only && qty_midnight == 0.0 => PnlValue::Valid(money),
             (None, _) => PnlValue::Invalid,
             // The server writes "nan" for a price at midnight it does not
             // have (a Sunday): not valid, with its 2150 (ibx#737; the
@@ -228,6 +239,7 @@ fn pnl_rows(shared: &SharedState) -> Vec<PnlRow> {
             (Some(p), false) => PnlValue::Valid(qty * p - 0.0 + money),
         };
         let unrealized = match price {
+            _ if seed_only => PnlValue::Invalid,
             None => PnlValue::Unset,
             Some(_) if qty != 0.0 && avg_cost == 0.0 => PnlValue::Unset,
             Some(p) => match qty * p - cost_basis(qty_fixed, avg_cost) {
@@ -239,8 +251,9 @@ fn pnl_rows(shared: &SharedState) -> Vec<PnlRow> {
             0.0 => PnlValue::Unset,
             v => PnlValue::Valid(v),
         };
-        let value = price.map_or(PnlValue::Unset, |p| PnlValue::Valid(qty * p));
-        PnlRow { con_id, qty_fixed, daily, unrealized, realized, value }
+        let value = if seed_only { PnlValue::Unset } else { price.map_or(PnlValue::Unset, |p| PnlValue::Valid(qty * p)) };
+        let in_totals = !seed_only || listed.contains(&con_id);
+        PnlRow { con_id, qty_fixed, daily, unrealized, realized, value, in_totals }
     }).collect()
 }
 
@@ -362,6 +375,9 @@ pub struct PnlRow {
     pub unrealized: PnlValue,
     pub realized: PnlValue,
     pub value: PnlValue,
+    /// Counted in the account's P&L (ibx#737): not a contract only the
+    /// seeds carry, asked by a single request alone.
+    pub in_totals: bool,
 }
 
 /// The P&L is computed at most once in this time (ibx#511; the reference's
@@ -795,6 +811,19 @@ fn java_string_hash(s: &str) -> i32 {
     s.encode_utf16().fold(0i32, |h, c| h.wrapping_mul(31).wrapping_add(c as i32))
 }
 
+/// The bucket of an integer key in a Java `HashMap` of `entries` entries:
+/// the spread hash, a table of 16 doubled past three quarters full.
+fn java_int_hash_bucket(entries: usize) -> impl Fn(i64) -> usize {
+    let mut cap = 16usize;
+    while entries > cap * 3 / 4 {
+        cap *= 2;
+    }
+    move |key: i64| {
+        let h = key as i32 as u32;
+        ((h ^ (h >> 16)) as usize) & (cap - 1)
+    }
+}
+
 /// The iteration order of a Java `HashMap` / `HashSet` that got `keys` in
 /// this order (the reference keeps the ledger currencies and accounts in
 /// such maps): buckets by the spread hash, 16 to start, doubled past three
@@ -1015,6 +1044,11 @@ fn advance_positions(sub: &mut PositionsSubscription, shared: &SharedState, acco
         {
             return None;
         }
+        // From now on such a contract is a row of the account's P&L, as on
+        // the reference (ibx#737; 10.51 at level 225, paper, 18/10/2026: the
+        // account's realized and daily P&L counted it after a reqPositions,
+        // and not without one).
+        shared.portfolio.mark_seeds_listed(&seed_only);
         rows.extend(seed_only.into_iter().map(|con_id| PositionInfo { con_id, ..Default::default() }));
         sub.generation = shared.portfolio.position_generation();
         sub.feed_seen = shared.portfolio.feed_moves_last();
@@ -5272,7 +5306,8 @@ impl ClientCore {
             return q.generation;
         }
         q.row_moves_seen = moves;
-        let mut rows = pnl_rows(shared);
+        let singles: HashSet<i64> = self.pnl_single_reqs.lock().unwrap().values().copied().collect();
+        let mut rows = pnl_rows(shared, &singles);
         if q.generation == 0 {
             rows.truncate(1);
         }
@@ -5317,7 +5352,7 @@ impl ClientCore {
             q.seen_total = generation;
             let sum = |f: fn(&PnlRow) -> PnlValue| -> PnlValue {
                 let mut total: Option<f64> = None;
-                for r in &q.rows {
+                for r in q.rows.iter().filter(|r| r.in_totals) {
                     if let PnlValue::Valid(v) = f(r) {
                         total = Some(total.map_or(v, |t| t + v));
                     }
@@ -5326,21 +5361,28 @@ impl ClientCore {
                 // unknown.
                 match total {
                     Some(v) => PnlValue::Valid(v),
-                    None if q.rows.iter().any(|r| f(r) == PnlValue::Invalid) => PnlValue::Invalid,
+                    None if q.rows.iter().any(|r| r.in_totals && f(r) == PnlValue::Invalid) => PnlValue::Invalid,
                     None => PnlValue::Unset,
                 }
             };
             let mut fields = [sum(|r| r.daily), sum(|r| r.unrealized), sum(|r| r.realized)];
+            let has_rows = q.rows.iter().any(|r| r.in_totals);
             // The realized P&L is always given with rows: the sum of the
             // rows that have one, 0.0 when none has (ibx#737; the reference
             // 10.51 on paper, recorded 15/10 to 17/10/2026: 60 account
-            // answers, never unset).
-            if !q.rows.is_empty() && !matches!(fields[2], PnlValue::Valid(_)) {
+            // answers, never unset). The daily P&L too, without 2150, when no
+            // row has a valid one (ibx#737; the reference 10.51 at level
+            // 225, paper, 18/10/2026, a Sunday: four rows held at midnight
+            // with no price at midnight, the account's daily 0.0).
+            if has_rows && !matches!(fields[2], PnlValue::Valid(_)) {
                 fields[2] = PnlValue::Valid(0.0);
+            }
+            if has_rows && !matches!(fields[0], PnlValue::Valid(_)) {
+                fields[0] = PnlValue::Valid(0.0);
             }
             // No row: the server's own account P&L keys, when it sends
             // them (ibx#239); the paper account's frames carry none.
-            if q.rows.is_empty() {
+            if !has_rows {
                 let rows = shared.portfolio.account_rows();
                 let server = |key: &str| rows.rows.iter()
                     .filter(|r| r.key == key)
@@ -5420,7 +5462,12 @@ impl ClientCore {
                 errors,
             });
         }
-        results.sort_by_key(|u| u.req_id);
+        // In the order of the reference's map of the rows by conId (ibx#737;
+        // the reference 10.51, paper, 17 and 18/10/2026: IWM, SPY, MSFT,
+        // AAPL, AXTI in three runs, whatever the request ids).
+        let reqs_by_id: HashMap<i64, i64> = self.pnl_single_reqs.lock().unwrap().clone();
+        let bucket = java_int_hash_bucket(rows.len());
+        results.sort_by_key(|u| (reqs_by_id.get(&u.req_id).map_or(usize::MAX, |&c| bucket(c)), u.req_id));
         results
     }
 
@@ -8407,7 +8454,8 @@ mod tests {
 
     // ibx#737 (the reference 10.51 at level 225, paper, 18/10/2026, a
     // Sunday): a price at midnight given as "nan" makes the daily P&L of a
-    // position held at midnight not valid: 2150, then the unset value.
+    // position held at midnight not valid (2150, then the unset value, in
+    // its single); the account's daily is then 0.0.
     #[test]
     fn a_price_at_midnight_that_is_not_a_number_makes_the_daily_not_valid() {
         let core = ClientCore::new();
@@ -8418,8 +8466,43 @@ mod tests {
             con_id: 756733, qty_midnight_fixed: 10 * crate::types::QTY_SCALE, money_traded: 0.0, realized_pnl: 0.0,
         }]);
         let update = core.poll_pnl(&shared).pop().expect("callback must fire");
-        assert_eq!((update.daily_pnl, update.errors), (f64::MAX, 1));
+        assert_eq!((update.daily_pnl, update.errors), (0.0, 0), "the account's daily: 0.0 with no row valid");
         assert!((update.unrealized_pnl - 350.0).abs() < 1e-6);
+    }
+
+    // ibx#737 (the reference 10.51 at level 225, paper, 18/10/2026, two
+    // runs each): a contract only the seeds carry gets its single (position
+    // 0, the cash traded today as daily, the unrealized not valid after
+    // 2150, the realized, no value); the account counts it only once a
+    // positions request listed it. The singles go in the order of the
+    // reference's map of the rows by conId.
+    #[test]
+    fn a_contract_only_the_seeds_carry_gets_its_single_and_counts_once_listed() {
+        let core = ClientCore::new();
+        let shared = SharedState::new();
+        seed_pnl_position(&core, &shared, 9579970, 0, -20, 277.144285, 270.0, 0.0);
+        seed_pnl_position(&core, &shared, 4726868, 0, 1, 44.8, 51.47, 0.0);
+        shared.portfolio.set_midnight_seeds(vec![MidnightSeed {
+            con_id: 265598, qty_midnight_fixed: 0, money_traded: -13.3509, realized_pnl: -13.3510601,
+        }]);
+        core.subscribe_pnl(9101);
+        for (req, con) in [(9200, 265598), (9203, 4726868), (9204, 9579970)] {
+            core.subscribe_pnl_single(req, con);
+        }
+        pnl_ready(&core);
+        let singles = core.poll_pnl_single(&shared);
+        assert_eq!(singles.iter().map(|u| u.req_id).collect::<Vec<_>>(), [9204, 9200, 9203], "IWM, AAPL, AXTI");
+        let aapl = singles.iter().find(|u| u.req_id == 9200).unwrap();
+        assert_eq!((aapl.pos, aapl.daily_pnl, aapl.unrealized_pnl, aapl.realized_pnl, aapl.value, aapl.errors),
+            (0.0, -13.3509, f64::MAX, -13.3510601, f64::MAX, 1));
+        let before = core.poll_pnl(&shared).pop().unwrap();
+        assert_eq!(before.realized_pnl, 0.0, "not counted before a positions request listed it");
+
+        shared.portfolio.mark_seeds_listed(&[265598]);
+        core.pnl_quotes.lock().unwrap().computed_at = None;
+        let total = core.poll_pnl(&shared).pop().unwrap();
+        assert!((total.daily_pnl - (before.daily_pnl - 13.3509)).abs() < 1e-9, "counted once listed: {}", total.daily_pnl);
+        assert_eq!(total.realized_pnl, -13.3510601);
     }
 
     #[test]
@@ -8502,9 +8585,10 @@ mod tests {
         }]);
         pnl_ready(&core);
         let u = core.poll_pnl(&shared).pop().unwrap();
-        // Held at midnight, no price at midnight: not valid, after 2150.
-        assert_eq!(u.daily_pnl, f64::MAX);
-        assert_eq!(u.errors, 1);
+        // Held at midnight, no price at midnight: the row's daily is not
+        // valid; the account's is 0.0, without 2150 (ibx#737, 18/10/2026).
+        assert_eq!(u.daily_pnl, 0.0);
+        assert_eq!(u.errors, 0);
         assert!((u.unrealized_pnl - 31.0 * (770.0 - 764.59)).abs() < 1e-3, "unreal={}", u.unrealized_pnl);
         assert!((u.realized_pnl - 37.12).abs() < 1e-9);
     }
@@ -9056,12 +9140,17 @@ mod tests {
         assert_eq!(full.errors, 0);
         let singles: Vec<(i64, f64, f64, f64, f64, f64)> = core.poll_pnl_single(&shared).iter()
             .map(|u| (u.req_id, u.pos, u.daily_pnl, u.unrealized_pnl, u.realized_pnl, u.value)).collect();
+        // AAPL's single is answered from its seed alone (ibx#737; the
+        // reference 10.51, paper, 18/10/2026), and the singles go in the
+        // order of the reference's map (IWM, SPY, MSFT, AAPL, AXTI; the
+        // four others so on 17/10/2026).
         assert_eq!(singles, [
-            (9200, -10.0, 103.90012207031305, -469.6101779296878, f64::MAX, -5290.4998779296875),
-            (9201, 79.0, -835.8310285156213, -1130.7594282656282, -10.5616022, 60139.540771484375),
-            (9202, 1.0, -6.439998779296872, 6.670001220703128, f64::MAX, 51.470001220703125),
             (9203, -20.0, 104.40029296874945, 145.68599296874982, f64::MAX, -5397.19970703125),
-        ], "AAPL has no row: no answer");
+            (9201, 79.0, -835.8310285156213, -1130.7594282656282, -10.5616022, 60139.540771484375),
+            (9200, -10.0, 103.90012207031305, -469.6101779296878, f64::MAX, -5290.4998779296875),
+            (9204, 0.0, -13.3509, f64::MAX, -13.3510601, f64::MAX),
+            (9202, 1.0, -6.439998779296872, 6.670001220703128, f64::MAX, 51.470001220703125),
+        ]);
     }
 
     // ibx#737: the same seeds while the position list carries AAPL with
