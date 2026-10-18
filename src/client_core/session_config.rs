@@ -211,8 +211,11 @@ impl SessionConfig {
             messages: self.listed()
                 .map(|m| MessageRule {
                     id: m.config.id.unwrap_or_default(),
+                    // A message with no text of its own has "Message" as
+                    // its warning's text (ibx#610; the reference 10.51 at
+                    // level 225, paper, 18/10/2026: message 131).
                     warning: m.warning.then(|| {
-                        (m.config.title.clone().unwrap_or_default(), m.config.message.clone().unwrap_or_default())
+                        (m.config.title.clone().unwrap_or_default(), m.config.message.clone().unwrap_or_else(|| "Message".to_string()))
                     }),
                 })
                 .collect(),
@@ -462,6 +465,12 @@ mod tests {
         // The reference's checks still come first.
         let c13 = UpdateConfigRequest { messages: vec![msg(605, Some(false))], ..req(7422) };
         assert_eq!(c.update(&c13).status.as_deref(), Some("pending"));
+        // A message with no text: its warning's text is "Message" (ibx#610;
+        // the reference 10.51 at level 225, paper, 18/10/2026, message 131).
+        let w131 = c.update(&UpdateConfigRequest { messages: vec![msg(131, Some(false))], ..req(7801) });
+        assert_eq!(w131.status.as_deref(), Some("pending"));
+        assert_eq!(w131.warnings.iter().map(|w| (w.message_id, w.title.as_deref(), w.message.as_deref())).collect::<Vec<_>>(),
+            [(Some(131), Some("Confirm Mandatory Cap Price"), Some("Message"))]);
         let c08 = settings(7417, ApiSettingsConfig { logging_level: Some("bogus".into()), read_only_api: Some(true), ..Default::default() });
         assert_eq!(c.update(&c08).errors, ["configuration.api.settings.loggingLevel"]);
     }
