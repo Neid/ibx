@@ -485,7 +485,8 @@ pub(crate) struct MdEntry {
     pub(crate) sec_type: String,
     pub(crate) req_type: &'static str,
     pub(crate) mode_9887: i32,
-    /// Asked for a snapshot (ibx#696).
+    /// Asked with the snapshot action (ibx#696); a snapshot in frozen mode
+    /// is asked as a stream (ibx#749).
     pub(crate) snapshot: bool,
 }
 
@@ -2434,10 +2435,18 @@ impl FarmState {
         let entries: Vec<(u32, &str, &str)> = native_id.map(|id| (id, exchange, NATIVE_TOP)).into_iter()
             .chain([(bid_ask_id, bid_ask_exch, "442"), (last_id, last_exch, "443")])
             .collect();
+        // A snapshot is asked with the snapshot action and without the
+        // streaming-client mark, as the reference asks it (ibx#446). In
+        // frozen mode the reference asks it as a stream, with the API
+        // source, and cancels it at its end (ibx#749; 10.51, paper, a stock
+        // on 17/10/2026 and an option on 12, 14 and 15/10/2026): the farm
+        // then sends the real-time values at once, before the status, and
+        // the client gets them before the switch.
+        let as_stream = !sub.snapshot || (realtime && self.md_modes.frozen);
         for &(req_id, exch, req_type) in &entries {
             self.md_entries.push(MdEntry {
                 req_id, instrument, farm, con_id: con_id_str.clone(), exchange: exch.to_string(),
-                sec_type: sec_type.to_string(), req_type, mode_9887, snapshot: sub.snapshot,
+                sec_type: sec_type.to_string(), req_type, mode_9887, snapshot: sub.snapshot && !as_stream,
             });
         }
 
@@ -2447,12 +2456,10 @@ impl FarmState {
         let frozen_mode = mode_9887 == crate::types::MarketDataModes::entry_mode(true, false)
             || mode_9887 == crate::types::MarketDataModes::entry_mode(true, true);
         let ts = chrono_free_timestamp();
-        // A snapshot is asked with the snapshot action and without the
-        // streaming-client mark, as the reference asks it (ibx#446).
         let mut tags: Vec<(u32, &str)> = vec![
             (fix::TAG_MSG_TYPE, fix::MSG_MARKET_DATA_REQ),
             (fix::TAG_SENDING_TIME, &ts),
-            (263, if sub.snapshot { "3" } else { "1" }),
+            (263, if as_stream { "1" } else { "3" }),
             (146, if native_id.is_some() { "3" } else { "2" }),
         ];
         for ((_, exch, req_type), id) in entries.iter().zip(&ids) {
@@ -2463,7 +2470,7 @@ impl FarmState {
             tags.push((264, req_type));
             // The frozen pair is not asked by the API client's request
             // (captured 07/10/2026: no API source on it).
-            if !sub.snapshot && !frozen_mode { tags.push((6088, "Socket")); }
+            if as_stream && !frozen_mode { tags.push((6088, "Socket")); }
             if !realtime { tags.push((9887, &mode_str)); }
             tags.push((9830, "1"));
             if let Some(mark) = entry_mark(req_type, marks, false) { tags.push((9839, mark)); }
@@ -2477,12 +2484,14 @@ impl FarmState {
             }
         }
         // A snapshot in frozen mode asks the contract's market data status
-        // after its pair, in a message of its own (ibx#494; the reference
-        // 10.51, paper, 14/10/2026, a closed option, two runs): when frozen,
-        // the snapshot goes on with the frozen pair, as a stream does.
+        // after its pair, in a message of its own with the API source
+        // (ibx#494, ibx#749; the reference 10.51, paper, 14/10/2026 a closed
+        // option, 17/10/2026 a stock): when frozen, the snapshot goes on
+        // with the frozen pair, as a stream does.
         if realtime && sub.snapshot && self.md_modes.frozen
-            && let Some(msg) = self.start_status(sub, farm)
+            && let Some(mut msg) = self.start_status(sub, farm)
         {
+            msg.push((6088, "Socket".to_string()));
             sink.send_comp(&borrow_tags(&msg));
         }
     }

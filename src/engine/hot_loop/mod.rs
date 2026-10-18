@@ -9651,6 +9651,54 @@ mod frozen_tests {
         ]);
     }
 
+    // ibx#749 (the reference 10.51, paper, AAPL on 17/10/2026, the market
+    // closed): a snapshot in frozen mode is asked as a stream, with the API
+    // source, then the status entry with it; its end cancels the pair and
+    // the status entry. In real-time mode it keeps the snapshot action.
+    #[test]
+    fn a_snapshot_in_frozen_mode_is_asked_as_a_stream() {
+        // A message as the tests read it: `tag=value|` per field.
+        fn msg(head: &[(u32, &str)], entries: &[(&str, &str, &[(u32, &str)])]) -> String {
+            let mut fields: Vec<(u32, &str)> = head.to_vec();
+            for &(id, code, extra) in entries {
+                fields.extend([(262, id), (6008, "265598"), (207, "BEST"), (167, "CS"), (264, code)]);
+                fields.extend_from_slice(extra);
+            }
+            fields.iter().map(|(t, v)| format!("{t}={v}|")).collect()
+        }
+        let snapshot = |tx: &ControlSender| tx.send(ControlCommand::Subscribe {
+            con_id: 265598, symbol: "AAPL".into(), exchange: "SMART".into(), sec_type: "STK".into(),
+            last_trade_date: String::new(), strike: 0.0, right: String::new(), multiplier: String::new(),
+            mode_9887: 0, snapshot: true, reply_tx: None,
+        }).unwrap();
+        let (sub, cancel) = ([(35, "V"), (263, "1")], [(35, "V"), (263, "2")]);
+        let source: &[(u32, &str)] = &[(6088, "Socket"), (9830, "1"), (9839, "1")];
+        let marks: &[(u32, &str)] = &[(9830, "1"), (9839, "1")];
+        let (mut eng, _shared, mut farm_side, tx) = engine();
+        tx.send(ControlCommand::SetMarketDataType { market_data_type: 2 }).unwrap();
+        snapshot(&tx);
+        eng.poll_once();
+        assert_eq!(sent(&mut farm_side), [
+            msg(&[sub[0], sub[1], (146, "2")], &[("1", "442", source), ("2", "443", source)]),
+            msg(&[sub[0], sub[1], (146, "1")], &[("3", "398", &[(6088, "Socket")])]),
+        ]);
+        let live = eng.context.market.instrument_by_con_id(265598).unwrap();
+        tx.send(ControlCommand::Unsubscribe { instrument: live }).unwrap();
+        eng.poll_once();
+        assert_eq!(sent(&mut farm_side), [
+            msg(&[cancel[0], cancel[1], (146, "2")], &[("1", "442", marks), ("2", "443", marks)]),
+            msg(&[cancel[0], cancel[1], (146, "1")], &[("3", "398", &[])]),
+        ]);
+
+        let (mut eng, _shared, mut farm_side, tx) = engine();
+        snapshot(&tx);
+        eng.poll_once();
+        let out = sent(&mut farm_side);
+        assert_eq!(out.len(), 1, "{out:?}");
+        let action = msg(&[(263, "3")], &[]);
+        assert!(out[0].contains(&action) && !out[0].contains("6088") && !out[0].contains("|264=398"), "{}", out[0]);
+    }
+
     // ibx#447: outside frozen mode no status entry is asked (type 1, and
     // type 3 or 4 alone, which do not set the frozen flag).
     #[test]

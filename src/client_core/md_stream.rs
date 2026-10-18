@@ -1379,6 +1379,35 @@ mod tests {
         assert_eq!(auto, 2, "{out:?}");
     }
 
+    // ibx#749 (the reference 10.51, paper: an option at level 225 on
+    // 12/10/2026, AAPL at level 214 twice on 17/10/2026): when the real-time
+    // pair's first values come before the status says frozen, a snapshot in
+    // frozen mode gives them (bid and ask -1 with no size, the close), then
+    // marketDataType 2 and the whole frozen image, the values it gave already
+    // included.
+    #[test]
+    fn a_frozen_snapshot_gives_the_real_time_values_that_came_before_the_switch() {
+        let (core, shared) = (ClientCore::new(), SharedState::new());
+        assert!(core.attach_md_request(&shared, 1, 5, true, "STK", "SMART", None, false, false));
+        core.mdt_sent.lock().unwrap().insert(1);
+        let p = |cents: i64| cents * PRICE_SCALE / 100;
+        let live = Quote { bid: -PRICE_SCALE, ask: -PRICE_SCALE, close: p(34200), ..Default::default() };
+        shared.market.push_test_message(5, &live, &TestMessage { steps: Some(&[MdStep::Daily, MdStep::Quote]), ..Default::default() });
+        assert_eq!(poll(&core, &shared), ["price:1:9:342", "price:1:1:-1", "size:1:0:0", "price:1:2:-1", "size:1:3:0"]);
+        let mut notices = Vec::new();
+        core.md_freeze(&shared, 5, 6, false, &mut notices);
+        assert_eq!(notices.len(), 1, "{notices:?}");
+        let frozen = Quote {
+            bid: p(34262), ask: p(34286), bid_size: 3 * QTY_SCALE, ask_size: 4 * QTY_SCALE, volume: 7 * QTY_SCALE,
+            close: p(34200), ..Default::default()
+        };
+        shared.market.push_test_message(6, &frozen, &TestMessage { steps: Some(&[MdStep::Quote]), sizes_seen: true, ..Default::default() });
+        shared.market.push_test_message(6, &frozen, &TestMessage { steps: Some(&[MdStep::Daily]), sizes_seen: true, ..Default::default() });
+        assert_eq!(poll(&core, &shared), [
+            "price:1:1:342.62", "size:1:0:3", "price:1:2:342.86", "size:1:3:4", "generic:1:49:-1", "size:1:8:7", "price:1:9:342",
+        ]);
+    }
+
     // ibx#692 (the reference 10.51, paper, 14/10/2026, an AAPL call from
     // 15:26 Paris): a stream's bid and ask carry the quote's pre-open state;
     // once it opens, they do not.
