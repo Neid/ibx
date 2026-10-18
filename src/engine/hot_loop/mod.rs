@@ -9551,9 +9551,41 @@ mod frozen_tests {
 
     const PAIR: &str = "|6008=929914886|207=BEST|167=OPT|264=";
 
-    // ibx#447 (captured 07/10/2026, b4_447_frozen_option): in frozen mode
-    // the market data status entry goes first, without the API source, then
-    // the pair. Status 1: the frozen pair is asked with mode 2 and without
+    /// The head of a market data request as the tests read it: its type,
+    /// the action and the number of entries.
+    fn head(action: u32, entries: u32) -> String {
+        [(35, "V".to_string()), (263, action.to_string()), (146, entries.to_string())]
+            .iter().map(|(t, v)| format!("{t}={v}|")).collect()
+    }
+
+    /// A whole request: the head, then per entry its id, the contract,
+    /// its code and its other fields.
+    fn req(action: u32, entries: &[(u32, &str, &[(u32, &str)])]) -> String {
+        let mut out = head(action, entries.len() as u32);
+        for (id, code, extra) in entries {
+            out.push_str(&format!("{}={id}{PAIR}{code}|", 262));
+            for (t, v) in extra.iter() {
+                out.push_str(&format!("{t}={v}|"));
+            }
+        }
+        out
+    }
+
+    /// A farm ack frame: the head fields, the body, the signature when
+    /// given, each ended by the separator.
+    fn ack(head: &[(u32, &str)], body: &str, sig: Option<&str>) -> Vec<u8> {
+        let mut out: Vec<String> = head.iter().map(|(t, v)| format!("{t}={v}")).collect();
+        out.push(body.to_string());
+        if let Some(sig) = sig {
+            out.push(format!("8349={sig}"));
+        }
+        out.iter().map(|f| format!("{f}\x01")).collect::<String>().into_bytes()
+    }
+
+    // ibx#447 (captured 07/10/2026, b4_447_frozen_option; the order of the
+    // requests as the reference 10.51 in nine fresh sessions on 17 and
+    // 18/10/2026, ibx#749): in frozen mode the pair goes first, then the
+    // market data status entry with the API source. Status 1: the frozen pair is asked with mode 2 and without
     // the API source, on a slot of its own, and the requests are told. The
     // captured frames give the frozen quote the client got (close 5.0, bid
     // 4.75 x 597, ask 5.35 x 675) and leave the real-time slot with the
@@ -9564,12 +9596,12 @@ mod frozen_tests {
         let (mut engine, shared, mut farm_side, tx) = engine();
         let live = frozen_option(&mut engine, &tx);
         assert_eq!(sent(&mut farm_side), [
-            format!("35=V|263=1|146=1|262=1{PAIR}398|"),
-            format!("35=V|263=1|146=2|262=2{PAIR}442|6088=Socket|9830=1|9839=1|262=3{PAIR}443|6088=Socket|9830=1|9839=1|"),
+            req(1, &[(1, "442", &[(6088, "Socket"), (9830, "1"), (9839, "1")]), (2, "443", &[(6088, "Socket"), (9830, "1"), (9839, "1")])]),
+            req(1, &[(3, "398", &[(6088, "Socket")])]),
         ]);
 
         // Frame 183: the status ack; frame 185: status 1, before the pair's acks.
-        engine.inject_farm_message(b"8=O\x019=0046\x0135=Q\x01128617,1,0.01,0,0,c7,,0,1\x018349=928EC0B4\x01");
+        engine.inject_farm_message(&ack(&[(8, "O"), (9, "0046"), (35, "Q")], "128617,3,0.01,0,0,c7,,0,1", Some("928EC0B4")));
         assert!(shared.market.drain_tick_req_params().is_empty(), "a status ack gives no request parameters");
         engine.inject_farm_message(&status_frame(1));
         let frozen = engine.farm.frozen_slot(live).expect("a frozen slot");
@@ -9583,8 +9615,8 @@ mod frozen_tests {
         assert!(shared.market.drain_md_rejects().is_empty() && sent(&mut farm_side).is_empty());
 
         // Frames 194-197: the real-time pair's acks, its trade tag, its quote.
-        engine.inject_farm_message(b"8=O\x019=0046\x0135=Q\x01128612,2,0.01,0,3,c7,,1,1\x018349=36A7B14D\x01");
-        engine.inject_farm_message(b"8=O\x019=0046\x0135=Q\x01128612,3,0.01,0,3,c7,,1,1\x018349=3FCCD8EC\x01");
+        engine.inject_farm_message(&ack(&[(8, "O"), (9, "0046"), (35, "Q")], "128612,1,0.01,0,3,c7,,1,1", Some("36A7B14D")));
+        engine.inject_farm_message(&ack(&[(8, "O"), (9, "0046"), (35, "Q")], "128612,2,0.01,0,3,c7,,1,1", Some("3FCCD8EC")));
         engine.inject_farm_message(b"8=O\x019=0044\x0135=L\x01929914886,0.01,128613,,1\x018349=E35764CA\x01");
         engine.inject_farm_message(&hex("383d4f01393d303034320133353d500100a00001f66404e424000ce42c003c0c84008c00580001383334393d384133324244353101"));
         // Frames 209-212: the frozen pair's acks (mode 2 in the fourth field), then its quote.
@@ -9607,8 +9639,8 @@ mod frozen_tests {
         engine.poll_once();
         assert_eq!(sent(&mut farm_side), [
             format!("35=V|263=2|146=2|262=4{PAIR}442|9887=2|9830=1|9839=1|262=5{PAIR}443|9887=2|9830=1|9839=1|"),
-            format!("35=V|263=2|146=2|262=2{PAIR}442|9830=1|9839=1|262=3{PAIR}443|9830=1|9839=1|"),
-            format!("35=V|263=2|146=1|262=1{PAIR}398|"),
+            req(2, &[(1, "442", &[(9830, "1"), (9839, "1")]), (2, "443", &[(9830, "1"), (9839, "1")])]),
+            req(2, &[(3, "398", &[])]),
         ]);
         assert!(engine.farm.status.is_empty());
         assert_eq!(engine.context.market.con_id(live), None, "the real-time slot is freed");
@@ -9625,7 +9657,7 @@ mod frozen_tests {
         let (mut engine, shared, mut farm_side, tx) = engine();
         let live = frozen_option(&mut engine, &tx);
         sent(&mut farm_side);
-        engine.inject_farm_message(b"8=O\x0135=Q\x01128617,1,0.01,0,0,c7,,0,1\x01");
+        engine.inject_farm_message(&ack(&[(8, "O"), (35, "Q")], "128617,3,0.01,0,0,c7,,0,1", None));
         engine.inject_farm_message(&status_frame(2));
         assert!(shared.market.drain_md_rejects().is_empty() && sent(&mut farm_side).is_empty());
         assert_eq!(engine.farm.frozen_slot(live), None);
@@ -9649,8 +9681,8 @@ mod frozen_tests {
         tx.send(ControlCommand::Unsubscribe { instrument: live }).unwrap();
         engine.poll_once();
         assert_eq!(sent(&mut farm_side), [
-            format!("35=V|263=2|146=2|262=2{PAIR}442|9830=1|9839=1|262=3{PAIR}443|9830=1|9839=1|"),
-            format!("35=V|263=2|146=1|262=1{PAIR}398|"),
+            req(2, &[(1, "442", &[(9830, "1"), (9839, "1")]), (2, "443", &[(9830, "1"), (9839, "1")])]),
+            req(2, &[(3, "398", &[])]),
         ]);
     }
 

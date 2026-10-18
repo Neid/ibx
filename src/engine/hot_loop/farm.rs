@@ -2388,17 +2388,6 @@ impl FarmState {
             return;
         }
         let realtime = mode_9887 == 0;
-        // In frozen mode the contract's market data status is asked first,
-        // in a message of its own, without the API source (ibx#447): the
-        // reference's frozen observer registers before the request does
-        //. Its sender sometimes puts the
-        // entry after the pair, then with the API source (captured
-        // 05/10/2026 and 07/10/2026).
-        if realtime && !sub.snapshot && self.md_modes.frozen {
-            if let Some(msg) = self.start_status(sub, farm) {
-                sink.send_comp(&borrow_tags(&msg));
-            }
-        }
         // An index streamed in real time gets the native top entry first,
         // in the same request (ibx#640; observed 13/10/2026, SPX on CBOE,
         // regular hours, reference 10.51).
@@ -2483,12 +2472,15 @@ impl FarmState {
                 hb.last_farm_sent = Instant::now();
             }
         }
-        // A snapshot in frozen mode asks the contract's market data status
+        // In frozen mode a request asks the contract's market data status
         // after its pair, in a message of its own with the API source
-        // (ibx#494, ibx#749; the reference 10.51, paper, 14/10/2026 a closed
-        // option, 17/10/2026 a stock): when frozen, the snapshot goes on
-        // with the frozen pair, as a stream does.
-        if realtime && sub.snapshot && self.md_modes.frozen
+        // (ibx#447, ibx#494, ibx#749; the reference 10.51, paper, a stream
+        // and a snapshot of a stock in nine fresh sessions on 17 and
+        // 18/10/2026, an option on 14/10/2026). The farm then sends the
+        // real-time values before the status, and the client gets
+        // marketDataType 1 and them before marketDataType 2. When frozen,
+        // the request goes on with the frozen pair.
+        if realtime && self.md_modes.frozen
             && let Some(mut msg) = self.start_status(sub, farm)
         {
             msg.push((6088, "Socket".to_string()));
