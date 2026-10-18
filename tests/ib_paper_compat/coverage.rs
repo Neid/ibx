@@ -22,6 +22,7 @@ const TESTED_CONTROL_COMMANDS: &[&str] = &[
     "Order",
     "RegisterInstrument",
     "RegisterOrderContract", // order_paths_paper order_by_symbol (ibx#486)
+    "RegisterOrderSlot", // order_paths_paper refusals_of_10_51 (ibx#743)
     "HoldOrder", // order_paths_paper bracket_with_transmit_off (ibx#509)
     "OrderGroup", // order_paths_paper bracket_with_transmit_off (ibx#547)
     "FetchHistorical",

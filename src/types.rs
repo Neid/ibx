@@ -2236,6 +2236,11 @@ pub enum ControlCommand {
     /// keeps it, unlisted, for its cancel. The client sends it as a new
     /// order when its group is transmitted.
     HoldOrder { order_id: OrderId, instrument: InstrumentId, qty: Qty, parent_id: i64, oca_group: String },
+    /// A slot of its own for an order given by its conId on another
+    /// exchange than the one the conId's slot was registered with: the
+    /// order goes to its own exchange (ibx#743). The slot keeps the
+    /// conId's currency.
+    RegisterOrderSlot { con_id: i64, symbol: String, sec_type: String, exchange: String, reply_tx: Option<crossbeam_channel::Sender<Result<InstrumentId, String>>> },
     /// Register an instrument from external caller (bridge mode).
     RegisterInstrument { con_id: i64, symbol: String, sec_type: String, exchange: String, reply_tx: Option<crossbeam_channel::Sender<Result<InstrumentId, String>>> },
     /// A slot of its own for the contract of an order given without a

@@ -45,6 +45,7 @@ pub(crate) fn is_aside(cmd: &ControlCommand) -> bool {
         ControlCommand::RegisterInstrument { .. }
         | ControlCommand::MarketDataSlot { .. }
         | ControlCommand::RegisterOrderContract { .. }
+        | ControlCommand::RegisterOrderSlot { .. }
         | ControlCommand::SetInstrumentCurrency { .. }
         | ControlCommand::UpdateParam { .. }
         | ControlCommand::DropSnapshot { .. }

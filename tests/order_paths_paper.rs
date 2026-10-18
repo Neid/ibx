@@ -779,6 +779,69 @@ fn attached_from_preset(paper: &mut Paper, id: i64) {
     paper.check(!sent, "attached orders from the preset: nothing sent");
 }
 
+/// ibx#743, ibx#744, ibx#745 (the reference 10.51, paper, 18/10/2026,
+/// market closed): AAPL by conId on a made-up exchange gets 200 and is
+/// gone (not listed, its cancel 10147); a stock combo with outside RTH
+/// gets 2109 and is sent; PEG STK on AAPL gets 387 and is kept (its cancel
+/// gives Cancelled, 202 and 161).
+fn refusals_of_10_51(paper: &mut Paper, id: i64) {
+    println!("  refusals of 10.51 (orders {}..{})", id, id + 2);
+    let lmt = Order {
+        action: "BUY".into(), order_type: "LMT".into(), total_quantity: 1.0, lmt_price: 50.0,
+        tif: "DAY".into(), ..Default::default()
+    };
+    let nowhere = Contract { exchange: "XYZ".into(), ..aapl() };
+    paper.placed.push(id);
+    if let Err(e) = paper.client.place_order(id, &nowhere, &lmt) {
+        paper.fail(&format!("order {}: place_order returned {}", id, e));
+    }
+    let got = paper.pump(20, |s| s.errors.iter().any(|(r, c, _)| *r == id && *c == 200));
+    paper.check(got, "an exchange without a definition: error 200");
+    let ends = paper.state.lock().unwrap().open_ends;
+    paper.client.req_open_orders(&mut paper.probe);
+    paper.pump(10, |s| s.open_ends > ends);
+    let listed = paper.state.lock().unwrap().open_rows.contains(&id);
+    paper.check(!listed, "an exchange without a definition: not listed by reqOpenOrders");
+    let _ = paper.client.cancel_order(id, "");
+    let gone = paper.pump(10, |s| s.errors.iter().any(|(r, c, _)| *r == id && *c == 10147));
+    paper.check(gone, "an exchange without a definition: its cancel gives 10147");
+
+    let leg = |con_id, action: &str| ibx::api::types::ComboLeg {
+        con_id, ratio: 1, action: action.into(), exchange: "SMART".into(), ..Default::default()
+    };
+    let combo = Contract {
+        symbol: "AAPL,MSFT".into(), sec_type: "BAG".into(), exchange: "SMART".into(), currency: "USD".into(),
+        combo_legs: vec![leg(265598, "BUY"), leg(272093, "SELL")], ..Default::default()
+    };
+    let combo_order = Order {
+        lmt_price: -500.0, outside_rth: true,
+        smart_combo_routing_params: vec![TagValue { tag: "NonGuaranteed".into(), value: "1".into() }],
+        ..lmt.clone()
+    };
+    paper.placed.push(id + 1);
+    if let Err(e) = paper.client.place_order(id + 1, &combo, &combo_order) {
+        paper.fail(&format!("order {}: place_order returned {}", id + 1, e));
+    }
+    let warned = paper.pump(20, |s| s.errors.iter().any(|(r, c, _)| *r == id + 1 && *c == 2109));
+    paper.check(warned, "a combo with outside RTH: warning 2109");
+    // The warning is no refusal: the order goes on.
+    let sent = paper.pump(20, |s| working(s, id + 1));
+    paper.check(sent, "a combo with outside RTH: sent and working");
+
+    let peg_stk = Order { order_type: "PEG STK".into(), lmt_price: 0.0, ..lmt };
+    paper.place(id + 2, &peg_stk);
+    let got = paper.pump(20, |s| s.errors.iter().any(|(r, c, _)| *r == id + 2 && *c == 387));
+    paper.check(got, "PEG STK on a stock: error 387");
+    let _ = paper.client.cancel_order(id + 2, "");
+    let ended = paper.pump(10, |s| s.errors.iter().any(|(r, c, _)| *r == id + 2 && *c == 161));
+    let s = paper.state.lock().unwrap();
+    let seq: Vec<String> = s.sequence.iter().filter(|e| e.split(':').nth(1) == Some((id + 2).to_string().as_str())).cloned().collect();
+    drop(s);
+    paper.check(ended && seq == [format!("error:{}:387", id + 2), format!("status:{}:Cancelled", id + 2),
+        format!("error:{}:202", id + 2), format!("error:{}:161", id + 2)],
+        &format!("PEG STK on a stock: kept, its cancel gives Cancelled, 202, 161 ({seq:?})"));
+}
+
 #[test]
 #[ignore = "live: logs in to the paper account (IB_USERNAME / IB_PASSWORD)"]
 fn order_paths_paper() {
@@ -810,6 +873,7 @@ fn order_paths_paper() {
     global_cancel_after_ended_orders(&mut paper, base + 800);
     attached_from_preset(&mut paper, base + 900);
     refused_at_lookup(&mut paper, base + 1000);
+    refusals_of_10_51(&mut paper, base + 1100);
 
     println!("  cleanup: cancelling every order still working");
     // A modified order is placed twice under one id: cancel it once.

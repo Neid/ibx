@@ -1565,6 +1565,10 @@ pub struct ClientCore {
     pub instrument_to_req: Mutex<HashMap<InstrumentId, Vec<i64>>>,
     // con_id → InstrumentId for find_or_register_instrument lookup
     pub con_id_to_instrument: Mutex<HashMap<i64, InstrumentId>>,
+    /// The exchange each conId's slot was registered with, and the slots
+    /// of orders by conId on another exchange (ibx#743).
+    slot_exchanges: Mutex<HashMap<InstrumentId, String>>,
+    order_slots: Mutex<HashMap<(i64, String), InstrumentId>>,
     /// What each market data request sent last and where it reads the
     /// market data queue, by request id (ibx#446).
     pub last_quotes: Mutex<HashMap<i64, StreamState>>,
@@ -2362,6 +2366,8 @@ impl ClientCore {
             req_to_instrument: Mutex::new(HashMap::new()),
             instrument_to_req: Mutex::new(HashMap::new()),
             con_id_to_instrument: Mutex::new(HashMap::new()),
+            slot_exchanges: Mutex::new(HashMap::new()),
+            order_slots: Mutex::new(HashMap::new()),
             last_quotes: Mutex::new(HashMap::new()),
             md_reader: Mutex::new(md_stream::MdReader::new()),
             md_joins_waiting: std::sync::atomic::AtomicUsize::new(0),
@@ -2529,8 +2535,11 @@ impl ClientCore {
         con_id: i64, symbol: &str, exchange: &str, sec_type: &str, currency: &str,
         filters: crate::types::SecDefFilters,
     ) -> Result<InstrumentId, String> {
-        if con_id != 0 || sec_type.eq_ignore_ascii_case("BAG") {
+        if sec_type.eq_ignore_ascii_case("BAG") {
             return self.find_or_register_instrument(control_tx, con_id, symbol, exchange, sec_type);
+        }
+        if con_id != 0 {
+            return self.order_slot(control_tx, con_id, symbol, exchange, sec_type);
         }
         if !what_if && let Some(t) = self.open_orders.lock().unwrap().get(&order_id) {
             return Ok(t.instrument);
@@ -2566,6 +2575,39 @@ impl ClientCore {
             || self.currency_sent.lock().unwrap().get(&con_id).map(String::as_str) == Some(currency)
     }
 
+    /// The slot of an order given by its conId (ibx#743): the conId's own
+    /// slot when it was registered with the order's exchange (SMART and
+    /// BEST alike) or the order names none, else a slot of its own for
+    /// that exchange, so that the order goes where the caller sent it.
+    fn order_slot(
+        &self, control_tx: &ControlSender, con_id: i64, symbol: &str, exchange: &str, sec_type: &str,
+    ) -> Result<InstrumentId, String> {
+        let venue = |e: &str| match e.to_ascii_uppercase().as_str() {
+            "" | "SMART" | "BEST" => "SMART".to_string(),
+            other => other.to_string(),
+        };
+        let main = self.con_id_to_instrument.lock().unwrap().get(&con_id).copied();
+        let Some(main) = main else {
+            return self.find_or_register_instrument(control_tx, con_id, symbol, exchange, sec_type);
+        };
+        let wanted = venue(exchange);
+        let registered = self.slot_exchanges.lock().unwrap().get(&main).cloned().unwrap_or_else(|| "SMART".to_string());
+        if exchange.is_empty() || wanted == registered {
+            return Ok(main);
+        }
+        if let Some(&id) = self.order_slots.lock().unwrap().get(&(con_id, wanted.clone())) {
+            return Ok(id);
+        }
+        let (reply_tx, reply_rx) = crossbeam_channel::bounded(1);
+        control_tx.send(ControlCommand::RegisterOrderSlot {
+            con_id, symbol: symbol.to_string(), sec_type: sec_type.to_string(), exchange: exchange.to_string(),
+            reply_tx: Some(reply_tx),
+        }).map_err(|e| format!("Engine stopped: {}", e))?;
+        let id = Self::recv_registration(reply_rx)?;
+        self.order_slots.lock().unwrap().insert((con_id, wanted), id);
+        Ok(id)
+    }
+
     pub fn find_or_register_instrument(
         &self,
         control_tx: &ControlSender,
@@ -2592,7 +2634,19 @@ impl ClientCore {
 
         let id = Self::recv_registration(reply_rx)?;
         self.con_id_to_instrument.lock().unwrap().insert(con_id, id);
+        self.note_slot_exchange(id, exchange);
         Ok(id)
+    }
+
+    /// The exchange a conId's slot was last registered with, as the engine
+    /// keeps it: an empty one leaves it (ibx#743).
+    fn note_slot_exchange(&self, id: InstrumentId, exchange: &str) {
+        let venue = match exchange.to_ascii_uppercase().as_str() {
+            "" => return,
+            "SMART" | "BEST" => "SMART".to_string(),
+            other => other.to_string(),
+        };
+        self.slot_exchanges.lock().unwrap().insert(id, venue);
     }
 
     // ── Subscription management ──
@@ -2794,6 +2848,7 @@ impl ClientCore {
         }
 
         self.con_id_to_instrument.lock().unwrap().insert(con_id, instrument_id);
+        self.note_slot_exchange(instrument_id, exchange);
         let attached = attach(instrument_id, false);
         if delayed_known && self.req_to_instrument.lock().unwrap().contains_key(&req_id) {
             self.set_delayed(req_id);
@@ -3675,6 +3730,7 @@ impl ClientCore {
 
         let instrument_id = Self::recv_registration(reply_rx)?;
         self.con_id_to_instrument.lock().unwrap().insert(con_id, instrument_id);
+        self.note_slot_exchange(instrument_id, exchange);
         self.tbt_reqs.lock().unwrap().insert(req_id, (instrument_id, con_id, tbt_type));
         Ok(instrument_id)
     }
@@ -9539,6 +9595,44 @@ mod tests {
         assert_eq!(ids(&legs((11, "PRESET"), (10, "PRESET"))), Some((103, "Duplicate order id".to_string())), "case F");
         assert_eq!(ids(&legs((12, "PRESET"), (12, "PRESET"))), Some((103, "Duplicate order id".to_string())));
         assert_eq!(ids(&legs((0, "PRESET"), (none, ""))).map(|r| r.0), Some(10149));
+    }
+
+    // ibx#743: an order by conId on another exchange than the one the
+    // conId's slot was registered with gets a slot of its own, kept for the
+    // next orders there; SMART, BEST and no exchange take the conId's slot.
+    #[test]
+    fn an_order_by_con_id_on_another_exchange_gets_its_own_slot() {
+        let core = ClientCore::new();
+        let (tx, rx) = crossbeam_channel::unbounded::<ControlCommand>();
+        let tx = crate::engine::park::ControlSender::from(tx);
+        let engine = std::thread::spawn(move || {
+            let mut next = 0u32;
+            let mut seen = Vec::new();
+            while let Ok(cmd) = rx.recv_timeout(std::time::Duration::from_secs(2)) {
+                match cmd {
+                    ControlCommand::RegisterInstrument { exchange, reply_tx: Some(r), .. } => {
+                        seen.push(format!("main {exchange}"));
+                        let _ = r.send(Ok(next)); next += 1;
+                    }
+                    ControlCommand::RegisterOrderSlot { con_id, exchange, reply_tx: Some(r), .. } => {
+                        seen.push(format!("own {con_id} {exchange}"));
+                        let _ = r.send(Ok(next)); next += 1;
+                    }
+                    _ => {}
+                }
+            }
+            seen
+        });
+        let slot = |exchange: &str| core.order_instrument(&tx, 1, false, 265598, "AAPL", exchange, "STK", "USD",
+            Default::default()).unwrap();
+        assert_eq!(slot("SMART"), 0);
+        assert_eq!(slot("XYZ"), 1);
+        assert_eq!(slot("BEST"), 0);
+        assert_eq!(slot(""), 0);
+        assert_eq!(slot("xyz"), 1, "kept for the next order there");
+        assert_eq!(slot("ISLAND"), 2);
+        drop(tx);
+        assert_eq!(engine.join().unwrap(), ["main SMART", "own 265598 XYZ", "own 265598 ISLAND"]);
     }
 
     // ibx#466: an order with an orderRef goes to the extended encoder,

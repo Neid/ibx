@@ -2716,6 +2716,25 @@ impl HotLoop {
                 ControlCommand::RegisterInstrument { con_id, symbol, sec_type, exchange, reply_tx } => {
                     self.register_or_reject(con_id, symbol, &sec_type, &exchange, &reply_tx);
                 }
+                ControlCommand::RegisterOrderSlot { con_id, symbol, sec_type, exchange, reply_tx } => {
+                    // What the conId's own slot knows and the order left out.
+                    let main = self.context.market.instrument_by_con_id(con_id);
+                    let currency = main.map(|m| self.context.market.currency(m).to_string());
+                    let symbol = match main {
+                        Some(m) if symbol.is_empty() && !matches!(self.context.market.symbol(m), "" | "?") => self.context.market.symbol(m).to_string(),
+                        _ => symbol,
+                    };
+                    let sec_type = match main {
+                        Some(m) if sec_type.is_empty() => self.context.market.order_routing(m).0,
+                        _ => sec_type,
+                    };
+                    if let Some(id) = self.register_slot_or_reject(None, symbol, &sec_type, &exchange, &reply_tx) {
+                        self.context.market.resolve_con_id(id, con_id);
+                        if let Some(currency) = currency {
+                            self.context.market.set_currency(id, &currency);
+                        }
+                    }
+                }
                 ControlCommand::RegisterOrderContract { symbol, sec_type, exchange, currency, filters, reply_tx } => {
                     // Its conId comes from the lookup before the order
                     // goes out (ibx#486); a contract other than a stock is
