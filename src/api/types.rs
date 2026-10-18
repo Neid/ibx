@@ -458,6 +458,30 @@ impl Order {
     }
 
     /// Build OrderAttrs from Order fields.
+    /// The scale fields of a scale order (ibx#751): one with an initial
+    /// level size. The profit taker's id is given by the client.
+    pub fn scale(&self) -> Option<Box<crate::types::Scale>> {
+        if self.scale_init_level_size == i32::MAX {
+            return None;
+        }
+        let int = |v: i32| (v != i32::MAX).then_some(v);
+        let price = |v: f64| (v != f64::MAX).then(|| crate::api::types::price_from_f64(v));
+        Some(Box::new(crate::types::Scale {
+            init_level_size: self.scale_init_level_size,
+            subs_level_size: int(self.scale_subs_level_size),
+            price_increment: price(self.scale_price_increment),
+            price_adjust_value: price(self.scale_price_adjust_value),
+            price_adjust_interval: int(self.scale_price_adjust_interval),
+            profit_offset: price(self.scale_profit_offset),
+            auto_reset: self.scale_auto_reset,
+            init_position: int(self.scale_init_position),
+            init_fill_qty: int(self.scale_init_fill_qty),
+            random_percent: self.scale_random_percent,
+            total_qty: (self.total_quantity * crate::types::QTY_SCALE as f64).round() as crate::types::Qty,
+            profit_child_id: None,
+        }))
+    }
+
     pub fn attrs(&self) -> OrderAttrs {
         // Parse the good-till expiry string into either a UTC instant or a
         // calendar date. An expiry that does not parse is refused with 343
@@ -553,6 +577,7 @@ impl Order {
             algo: None,
             // Set where a combo order is built, from its contract (ibx#470).
             combo: None,
+            scale: self.scale(),
         }
     }
 
@@ -599,6 +624,8 @@ impl Order {
     pub fn has_extended_attrs(&self) -> bool {
         // An orderRef rides the extended encoders, which send it (ibx#466).
         !self.order_ref.is_empty()
+            // A scale order (ibx#751).
+            || self.scale_init_level_size != i32::MAX
             || self.display_size > 0
             || (self.min_qty > 0 && self.min_qty != i32::MAX)
             || self.hidden

@@ -433,9 +433,10 @@ def test_account_summary_tag_rows():
 
 
 # The whole answer (ibx#486): the tag rows, the $LEDGER:ALL rows of the
-# account "All" per currency, the end; each frame twice, as the reference.
+# account "All" per currency, the end; each frame twice, as the reference
+# in a process that had served account updates earlier (ibx#752).
 def test_account_summary_whole_answer():
-    out = replay("20260926/account_summary")
+    out = replay("20260926/account_summary", after_account_updates=True)
     theirs = assert_same(out)
     assert sum(l.startswith("accountSummaryEnd|") for l in theirs) == 2
     assert any(l.startswith("accountSummary|9002|All|CashBalance|933115.05|USD") for l in theirs)
@@ -446,6 +447,13 @@ def test_account_summary_whole_answer():
 def test_account_summary_whole_answer_on_10_51():
     theirs = assert_same(replay("gw1051/20261018c/account_summary", until=1413))
     assert sum(l.startswith("accountSummaryEnd|") for l in theirs) == 1
+
+
+# The same after an earlier session of the process had asked the account
+# updates: each frame twice (ibx#752).
+def test_account_summary_whole_answer_after_account_updates():
+    theirs = assert_same(replay("gw1051/20261018/account_summary", until=2717, after_account_updates=True))
+    assert sum(l.startswith("accountSummaryEnd|") for l in theirs) == 2
 
 
 # A combo whose BAG symbol is not in the legs' order (10.51 at level 225,

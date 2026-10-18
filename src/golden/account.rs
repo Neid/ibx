@@ -30,6 +30,9 @@ struct AccountReplay {
 /// with ibx's subscription id in place of the reference's.
 fn replay_account_summary(fx: &Fixture) -> AccountReplay {
     let mut s = Session::new().in_zone(&fx.header);
+    // The recording's gateway process had served account updates in an
+    // earlier session: its frames come twice (ibx#752).
+    s.call(|c| { let _ = c.core.subscribe_account_updates(true); });
     let mut theirs = Vec::new();
     let mut requests_theirs = Vec::new();
     // The reference's subscription id and ibx's, in request order.
@@ -93,8 +96,8 @@ fn account_summary_request_and_tag_rows() {
 // The rest of the answer: the reference gives the tag rows twice, and the
 // $LEDGER:ALL rows per currency (USD, then BASE) for the account "All"
 // written as its account values (933115.0500 gives 933115.05), then the
-// end, twice (ACCOUNT-SUMMARY 1.3 and 1.5: the ALL sum of ef.a(); the
-// listener registered twice by b2.o()).
+// end, twice: the recording's process had served account updates in an
+// earlier session (ibx#752).
 #[test]
 fn account_summary_ledger_all_rows() {
     let r = replay_account_summary(&load("account_summary"));

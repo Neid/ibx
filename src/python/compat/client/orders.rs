@@ -174,6 +174,14 @@ impl EClient {
         // A rule checked once the contract is known that keeps the order
         // for its cancel (ibx#688).
         self.core.carry_kept_refusal(&mut cmd, api_order);
+        let child_contract = ApiContract {
+            con_id: contract.con_id, symbol: contract.symbol.clone(), sec_type: contract.sec_type.clone(),
+            exchange: contract.exchange.clone(), currency: contract.currency.clone(), ..Default::default()
+        };
+        // A scale order's profit taker (ibx#751).
+        if !api_order.what_if {
+            self.core.scale_profit_child(&mut cmd, &child_contract, api_order, oid, instrument);
+        }
         built.push(cmd);
 
         // Track order in shared core

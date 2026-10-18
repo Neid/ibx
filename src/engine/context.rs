@@ -252,6 +252,8 @@ pub struct Context {
     /// The last limit offset, limit price and stop price the server
     /// reported for a TRAIL LIMIT order (ib-agent#194, ibx#491).
     pub(crate) trail_limit_reported: HashMap<OrderId, TrailLimitReported>,
+    /// The scale orders whose auto-reset a report gave (ibx#751).
+    pub(crate) scale_reset_reported: std::collections::HashSet<OrderId>,
     /// The last stop price the server reported for an order, the
     /// reference's last known value a trailing replace compares with
     /// (ibx#263). A replace does not change it.
@@ -311,6 +313,8 @@ pub struct Context {
     /// Set while a combo order is encoded: what it writes besides the
     /// order's own fields (ibx#470).
     pub(crate) combo_send: Option<crate::engine::combo::ComboSend>,
+    /// The scale fields of the order being sent (ibx#751).
+    pub(crate) scale_send: Option<Box<crate::types::Scale>>,
     /// The API client id the new orders carry (ibx#466).
     pub(crate) api_client_id: i64,
     /// Requests with outside-RTH waiting for their lookup, in order; later
@@ -577,6 +581,7 @@ impl Context {
             cancel_clord: HashMap::new(),
             status_queries: std::collections::HashSet::new(),
             trail_limit_reported: HashMap::new(),
+            scale_reset_reported: std::collections::HashSet::new(),
             reported_stop: HashMap::new(),
             rth_types: HashMap::new(),
             rth_lookups: Vec::new(),
@@ -602,6 +607,7 @@ impl Context {
             short_sale_send: None,
             combos: Default::default(),
             combo_send: None,
+            scale_send: None,
             api_client_id: 0,
             scale_us_lots: false,
             bracket_keys: HashMap::new(),
@@ -760,6 +766,14 @@ impl Context {
                 OrderStatus::PendingCancel | OrderStatus::PendingReplace |
                 OrderStatus::PartiallyFilled))
             .collect()
+    }
+
+    /// Set the quantity an order is held with (ibx#751: a scale order with
+    /// an initial position).
+    pub(crate) fn set_order_qty(&mut self, order_id: OrderId, qty_fixed: crate::types::Qty) {
+        if let Some(o) = self.open_orders.get_mut(&order_id) {
+            o.qty_fixed = qty_fixed;
+        }
     }
 
     pub fn order(&self, order_id: OrderId) -> Option<&Order> {

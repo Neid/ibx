@@ -84,6 +84,10 @@ pub struct StreamState {
     /// An index streamed in real time: the reference gives it from its
     /// native top, with no bid, ask or sizes (ibx#640).
     index_top: bool,
+    /// A time of 0 and a delayed open of 0 were given (ibx#756).
+    zeros_sent: u8,
+    /// An option or futures option: a time of 0 is given (ibx#756).
+    option: bool,
 }
 
 impl StreamState {
@@ -125,6 +129,8 @@ pub(crate) struct NewRequest<'a> {
     pub farm_auto: bool,
     /// An index streamed in real time (ibx#640).
     pub index_top: bool,
+    /// An option or futures option (ibx#756).
+    pub option: bool,
 }
 
 /// An instrument as the queued steps have it: the reference's record at
@@ -420,6 +426,19 @@ fn stream_pass(st: &mut StreamState, m: &Mirror, pass: Pass, out: &mut Out) {
             // Each exchange when it changes: the last trade's exchange is
             // not given again for a trade on the same exchange (ibx#638).
             field::BID_EXCH | field::ASK_EXCH | field::LAST_EXCH => fields[idx] != st.fields[idx],
+            // A step that sets a time of 0 on an option, and a delayed open
+            // of 0, give it once (ibx#756; the reference 10.51, paper,
+            // 18/10/2026 weekend, two runs: a frozen option's last time "0"
+            // at +1.2 s, none on the stocks; a delayed stock's open 0.0 with
+            // its -1 bid and ask).
+            field::TIME | field::OPEN if fields[idx] == 0 => {
+                let bit = if idx == field::TIME { 1 } else { 2 };
+                let set = matches!(pass, Pass::Step(_, set) if set & (1 << idx) != 0);
+                set && (if idx == field::TIME { st.option } else { st.delayed }) && st.zeros_sent & bit == 0 && {
+                    st.zeros_sent |= bit;
+                    true
+                }
+            }
             _ => fields[idx] != 0 && fields[idx] != st.fields[idx],
         };
     }
@@ -603,10 +622,13 @@ fn snapshot_pass(snap: &mut PlainSnapshot, m: &Mirror, pass: Pass, out: &mut Out
         out.price(TICK_LAST, field::LAST, false);
         out.size(TICK_LAST_SIZE, field::LAST_SIZE);
     }
-    // An option's volume of 0 is given too (ibx#681; the reference 10.51,
-    // an option with no trade, 13/10/2026).
+    // A volume of 0 is given too: an option's (ibx#681; the reference
+    // 10.51, an option with no trade, 13/10/2026), a stock's (ibx#756; the
+    // reference 10.51, paper, 18/10/2026 weekend, SPY, two runs). A currency
+    // pair's snapshot gives none.
     let option = snap.is_option();
-    let volume = (has(field::VOLUME) || (option && set & (1 << field::VOLUME) != 0 && m.seen(SizeKind::Volume)))
+    let zero_volume = set & (1 << field::VOLUME) != 0 && m.seen(SizeKind::Volume);
+    let volume = (has(field::VOLUME) || zero_volume)
         && snap.take(out.api(TICK_VOLUME));
     if volume && !delayed {
         out.size(TICK_VOLUME, field::VOLUME);
@@ -696,10 +718,10 @@ impl ClientCore {
         if waiting_join {
             self.md_joins_waiting.fetch_add(1, Ordering::AcqRel);
         }
-        let (top_off, farm_auto, index_top) = kind.map_or((old.top_off, old.farm_auto, old.index_top),
-            |k| (k.top_off, k.farm_auto, k.index_top));
+        let (top_off, farm_auto, index_top, option) = kind.map_or((old.top_off, old.farm_auto, old.index_top, old.option),
+            |k| (k.top_off, k.farm_auto, k.index_top, k.option));
         streams.insert(req_id, StreamState {
-            start: head, waiting_join, delayed, top_off, farm_auto, index_top, mdt_done: old.mdt_done, ..StreamState::default()
+            start: head, waiting_join, delayed, top_off, farm_auto, index_top, option, mdt_done: old.mdt_done, ..StreamState::default()
         });
     }
 

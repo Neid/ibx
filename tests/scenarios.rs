@@ -1135,11 +1135,11 @@ fn account_summary_delivers_each_server_batch() {
     let mut w = RecordingWrapper::default();
     client.process_msgs(&mut w);
 
-    // The 3 rows and the end, each frame twice as the reference gives them
-    // (ibx#486: its listener is registered twice).
+    // The 3 rows and the end, each frame once: no account updates were
+    // asked in the session (ibx#752).
     let summaries: Vec<_> = w.events.iter().filter(|e| e.starts_with("account_summary:5:")).collect();
-    assert_eq!(summaries.len(), 6, "Expected the 3 summary tags twice, got {:?}", summaries);
-    assert_eq!(w.events.iter().filter(|e| *e == "account_summary_end:5").count(), 2);
+    assert_eq!(summaries.len(), 3, "Expected the 3 summary tags once, got {:?}", summaries);
+    assert_eq!(w.events.iter().filter(|e| *e == "account_summary_end:5").count(), 1);
 
     // Verify specific tags
     assert!(summaries.iter().any(|e| e.contains(":NetLiquidation:")));

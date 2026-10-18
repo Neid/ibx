@@ -177,6 +177,7 @@ impl PlainSnapshot {
         self.option
     }
 
+
     pub fn timed_out(&self, now: Instant) -> bool {
         now.duration_since(self.started) >= if self.acked { TIMEOUT } else { UNACKED_TIMEOUT }
     }

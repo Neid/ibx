@@ -65,16 +65,19 @@ impl EClient {
     /// `hmds_farms` (farms played on the historical link),
     /// `positions_of_the_recording` (the account's positions of the
     /// reference's first reqPositions answer, ibx#707), `replies_from` (a
-    /// scenario whose lookups also answer ibx's, ibx#604).
+    /// scenario whose lookups also answer ibx's, ibx#604),
+    /// `after_account_updates` (the recording's process had served account
+    /// updates in an earlier session, ibx#752).
     /// Returns a dict: `frame_error`, `frames_compared`, `ours`, `theirs`
     /// (callback lines), `unsent`, `not_made`.
     #[doc(hidden)]
-    #[pyo3(signature = (name, driver, codec=false, until=None, skip_seqs=Vec::new(), skip_orders=Vec::new(), compare=None, farms=Vec::new(), hmds_farms=Vec::new(), positions_of_the_recording=false, replies_from=None))]
+    #[pyo3(signature = (name, driver, codec=false, until=None, skip_seqs=Vec::new(), skip_orders=Vec::new(), compare=None, farms=Vec::new(), hmds_farms=Vec::new(), positions_of_the_recording=false, replies_from=None, after_account_updates=false))]
     #[allow(clippy::too_many_arguments)]
     fn _test_replay_scenario<'py>(
         &self, py: Python<'py>, name: &str, driver: Bound<'py, PyAny>, codec: bool, until: Option<u64>,
         skip_seqs: Vec<u64>, skip_orders: Vec<i64>, compare: Option<Vec<String>>, farms: Vec<String>,
         hmds_farms: Vec<String>, positions_of_the_recording: bool, replies_from: Option<String>,
+        after_account_updates: bool,
     ) -> PyResult<Bound<'py, PyDict>> {
         if self.connected.load(Ordering::Acquire) {
             return Err(PyRuntimeError::new_err("Already connected"));
@@ -119,6 +122,9 @@ impl EClient {
         *self.account_id.lock().unwrap() = Some(crate::test_support::scenario::session::ACCOUNT.to_string());
         *self.connection_time.lock().unwrap() = Some(crate::client_core::connection_time_now());
         self.connected.store(true, Ordering::Release);
+        if after_account_updates {
+            let _ = self.core.subscribe_account_updates(true);
+        }
         let mut d = PyDriver { client: self, driver, error: None };
         let outcome = run(&scenario, &opts, &mut links, &mut d);
         crate::gateway::set_machine_zone_for_test(zone_before.as_deref());

@@ -582,6 +582,30 @@ pub struct OrderAttrs {
     pub algo: Option<OrderAlgo>,
     /// The combo of a BAG order, None for any other order (ibx#470).
     pub combo: Option<Box<ComboSpec>>,
+    /// The scale fields of a scale order, None for any other (ibx#751).
+    pub scale: Option<Box<Scale>>,
+}
+
+/// The scale fields of a scale order (ibx#751), as given by the caller:
+/// `None` for an unset value. With a profit offset the order has a profit
+/// taker, the reference's own child order: its API order id
+/// (`profit_child_id`, negative), the opposite side, the order's price
+/// moved by the offset.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Scale {
+    pub init_level_size: i32,
+    pub subs_level_size: Option<i32>,
+    pub price_increment: Option<Price>,
+    pub price_adjust_value: Option<Price>,
+    pub price_adjust_interval: Option<i32>,
+    pub profit_offset: Option<Price>,
+    pub auto_reset: bool,
+    pub init_position: Option<i32>,
+    pub init_fill_qty: Option<i32>,
+    pub random_percent: bool,
+    /// The order's whole quantity (the caller's total quantity).
+    pub total_qty: Qty,
+    pub profit_child_id: Option<OrderId>,
 }
 
 /// The hedge of a hedge order (ibx#614), as the reference sends it: its

@@ -372,6 +372,9 @@ pub struct Options {
     /// The account's positions before the replay, from the reference's
     /// first reqPositions answer (see [`Options::positions_of_the_recording`]).
     pub positions_of_the_recording: bool,
+    /// The recording's gateway process had served account updates in an
+    /// earlier session (see [`Options::after_account_updates`]).
+    pub after_account_updates: bool,
 }
 
 impl Default for Options {
@@ -391,11 +394,20 @@ impl Default for Options {
             farms: Vec::new(),
             hmds_farms: Vec::new(),
             positions_of_the_recording: false,
+            after_account_updates: false,
         }
     }
 }
 
 impl Options {
+    /// The recording's gateway process had served account updates in an
+    /// earlier session, so its account summary frames come twice
+    /// (ibx#752): the replayed client starts as one that asked them.
+    pub fn after_account_updates(mut self) -> Self {
+        self.after_account_updates = true;
+        self
+    }
+
     /// The account's positions before the replay are those of the
     /// reference's first reqPositions answer in the recording: its logon
     /// held them, the recording does not (ibx#515, ibx#707).
@@ -733,6 +745,9 @@ pub fn level_of(sc: &Scenario) -> i32 {
 pub fn replay(sc: &Scenario, opts: &Options) -> Outcome {
     let mut links = Links::new();
     let mut driver = RustDriver::new(&links);
+    if opts.after_account_updates {
+        let _ = driver.client.core.subscribe_account_updates(true);
+    }
     run(sc, opts, &mut links, &mut driver)
 }
 

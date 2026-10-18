@@ -577,10 +577,6 @@ pub const LEVEL_PRICE_FROM_DEFINITION: i32 = 224;
 /// trade's size; below it, a whole number (ibx#613).
 pub const LEVEL_FRACTIONAL_LAST_SIZE: i32 = 222;
 
-/// From this session level each account summary frame is given once;
-/// below it, twice (ibx#486, ibx#662).
-const LEVEL_SUMMARY_FRAMES_ONCE: i32 = 225;
-
 /// From this session level a cancel of an account summary changes nothing
 /// (ibx#602; the reference 10.51 at level 225, paper, 18/10/2026, two
 /// fresh sessions): the rows keep coming under the request id, the request
@@ -1565,6 +1561,11 @@ pub struct ClientCore {
     pub instrument_to_req: Mutex<HashMap<InstrumentId, Vec<i64>>>,
     // con_id → InstrumentId for find_or_register_instrument lookup
     pub con_id_to_instrument: Mutex<HashMap<i64, InstrumentId>>,
+    /// Account updates were asked in this session (ibx#752).
+    account_updates_asked: AtomicBool,
+    /// The API order id of the next profit taker of a scale order, the
+    /// reference's own child order: negative, from -2 down (ibx#751).
+    next_scale_child: std::sync::atomic::AtomicI64,
     /// The exchange each conId's slot was registered with, and the slots
     /// of orders by conId on another exchange (ibx#743).
     slot_exchanges: Mutex<HashMap<InstrumentId, String>>,
@@ -2236,6 +2237,16 @@ pub(crate) fn auto_cancel_date_view(raw: &str, tz: &jiff::tz::TimeZone) -> Optio
     Some(format!("{} {}", local.strftime("%Y%m%d %H:%M:%S"), label))
 }
 
+/// A scale order's auto-reset as openOrder reports it (ibx#751): as the
+/// server's reports gave it so far, once a report came.
+fn reported_scale_reset(order: &mut ApiOrder, reported: Option<&ApiOrder>) {
+    if order.scale_init_level_size != i32::MAX && order.scale_auto_reset
+        && let Some(r) = reported
+    {
+        order.scale_auto_reset = r.scale_auto_reset;
+    }
+}
+
 /// usePriceMgmtAlgo as openOrder reports it (ibx#492): 0 or 1, never
 /// unset, as the reference; the value the server's report gives, else the
 /// caller's, unset read as 0.
@@ -2366,6 +2377,8 @@ impl ClientCore {
             req_to_instrument: Mutex::new(HashMap::new()),
             instrument_to_req: Mutex::new(HashMap::new()),
             con_id_to_instrument: Mutex::new(HashMap::new()),
+            account_updates_asked: AtomicBool::new(false),
+            next_scale_child: std::sync::atomic::AtomicI64::new(-2),
             slot_exchanges: Mutex::new(HashMap::new()),
             order_slots: Mutex::new(HashMap::new()),
             last_quotes: Mutex::new(HashMap::new()),
@@ -2926,6 +2939,7 @@ impl ClientCore {
         let kind = md_stream::NewRequest {
             snapshot: snapshot.then_some(sec_type), top_off, farm_auto: auto_execution_from_farm(sec_type, exchange),
             index_top: !snapshot && sec_type.eq_ignore_ascii_case("IND"),
+            option: matches!(sec_type.to_ascii_uppercase().as_str(), "OPT" | "FOP"),
         };
         if !self.join_md_observers(shared, req_id, instrument, had_data, Some(kind), None) {
             self.md_news.lock().unwrap().remove(&req_id);
@@ -4088,6 +4102,8 @@ impl ClientCore {
     pub fn subscribe_account_updates(&self, subscribe: bool) -> Option<(i64, String)> {
         let was = self.account_updates_subscribed.swap(subscribe, Ordering::AcqRel);
         if subscribe {
+            // From now on each account summary frame comes twice (ibx#752).
+            self.account_updates_asked.store(true, Ordering::Relaxed);
             if !was {
                 *self.account_stream.lock().unwrap() = AccountStream { image_pending: true, ..Default::default() };
                 *self.last_portfolio.lock().unwrap() = None;
@@ -4646,6 +4662,12 @@ impl ClientCore {
     /// status and fill counts stay as the server last reported them: the
     /// engine can still refuse the modify (ibx#463).
     pub fn track_order(&self, order_id: OrderId, contract: ApiContract, mut order: ApiOrder, instrument: InstrumentId) {
+        // A scale order with an initial position goes out, and is reported,
+        // with its quantity less that position (ibx#751; the reference
+        // 10.51, paper, 18/10/2026: 4 less 5 shown as -1).
+        if order.scale_init_level_size != i32::MAX && order.scale_init_position != i32::MAX {
+            order.total_quantity -= f64::from(order.scale_init_position);
+        }
         // Kept with the time in force the reference reports for it, which
         // a modify must restate (ibx#467).
         let restated = order.tif.is_empty() && !order.include_overnight;
@@ -4728,6 +4750,7 @@ impl ClientCore {
                     reported_trail_limit(&mut order, &i.order);
                 }
                 reported_price_mgmt(&mut order, info.as_ref().map(|i| &i.order));
+                reported_scale_reset(&mut order, info.as_ref().map(|i| &i.order));
                 reported_auto_cancel_date(&mut order, info.as_ref().map(|i| &i.order));
                 // The order of this client carries its client id, as the
                 // reference's openOrder (ibx#486).
@@ -5233,6 +5256,7 @@ impl ClientCore {
                         if !info.order.oca_group.is_empty() { order.oca_group = info.order.oca_group.clone(); }
                     }
                     reported_price_mgmt(&mut order, info.as_ref().map(|i| &i.order));
+                    reported_scale_reset(&mut order, info.as_ref().map(|i| &i.order));
                     reported_auto_cancel_date(&mut order, info.as_ref().map(|i| &i.order));
                     let modified = self.modified_orders.lock().unwrap().contains(&oid);
                     session_order_fields(&mut order, &shared.reference.user_name(), modified);
@@ -5640,10 +5664,8 @@ impl ClientCore {
     ///   currency summed over the accounts, for the account `All`;
     /// - ledger values are written as the reference's account values
     ///   (two to seven decimals, no grouping);
-    /// - the reference registers the request's listener twice, so
-    ///   each frame's rows and end are given twice (account_summary of
-    ///   26/09/2026: the four tag rows twice; the ledger sums and the end
-    ///   twice).
+    /// - once account updates were asked in the session, each frame's rows
+    ///   and end are given twice (ibx#752).
     pub fn prepare_account_summary(&self, shared: &SharedState) -> Vec<AccountSummaryBatch> {
         let events = shared.portfolio.drain_account_summary_events();
         if events.is_empty() {
@@ -5684,11 +5706,14 @@ impl ClientCore {
                 }
                 batches.push(AccountSummaryBatch { req_id: req.req_id, account: None, rows: Vec::new(), end: true });
             }
-            // The reference 10.40 gives each frame twice (its listener is
-            // registered twice, ibx#486); the reference 10.51 gives it once
-            // (observed 13/10/2026, regular hours, paper, ibx#662), with
-            // the move to its session level (ibx#602).
-            if session_level() < LEVEL_SUMMARY_FRAMES_ONCE {
+            // Each frame twice once account updates were asked earlier in
+            // the session, whether still running or cancelled, once
+            // otherwise; a second account updates request changes nothing
+            // (ibx#752; the reference 10.51, paper, 18/10/2026, market
+            // closed, three fresh processes: in the same session and in
+            // later ones). The level plays no part: the twice of the 10.40
+            // recordings came after account updates.
+            if self.account_updates_asked.load(Ordering::Relaxed) {
                 out.extend(batches.iter().cloned());
             }
             out.extend(batches);
@@ -6880,7 +6905,45 @@ impl ClientCore {
         {
             return Some((328, "Trailing stop orders can be attached to limit or stop-limit orders only.".into()));
         }
+        // A scale order with auto-reset and no profit offset (ibx#751; the
+        // reference 10.51, paper, 18/10/2026, market closed: 418, nothing
+        // sent, kept: its cancel gives 202 and 161).
+        if order.scale_init_level_size != i32::MAX && order.scale_auto_reset && order.scale_profit_offset == f64::MAX {
+            return Some((418, "Invalid scale order profit offset.".into()));
+        }
         (order.oca_group.chars().count() > 64).then(|| (401, "OCA Group".into()))
+    }
+
+    /// The profit taker of a new scale order with a profit offset (ibx#751),
+    /// as the reference makes it with the order: a child of the order under
+    /// a negative API order id, the opposite side, a limit at the order's
+    /// price moved by the offset, the order's quantity and time in force,
+    /// auto-reset as the order's (the reference 10.51, paper, 18/10/2026,
+    /// market closed: ids -2 to -6, each child's openOrder with its parent's
+    /// id). The child is tracked as an order of this client; its id goes
+    /// to the engine with the order.
+    pub fn scale_profit_child(&self, cmd: &mut ControlCommand, contract: &ApiContract, order: &ApiOrder, parent_id: OrderId, instrument: InstrumentId) {
+        let ControlCommand::Order(req) = cmd else { return };
+        if matches!(req, OrderRequest::Modify { .. }) { return; }
+        let Some(scale) = req.new_order_attrs_mut().and_then(|a| a.scale.as_mut()) else { return };
+        let Some(offset) = scale.profit_offset else { return };
+        let child_id = self.next_scale_child.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+        scale.profit_child_id = Some(child_id);
+        let offset = offset as f64 / crate::types::PRICE_SCALE as f64;
+        let buy = order.action.eq_ignore_ascii_case("BUY");
+        let child = ApiOrder {
+            order_id: child_id,
+            action: if buy { "SELL" } else { "BUY" }.to_string(),
+            order_type: "LMT".to_string(),
+            total_quantity: order.total_quantity,
+            lmt_price: ((if buy { order.lmt_price + offset } else { order.lmt_price - offset }) * 1e8).round() / 1e8,
+            tif: order.tif.clone(),
+            parent_id,
+            account: order.account.clone(),
+            scale_auto_reset: order.scale_auto_reset,
+            ..Default::default()
+        };
+        self.track_order(child_id, contract.clone(), child, instrument);
     }
 
     /// Carry [`Self::kept_refusal`] with a new order to the engine, and
@@ -8341,11 +8404,11 @@ mod tests {
     // frame; a value missing in one account counts as missing.
     #[test]
     fn ledger_all_sums_per_currency_at_the_end() {
-        // Each frame twice below level 225 (a capture at level 214), once
-        // from it (ibx#662).
-        for (level, times) in [(214, 2), (225, 1)] {
-            crate::client_core::set_session_level_for_test(Some(level));
+        // Each frame twice once account updates were asked in the session,
+        // once otherwise, whatever the level (ibx#752).
+        for (asked, times) in [(true, 2), (false, 1)] {
             let core = ClientCore::new();
+            if asked { let _ = core.subscribe_account_updates(true); }
             let shared = SharedState::new();
             let plan = core.subscribe_account_summary(7, "All", "$LEDGER:ALL").unwrap();
             assert_eq!(plan.wire_tags, "$LEDGER");
@@ -8371,7 +8434,7 @@ mod tests {
             }).collect();
             let once = ["All|Currency|USD|USD", "All|CashBalance|10.75|USD", "All|AccruedCash|2.00|USD",
                 "All|Currency|BASE|BASE", "All|CashBalance|10.50|BASE", "All|AccruedCash|1.00|BASE", "end"];
-            assert_eq!(lines, once.repeat(times), "level {level}");
+            assert_eq!(lines, once.repeat(times), "account updates asked: {asked}");
         }
     }
 

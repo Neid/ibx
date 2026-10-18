@@ -227,6 +227,10 @@ fn send_orders(
                 continue;
             }
         }
+        // A scale order's fields (ibx#751); a preview goes without them.
+        context.scale_send = if what_if { None } else {
+            order_req.new_order_side().and_then(|(_, a)| a).and_then(|a| a.scale.clone())
+        };
         // A short-side order: refused with 321 and nothing sent, as the
         // reference, or sent with its short-sale fields (ibx#417).
         context.short_sale_send = None;
@@ -1833,6 +1837,7 @@ fn send_orders(
         send_preset_saves(context, conn, hb);
         context.short_sale_send = None;
         context.combo_send = None;
+        context.scale_send = None;
         if let Some((combo_order, view)) = combo_track && result.is_ok() {
             shared.orders.set_combo_view(oid, view);
             if !what_if { context.combos.track(oid, combo_order); }
@@ -2395,6 +2400,39 @@ fn send_new_order(
             context.set_links(oid, parent, oca_group);
         }
     }
+    // A scale order's profit taker: its own order, ids and bracket key,
+    // before the parent's message names its key (ibx#751).
+    let scale = context.scale_send.clone();
+    let profit = scale.as_ref().and_then(|s| s.profit_child_id.map(|c| (c, s.profit_offset.unwrap_or(0))));
+    let parent_oid = field(fields, 11).and_then(|v| v.split('.').next()).and_then(|i| i.parse::<crate::types::OrderId>().ok())
+        .map(|s| context.key_of(s));
+    let scale_keys = match (profit, parent_oid) {
+        (Some((child, _)), Some(parent)) => {
+            context.assign_server_id(child);
+            let child_key = context.brackets().attach_child(parent, child);
+            let parent_key = context.bracket_keys.get(&parent).copied();
+            parent_key.map(|p| (p.to_string(), child_key.to_string(), format!("{}.0", context.server_id(child))))
+        }
+        _ => None,
+    };
+    if let (Some((child, offset)), Some(parent)) = (profit, parent_oid)
+        && let Some(order) = context.order(parent).copied()
+    {
+        let side = if order.side == crate::types::Side::Buy { crate::types::Side::Sell } else { crate::types::Side::Buy };
+        let price = if order.side == crate::types::Side::Buy { order.price + offset } else { order.price - offset };
+        let qty = scale.as_ref().map_or(order.qty_fixed, |s| s.total_qty) / crate::types::QTY_SCALE;
+        context.insert_order(crate::types::Order::new(child, instrument, side, qty as u32, price, b'2', order.tif, 0));
+        // Its reports name its parent, also the reject that carries no link.
+        context.set_links(child, Some(parent), None);
+    }
+    // A scale order with an initial position is held, and reported, with
+    // the quantity it goes out with: its whole quantity less the position
+    // (ibx#751; the reference 10.51, paper, 18/10/2026: 4 less 5, -1).
+    if let (Some(s), Some(parent)) = (scale.as_ref(), parent_oid)
+        && let Some(position) = s.init_position
+    {
+        context.set_order_qty(parent, s.total_qty - i64::from(position) * crate::types::QTY_SCALE);
+    }
     let context: &Context = context;
     let short_sale: Fields = match &context.short_sale_send {
         Some(s) if fields.iter().any(|&(t, v)| t == 54 && v == "5") => short_sale_fields(s),
@@ -2498,10 +2536,108 @@ fn send_new_order(
     // (the reference 10.51, paper, pre-market 14/10/2026; ibx#690).
     if context.market.exchange(instrument) == "IBKRATS" { out.push((8032, "1")); }
     in_reference_order(&mut out);
-    let result = conn.send_fix(&out);
-    // When each new order leaves, for a comparison of timings (ibx#548).
-    log::debug!("New order sent: order {}", order_id.as_deref().unwrap_or("-"));
+    let Some(scale) = scale else {
+        let result = conn.send_fix(&out);
+        // When each new order leaves, for a comparison of timings (ibx#548).
+        log::debug!("New order sent: order {}", order_id.as_deref().unwrap_or("-"));
+        return result;
+    };
+    let mut owned: Vec<(u32, String)> = out.iter().map(|(t, v)| (*t, v.to_string())).collect();
+    let child = scale_fields(&mut owned, &scale, scale_keys.as_ref().map(|k| k.0.as_str()));
+    let refs: Vec<(u32, &str)> = owned.iter().map(|(t, v)| (*t, v.as_str())).collect();
+    let result = conn.send_fix(&refs);
+    log::debug!("New scale order sent: order {}", order_id.as_deref().unwrap_or("-"));
+    if let (Some(mut child), Some((_, child_key, child_clord)), Some(child_id)) = (child, scale_keys, scale.profit_child_id) {
+        let parent_clord = field(&refs, 11).unwrap_or("").to_string();
+        profit_child_fields(&mut child, &scale, &child_key, &child_clord, child_id, &parent_clord);
+        let refs: Vec<(u32, &str)> = child.iter().map(|(t, v)| (*t, v.as_str())).collect();
+        conn.send_fix(&refs)?;
+        log::debug!("Profit taker sent: order {}", child_id);
+    }
     result
+}
+
+/// The scale fields of a new order, as the reference 10.51 writes them
+/// (ibx#751; paper, 18/10/2026, market closed, twelve scale orders): after
+/// the account, the price management flag, the bracket key of a profit
+/// taker, the price increment, the price adjustment value, the initial
+/// level size, the adjustment interval, the initial position and filled
+/// quantity, auto-reset, the size randomization (55), the order's whole
+/// quantity, the origin, then the subsequent level size; the source is
+/// the scale one, and the quantity sent is the whole quantity less the
+/// initial position. Gives the frame the profit taker starts from.
+fn scale_fields(out: &mut Vec<(u32, String)>, scale: &crate::types::Scale, parent_key: Option<&str>) -> Option<Vec<(u32, String)>> {
+    let p = |v: crate::types::Price| format_price_ref(v).to_string();
+    let base: Vec<(u32, String)> = out.clone();
+    for (tag, value) in out.iter_mut() {
+        if *tag == 6088 { *value = "Scale".to_string(); }
+        if *tag == 38 && let Some(position) = scale.init_position {
+            *value = (scale.total_qty / crate::types::QTY_SCALE - i64::from(position)).to_string();
+        }
+    }
+    let price_mgmt = out.iter().any(|(t, _)| *t == 8339);
+    out.retain(|(t, _)| !matches!(*t, 8339 | 6122 | 6531));
+    let mut block: Vec<(u32, String)> = Vec::new();
+    if price_mgmt { block.push((8339, "1".to_string())); }
+    if let Some(key) = parent_key { block.push((6531, key.to_string())); }
+    if let Some(v) = scale.price_increment { block.push((6405, p(v))); }
+    if let Some(v) = scale.price_adjust_value { block.push((6527, p(v))); }
+    block.push((6403, scale.init_level_size.to_string()));
+    if let Some(v) = scale.price_adjust_interval { block.push((6526, v.to_string())); }
+    if let Some(v) = scale.init_position { block.push((6485, v.to_string())); }
+    if let Some(v) = scale.init_fill_qty { block.push((6486, v.to_string())); }
+    if scale.auto_reset { block.push((6461, "1".to_string())); }
+    if scale.random_percent { block.push((6795, "55.00".to_string())); }
+    block.push((6534, (scale.total_qty / crate::types::QTY_SCALE).to_string()));
+    block.push((6122, "c".to_string()));
+    if let Some(v) = scale.subs_level_size { block.push((6445, v.to_string())); }
+    let at = out.iter().position(|(t, _)| *t == 1).map_or(out.len(), |i| i + 1);
+    out.splice(at..at, block);
+    scale.profit_child_id.map(|_| base)
+}
+
+/// The profit taker of a scale order, as the reference 10.51 writes it with
+/// its parent (ibx#751): the opposite side at the parent's price moved by
+/// the offset, the parent's whole quantity, after the account its bracket
+/// key, the offset, auto-cancel of the parent, auto-reset and the size
+/// randomization as the parent's, the origin and the price management
+/// flag; its negative API order id; the scale source and the parent link.
+fn profit_child_fields(out: &mut Vec<(u32, String)>, scale: &crate::types::Scale, key: &str, clord: &str, child_id: crate::types::OrderId, parent_clord: &str) {
+    let offset = scale.profit_offset.unwrap_or(0);
+    let buy = out.iter().any(|(t, v)| *t == 54 && v == "1");
+    for (tag, value) in out.iter_mut() {
+        match *tag {
+            11 => *value = clord.to_string(),
+            44 => if let Ok(price) = value.parse::<f64>() {
+                let moved = price + if buy { 1.0 } else { -1.0 } * offset as f64 / crate::types::PRICE_SCALE as f64;
+                *value = format!("{:.2}", moved);
+            },
+            54 => *value = if buy { "2" } else { "1" }.to_string(),
+            38 => *value = (scale.total_qty / crate::types::QTY_SCALE).to_string(),
+            6121 => *value = child_id.to_string(),
+            6088 => *value = "Scale".to_string(),
+            _ => {}
+        }
+    }
+    let price_mgmt = out.iter().any(|(t, _)| *t == 8339);
+    out.retain(|(t, _)| !matches!(*t, 8339 | 6122 | 6531));
+    if !out.iter().any(|(t, _)| *t == 6121) {
+        let at = out.iter().position(|(t, _)| *t == 6119).unwrap_or(out.len());
+        out.insert(at, (6121, child_id.to_string()));
+    }
+    let mut block: Vec<(u32, String)> = vec![
+        (6531, key.to_string()),
+        (6446, format_price_ref(offset).to_string()),
+        (6965, "1".to_string()),
+    ];
+    if scale.auto_reset { block.push((6461, "1".to_string())); }
+    if scale.random_percent { block.push((6795, "55.00".to_string())); }
+    block.push((6122, "c".to_string()));
+    if price_mgmt { block.push((8339, "1".to_string())); }
+    let at = out.iter().position(|(t, _)| *t == 1).map_or(out.len(), |i| i + 1);
+    out.splice(at..at, block);
+    let at = out.iter().position(|(t, _)| *t == 6088).map_or(out.len(), |i| i + 1);
+    out.insert(at, (6107, parent_clord.to_string()));
 }
 
 /// Whether a new order of this frame's type writes the trigger method,
@@ -6226,6 +6362,58 @@ mod tests {
         assert!(tags.is_empty(), "nothing sent: {tags:?}");
         let tags = wire_tags_with(with(&["SMART", "NASDAQ", "OVERNIGHT"]), order);
         assert!(tags.contains(&(35, "D".to_string())), "{tags:?}");
+    }
+
+    // ibx#751 (the reference 10.51, paper, 18/10/2026, market closed): a
+    // scale order goes out with its scale fields after the account and the
+    // scale source; with a profit offset, its profit taker follows in the
+    // same pass: the opposite side at the price moved by the offset, its
+    // negative API order id, the bracket key of the pair and the parent link.
+    #[test]
+    fn a_scale_order_and_its_profit_taker_as_the_reference() {
+        let scale = crate::types::Scale {
+            init_level_size: 1, subs_level_size: Some(1), price_increment: Some(px(0.1)),
+            profit_offset: Some(px(0.5)), auto_reset: true, total_qty: 2 * crate::types::QTY_SCALE,
+            profit_child_id: Some(-2), ..Default::default()
+        };
+        let tags = wire_tags(OrderRequest::SubmitLimitEx {
+            order_id: FIRST, instrument: 0, side: Side::Buy, qty: 2, price: px(60.0), tif: b'0',
+            attrs: crate::types::OrderAttrs { scale: Some(Box::new(scale)), ..Default::default() },
+        });
+        let frames: Vec<Vec<(u32, String)>> = tags.split(|(t, v)| *t == 35 && v == "D").skip(1).map(|f| f.to_vec()).collect();
+        assert_eq!(frames.len(), 2, "the order and its profit taker: {tags:?}");
+        let order: Vec<u32> = |f: &[(u32, String)]| -> Vec<u32> {
+            f.iter().map(|(t, _)| *t).skip_while(|t| *t != 44).filter(|t| !matches!(*t, 8339 | 10 | 8 | 9 | 34 | 52)).collect()
+        }(&frames[0]);
+        assert_eq!(order, [44, 1, 6531, 6405, 6403, 6461, 6534, 6122, 6445, 6121, 6119, 38, 40, 55, 167, 231, 54, 59,
+            100, 6210, 6008, 6088, 15, 6211, 6238]);
+        let child: Vec<u32> = frames[1].iter().map(|(t, _)| *t).skip_while(|t| *t != 44).filter(|t| !matches!(*t, 8339 | 10 | 8 | 9 | 34 | 52)).collect();
+        assert_eq!(child, [44, 1, 6531, 6446, 6965, 6461, 6122, 6121, 6119, 38, 40, 55, 167, 231, 54, 59,
+            100, 6210, 6008, 6088, 6107, 15, 6211, 6238]);
+        let value = |f: &[(u32, String)], t: u32| f.iter().find(|(x, _)| *x == t).map(|(_, v)| v.clone()).unwrap_or_default();
+        assert_eq!((value(&frames[0], 6088), value(&frames[0], 6405), value(&frames[0], 6534), value(&frames[0], 6403)),
+            ("Scale".into(), "0.10".into(), "2".into(), "1".into()));
+        assert_eq!((value(&frames[1], 44), value(&frames[1], 54), value(&frames[1], 6121), value(&frames[1], 6446)),
+            ("60.50".into(), "2".into(), "-2".into(), "0.50".into()));
+        assert_eq!(value(&frames[1], 6107), value(&frames[0], 11), "the parent link");
+        let (parent_key, child_key) = (value(&frames[0], 6531), value(&frames[1], 6531));
+        assert_eq!(parent_key.split('/').nth(1), Some("0"));
+        assert_eq!(child_key.split('/').nth(1), Some("1"));
+        assert_eq!(parent_key.split('/').nth(2), child_key.split('/').nth(2));
+
+        // With an initial position, the quantity sent is the whole quantity
+        // less that position (an order of 4 with a position of 5: -1).
+        let scale = crate::types::Scale {
+            init_level_size: 2, subs_level_size: Some(1), price_increment: Some(px(0.2)), init_position: Some(5),
+            init_fill_qty: Some(1), total_qty: 4 * crate::types::QTY_SCALE, ..Default::default()
+        };
+        let tags = wire_tags(OrderRequest::SubmitLimitEx {
+            order_id: FIRST, instrument: 0, side: Side::Buy, qty: 4, price: px(50.0), tif: b'0',
+            attrs: crate::types::OrderAttrs { scale: Some(Box::new(scale)), ..Default::default() },
+        });
+        assert_eq!(tags.iter().filter(|(t, v)| *t == 35 && v == "D").count(), 1);
+        let value = |t: u32| tags.iter().find(|(x, _)| *x == t).map(|(_, v)| v.clone()).unwrap_or_default();
+        assert_eq!((value(38), value(6485), value(6486), value(6534)), ("-1".into(), "5".into(), "1".into(), "4".into()));
     }
 
     // ibx#660 (the reference 10.51, paper, 13/10/2026): a Minutes order

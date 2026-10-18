@@ -5681,12 +5681,14 @@ fn summary_event(rows: Vec<crate::bridge::AccountRow>, ledgers: Vec<crate::bridg
 fn account_summary_is_a_server_subscription() {
     crate::client_core::set_session_level_for_test(Some(214)); // a capture at level 214 (ibx#602)
     let (client, rx, shared) = test_client();
+    // Account updates asked earlier in the session: each frame twice (ibx#752).
+    let _ = client.core.subscribe_account_updates(true);
     client.req_account_summary(1, "All", "AccountType,NetLiquidation,$LEDGER:USD");
     assert_eq!(summary_sent(&rx), ["sub:SR.Socket.1:AccountType,NetLiquidation,$LEDGER:All"]);
 
     // Rows as sent; ledger rows of the chosen currency only, written as the
     // reference writes account values; the end. Each frame twice, as the
-    // reference (ibx#486: its listener is registered twice).
+    // reference after account updates (ibx#752).
     shared.portfolio.push_account_summary_event(summary_event(
         vec![summary_row("AccountType", "INDIVIDUAL", ""), summary_row("NetLiquidation", "953633.06", "USD")], vec![], false));
     shared.portfolio.push_account_summary_event(summary_event(vec![],

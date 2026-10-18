@@ -190,6 +190,10 @@ impl EClient {
         // A rule checked once the contract is known that keeps the order
         // for its cancel (ibx#688).
         self.core.carry_kept_refusal(&mut cmd, order);
+        // A scale order's profit taker (ibx#751).
+        if !order.what_if {
+            self.core.scale_profit_child(&mut cmd, contract, order, oid, instrument);
+        }
         built.push(cmd);
         self.core.cache_contract(contract.con_id, contract.clone());
         if order.what_if {

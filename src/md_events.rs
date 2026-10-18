@@ -126,7 +126,10 @@ pub fn wire_field(tick_type: u64, magnitude: i64, stats: bool) -> Option<usize> 
         td::O_ASK_EXCH => field::ASK_EXCH,
         td::O_LAST_EXCH => field::LAST_EXCH,
         // On a daily-stats block the base is the close date, not a time.
-        td::O_TIMESTAMP_BASE if !stats && magnitude > 0 => field::TIME,
+        // A time of 0 on a trade stream is given as such (ibx#756; the
+        // reference 10.51, paper, 18/10/2026 weekend: a frozen option's last
+        // time "0").
+        td::O_TIMESTAMP_BASE if !stats && magnitude >= 0 => field::TIME,
         td::O_TIMESTAMP_DELTA if magnitude > 0 => field::TIME,
         _ => return None,
     })

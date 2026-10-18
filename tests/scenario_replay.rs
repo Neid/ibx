@@ -323,9 +323,11 @@ fn account_summary_subscription_and_tag_rows() {
     ibx::test_support::scenario::assert_same_callbacks(&o.ours[..4], &theirs[..4]);
 }
 
+// Recorded in a gateway process that had served account updates in an
+// earlier session: each frame twice (ibx#752).
 #[test]
 fn account_summary_whole_answer() {
-    check("20260926/account_summary", Options::default());
+    check("20260926/account_summary", Options::default().after_account_updates());
 }
 
 // The same request on 10.51 at level 225, market closed (18/10/2026,
@@ -350,12 +352,11 @@ fn account_summary_whole_answer_on_10_51() {
 }
 
 // The same request after an earlier session of the gateway's process had
-// asked the account updates (20261018): the reference gives each frame
-// twice, ibx once (ibx#752).
+// asked the account updates (20261018): each frame twice (ibx#752).
 #[test]
-#[ignore = "ibx#752: the account summary frames given twice by the reference after account updates were asked"]
 fn account_summary_whole_answer_after_account_updates() {
-    check("gw1051/20261018/account_summary", Options::default().until(2717));
+    let o = check("gw1051/20261018/account_summary", Options::default().until(2717).after_account_updates());
+    assert_eq!(o.theirs.iter().filter(|(_, l)| l.starts_with("accountSummaryEnd|")).count(), 2);
 }
 
 // reqPnL and reqPnLSingle (26/09/2026, ibx#478): the reference subscribes

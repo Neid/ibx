@@ -2201,8 +2201,13 @@ impl CcpState {
             // Any other status is kept: reporting it as PendingCancel left
             // the order looking cancelled, since nothing moves it back
             // (ibx#247).
+            // An order not acknowledged yet whose first reports are pending
+            // ones (a scale order with a price adjustment) shows
+            // PreSubmitted too (ibx#751; the reference 10.51, paper,
+            // 18/10/2026: two such reports, then the New one).
             "6" if !is_cancel_request => match context.order(clord_id) {
-                Some(o) if matches!(o.status, crate::types::OrderStatus::Submitted | crate::types::OrderStatus::PreSubmitted) =>
+                Some(o) if matches!(o.status, crate::types::OrderStatus::Submitted | crate::types::OrderStatus::PreSubmitted
+                    | crate::types::OrderStatus::PendingSubmit) =>
                     crate::types::OrderStatus::PreSubmitted,
                 Some(o) => o.status,
                 None => crate::types::OrderStatus::PendingReplace,
@@ -2450,8 +2455,11 @@ impl CcpState {
                     (None, q) => q,
                 };
                 let remaining = match order.status {
+                    // Not bounded at 0: a scale order sent with a quantity
+                    // below 0 shows it (ibx#751; the reference 10.51,
+                    // paper, 18/10/2026: Inactive with -1 remaining).
                     crate::types::OrderStatus::Cancelled | crate::types::OrderStatus::Rejected =>
-                        (ordered - filled).max(0),
+                        ordered - filled,
                     _ => leaves_qty,
                 };
                 let update = crate::types::OrderUpdate {
@@ -2643,6 +2651,14 @@ impl CcpState {
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(f64::MAX);
 
+            // A scale order's auto-reset, as its reports gave it so far: the
+            // first report of an order that has it may leave it out
+            // (ibx#751; the reference 10.51, paper, 18/10/2026: the first
+            // openOrder without it, the later ones with it).
+            if parsed.get(&6461).copied() == Some("1") {
+                context.scale_reset_reported.insert(clord_id);
+            }
+            let scale_auto_reset = context.scale_reset_reported.contains(&clord_id);
             // A TRAIL LIMIT report without its offset, limit price or stop
             // price keeps the last ones (ib-agent#194, ibx#491).
             let trail_limit = context.trail_limit_reported.get(&clord_id).copied();
@@ -2687,6 +2703,7 @@ impl CcpState {
                 cash_qty: parsed.get(&152).and_then(|s| s.parse().ok()).unwrap_or(0.0),
                 // A TRAIL LIMIT's offset as the server reports it (ib-agent#194).
                 lmt_price_offset: trail_limit.map_or(f64::MAX, |r| r.offset as f64 / PRICE_SCALE as f64),
+                scale_auto_reset,
                 // A combo's per-leg prices as reported (ibx#470).
                 order_combo_legs: shared.orders.combo_view(clord_id).map(|v| v.leg_prices).unwrap_or_default(),
                 // The order's API client (6119, 0 when absent) and order id.
