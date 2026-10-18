@@ -5702,8 +5702,10 @@ impl ClientCore {
     pub fn validate_order(order: &ApiOrder) -> Result<(), String> {
         // An action the reference does not know is its 321 refusal
         // (`order_rule_refusal`), as SSHORTX (ibx#688); one it knows that
-        // ibx cannot send (SELL LONG) fails here.
-        if Self::action_known(&order.action) && !Self::action_sshortx(&order.action) {
+        // ibx cannot send (SELL LONG with the slot -100) fails here.
+        if Self::action_known(&order.action) && !Self::action_sshortx(&order.action)
+            && Self::sell_long_refusal(order).is_none()
+        {
             order.side()?;
         }
 
@@ -6739,7 +6741,8 @@ impl ClientCore {
     ///   the snap types, or conditions that cancel the order on one other
     ///   than LMT and MIDPRICE (148; STP, STP with cancel, REL with cancel);
     /// - a trailing stop under a parent that is not LMT or STP LMT (328; a
-    ///   TRAIL under a held STP; TRAIL LIMIT not observed yet);
+    ///   TRAIL under a held STP; a TRAIL LIMIT so, the reference 10.51 at
+    ///   level 225, paper, 18/10/2026, market closed);
     /// - an OCA group name longer than 64 characters (401, "OCA Group").
     ///
     /// A held parent of such an order stays held.
@@ -6753,7 +6756,7 @@ impl ClientCore {
                 return Some((148, "Conditional submission of orders is supported for Limit, Market, MidPrice, Relative and Snap order types only. Conditional cancellation of orders is supported for Limit, MidPrice, IBAlgo - Limit order types only.".into()));
             }
         }
-        if order_type == "TRAIL" && order.parent_id > 0
+        if matches!(order_type.as_str(), "TRAIL" | "TRAIL LIMIT") && order.parent_id > 0
             && let Some((_, parent)) = self.hedge_parent(order.parent_id)
             && !matches!(parent.order_type.to_uppercase().as_str(), "LMT" | "STP LMT")
         {
@@ -7106,7 +7109,25 @@ impl ClientCore {
         if matches!(order_type.as_str(), "MIDPRICE" | "MIDPX") && order.outside_rth {
             return refuse("Midprice orders are not supported outside of regular trading hours.");
         }
+        // A discretionary amount with a DiscretionaryPct routing parameter
+        // (ibx#688; the reference 10.51 at level 225, paper, 18/10/2026,
+        // market closed: a combo limit order, refused at once, nothing
+        // sent).
+        if is_given(order.discretionary_amt)
+            && order.smart_combo_routing_params.iter().any(|p| p.tag == "DiscretionaryPct")
+        {
+            return refuse("Cannot specify both DiscretionaryPct and Discretionary Amt.");
+        }
         None
+    }
+
+    /// SELL LONG without the short sale slot -100: refused as the
+    /// reference reads it (ibx#688; the reference 10.51 at level 225,
+    /// paper, 18/10/2026, market closed: an AAPL limit order with slot 1,
+    /// 320 at once, nothing sent). With -100 ibx cannot send it yet.
+    fn sell_long_refusal(order: &ApiOrder) -> Option<(i64, String)> {
+        (order.action.eq_ignore_ascii_case("SELL LONG") && order.short_sale_slot != -100)
+            .then(|| (320, "Error reading request. Sell Long orders must have short sale slot with value -100".into()))
     }
 
     /// Algo parameters the reference refuses before sending, checked
@@ -7312,6 +7333,7 @@ impl ClientCore {
         Self::attached_orders_read_refusal(order, no_single)
             .or_else(|| Self::volatility_type_refusal(order))
             .or_else(|| self.hedge_read_refusal(order_id, sec_type, order, shared))
+            .or_else(|| Self::sell_long_refusal(order))
             .or_else(|| Self::refusal_before_sending_for(order, exchange, contract_month, account_pending, shared.reference.form_10_40()))
             .or_else(|| self.parent_refusal(order, shared))
             .or_else(|| Self::scale_size_refusal(order))
@@ -9213,6 +9235,36 @@ mod tests {
         assert_eq!(refused.iter().map(|o| o.0).collect::<Vec<_>>(), [30]);
         let sent = core.orders_to_transmit_checked(30, &aapl, &ApiOrder { transmit: true, hedge_max_size: 100, ..hedge("B", "1") }, &shared, "DU1");
         assert_eq!(sent.iter().map(|o| o.0).collect::<Vec<_>>(), [10, 30]);
+    }
+
+    // ibx#688 (the reference 10.51 at level 225, paper, 18/10/2026, market
+    // closed): SELL LONG with a short sale slot other than -100 is 320; a
+    // discretionary amount with a DiscretionaryPct routing parameter is
+    // 321; a TRAIL LIMIT under a held STP is kept with 328, as a TRAIL.
+    #[test]
+    fn sell_long_slot_discretionary_pair_and_trail_limit_under_a_stop() {
+        let lmt = ApiOrder { action: "BUY".into(), order_type: "LMT".into(), total_quantity: 1.0, lmt_price: 50.0, tif: "DAY".into(), ..Default::default() };
+        let sell_long = ApiOrder { action: "SELL LONG".into(), short_sale_slot: 1, ..lmt.clone() };
+        assert_eq!(ClientCore::sell_long_refusal(&sell_long),
+            Some((320, "Error reading request. Sell Long orders must have short sale slot with value -100".into())));
+        assert!(ClientCore::validate_order(&sell_long).is_ok(), "refused as the reference reads it, not by the call");
+        let with_slot = ApiOrder { short_sale_slot: -100, ..sell_long.clone() };
+        assert_eq!(ClientCore::sell_long_refusal(&with_slot), None);
+        assert!(ClientCore::validate_order(&with_slot).is_err(), "ibx cannot send it yet");
+
+        let pct = crate::api::types::TagValue { tag: "DiscretionaryPct".into(), value: "1".into() };
+        let both = ApiOrder { discretionary_amt: 0.1, smart_combo_routing_params: vec![pct.clone()], ..lmt.clone() };
+        assert_eq!(ClientCore::refusal_before_sending(&both, "SMART"),
+            Some((321, "Error validating request.-'PlaceOrder(3)' : cause - Cannot specify both DiscretionaryPct and Discretionary Amt.".into())));
+        assert_eq!(ClientCore::refusal_before_sending(&ApiOrder { discretionary_amt: 0.0, ..both.clone() }, "SMART"), None);
+        assert_eq!(ClientCore::refusal_before_sending(&ApiOrder { smart_combo_routing_params: vec![], ..both }, "SMART"), None);
+
+        let core = ClientCore::new();
+        let aapl = ApiContract { symbol: "AAPL".into(), sec_type: "STK".into(), exchange: "SMART".into(), currency: "USD".into(), ..Default::default() };
+        core.hold_order(10, aapl, ApiOrder { order_type: "STP".into(), aux_price: 500.0, transmit: false, ..lmt.clone() }, 1);
+        let child = ApiOrder { action: "SELL".into(), order_type: "TRAIL LIMIT".into(), parent_id: 10, trail_stop_price: 40.0,
+            lmt_price_offset: 0.1, aux_price: 1.0, ..lmt };
+        assert_eq!(core.kept_refusal(&child).map(|r| r.0), Some(328));
     }
 
     // ibx#602 (the reference 10.51, paper, regular hours 16/10/2026): a
