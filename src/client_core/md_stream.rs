@@ -298,7 +298,7 @@ struct Out<'a> {
 /// paper account): from level 222 in the steps of the size increment of
 /// the contract's definition; below 222, or with no increment known, as
 /// it came. A whole number is given without decimals ("80", the reference
-/// 10.51 at level 225, paper, regular hours 13, 14 and 16/10/2026, stocks
+/// 10.51 at level 225, paper, 13, 14 and 16/10/2026, stocks
 /// whose size increment is 0.0001). The rule's exception, market data
 /// in lots, has no setting in ibx: never on.
 #[inline(always)]

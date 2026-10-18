@@ -1782,6 +1782,19 @@ pub fn lookup_cancel_refusal(level: i32, ticks: bool) -> Option<(i64, &'static s
     (level < LEVEL_LOOKUP_CANCELS)
         .then_some(if ticks { CANCEL_HISTORICAL_TICKS_UNSUPPORTED } else { CANCEL_CONTRACT_DATA_UNSUPPORTED })
 }
+/// The session level at which an order with no time in force is refused
+/// (ibx#602): observed at 225, where 214 takes the order preset's with
+/// 10349 (ibx#660); the levels between are not observed.
+pub const LEVEL_EMPTY_TIF_REFUSED: i32 = 225;
+
+/// An order with no time in force at session level `level` (ibx#602; the
+/// reference 10.51, paper, regular hours 13/10/2026: at 225, 10052
+/// "Invalid time in force:Empty"; at 214 the order preset's time in force
+/// with 10349).
+pub fn empty_tif_refusal(level: i32, order: &ApiOrder) -> Option<(i64, String)> {
+    (level >= LEVEL_EMPTY_TIF_REFUSED && order.tif.is_empty()).then(|| (10052, "Invalid time in force:Empty".to_string()))
+}
+
 /// The session level from which the official client library sends
 /// reqConfig (ibx#610).
 pub const LEVEL_CONFIG: i32 = 219;
@@ -1789,9 +1802,10 @@ pub const LEVEL_CONFIG: i32 = 219;
 /// updateConfig (ibx#612).
 pub const LEVEL_UPDATE_CONFIG: i32 = 221;
 
-// Every level up to 225 is written (ibx#602, 18/10/2026); what is left
-// waits for a session or an account. Raising the level ibx answers is the
-// project manager's decision (ibx#602): this check stays until he takes it.
+// The rules of the levels up to 225 are written (ibx#602, 18/10/2026)
+// but one: the frozen snapshot's order at 225 (ibx#749). Raising the
+// level ibx answers is the project manager's decision (ibx#602): this
+// check stays until he takes it.
 const _: () = assert!(SERVER_VERSION < LEVEL_FRACTIONAL_LAST_SIZE,
     "raising the session level is decided on ibx#602; remove this check with the move");
 
@@ -6910,6 +6924,9 @@ impl ClientCore {
         if !Self::order_type_known(&order_type) {
             return refuse("Invalid order type was entered");
         }
+        if let Some(refusal) = empty_tif_refusal(SERVER_VERSION, order) {
+            return Some(refusal);
+        }
         let day = order.tif.is_empty() || order.tif == "DAY";
         if !TIF_TEXTS.contains(&order.tif.as_str()) || (order.include_overnight && !day && !form_10_40) {
             return Some((10052, format!("Invalid time in force:{}", order.tif)));
@@ -9193,6 +9210,17 @@ mod tests {
             Some((10365, "Max Hedging Size value is smaller than what has already filled: 3.".into())));
         assert_eq!(core.hedge_filled_refusal(12, &hedge("1", 3)), None);
         assert_eq!(core.hedge_filled_refusal(12, &ApiOrder { hedge_type: String::new(), ..hedge("1", 2) }), None);
+    }
+
+    // ibx#602 (the reference 10.51, paper, regular hours 13/10/2026): an
+    // order with no time in force is refused at level 225, taken at 214.
+    #[test]
+    fn an_order_without_a_time_in_force_by_level() {
+        let order = ApiOrder { tif: String::new(), ..lmt(100.0) };
+        assert_eq!(empty_tif_refusal(225, &order), Some((10052, "Invalid time in force:Empty".into())));
+        assert_eq!(empty_tif_refusal(214, &order), None);
+        assert_eq!(empty_tif_refusal(225, &ApiOrder { tif: "DAY".into(), ..lmt(100.0) }), None);
+        assert!(SERVER_VERSION < LEVEL_EMPTY_TIF_REFUSED, "at the session's level the preset's time in force is taken");
     }
 
     // ibx#609 (the reference 10.51, paper, 15 and 16/10/2026): the reading
