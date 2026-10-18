@@ -2421,9 +2421,15 @@ impl CcpState {
                 // recording of 26/09 to 02/10/2026: Cancelled and Inactive
                 // with 1 remaining of 1, ibx#486).
                 // A fund bought by cash: its amount (ibx#666).
-                let ordered = match order.qty_fixed {
-                    0 => context.cash_orders.get(&clord_id).copied().unwrap_or(0),
-                    q => q,
+                // The order's quantity as the server reports it, when it
+                // does: a beta hedge on another contract is sized by the
+                // server, its max size included (ibx#602; the reference 10.51
+                // at level 225, paper, 18/10/2026: a hedge of 10 capped at 2,
+                // Cancelled with 2 remaining).
+                let ordered = match (parsed.get(&38).and_then(|s| parse_qty(s)).filter(|&q| q > 0), order.qty_fixed) {
+                    (Some(q), _) => q,
+                    (None, 0) => context.cash_orders.get(&clord_id).copied().unwrap_or(0),
+                    (None, q) => q,
                 };
                 let remaining = match order.status {
                     crate::types::OrderStatus::Cancelled | crate::types::OrderStatus::Rejected =>
