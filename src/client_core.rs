@@ -5752,7 +5752,8 @@ impl ClientCore {
     pub fn validate_order(order: &ApiOrder) -> Result<(), String> {
         // An action the reference does not know is its 321 refusal
         // (`order_rule_refusal`), as SSHORTX (ibx#688); one it knows that
-        // ibx cannot send (SELL LONG with the slot -100) fails here.
+        // ibx cannot send (SELL LONG) is refused at the reading instead
+        // (`sell_long_refusal`).
         if Self::action_known(&order.action) && !Self::action_sshortx(&order.action)
             && Self::sell_long_refusal(order).is_none()
         {
@@ -7165,25 +7166,33 @@ impl ClientCore {
         if matches!(order_type.as_str(), "MIDPRICE" | "MIDPX") && order.outside_rth {
             return refuse("Midprice orders are not supported outside of regular trading hours.");
         }
-        // A discretionary amount with a DiscretionaryPct routing parameter
-        // (ibx#688; the reference 10.51 at level 225, paper, 18/10/2026,
-        // market closed: a combo limit order, refused at once, nothing
-        // sent).
-        if is_given(order.discretionary_amt)
-            && order.smart_combo_routing_params.iter().any(|p| p.tag == "DiscretionaryPct")
-        {
-            return refuse("Cannot specify both DiscretionaryPct and Discretionary Amt.");
-        }
         None
     }
 
-    /// SELL LONG without the short sale slot -100: refused as the
-    /// reference reads it (ibx#688; the reference 10.51 at level 225,
-    /// paper, 18/10/2026, market closed: an AAPL limit order with slot 1,
-    /// 320 at once, nothing sent). With -100 ibx cannot send it yet.
+    /// A combo order with a discretionary amount and a DiscretionaryPct
+    /// routing parameter (ibx#688; the reference 10.51 at level 225, paper,
+    /// 18/10/2026, market closed: a combo limit order refused at once,
+    /// nothing sent; a stock order so is sent).
+    fn combo_discretionary_refusal(sec_type: &str, order: &ApiOrder) -> Option<(i64, String)> {
+        (sec_type.eq_ignore_ascii_case("BAG") && is_given(order.discretionary_amt)
+            && order.smart_combo_routing_params.iter().any(|p| p.tag == "DiscretionaryPct"))
+            .then(|| (321, "Error validating request.-'PlaceOrder(3)' : cause - Cannot specify both DiscretionaryPct and Discretionary Amt.".into()))
+    }
+
+    /// SELL LONG (ibx#688; the reference 10.51 at level 225, paper,
+    /// 18/10/2026, market closed, AAPL limit orders): without the short
+    /// sale slot -100, 320 at once; with it, 10104 on the paper account,
+    /// which has no SELL LONG (an account that has it: line of #634; ibx
+    /// cannot send SELL LONG).
     fn sell_long_refusal(order: &ApiOrder) -> Option<(i64, String)> {
-        (order.action.eq_ignore_ascii_case("SELL LONG") && order.short_sale_slot != -100)
-            .then(|| (320, "Error reading request. Sell Long orders must have short sale slot with value -100".into()))
+        if !order.action.eq_ignore_ascii_case("SELL LONG") {
+            return None;
+        }
+        Some(if order.short_sale_slot != -100 {
+            (320, "Error reading request. Sell Long orders must have short sale slot with value -100".into())
+        } else {
+            (10104, "Sell Long order is not supported for this account.".into())
+        })
     }
 
     /// Algo parameters the reference refuses before sending, checked
@@ -7391,6 +7400,7 @@ impl ClientCore {
             .or_else(|| self.hedge_read_refusal(order_id, sec_type, order, shared))
             .or_else(|| Self::sell_long_refusal(order))
             .or_else(|| Self::refusal_before_sending_for(order, exchange, contract_month, account_pending, shared.reference.form_10_40()))
+            .or_else(|| Self::combo_discretionary_refusal(sec_type, order))
             .or_else(|| self.parent_refusal(order, shared))
             .or_else(|| Self::scale_size_refusal(order))
             .or_else(|| Self::account_config_refusal(order, shared.reference.account_features().as_deref(), account))
@@ -9364,15 +9374,16 @@ mod tests {
             Some((320, "Error reading request. Sell Long orders must have short sale slot with value -100".into())));
         assert!(ClientCore::validate_order(&sell_long).is_ok(), "refused as the reference reads it, not by the call");
         let with_slot = ApiOrder { short_sale_slot: -100, ..sell_long.clone() };
-        assert_eq!(ClientCore::sell_long_refusal(&with_slot), None);
-        assert!(ClientCore::validate_order(&with_slot).is_err(), "ibx cannot send it yet");
+        assert_eq!(ClientCore::sell_long_refusal(&with_slot), Some((10104, "Sell Long order is not supported for this account.".into())));
+        assert!(ClientCore::validate_order(&with_slot).is_ok());
 
         let pct = crate::api::types::TagValue { tag: "DiscretionaryPct".into(), value: "1".into() };
         let both = ApiOrder { discretionary_amt: 0.1, smart_combo_routing_params: vec![pct.clone()], ..lmt.clone() };
-        assert_eq!(ClientCore::refusal_before_sending(&both, "SMART"),
+        assert_eq!(ClientCore::combo_discretionary_refusal("BAG", &both),
             Some((321, "Error validating request.-'PlaceOrder(3)' : cause - Cannot specify both DiscretionaryPct and Discretionary Amt.".into())));
-        assert_eq!(ClientCore::refusal_before_sending(&ApiOrder { discretionary_amt: 0.0, ..both.clone() }, "SMART"), None);
-        assert_eq!(ClientCore::refusal_before_sending(&ApiOrder { smart_combo_routing_params: vec![], ..both }, "SMART"), None);
+        assert_eq!(ClientCore::combo_discretionary_refusal("STK", &both), None, "a stock order so is sent");
+        assert_eq!(ClientCore::combo_discretionary_refusal("BAG", &ApiOrder { discretionary_amt: 0.0, ..both.clone() }), None);
+        assert_eq!(ClientCore::combo_discretionary_refusal("BAG", &ApiOrder { smart_combo_routing_params: vec![], ..both }), None);
 
         let core = ClientCore::new();
         let aapl = ApiContract { symbol: "AAPL".into(), sec_type: "STK".into(), exchange: "SMART".into(), currency: "USD".into(), ..Default::default() };
