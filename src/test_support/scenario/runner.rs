@@ -719,6 +719,16 @@ struct Run<'a> {
     out: Outcome,
 }
 
+/// The session level of a recording: the level the reference answered
+/// its client (the first field of its server version message); the
+/// recordings without it are of a client at 214 (ibx#602).
+pub fn level_of(sc: &Scenario) -> i32 {
+    sc.recs.iter()
+        .find(|r| r.leg == "api_in" && r.msg == "SERVER_VERSION")
+        .and_then(|r| std::str::from_utf8(&r.raw).ok()?.split('\0').next()?.trim().parse::<i32>().ok())
+        .map_or(super::session::RECORDING_LEVEL, |n| n.min(crate::client_core::SERVER_VERSION))
+}
+
 /// Replay a scenario through the Rust API client.
 pub fn replay(sc: &Scenario, opts: &Options) -> Outcome {
     let mut links = Links::new();
@@ -730,6 +740,8 @@ pub fn replay(sc: &Scenario, opts: &Options) -> Outcome {
 /// the recording (`session::zone_of`) on this thread.
 pub fn run(sc: &Scenario, opts: &Options, links: &mut Links, driver: &mut dyn Driver) -> Outcome {
     crate::gateway::set_machine_zone_for_test(Some(super::session::zone_of(&sc.header)));
+    // At the level the recording's client was given (ibx#602).
+    crate::client_core::set_session_level_for_test(Some(level_of(sc)));
     // A recording of 10.40 follows its order rules (ibx#660); one with no
     // version is from before 10.51.
     let version = sc.header.get("gateway_version")

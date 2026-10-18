@@ -828,7 +828,7 @@ impl HotLoop {
         farm::publish_increments(&self.context, &self.shared, sub.instrument, sub.con_id);
         // From level 222, the definition of a contract ibx has not read, for
         // the steps of its last size (ibx#613).
-        if farm::increments_lookup_needed(crate::client_core::SERVER_VERSION, &self.context, sub.con_id) {
+        if farm::increments_lookup_needed(crate::client_core::session_level(), &self.context, sub.con_id) {
             self.ask_own_definition(sub.con_id, &sub.exchange);
         }
         // A contract asked before in the session: its request parameters
@@ -2775,7 +2775,7 @@ impl HotLoop {
                     // steps of its market rule, which its definition names:
                     // the reference looks a conId up before the query
                     // (ibx#615; paper, 16/10/2026).
-                    let rule_needed = crate::client_core::SERVER_VERSION < crate::client_core::LEVEL_PRICE_FROM_DEFINITION
+                    let rule_needed = crate::client_core::session_level() < crate::client_core::LEVEL_PRICE_FROM_DEFINITION
                         && !self.shared.reference.knows_contract_rule(con_id);
                     // Once: a definition that never came leaves the group
                     // set (-1) and the request goes as it is.
@@ -6234,6 +6234,7 @@ mod tests {
     // second subscription of the contract uses the kept lot at once.
     #[test]
     fn stock_subscription_waits_for_its_round_lot() {
+        crate::client_core::set_session_level_for_test(Some(214)); // a capture at level 214 (ibx#602)
         let shared = Arc::new(SharedState::new());
         let mut engine = HotLoop::new(shared.clone(), None, None);
         let (c1, mut farm_side) = socket_pair();
@@ -6636,6 +6637,7 @@ mod tests {
     // waits is never sent.
     #[test]
     fn round_lot_lookup_only_where_it_can_apply() {
+        crate::client_core::set_session_level_for_test(Some(214)); // a capture at level 214 (ibx#602)
         let shared = Arc::new(SharedState::new());
         let mut engine = HotLoop::new(shared.clone(), None, None);
         let (c1, mut farm_side) = socket_pair();
@@ -7743,10 +7745,11 @@ mod tbt_tests {
 
     // ibx#613 (the 10.51 rules, not observed yet: no fractional trade on the
     // paper account): a trade of 0.4 and of 1.6 in steps of 0.0001 is given
-    // as a whole number at the session's level, below 222; from 222 its
+    // as a whole number at level 214, below 222; from 222 its
     // fraction is kept (`hmds::trade_size_at`).
     #[test]
     fn a_fractional_trade_is_whole_at_the_session_level() {
+        crate::client_core::set_session_level_for_test(Some(214));
         let shared = Arc::new(SharedState::new());
         let mut engine = HotLoop::new(shared.clone(), None, None);
         let (conn, _side) = loopback();
@@ -7759,7 +7762,6 @@ mod tbt_tests {
         let e = [trade_entry(1, 1_790_000_000, 100_000, 0, 4_000, "CME"), trade_entry(1, 1_790_000_001, 0, 0, 16_000, "CME")].concat();
         engine.inject_hmds_message(&tbt_frame(&e));
         let sizes: Vec<f64> = shared.market.drain_tbt_trades().iter().map(|t| t.size).collect();
-        assert!(crate::client_core::SERVER_VERSION < crate::client_core::LEVEL_FRACTIONAL_LAST_SIZE);
         assert_eq!(sizes, [0.0, 2.0]);
         assert_eq!(hmds::trade_size_at(222, 4_000, Some(0.0001), crate::md_events::Increment::from_step(0.0001)), 0.4);
         assert_eq!(hmds::trade_size_at(222, 16_000, Some(0.0001), crate::md_events::Increment::from_step(0.0001)), 1.6);
@@ -8211,6 +8213,7 @@ mod bars_routing_tests {
     // the engine's own lookup is kept, and the bars then go.
     #[test]
     fn bars_of_a_con_id_wait_for_the_market_rule() {
+        crate::client_core::set_session_level_for_test(Some(214)); // a capture at level 214 (ibx#602)
         use crate::control::contracts::*;
         let shared = Arc::new(SharedState::new());
         let mut engine = HotLoop::new(shared.clone(), None, None);

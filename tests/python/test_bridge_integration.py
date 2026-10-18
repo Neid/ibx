@@ -1015,10 +1015,9 @@ class TestAccountDispatch:
         assert "BuyingPower" in tags
         assert tags["NetLiquidation"] == "100000.00"
 
-        # Each frame twice, as the reference (ibx#486: its listener is
-        # registered twice).
         end_events = [e for e in w.events if e[0] == "account_summary_end"]
-        assert len(end_events) == 2
+        # Each frame once at session level 225 (twice at 214, ibx#662, ibx#602).
+        assert len(end_events) == 1
 
     def test_positions(self):
         w, c = make_test_client("DU12345")

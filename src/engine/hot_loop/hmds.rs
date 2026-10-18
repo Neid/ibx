@@ -255,7 +255,7 @@ impl TbtSub {
     /// A trade's size in size increments as the client gets it at this
     /// session's level (ibx#613).
     fn trade_size(&self, raw: u64) -> f64 {
-        trade_size_at(crate::client_core::SERVER_VERSION, raw, self.size_min_tick, self.size_increment)
+        trade_size_at(crate::client_core::session_level(), raw, self.size_min_tick, self.size_increment)
     }
 }
 
@@ -1402,7 +1402,7 @@ impl HmdsState {
     /// level 225): the nearest step, in binary. Nothing when the rule is
     /// not known, or from level 224.
     fn round_bar_prices(&self, req_id: ReqId, bars: &mut [crate::control::historical::HistoricalBar], shared: &SharedState) {
-        if crate::client_core::SERVER_VERSION >= crate::client_core::LEVEL_PRICE_FROM_DEFINITION {
+        if crate::client_core::session_level() >= crate::client_core::LEVEL_PRICE_FROM_DEFINITION {
             return;
         }
         let Some(con_id) = self.bar_requests.iter().find(|r| r.req_id == req_id).map(|r| r.con_id).filter(|c| *c != 0) else { return };
@@ -3778,6 +3778,7 @@ pub(crate) mod tests {
     // 1.125675, 1.125435, 1.12562 for 1.12545, 1.1257, 1.12545, 1.1256.
     #[test]
     fn bar_prices_in_the_market_rule_steps_below_level_224() {
+        crate::client_core::set_session_level_for_test(Some(214)); // a capture at level 214 (ibx#602)
         for (v, want) in [(1.125465, 1.12545), (1.125675, 1.1257), (1.125435, 1.12545), (1.12562, 1.1256), (773.38, 773.38),
                           (1.125325, 1.1253), (1.124875, 1.1249), (1.125525, 1.12555), (1.125025, 1.12505)] {
             let step = if v > 100.0 { 0.01 } else { 0.00005 };

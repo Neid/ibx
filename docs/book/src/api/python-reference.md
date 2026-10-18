@@ -63,7 +63,7 @@ def disconnect()
 
 #### `server_version`
 
-API level of the session: 214, the level the reference gives a current client; None when not connected (ibx#426).
+API level of the session: 225, the level the reference gives a current client; None when not connected (ibx#426).
 
 ```python
 def server_version()

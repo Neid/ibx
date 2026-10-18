@@ -124,7 +124,7 @@ pub fn pnl_second_later_for_test(&self)
 
 #### `server_version`
 
-API level the session follows: 214, the level the reference gives a current client (ibx#426)., for code that tests it before using a feature.
+API level the session follows: 225, the level the reference gives a current client (ibx#426)., for code that tests it before using a feature.
 
 ```rust
 pub fn server_version(&self) -> i32

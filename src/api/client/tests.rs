@@ -206,6 +206,7 @@ fn next_order_id_monotonic() {
 // nothing.
 #[test]
 fn req_ids_calls_wrapper() {
+    crate::client_core::set_session_level_for_test(Some(214)); // a capture at level 214 (ibx#602)
     let (client, rx, shared) = test_client();
     let mut w = RecordingWrapper::default();
     client.req_ids(&mut w);
@@ -643,6 +644,7 @@ fn place_order_limit_gtc_uses_limit_ex() {
 
 #[test]
 fn place_order_limit_hidden_uses_limit_ex() {
+    crate::client_core::set_session_level_for_test(Some(214)); // a capture at level 214 (ibx#602)
     let (client, rx, shared) = test_client();
     shared.market.set_instrument_count(1);
     let order = Order {
@@ -689,6 +691,7 @@ fn place_order_stop_with_parent_and_gtc_uses_submit_ex() {
 
 #[test]
 fn place_order_market_outside_rth_uses_submit_ex() {
+    crate::client_core::set_session_level_for_test(Some(214)); // a capture at level 214 (ibx#602)
     let (client, rx, shared) = test_client();
     shared.market.set_instrument_count(1);
     let order = Order {
@@ -734,8 +737,10 @@ fn place_order_trailing_amount_with_oca_uses_submit_ex() {
 
 #[test]
 fn place_order_empty_tif_takes_the_preset() {
-    // ibx#660: tif "" takes the account's order preset, which the engine
-    // reads: the order rides the extended path, marked for it; DAY does not.
+    crate::client_core::set_session_level_for_test(Some(214)); // a capture at level 214 (ibx#602)
+    // ibx#660: at level 214 tif "" takes the account's order preset, which
+    // the engine reads: the order rides the extended path, marked for it;
+    // DAY does not.
     let (client, rx, shared) = test_client();
     shared.market.set_instrument_count(1);
     let order = Order {
@@ -750,9 +755,18 @@ fn place_order_empty_tif_takes_the_preset() {
         }
         cmd => panic!("expected SubmitEx, got {:?}", cmd),
     }
-    client.place_order(2, &spy(), &Order { tif: "DAY".into(), ..order }).unwrap();
+    client.place_order(2, &spy(), &Order { tif: "DAY".into(), ..order.clone() }).unwrap();
     assert!(matches!(rx.try_recv().unwrap(),
         ControlCommand::Order(OrderRequest::SubmitStop { .. })));
+    // ibx#602: at the session's level (225) it is refused with 10052,
+    // nothing sent (the reference 10.51, paper, regular hours 13/10/2026).
+    crate::client_core::set_session_level_for_test(None);
+    shared.orders.drain_order_errors();
+    let _ = client.place_order(3, &spy(), &order);
+    assert!(rx.try_recv().is_err(), "nothing sent");
+    let mut w = RecordingWrapper::default();
+    client.process_msgs(&mut w);
+    assert!(w.events.iter().any(|e| e.starts_with("error:3:10052:Invalid time in force:Empty")), "{:?}", w.events);
 }
 
 // ── ibx#509: an order with transmit off is held, and sent with its tree ──
@@ -784,6 +798,7 @@ fn limit(action: &str, price: f64, transmit: bool, parent_id: i64) -> Order {
 // sends the three, in the order they were placed.
 #[test]
 fn a_bracket_with_transmit_off_is_sent_together() {
+    crate::client_core::set_session_level_for_test(Some(214)); // a capture at level 214 (ibx#602)
     let (client, rx, shared) = test_client();
     shared.market.set_instrument_count(1);
     client.place_order(3, &spy(), &limit("BUY", 100.0, false, 0)).unwrap();
@@ -812,6 +827,7 @@ fn a_bracket_with_transmit_off_is_sent_together() {
 // sent with the new values.
 #[test]
 fn only_the_tree_of_the_placed_order_is_sent() {
+    crate::client_core::set_session_level_for_test(Some(214)); // a capture at level 214 (ibx#602)
     let (client, rx, shared) = test_client();
     shared.market.set_instrument_count(1);
     // A held parent, an unrelated held order of an OCA group.
@@ -841,6 +857,7 @@ fn only_the_tree_of_the_placed_order_is_sent() {
 // is sent.
 #[test]
 fn a_held_order_is_checked_when_it_is_placed() {
+    crate::client_core::set_session_level_for_test(Some(214)); // a capture at level 214 (ibx#602)
     let (client, rx, shared) = test_client();
     shared.market.set_instrument_count(1);
     // A good-till date that is no date: refused, not held.
@@ -871,6 +888,7 @@ fn a_held_order_is_checked_when_it_is_placed() {
 // engine, which ends it, and the order is no longer held.
 #[test]
 fn a_working_order_with_transmit_off_is_left_and_a_held_order_can_be_cancelled() {
+    crate::client_core::set_session_level_for_test(Some(214)); // a capture at level 214 (ibx#602)
     let (client, rx, shared) = test_client();
     shared.market.set_instrument_count(1);
     client.place_order(30, &spy(), &limit("BUY", 100.0, true, 0)).unwrap();
@@ -907,6 +925,7 @@ fn place_order_unknown_tif_is_rejected() {
 // ibx refused it on TRAIL and REL.
 #[test]
 fn place_order_all_or_none_trail_and_rel_are_sent() {
+    crate::client_core::set_session_level_for_test(Some(214)); // a capture at level 214 (ibx#602)
     let (client, rx, shared) = test_client();
     shared.market.set_instrument_count(1);
     for (id, order_type, aux_price) in [(1, "TRAIL", 2.0), (2, "REL", 0.05)] {
@@ -926,6 +945,7 @@ fn place_order_all_or_none_trail_and_rel_are_sent() {
 // sending, 321 with error 146's text.
 #[test]
 fn place_order_unknown_trigger_method_is_refused() {
+    crate::client_core::set_session_level_for_test(Some(214)); // a capture at level 214 (ibx#602)
     let (client, rx, shared) = test_client();
     shared.market.set_instrument_count(1);
     for (id, trigger_method) in [(3, -1), (4, 5), (5, 6), (6, 9)] {
@@ -1288,6 +1308,7 @@ fn market_data_type_outside_one_to_four_is_refused() {
 // reference's text, and nothing is sent (captured 28/09/2026).
 #[test]
 fn customer_account_needs_the_account_config() {
+    crate::client_core::set_session_level_for_test(Some(214)); // a capture at level 214 (ibx#602)
     let (client, rx, shared) = test_client();
     shared.market.set_instrument_count(1);
     shared.reference.set_account_config(vec!["OLP".into(), "EUCOSTCALC".into(), "EUILLS".into()], String::new());
@@ -1312,6 +1333,7 @@ fn customer_account_needs_the_account_config() {
 // order.
 #[test]
 fn customer_account_is_sent_when_the_account_config_allows_it() {
+    crate::client_core::set_session_level_for_test(Some(214)); // a capture at level 214 (ibx#602)
     let (client, rx, shared) = test_client();
     shared.market.set_instrument_count(1);
     shared.reference.set_account_config(vec!["CUSTACCT".into()], String::new());
@@ -1349,6 +1371,7 @@ fn gtx_and_nmin_go_out_as_gtc() {
 // change.
 #[test]
 fn place_order_type_aliases() {
+    crate::client_core::set_session_level_for_test(Some(214)); // a capture at level 214 (ibx#602)
     for (alias, name) in [("STOP LIMIT", "STP LMT"), ("stplmt", "STP LMT"), ("LIMIT", "LMT"), ("MKT TO LMT", "MTL"),
                           ("PEG PRIM", "REL"), ("TRAILING STOP", "TRAIL"), ("TRAILLMT", "TRAIL LIMIT")] {
         let order = |order_type: &str| Order {
@@ -1376,6 +1399,7 @@ fn place_order_type_aliases() {
 // each as an order of its own type.
 #[test]
 fn place_order_trail_mit_trail_lit_peg_best_rpi_and_passv_rel() {
+    crate::client_core::set_session_level_for_test(Some(214)); // a capture at level 214 (ibx#602)
     let (client, rx, shared) = test_client();
     shared.market.set_instrument_count(1);
     let order = |order_type: &str| Order {
@@ -1435,6 +1459,7 @@ fn place_order_trail_mit_trail_lit_peg_best_rpi_and_passv_rel() {
 // one is sent.
 #[test]
 fn place_order_unreadable_good_after_time_is_refused() {
+    crate::client_core::set_session_level_for_test(Some(214)); // a capture at level 214 (ibx#602)
     let (client, rx, shared) = test_client();
     shared.market.set_instrument_count(1);
     let order = |gat: &str| Order {
@@ -1524,6 +1549,7 @@ fn place_order_bad_good_till_date_is_refused() {
 
 #[test]
 fn place_order_trailing_stop_limit_without_stop_price_is_refused() {
+    crate::client_core::set_session_level_for_test(Some(214)); // a capture at level 214 (ibx#602)
     let (client, rx, shared) = test_client();
     shared.market.set_instrument_count(1);
     let order = Order {
@@ -1778,6 +1804,7 @@ fn place_order_short_sell_side() {
 
 #[test]
 fn place_order_algo_vwap() {
+    crate::client_core::set_session_level_for_test(Some(214)); // a capture at level 214 (ibx#602)
     let (client, rx, shared) = test_client();
     shared.market.set_instrument_count(1);
     let order = Order {
@@ -1832,6 +1859,7 @@ fn place_order_algo_bracket_child_keeps_parent_oca_and_tif() {
 // was sent without them.
 #[test]
 fn place_order_with_only_conditions_keeps_them() {
+    crate::client_core::set_session_level_for_test(Some(214)); // a capture at level 214 (ibx#602)
     let (client, rx, shared) = test_client();
     shared.market.set_instrument_count(1);
     let order = Order {
@@ -1854,6 +1882,7 @@ fn place_order_with_only_conditions_keeps_them() {
 
 #[test]
 fn place_order_what_if() {
+    crate::client_core::set_session_level_for_test(Some(214)); // a capture at level 214 (ibx#602)
     let (client, rx, shared) = test_client();
     shared.market.set_instrument_count(1);
     let order = Order {
@@ -1871,6 +1900,7 @@ fn place_order_what_if() {
 // nothing is sent; the live order goes on.
 #[test]
 fn what_if_on_an_unanswered_order_id_is_a_duplicate() {
+    crate::client_core::set_session_level_for_test(Some(214)); // a capture at level 214 (ibx#602)
     let (client, rx, shared) = test_client();
     shared.market.set_instrument_count(1);
     let live = Order {
@@ -1914,6 +1944,7 @@ fn what_if_order_message_reply_then_data_reply() {
 // the reference's 321 and nothing is sent.
 #[test]
 fn what_if_with_transmit_off_is_refused() {
+    crate::client_core::set_session_level_for_test(Some(214)); // a capture at level 214 (ibx#602)
     let (client, rx, shared) = test_client();
     shared.market.set_instrument_count(1);
     let preview = Order {
@@ -1951,6 +1982,7 @@ fn refused_what_if_gives_open_order_then_201() {
 // apart and answered with open_order only.
 #[test]
 fn what_if_on_a_working_order_id_is_a_preview_not_a_modify() {
+    crate::client_core::set_session_level_for_test(Some(214)); // a capture at level 214 (ibx#602)
     let (client, rx, shared) = test_client();
     shared.market.set_instrument_count(1);
     let working = Order {
@@ -1981,6 +2013,7 @@ fn what_if_on_a_working_order_id_is_a_preview_not_a_modify() {
 // real algo order.
 #[test]
 fn algo_what_if_is_a_preview() {
+    crate::client_core::set_session_level_for_test(Some(214)); // a capture at level 214 (ibx#602)
     for algo in ["Adaptive", "Twap"] {
         let (client, rx, shared) = test_client();
         shared.market.set_instrument_count(1);
@@ -2043,6 +2076,7 @@ fn place_order_refusals_of_the_security_type() {
 
 #[test]
 fn place_order_explicit_stk_contract_accepted() {
+    crate::client_core::set_session_level_for_test(Some(214)); // a capture at level 214 (ibx#602)
     // An explicit sec_type="STK" must still be accepted.
     let (client, rx, shared) = test_client();
     shared.market.set_instrument_count(1);
@@ -2073,6 +2107,7 @@ fn place_order_invalid_action_is_refused_with_321() {
 //; ibx used to take the next id.
 #[test]
 fn place_order_with_id_zero_is_refused_with_10149() {
+    crate::client_core::set_session_level_for_test(Some(214)); // a capture at level 214 (ibx#602)
     let (client, rx, shared) = test_client();
     shared.market.set_instrument_count(1);
     let order = Order {
@@ -2140,6 +2175,7 @@ fn stp_order_with_zero_aux_price_is_rejected() {
 // their trigger price; nothing is sent.
 #[test]
 fn stop_types_with_unset_aux_price_get_the_reference_refusal() {
+    crate::client_core::set_session_level_for_test(Some(214)); // a capture at level 214 (ibx#602)
     let (client, rx, shared) = test_client();
     shared.market.set_instrument_count(1);
     let cases = [
@@ -2191,6 +2227,7 @@ fn stp_lmt_order_with_zero_aux_price_is_rejected() {
 // 17/10/2026).
 #[test]
 fn trail_order_with_zero_amount_and_zero_percent_is_rejected() {
+    crate::client_core::set_session_level_for_test(Some(214)); // a capture at level 214 (ibx#602)
     let (client, rx, shared) = test_client();
     shared.market.set_instrument_count(1);
     let order = Order {
@@ -2221,6 +2258,7 @@ fn trail_order_with_trailing_percent_succeeds() {
 // without its trailing amount still fails in the call (not observed yet).
 #[test]
 fn trail_limit_order_with_zero_aux_price_is_rejected() {
+    crate::client_core::set_session_level_for_test(Some(214)); // a capture at level 214 (ibx#602)
     let (client, rx, shared) = test_client();
     shared.market.set_instrument_count(1);
     let order = Order {
@@ -3084,6 +3122,7 @@ fn process_msgs_dispatches_partial_fill() {
 // PreSubmitted stays PreSubmitted (ib-agent#192 C8, pre-market fill).
 #[test]
 fn partial_fill_keeps_presubmitted() {
+    crate::client_core::set_session_level_for_test(Some(214)); // a capture at level 214 (ibx#602)
     let (client, _rx, shared) = test_client();
     shared.market.set_instrument_count(1);
     let order = Order {
@@ -4068,6 +4107,7 @@ fn process_msgs_live_fill_has_req_id_minus_one() {
 
 #[test]
 fn modify_limit_order_price_via_resubmit() {
+    crate::client_core::set_session_level_for_test(Some(214)); // a capture at level 214 (ibx#602)
     let (client, rx, shared) = test_client();
     shared.market.set_instrument_count(1);
     let order = Order {
@@ -4098,6 +4138,7 @@ fn modify_limit_order_price_via_resubmit() {
 
 #[test]
 fn modify_order_before_ack_no_panic() {
+    crate::client_core::set_session_level_for_test(Some(214)); // a capture at level 214 (ibx#602)
     let (client, rx, shared) = test_client();
     shared.market.set_instrument_count(1);
     for price in 0..10 {
@@ -4167,6 +4208,7 @@ fn modify_reject_of_a_filled_order_gives_no_callback() {
 
 #[test]
 fn rapid_modify_multiple_prices_no_crash() {
+    crate::client_core::set_session_level_for_test(Some(214)); // a capture at level 214 (ibx#602)
     let (client, rx, shared) = test_client();
     shared.market.set_instrument_count(1);
     for i in 0..50 {
@@ -4223,6 +4265,7 @@ fn modify_tif_day_to_gtc_via_resubmit() {
 
 #[test]
 fn modify_price_and_qty_simultaneously() {
+    crate::client_core::set_session_level_for_test(Some(214)); // a capture at level 214 (ibx#602)
     let (client, rx, shared) = test_client();
     shared.market.set_instrument_count(1);
     let order = Order {
@@ -4256,6 +4299,7 @@ fn modify_price_and_qty_simultaneously() {
 // (ORDER-MODIFY.md 5). The order stays as placed.
 #[test]
 fn modify_of_side_or_oca_is_refused_before_sending() {
+    crate::client_core::set_session_level_for_test(Some(214)); // a capture at level 214 (ibx#602)
     let placed = Order {
         action: "BUY".into(), total_quantity: 100.0, order_type: "LMT".into(), lmt_price: 150.0,
         oca_group: "G1".into(), oca_type: 2, ..Default::default()
@@ -4390,6 +4434,7 @@ fn minutes_time_in_force_goes_out() {
 // into a SELL STP gets 105. Nothing is sent either way.
 #[test]
 fn modify_type_change_gets_329_and_a_side_change_105_first() {
+    crate::client_core::set_session_level_for_test(Some(214)); // a capture at level 214 (ibx#602)
     for (action, code) in [("BUY", 329), ("SELL", 105)] {
         let (client, rx, shared) = test_client();
         shared.market.set_instrument_count(1);
@@ -4413,6 +4458,7 @@ fn modify_type_change_gets_329_and_a_side_change_105_first() {
 
 #[test]
 fn modify_order_type_lmt_to_stp() {
+    crate::client_core::set_session_level_for_test(Some(214)); // a capture at level 214 (ibx#602)
     let (client, rx, shared) = test_client();
     shared.market.set_instrument_count(1);
     let order = Order {
@@ -4476,6 +4522,7 @@ fn modify_of(first: Order, second: Order) -> (u32, OrderKind, u8, OrderAttrs) {
 // ibx#324: a stop modify must carry the new trigger, not a limit price of 0.
 #[test]
 fn modify_stop_moves_the_trigger() {
+    crate::client_core::set_session_level_for_test(Some(214)); // a capture at level 214 (ibx#602)
     let stp = |aux: f64| Order {
         action: "SELL".into(), total_quantity: 1.0, order_type: "STP".into(), aux_price: aux, ..Default::default()
     };
@@ -4486,6 +4533,7 @@ fn modify_stop_moves_the_trigger() {
 // ibx#324: a stop-limit modify moves both prices.
 #[test]
 fn modify_stop_limit_moves_both_prices() {
+    crate::client_core::set_session_level_for_test(Some(214)); // a capture at level 214 (ibx#602)
     let stp_lmt = |lmt: f64, aux: f64| Order {
         action: "SELL".into(), total_quantity: 1.0, order_type: "STP LMT".into(),
         lmt_price: lmt, aux_price: aux, ..Default::default()
@@ -4498,6 +4546,7 @@ fn modify_stop_limit_moves_both_prices() {
 // ibx#334: a trailing modify keeps its trailing kind and amount / percent.
 #[test]
 fn modify_trailing_keeps_the_trail() {
+    crate::client_core::set_session_level_for_test(Some(214)); // a capture at level 214 (ibx#602)
     let trail = |aux: f64| Order {
         action: "SELL".into(), total_quantity: 1.0, order_type: "TRAIL".into(), aux_price: aux, ..Default::default()
     };
@@ -4534,6 +4583,7 @@ fn percent_trail_rounds_to_basis_points() {
 // error 10243 (ib-agent#192 B3).
 #[test]
 fn fractional_quantity_is_refused_before_sending() {
+    crate::client_core::set_session_level_for_test(Some(214)); // a capture at level 214 (ibx#602)
     let (client, rx, shared) = test_client();
     shared.market.set_instrument_count(1);
     let order = Order {
@@ -4553,6 +4603,7 @@ fn fractional_quantity_is_refused_before_sending() {
 // the server sent.
 #[test]
 fn bad_algo_parameter_values_are_refused_before_sending() {
+    crate::client_core::set_session_level_for_test(Some(214)); // a capture at level 214 (ibx#602)
     let cases: [(&str, &str, &str, &str); 6] = [
         ("Twap", "strategyType", "Marketable", "443:Order processing failed. Unknown algo attribute:strategyType"),
         ("Adaptive", "adaptivePriority", "Bogus", "145:Error in validating entry fields -Bogus"),
@@ -4590,6 +4641,7 @@ fn bad_algo_parameter_values_are_refused_before_sending() {
 // nothing is sent, the definitions of that day loaded.
 #[test]
 fn algo_refusals_of_20261002_through_place_order() {
+    crate::client_core::set_session_level_for_test(Some(214)); // a capture at level 214 (ibx#602)
     type Case = (&'static str, Vec<(&'static str, &'static str)>, f64, &'static str);
     let cases: [Case; 5] = [
         ("Foo", vec![], 165.16, "439:Order processing failed. Algorithm definition not found"),
@@ -4633,6 +4685,7 @@ fn algo_refusals_of_20261002_through_place_order() {
 // not have is refused with 443 and nothing is sent, as the reference.
 #[test]
 fn accu_distr_through_place_order() {
+    crate::client_core::set_session_level_for_test(Some(214)); // a capture at level 214 (ibx#602)
     let place = |id: i64, params: &[(&str, &str)]| {
         let (client, rx, shared) = test_client();
         shared.market.set_instrument_count(1);
@@ -4705,6 +4758,7 @@ fn time_condition_through_place_order() {
 // Values the reference accepted in the same capture still go out.
 #[test]
 fn valid_algo_parameter_values_are_sent() {
+    crate::client_core::set_session_level_for_test(Some(214)); // a capture at level 214 (ibx#602)
     let (client, rx, shared) = test_client();
     shared.market.set_instrument_count(1);
     let order = Order {
@@ -4722,6 +4776,7 @@ fn valid_algo_parameter_values_are_sent() {
 
 #[test]
 fn fractional_quantity_on_a_modify_is_refused_and_keeps_the_order() {
+    crate::client_core::set_session_level_for_test(Some(214)); // a capture at level 214 (ibx#602)
     let (client, rx, shared) = test_client();
     shared.market.set_instrument_count(1);
     let whole = Order {
@@ -4741,6 +4796,7 @@ fn fractional_quantity_on_a_modify_is_refused_and_keeps_the_order() {
 // ibx#247: outside-RTH follows the order; it is not forced on.
 #[test]
 fn modify_carries_outside_rth_as_set() {
+    crate::client_core::set_session_level_for_test(Some(214)); // a capture at level 214 (ibx#602)
     let lmt = |rth: bool, px: f64| Order {
         action: "BUY".into(), total_quantity: 1.0, order_type: "LMT".into(), lmt_price: px,
         outside_rth: rth, ..Default::default()
@@ -5230,6 +5286,7 @@ fn exec_details_carries_the_fill_report_fields() {
 // this client's id and the tracked order's orderRef.
 #[test]
 fn exec_details_of_an_own_order_takes_the_tracked_order_ref() {
+    crate::client_core::set_session_level_for_test(Some(214)); // a capture at level 214 (ibx#602)
     let (client, _rx, shared) = test_client();
     shared.market.set_instrument_count(1);
     let order = Order {
@@ -5322,6 +5379,7 @@ fn known_parent(client: &EClient, id: i64) {
 // when the status is unchanged (a modify confirm).
 #[test]
 fn every_report_gives_open_order_then_order_status() {
+    crate::client_core::set_session_level_for_test(Some(214)); // a capture at level 214 (ibx#602)
     let (client, _rx, shared) = test_client();
     placed_order(&client, &shared, 60);
     shared.orders.push_order_update(update(60, OrderStatus::Submitted, 0));
@@ -5339,6 +5397,7 @@ fn every_report_gives_open_order_then_order_status() {
 // ApiPending.
 #[test]
 fn a_refused_pending_order_is_listed_with_its_status_only() {
+    crate::client_core::set_session_level_for_test(Some(214)); // a capture at level 214 (ibx#602)
     let (client, _rx, shared) = test_client();
     placed_order(&client, &shared, 62);
     shared.orders.push_order_error(62, 10043, "Missing or invalid NonGuaranteed value.".into());
@@ -5355,6 +5414,7 @@ fn a_refused_pending_order_is_listed_with_its_status_only() {
 // notice 10349 named it; a modify with no time in force restates it.
 #[test]
 fn the_preset_time_in_force_is_the_orders() {
+    crate::client_core::set_session_level_for_test(Some(214)); // a capture at level 214 (ibx#602)
     let (client, rx, shared) = test_client();
     placed_order(&client, &shared, 63);
     acked(&client, 63);
@@ -5390,6 +5450,7 @@ fn a_cancel_gives_order_status_only() {
 // A fill gives open_order too; a later report keeps the last fill price.
 #[test]
 fn a_later_report_carries_the_last_fill_price() {
+    crate::client_core::set_session_level_for_test(Some(214)); // a capture at level 214 (ibx#602)
     let (client, _rx, shared) = test_client();
     placed_order(&client, &shared, 62);
     shared.orders.push_fill(Fill {
@@ -5582,6 +5643,7 @@ fn summary_event(rows: Vec<crate::bridge::AccountRow>, ledgers: Vec<crate::bridg
 
 #[test]
 fn account_summary_is_a_server_subscription() {
+    crate::client_core::set_session_level_for_test(Some(214)); // a capture at level 214 (ibx#602)
     let (client, rx, shared) = test_client();
     client.req_account_summary(1, "All", "AccountType,NetLiquidation,$LEDGER:USD");
     assert_eq!(summary_sent(&rx), ["sub:SR.Socket.1:AccountType,NetLiquidation,$LEDGER:All"]);
@@ -6076,7 +6138,7 @@ fn news_bulletin_delivery_modes() {
 #[test]
 fn server_version_and_connection_time() {
     let (client, _rx, _shared) = test_client();
-    assert_eq!(client.server_version(), 214);
+    assert_eq!(client.server_version(), 225);
     let time = client.tws_connection_time();
     assert_eq!(time.split(' ').next().map(str::len), Some(8), "{}", time);
     assert_eq!(time, client.tws_connection_time(), "fixed at connect");
@@ -6161,6 +6223,7 @@ fn ids_outside_the_reference_range_drop_the_request() {
 // lost) leaves the client with no callback: no open order, no status.
 #[test]
 fn a_forgotten_order_leaves_without_callbacks() {
+    crate::client_core::set_session_level_for_test(Some(214)); // a capture at level 214 (ibx#602)
     let (client, _rx, shared) = test_client();
     shared.market.set_instrument_count(1);
     let order = Order { action: "BUY".into(), total_quantity: 1.0, order_type: "LMT".into(), lmt_price: 10.0, ..Default::default() };
@@ -6179,6 +6242,7 @@ fn a_forgotten_order_leaves_without_callbacks() {
 // (paper, 17/10/2026, market closed); its id stays used: placed again, 103.
 #[test]
 fn an_order_refused_at_its_lookup_is_not_an_open_order() {
+    crate::client_core::set_session_level_for_test(Some(214)); // a capture at level 214 (ibx#602)
     let (client, _rx, shared) = test_client();
     shared.market.set_instrument_count(1);
     let order = Order { action: "BUY".into(), total_quantity: 1.0, order_type: "LMT".into(), lmt_price: 10.0, ..Default::default() };
@@ -6201,6 +6265,7 @@ fn an_order_refused_at_its_lookup_is_not_an_open_order() {
 // is answered once, after the replayed statuses, as in the reference.
 #[test]
 fn open_order_requests_wait_for_the_order_replay() {
+    crate::client_core::set_session_level_for_test(Some(214)); // a capture at level 214 (ibx#602)
     let (client, _rx, shared) = test_client();
     shared.market.set_instrument_count(1);
     let order = Order { action: "BUY".into(), total_quantity: 1.0, order_type: "LMT".into(), lmt_price: 10.0, ..Default::default() };
@@ -7357,6 +7422,7 @@ fn req_current_time_in_millis_adds_the_logon_clock_offset() {
 // answers of the reference run of 10/10/2026, and send nothing.
 #[test]
 fn requests_the_reference_session_does_not_have() {
+    crate::client_core::set_session_level_for_test(Some(214)); // a capture at level 214 (ibx#602)
     let (client, rx, shared) = test_client();
     client.cancel_contract_data(7001);
     client.cancel_historical_ticks(7003);
@@ -7380,6 +7446,7 @@ fn requests_the_reference_session_does_not_have() {
 // 17/10/2026).
 #[test]
 fn update_config_is_refused_below_level_221() {
+    crate::client_core::set_session_level_for_test(Some(214)); // a capture at level 214 (ibx#602)
     let (client, rx, shared) = test_client();
     let mut request = crate::api::config::UpdateConfigRequest { req_id: Some(7401), ..Default::default() };
     client.update_config(&request);
@@ -7395,6 +7462,7 @@ fn update_config_is_refused_below_level_221() {
 // below level 219, and nothing goes to the engine.
 #[test]
 fn req_config_is_refused_below_level_219() {
+    crate::client_core::set_session_level_for_test(Some(214)); // a capture at level 214 (ibx#602)
     let (client, rx, shared) = test_client();
     client.req_config(&crate::api::config::ConfigRequest { req_id: Some(7301) });
     client.req_config(&crate::api::config::ConfigRequest::default());
@@ -8048,6 +8116,7 @@ fn an_order_with_unset_fields_goes_out_and_shows_as_the_reference() {
 // post-only order keeps it.
 #[test]
 fn an_accu_distr_order_shows_post_only_on_its_first_open_order_only() {
+    crate::client_core::set_session_level_for_test(Some(214)); // a capture at level 214 (ibx#602)
     let (client, _rx, shared) = test_client();
     shared.market.set_instrument_count(1);
     let base = Order { action: "BUY".into(), total_quantity: 1.0, order_type: "LMT".into(), lmt_price: 1.0,
@@ -8093,6 +8162,7 @@ fn managed_accounts_are_the_logon_account_list() {
 // reqAccountUpdates gives the warning and goes on.
 #[test]
 fn pending_accounts_refuse_orders_and_positions() {
+    crate::client_core::set_session_level_for_test(Some(214)); // a capture at level 214 (ibx#602)
     #[derive(Default)]
     struct Errors(Vec<(i64, i64, String)>);
     impl Wrapper for Errors {
@@ -8137,6 +8207,7 @@ fn pending_accounts_refuse_orders_and_positions() {
 // and the order goes out.
 #[test]
 fn algo_time_parameters_10314_and_2174() {
+    crate::client_core::set_session_level_for_test(Some(214)); // a capture at level 214 (ibx#602)
     let (client, rx, shared) = test_client();
     shared.market.set_instrument_count(1);
     shared.reference.add_algo_definitions(include_str!("../../../tests/fixtures/algo/IBALGO-AE-20261002.xml"));

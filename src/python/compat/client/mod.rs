@@ -294,10 +294,10 @@ impl EClient {
         Ok(())
     }
 
-    /// API level of the session: 214, the level the reference gives a
+    /// API level of the session: 225, the level the reference gives a
     /// current client; None when not connected (ibx#426).
     fn server_version(&self) -> Option<i32> {
-        self.connection_time.lock().unwrap().as_ref().map(|_| crate::client_core::SERVER_VERSION)
+        self.connection_time.lock().unwrap().as_ref().map(|_| crate::client_core::session_level())
     }
 
     /// Time the session started, as `yyyyMMdd HH:mm:ss {zone}` in the

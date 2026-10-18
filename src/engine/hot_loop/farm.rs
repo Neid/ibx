@@ -201,7 +201,7 @@ fn note_record_terms(context: &mut Context, con_id: i64, def: &crate::control::c
     }
     // The steps of its last size and price, from session level 222
     // (ibx#613).
-    if crate::client_core::SERVER_VERSION >= crate::client_core::LEVEL_FRACTIONAL_LAST_SIZE {
+    if crate::client_core::session_level() >= crate::client_core::LEVEL_FRACTIONAL_LAST_SIZE {
         let increments = definition_increments(def);
         if context.def_increments.insert(con_id, increments) != Some(increments) {
             context.increments_due.push(con_id);
@@ -246,7 +246,7 @@ pub(crate) fn definition_increments(def: &crate::control::contracts::ContractDef
 /// a reused slot keeps none of an earlier contract's. Only from session
 /// level 222, which gives the last size and price in those steps.
 pub(crate) fn publish_increments(context: &Context, shared: &SharedState, instrument: InstrumentId, con_id: i64) {
-    if crate::client_core::SERVER_VERSION >= crate::client_core::LEVEL_FRACTIONAL_LAST_SIZE {
+    if crate::client_core::session_level() >= crate::client_core::LEVEL_FRACTIONAL_LAST_SIZE {
         let (size, price) = context.def_increments.get(&con_id).copied().unwrap_or((0, 0));
         shared.market.set_last_increments(instrument, size, price);
     }
@@ -255,7 +255,7 @@ pub(crate) fn publish_increments(context: &Context, shared: &SharedState, instru
 /// The frozen slot of a contract takes the increments of its real-time
 /// slot (ibx#613), from session level 222.
 fn copy_increments(shared: &SharedState, live: InstrumentId, twin: InstrumentId) {
-    if crate::client_core::SERVER_VERSION >= crate::client_core::LEVEL_FRACTIONAL_LAST_SIZE {
+    if crate::client_core::session_level() >= crate::client_core::LEVEL_FRACTIONAL_LAST_SIZE {
         let (size, price) = shared.market.last_increments(live);
         shared.market.set_last_increments(twin, size, price);
     }
@@ -4688,8 +4688,8 @@ mod tests {
         assert_eq!(definition_increments(&whole), (pack(1.0), pack(0.01)));
         let no_sizes = ContractDefinition { min_tick: 0.01, ..Default::default() };
         assert_eq!(definition_increments(&no_sizes), (0, pack(0.01)));
-        // At the session's level, below 222, nothing is kept or handed on.
-        assert!(crate::client_core::SERVER_VERSION < crate::client_core::LEVEL_FRACTIONAL_LAST_SIZE);
+        // At level 214, below 222, nothing is kept or handed on.
+        crate::client_core::set_session_level_for_test(Some(214));
         let mut context = Context::new();
         context.def_increments.insert(265598, definition_increments(&fractional));
         let shared = SharedState::new();

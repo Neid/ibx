@@ -286,21 +286,21 @@ fn modifies(paper: &mut Paper, base: i64) {
         lmt_price: px, outside_rth: rth, tif: tif.into(), ..Default::default()
     };
     let stp = |aux: f64| Order {
-        action: "SELL".into(), order_type: "STP".into(), total_quantity: 1.0, aux_price: aux, ..Default::default()
+        action: "SELL".into(), order_type: "STP".into(), total_quantity: 1.0, aux_price: aux, tif: "DAY".into(), ..Default::default()
     };
     let stp_lmt = |l: f64, aux: f64| Order {
         action: "SELL".into(), order_type: "STP LMT".into(), total_quantity: 1.0,
-        lmt_price: l, aux_price: aux, ..Default::default()
+        lmt_price: l, aux_price: aux, tif: "DAY".into(), ..Default::default()
     };
     let trail = |aux: f64| Order {
-        action: "SELL".into(), order_type: "TRAIL".into(), total_quantity: 1.0, aux_price: aux, ..Default::default()
+        action: "SELL".into(), order_type: "TRAIL".into(), total_quantity: 1.0, aux_price: aux, tif: "DAY".into(), ..Default::default()
     };
     let trail_lmt = |aux: f64| Order {
         action: "SELL".into(), order_type: "TRAIL LIMIT".into(), total_quantity: 1.0,
-        aux_price: aux, lmt_price_offset: 0.50, trail_stop_price: 50.0, ..Default::default()
+        aux_price: aux, lmt_price_offset: 0.50, trail_stop_price: 50.0, tif: "DAY".into(), ..Default::default()
     };
     let trail_percent = |p: f64| Order {
-        action: "SELL".into(), order_type: "TRAIL".into(), total_quantity: 1.0, trailing_percent: p, ..Default::default()
+        action: "SELL".into(), order_type: "TRAIL".into(), total_quantity: 1.0, trailing_percent: p, tif: "DAY".into(), ..Default::default()
     };
     let gtd_stp = |aux: f64| Order {
         action: "SELL".into(), order_type: "STP".into(), total_quantity: 1.0, aux_price: aux,
@@ -377,7 +377,7 @@ fn modifies(paper: &mut Paper, base: i64) {
 fn fractional(paper: &mut Paper, id: i64) {
     println!("  fractional quantity (order {})", id);
     let order = Order {
-        action: "BUY".into(), order_type: "LMT".into(), total_quantity: 1.5, lmt_price: 200.0, ..Default::default()
+        action: "BUY".into(), order_type: "LMT".into(), total_quantity: 1.5, lmt_price: 200.0, tif: "DAY".into(), ..Default::default()
     };
     paper.place(id, &order);
     let got = paper.pump(5, |s| s.errors.iter().any(|(r, c, _)| *r == id && *c == 10243));
@@ -392,13 +392,13 @@ fn algos(paper: &mut Paper, base: i64) {
         action: "SELL".into(), order_type: "LMT".into(), total_quantity: 1.0, lmt_price: 5000.0,
         algo_strategy: "Adaptive".into(),
         algo_params: vec![TagValue { tag: "adaptivePriority".into(), value: "Normal".into() }],
-        ..Default::default()
+        tif: "DAY".into(), ..Default::default()
     };
     let twap = Order {
         action: "SELL".into(), order_type: "LMT".into(), total_quantity: 1.0, lmt_price: 5000.0,
         algo_strategy: "Twap".into(),
         algo_params: vec![TagValue { tag: "allowPastEndTime".into(), value: "1".into() }],
-        ..Default::default()
+        tif: "DAY".into(), ..Default::default()
     };
     // The server refuses GTC for TWAP (and VWAP, ArrivalPx) itself.
     for (i, (label, child, tif)) in [("Adaptive child, GTC", adaptive, "GTC"), ("TWAP child, DAY", twap, "DAY")]
@@ -462,7 +462,7 @@ fn algos(paper: &mut Paper, base: i64) {
         action: "BUY".into(), order_type: "STP".into(), total_quantity: 1.0, aux_price: 5000.0,
         algo_strategy: "Adaptive".into(),
         algo_params: vec![TagValue { tag: "adaptivePriority".into(), value: "Normal".into() }],
-        ..Default::default()
+        tif: "DAY".into(), ..Default::default()
     };
     paper.place(id, &adaptive_stop);
     let up = paper.wait_working(&[id]);
@@ -495,7 +495,7 @@ fn conditions(paper: &mut Paper, base: i64) {
             }],
             conditions_cancel_order: cancel_order,
             conditions_ignore_rth: ignore_rth,
-            ..Default::default()
+            tif: "DAY".into(), ..Default::default()
         };
         paper.place(id, &order);
         let up = paper.wait_working(&[id]);

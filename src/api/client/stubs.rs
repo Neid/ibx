@@ -83,7 +83,7 @@ impl EClient {
     pub fn cancel_contract_data(&self, req_id: i64) {
         // One API request for the pacing, whatever it sends (ibx#565).
         let _request = crate::engine::park::one_request();
-        if let Some((code, text)) = crate::client_core::lookup_cancel_refusal(crate::client_core::SERVER_VERSION, false) {
+        if let Some((code, text)) = crate::client_core::lookup_cancel_refusal(crate::client_core::session_level(), false) {
             self.shared.orders.push_order_error(req_id, code, text.to_string());
         }
     }
@@ -94,7 +94,7 @@ impl EClient {
     pub fn cancel_historical_ticks(&self, req_id: i64) {
         // One API request for the pacing, whatever it sends (ibx#565).
         let _request = crate::engine::park::one_request();
-        if let Some((code, text)) = crate::client_core::lookup_cancel_refusal(crate::client_core::SERVER_VERSION, true) {
+        if let Some((code, text)) = crate::client_core::lookup_cancel_refusal(crate::client_core::session_level(), true) {
             self.shared.orders.push_order_error(req_id, code, text.to_string());
         }
     }
@@ -144,7 +144,7 @@ impl EClient {
     pub fn req_config(&self, request: &crate::api::config::ConfigRequest) {
         // One API request for the pacing, whatever it sends (ibx#565).
         let _request = crate::engine::park::one_request();
-        self.req_config_at(crate::client_core::SERVER_VERSION, request);
+        self.req_config_at(crate::client_core::session_level(), request);
     }
 
     /// `req_config` on a session of level `level`.
@@ -166,7 +166,7 @@ impl EClient {
     pub fn update_config(&self, request: &crate::api::config::UpdateConfigRequest) {
         // One API request for the pacing, whatever it sends (ibx#565).
         let _request = crate::engine::park::one_request();
-        self.update_config_at(crate::client_core::SERVER_VERSION, request);
+        self.update_config_at(crate::client_core::session_level(), request);
     }
 
     /// `update_config` on a session of level `level`.

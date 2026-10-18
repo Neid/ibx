@@ -48,7 +48,7 @@ def leg(con_id, action):
 
 def order(**kw):
     o = Order()
-    o.action, o.totalQuantity, o.orderType = "BUY", 1, "LMT"
+    o.action, o.totalQuantity, o.orderType, o.tif = "BUY", 1, "LMT", "DAY"  # no tif: 10052 at 225 (ibx#602)
     o.lmtPrice = kw.get("lmt", -23.15)
     o.smartComboRoutingParams = [TagValue("NonGuaranteed", "1")]
     if "prices" in kw:

@@ -824,7 +824,7 @@ impl EClient {
     }
 
     /// `req_config_proto_buf` on a session of level `level` (ibx#610,
-    /// test-only: ibx answers level 214 until every level up to 225 is).
+    /// test-only).
     #[doc(hidden)]
     fn _test_req_config_at(&self, py: Python<'_>, level: i32, request: Bound<'_, PyAny>) -> PyResult<()> {
         let request = super::super::config::config_request(&request)?;

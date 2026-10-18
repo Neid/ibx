@@ -45,9 +45,8 @@ def test_below_level_221_the_request_is_refused_at_once_for_its_id():
     c, w = connected()
     r = UpdateConfigRequest()
     r.reqId = 7401
-    c.update_config_proto_buf(r)
-    c.update_config_proto_buf(UpdateConfigRequest())
-    c.update_config_proto_buf(None)
+    c._test_update_config_at(214, r)
+    c._test_update_config_at(214, UpdateConfigRequest())
     # The official client library's own check: before anything is sent,
     # on the caller's thread.
     assert w.events == [("error", 7401, 503, UNSUPPORTED), ("error", -1, 503, UNSUPPORTED)]
@@ -57,8 +56,8 @@ def test_below_level_221_the_request_is_refused_at_once_for_its_id():
 
 def test_a_plain_object_with_the_official_attributes_is_taken():
     c, w = connected()
-    c.update_config_proto_buf(types.SimpleNamespace(reqId=7402, messages=[], acceptedWarnings=[]))
-    c.update_config_proto_buf(types.SimpleNamespace(reqId=None))
+    c._test_update_config_at(214, types.SimpleNamespace(reqId=7402, messages=[], acceptedWarnings=[]))
+    c._test_update_config_at(214, types.SimpleNamespace(reqId=None))
     assert w.events == [("error", 7402, 503, UNSUPPORTED), ("error", -1, 503, UNSUPPORTED)]
 
 

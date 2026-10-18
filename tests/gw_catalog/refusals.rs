@@ -638,6 +638,7 @@ fn attached_from_a_preset_without_them() {
 // paper 13/10/2026: the notice ends with a period).
 #[test]
 fn time_in_force_from_the_order_preset() {
+    ibx::client_core::set_session_level_for_test(Some(214)); // a capture at level 214 (ibx#602)
     let mut engine = Engine::start();
     engine.client.place_order(REFUSED, &aapl(), &Order { tif: String::new(), ..order("LMT") }).unwrap();
     engine.answer_preset("STK", "GTC");

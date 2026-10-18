@@ -179,7 +179,7 @@ impl EClient {
         if let Some(r) = self.not_connected(req_id) { return r; }
         // The official client library's own check, on the caller's thread
         // before anything is sent: never put off (ibx#532).
-        if let Some((code, text)) = crate::client_core::lookup_cancel_refusal(crate::client_core::SERVER_VERSION, false) {
+        if let Some((code, text)) = crate::client_core::lookup_cancel_refusal(crate::client_core::session_level(), false) {
             self.wrapper.call_method1(py, "error", (req_id, code, text, ""))?;
         }
         Ok(())
@@ -193,7 +193,7 @@ impl EClient {
         if let Some(r) = self.not_connected(req_id) { return r; }
         // The official client library's own check, on the caller's thread
         // before anything is sent: never put off (ibx#532).
-        if let Some((code, text)) = crate::client_core::lookup_cancel_refusal(crate::client_core::SERVER_VERSION, true) {
+        if let Some((code, text)) = crate::client_core::lookup_cancel_refusal(crate::client_core::session_level(), true) {
             self.wrapper.call_method1(py, "error", (req_id, code, text, ""))?;
         }
         Ok(())
@@ -272,7 +272,7 @@ impl EClient {
         // One API request for the pacing, whatever it sends (ibx#565).
         let _request = crate::engine::park::one_request();
         if let Some(r) = self.not_connected(request.req_id.map_or(-1, i64::from)) { return r; }
-        self.req_config_at(py, crate::client_core::SERVER_VERSION, &request)
+        self.req_config_at(py, crate::client_core::session_level(), &request)
     }
 
     /// Update the configuration, as the official `updateConfigProtoBuf`
@@ -291,7 +291,7 @@ impl EClient {
         // One API request for the pacing, whatever it sends (ibx#565).
         let _request = crate::engine::park::one_request();
         if let Some(r) = self.not_connected(request.req_id.map_or(-1, i64::from)) { return r; }
-        self.update_config_at(py, crate::client_core::SERVER_VERSION, &request)
+        self.update_config_at(py, crate::client_core::session_level(), &request)
     }
 
     // ── FA (Financial Advisor) ──

@@ -56,12 +56,15 @@ def test_current_time_in_millis_adds_the_logon_offset():
     assert abs(t - int(time.time() * 1000) - 60_000) <= 1_000
 
 
-def test_the_two_cancels_are_refused_for_their_request():
+def test_the_two_cancels_answer_nothing_at_session_level_225():
+    # Below level 215 the official client library refused them with 503
+    # (CONTRACT_DATA, HISTORICAL_TICKS); from 215 the reference 10.51 takes
+    # them and answers nothing (ibx#557, ibx#602).
     c, w = connected()
     c.cancel_contract_data(7001)
     c.cancel_historical_ticks(7003)
     c._test_dispatch_once()
-    assert w.events == [("error", 7001, 503, CONTRACT_DATA), ("error", 7003, 503, HISTORICAL_TICKS)]
+    assert w.events == []
 
 
 def test_the_verify_requests_answer_as_the_reference():

@@ -1,8 +1,8 @@
 """ibx#610 (reqConfig, session level 219) and the rest of ibx#612 (updateConfig, level 221) in the Python client.
 
-At the level ibx answers (214) both requests are refused with 503, as the official client library refuses them on a
-session of that level. From levels 219 and 221 (reached here through test hooks, as ibx answers 214 until every
-level up to 225 is handled, ibx#602), as decided on 18/10/2026 (option 3 of ibx#610):
+Below levels 219 and 221 (reached here through test hooks) both requests are refused with 503, as the official
+client library refuses them on a session of that level. From them (ibx answers 225 since 18/10/2026, ibx#602), as
+decided on 18/10/2026 (option 3 of ibx#610):
 
 - reqConfig gives the paper installation's configuration observed on the reference 10.51 on 15/10/2026 (paper,
   market closed, fresh process, the official client at level 225);
@@ -55,10 +55,9 @@ def official(name):
 def test_below_level_219_the_request_is_refused_at_once_for_its_id():
     ConfigRequest = official("ConfigRequest")
     c, w = connected()
-    c.req_config_proto_buf(ConfigRequest(reqId=7301))
-    c.req_config_proto_buf(ConfigRequest())
-    c.req_config_proto_buf(types.SimpleNamespace(reqId=7302))
-    c.req_config_proto_buf(None)
+    c._test_req_config_at(214, ConfigRequest(reqId=7301))
+    c._test_req_config_at(214, ConfigRequest())
+    c._test_req_config_at(214, types.SimpleNamespace(reqId=7302))
     # The official client library's own check: before anything is sent, on the caller's thread.
     assert w.events == [("error", 7301, 503, UNSUPPORTED), ("error", -1, 503, UNSUPPORTED),
                         ("error", 7302, 503, UNSUPPORTED)]

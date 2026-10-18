@@ -64,14 +64,13 @@ def test_the_answers_come_in_the_order_of_the_requests():
     c.req_managed_accts()
     c.req_family_codes()
     c.req_current_time_in_millis()
-    # The refused cancel is the official client library's own check, at
-    # once on the caller's thread (ibx#532).
-    assert w.events == ["error 7001 503"]
+    # The cancel answers nothing at session level 225 (ibx#557, ibx#602).
+    assert w.events == []
     # One turn after the other, as the pacing grants them.
     for _ in range(6):
         c._test_grant_turns(1)
         c._test_dispatch_once()
-    assert w.events == ["error 7001 503", "news_providers", "next_valid_id", "managed_accounts", "family_codes",
+    assert w.events == ["news_providers", "next_valid_id", "managed_accounts", "family_codes",
                         "current_time_in_millis"]
 
 

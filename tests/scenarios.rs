@@ -199,6 +199,7 @@ fn order_lifecycle_modify_then_fill() {
 /// What-if order: margin preview without actual execution.
 #[test]
 fn order_lifecycle_what_if_preview() {
+    ibx::client_core::set_session_level_for_test(Some(214)); // a capture at level 214 (ibx#602)
     let (client, rx, shared) = test_client();
     shared.market.set_instrument_count(1);
     client.seed_instrument(756733, 0);
@@ -1112,6 +1113,7 @@ fn summary_row(key: &str, value: &str, currency: &str) -> ibx::bridge::AccountRo
 /// account_summary_end, and nothing is sent between batches (no timer).
 #[test]
 fn account_summary_delivers_each_server_batch() {
+    ibx::client_core::set_session_level_for_test(Some(214)); // a capture at level 214 (ibx#602)
     let (client, rx, shared) = test_client();
 
     client.req_account_summary(5, "All", "NetLiquidation,BuyingPower,AvailableFunds");

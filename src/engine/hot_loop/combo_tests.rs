@@ -295,6 +295,7 @@ const COMBO_CONTRACT: &str = "28812380 QQQ,SPY BAG SMART USD QQQ,SPY COMB [75673
 // combo on the same legs sends no set-up request.
 #[test]
 fn combo_fill_session_is_the_captured_one() {
+    crate::client_core::set_session_level_for_test(Some(214)); // a capture at level 214 (ibx#602)
     let frames = fixture("20260930/i105_combo_fill.jsonl");
     let mut s = Session::new();
     s.client.place_order(42, &spy_qqq("QQQ,SPY"), &combo_lmt("BUY", 23.84)).unwrap();
@@ -350,6 +351,7 @@ fn combo_fill_session_is_the_captured_one() {
 // BAG conId, and the same for a second order.
 #[test]
 fn combo_symbol_refusal_then_order_modify_and_cancel_are_the_captured_ones() {
+    crate::client_core::set_session_level_for_test(Some(214)); // a capture at level 214 (ibx#602)
     let first = fixture("20260926/i105_combo_stock_smart.jsonl");
     let mut s = Session::new();
     // The session of the capture had the combo preset already (ibx#660).
@@ -396,6 +398,7 @@ fn combo_symbol_refusal_then_order_modify_and_cancel_are_the_captured_ones() {
 // reported leg prices and no limit price.
 #[test]
 fn combo_leg_prices_are_the_captured_ones() {
+    crate::client_core::set_session_level_for_test(Some(214)); // a capture at level 214 (ibx#602)
     let first = fixture("20260926/i105_combo_stock_smart.jsonl");
     let frames = fixture("20260926b/i105_combo_leg_prices.jsonl");
     let mut s = Session::new();
@@ -433,6 +436,7 @@ fn combo_leg_prices_are_the_captured_ones() {
 // and nothing else is sent.
 #[test]
 fn directed_combo_without_definition_is_the_captured_one() {
+    crate::client_core::set_session_level_for_test(Some(214)); // a capture at level 214 (ibx#602)
     let frames = fixture("20260926b/i105_combo_directed.jsonl");
     let mut s = Session::new();
     let id = s.engine.context.market.register(0);
@@ -455,6 +459,7 @@ fn directed_combo_without_definition_is_the_captured_one() {
 // two legs, 10045 with three.
 #[test]
 fn combos_without_a_non_guaranteed_value() {
+    crate::client_core::set_session_level_for_test(Some(214)); // a capture at level 214 (ibx#602)
     let mut s = Session::new();
     let place = |s: &mut Session, contract: &ApiContract, order: &ApiOrder| -> Vec<String> {
         s.client.place_order(7, contract, order).unwrap();
@@ -479,6 +484,7 @@ fn combos_without_a_non_guaranteed_value() {
 // order, before anything is sent.
 #[test]
 fn combo_refusals_before_sending() {
+    crate::client_core::set_session_level_for_test(Some(214)); // a capture at level 214 (ibx#602)
     let mut s = Session::new();
     let place = |s: &mut Session, contract: &ApiContract, order: &ApiOrder| -> Vec<String> {
         s.client.place_order(7, contract, order).unwrap();
@@ -535,6 +541,7 @@ fn combo_refusals_before_sending() {
 // has no combo permission: not part of this check.)
 #[test]
 fn option_vertical_set_up_is_the_captured_one() {
+    crate::client_core::set_session_level_for_test(Some(214)); // a capture at level 214 (ibx#602)
     let frames = fixture("20260928/rth_order_types.jsonl");
     let mut s = Session::new();
     let vertical = ApiContract {
@@ -558,6 +565,7 @@ fn option_vertical_set_up_is_the_captured_one() {
 // openOrder.
 #[test]
 fn modify_of_the_first_combo_order_of_a_session_goes_out() {
+    crate::client_core::set_session_level_for_test(Some(214)); // a capture at level 214 (ibx#602)
     let first = fixture("20260926/i105_combo_stock_smart.jsonl");
     let reports = fixture("20260926b/i105_combo_stock_smart.jsonl");
     let mut s = Session::new();

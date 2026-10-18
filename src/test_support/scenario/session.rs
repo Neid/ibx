@@ -28,6 +28,9 @@ pub const ACCOUNT: &str = "DUXXXXXXX";
 /// header does not name it (`machine_zone`): every capture so far.
 pub const RECORDING_ZONE: &str = "Europe/Paris";
 
+/// The session level of the recordings: the client was at 214 (ibx#602).
+pub const RECORDING_LEVEL: i32 = 214;
+
 /// The machine zone a recording names (`machine_zone` in its header), else
 /// [`RECORDING_ZONE`]: a replay runs in it, whatever the zone of the
 /// machine that runs the test (a time without a zone is read in it).
@@ -75,6 +78,10 @@ impl Links {
         // The engine runs on this thread in the recording machine's zone; a
         // replay of another zone sets its own (`in_zone`).
         crate::gateway::set_machine_zone_for_test(Some(RECORDING_ZONE));
+        // The recordings were made with the client at level 214 (the
+        // reference 10.40, and 10.51 with a capped client); a replay of a
+        // recording at another level sets its own (`runner::run`).
+        crate::client_core::set_session_level_for_test(Some(RECORDING_LEVEL));
         let shared = Arc::new(SharedState::new());
         shared.reference.set_user_name("user");
         // The client has no clock of the recording: its own copied waits
@@ -218,9 +225,11 @@ impl Links {
         let clock = self.shared.command_clock().clone();
         let engine = &mut self.engine;
         let zone = crate::gateway::machine_zone_for_test();
+        let level = crate::client_core::session_level_for_test();
         let out = std::thread::scope(|s| {
             s.spawn(|| {
                 crate::gateway::set_machine_zone_for_test(zone.as_deref());
+                crate::client_core::set_session_level_for_test(level);
                 if paced {
                     clock.set_engine_thread(true);
                 }
@@ -307,9 +316,11 @@ impl Session {
         let client = &*client;
         // The client's thread reads the machine zone of this one.
         let zone = crate::gateway::machine_zone_for_test();
+        let level = crate::client_core::session_level_for_test();
         let out = std::thread::scope(|s| {
             let h = s.spawn(move || {
                 crate::gateway::set_machine_zone_for_test(zone.as_deref());
+                crate::client_core::set_session_level_for_test(level);
                 f(client)
             });
             while !h.is_finished() {

@@ -942,14 +942,14 @@ fn pass_one(
     let complete = {
         // The increments are read only from the level that uses them
         // (ibx#613): below it, nothing more per step.
-        let increments = if SERVER_VERSION >= LEVEL_FRACTIONAL_LAST_SIZE {
+        let increments = if session_level() >= LEVEL_FRACTIONAL_LAST_SIZE {
             shared.market.last_increments(instrument)
         } else {
             (0, 0)
         };
         let mut o = Out {
             out: &mut *out, req_id, fields: &m.fields, delayed: st.delayed, shared, instrument, seq,
-            level: SERVER_VERSION, increments,
+            level: session_level(), increments,
         };
         match snap {
             // A snapshot on the frozen view gives the frozen image as a
@@ -1582,12 +1582,12 @@ mod tests {
         assert_eq!(last_at_level(214, 0.4567, crate::md_events::Increment::from_step(0.01).unwrap().pack()), 0.4567);
     }
 
-    // ibx#613: at the session's level, below 222, a stream gives its last
+    // ibx#613: at level 214, below 222, a stream gives its last
     // price and size as today even with the definition's increments set.
     #[test]
     fn the_last_size_and_price_are_as_today_at_the_session_level() {
         use crate::md_events::Increment;
-        assert!(SERVER_VERSION < LEVEL_FRACTIONAL_LAST_SIZE);
+        crate::client_core::set_session_level_for_test(Some(214));
         let (core, shared) = (ClientCore::new(), SharedState::new());
         shared.market.set_last_increments(5, Increment::from_step(0.01).unwrap().pack(), Increment::from_step(0.05).unwrap().pack());
         stream(&core, &shared, 1, 5);

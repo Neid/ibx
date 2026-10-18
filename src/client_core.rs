@@ -514,11 +514,42 @@ fn pnl_account_refusal(class: &str, account: &str, own_account: &str) -> Result<
     Err((321, format!("Error validating request.-'{}' : cause - {}", class, cause)))
 }
 
-/// API level of a session (ibx#426). The reference speaks levels 100 to
-/// 214 and answers the lower of 214 and the client's highest level; the
-/// current clients offer more than 214, so they get 214. Requests of higher
-/// levels are not implemented.
-pub const SERVER_VERSION: i32 = 214;
+/// API level of a session (ibx#426, ibx#602). The reference 10.51 answers
+/// the lower of 225 and the client's highest level; the current official
+/// clients offer more, so they get 225 (observed 12/10/2026). ibx answers
+/// 225 since the project manager's decision of 18/10/2026 (ibx#602).
+pub const SERVER_VERSION: i32 = 225;
+
+#[cfg(any(test, feature = "test-support"))]
+thread_local! {
+    static LEVEL_FOR_TEST: std::cell::Cell<Option<i32>> = const { std::cell::Cell::new(None) };
+}
+
+/// The level of this session: [`SERVER_VERSION`]. A replay of a recording
+/// made at a lower level runs at that level, on this thread and on the
+/// threads it lends the engine or the client to (tests only).
+#[inline(always)]
+pub fn session_level() -> i32 {
+    #[cfg(any(test, feature = "test-support"))]
+    if let Some(level) = LEVEL_FOR_TEST.with(|l| l.get()) {
+        return level;
+    }
+    SERVER_VERSION
+}
+
+/// Fix the session level this thread reads, for the tests (a replay of a
+/// recording made at 214); `None` gives [`SERVER_VERSION`] back.
+#[cfg(any(test, feature = "test-support"))]
+pub fn set_session_level_for_test(level: Option<i32>) {
+    LEVEL_FOR_TEST.with(|l| l.set(level));
+}
+
+/// The session level fixed for this thread by [`set_session_level_for_test`].
+#[cfg(any(test, feature = "test-support"))]
+pub fn session_level_for_test() -> Option<i32> {
+    LEVEL_FOR_TEST.with(|l| l.get())
+}
+
 /// From this session level the reference gives historical prices in the
 /// steps of the contract's definition, not its market rule (ibx#615).
 pub const LEVEL_PRICE_FROM_DEFINITION: i32 = 224;
@@ -526,13 +557,13 @@ pub const LEVEL_PRICE_FROM_DEFINITION: i32 = 224;
 /// trade's size; below it, a whole number (ibx#613).
 pub const LEVEL_FRACTIONAL_LAST_SIZE: i32 = 222;
 
-/// Each account summary frame is given twice below the session level of
-/// the reference 10.51 (ibx#486, ibx#662).
-const SUMMARY_FRAMES_TWICE: bool = SERVER_VERSION < 225;
+/// From this session level each account summary frame is given once;
+/// below it, twice (ibx#486, ibx#662).
+const LEVEL_SUMMARY_FRAMES_ONCE: i32 = 225;
 
 /// The odd-lot quotes (generic tick 787) are given from session level 225
 /// (ibx#616).
-const ODD_LOT_QUOTES: bool = SERVER_VERSION >= 225;
+const LEVEL_ODD_LOT_QUOTES: i32 = 225;
 
 /// Connection time of a session in the reference's form
 /// `yyyyMMdd HH:mm:ss {zone}`, local time of the machine (ibx#426). The zone
@@ -1801,13 +1832,6 @@ pub const LEVEL_CONFIG: i32 = 219;
 /// The session level from which the official client library sends
 /// updateConfig (ibx#612).
 pub const LEVEL_UPDATE_CONFIG: i32 = 221;
-
-// The rules of the levels up to 225 are written (ibx#602, 18/10/2026)
-// but one: the frozen snapshot's order at 225 (ibx#749). Raising the
-// level ibx answers is the project manager's decision (ibx#602): this
-// check stays until he takes it.
-const _: () = assert!(SERVER_VERSION < LEVEL_FRACTIONAL_LAST_SIZE,
-    "raising the session level is decided on ibx#602; remove this check with the move");
 
 pub const CONFIG_UNSUPPORTED: (i64, &str) =
     (503, "The TWS is out of date and must be upgraded.  It does not support config requests.");
@@ -4130,7 +4154,7 @@ impl ClientCore {
             // The odd-lot quotes need session level 225 and no `mdoff`
             // (ibx#616, 13/10/2026).
             let mdoff = generic_tick_list.split(',').any(|t| t.trim().eq_ignore_ascii_case("mdoff"));
-            if ticks.iter().any(|t| t.code == generic_tick::ODD_LOT) && (!ODD_LOT_QUOTES || mdoff) {
+            if ticks.iter().any(|t| t.code == generic_tick::ODD_LOT) && (session_level() < LEVEL_ODD_LOT_QUOTES || mdoff) {
                 return Some((10367, "Requesting \"Odd Lot Bid/Ask Quotes\" generic tick 787 is not allowed.".to_string()));
             }
             return None;
@@ -5535,7 +5559,7 @@ impl ClientCore {
             // registered twice, ibx#486); the reference 10.51 gives it once
             // (observed 13/10/2026, regular hours, paper, ibx#662), with
             // the move to its session level (ibx#602).
-            if SUMMARY_FRAMES_TWICE {
+            if session_level() < LEVEL_SUMMARY_FRAMES_ONCE {
                 out.extend(batches.iter().cloned());
             }
             out.extend(batches);
@@ -6924,7 +6948,7 @@ impl ClientCore {
         if !Self::order_type_known(&order_type) {
             return refuse("Invalid order type was entered");
         }
-        if let Some(refusal) = empty_tif_refusal(SERVER_VERSION, order) {
+        if let Some(refusal) = empty_tif_refusal(session_level(), order) {
             return Some(refusal);
         }
         let day = order.tif.is_empty() || order.tif == "DAY";
@@ -8037,10 +8061,11 @@ mod tests {
     }
 
     // ibx#616: below session level 225 the odd-lot quotes (787) are
-    // refused with 10367, also in a list with other ticks; a list the
+    // refused with 10367 (a capture at level 214), also in a list with other ticks; a list the
     // reference cannot read keeps its 321.
     #[test]
     fn odd_lot_quotes_are_refused_below_level_225() {
+        crate::client_core::set_session_level_for_test(Some(214)); // a capture at level 214 (ibx#602)
         let core = ClientCore::new();
         // The text as the reference 10.51 gave it to a client at level 214
         // (paper, 13/10/2026, regular hours), with its final period.
@@ -8050,6 +8075,9 @@ mod tests {
         assert_eq!(core.generic_tick_list_refusal("787", true, "STK", true), None, "not checked on a snapshot");
         assert_eq!(core.generic_tick_list_refusal("787,999", false, "STK", true).map(|r| r.0), Some(321));
         assert_eq!(core.generic_tick_list_refusal("233", false, "STK", true), None);
+        // At the session's level (225) the odd-lot quotes are asked.
+        crate::client_core::set_session_level_for_test(None);
+        assert_eq!(core.generic_tick_list_refusal("787", false, "STK", true), None);
     }
 
     // ibx#505: the provider names of the logon list; a modify of an order
@@ -8113,33 +8141,38 @@ mod tests {
     // frame; a value missing in one account counts as missing.
     #[test]
     fn ledger_all_sums_per_currency_at_the_end() {
-        let core = ClientCore::new();
-        let shared = SharedState::new();
-        let plan = core.subscribe_account_summary(7, "All", "$LEDGER:ALL").unwrap();
-        assert_eq!(plan.wire_tags, "$LEDGER");
-        let row = |account: &str, currency: &str, values: Vec<(u32, f64)>| crate::bridge::LedgerRow {
-            account: account.into(), currency: currency.into(), real_currency: currency.into(), values,
-        };
-        shared.portfolio.push_account_summary_event(crate::bridge::AccountSummaryEvent {
-            sr_id: plan.sr_id.clone(), rows: vec![], ledger: true, end: false,
-            ledgers: vec![row("DU1", "BASE", vec![(9806, 10.5), (6242, 1.0)]), row("DU1", "USD", vec![(9806, 10.5)]),
-                row("DU2", "USD", vec![(9806, 0.25), (6242, 2.0)])],
-        });
-        assert!(core.prepare_account_summary(&shared).is_empty(), "no rows at the ledger frame");
-        shared.portfolio.push_account_summary_event(crate::bridge::AccountSummaryEvent {
-            sr_id: plan.sr_id.clone(), rows: vec![], ledger: false, end: true, ledgers: vec![],
-        });
-        let out = core.prepare_account_summary(&shared);
-        let lines: Vec<String> = out.iter().flat_map(|b| {
-            let account = b.account.clone().unwrap_or_default();
-            let mut l: Vec<String> = b.rows.iter().filter(|r| matches!(r.key.as_str(), "Currency" | "CashBalance" | "AccruedCash"))
-                .map(|r| format!("{account}|{}|{}|{}", r.key, r.value, r.currency)).collect();
-            if b.end { l.push("end".into()); }
-            l
-        }).collect();
-        let once = ["All|Currency|USD|USD", "All|CashBalance|10.75|USD", "All|AccruedCash|2.00|USD",
-            "All|Currency|BASE|BASE", "All|CashBalance|10.50|BASE", "All|AccruedCash|1.00|BASE", "end"];
-        assert_eq!(lines, [once, once].concat());
+        // Each frame twice below level 225 (a capture at level 214), once
+        // from it (ibx#662).
+        for (level, times) in [(214, 2), (225, 1)] {
+            crate::client_core::set_session_level_for_test(Some(level));
+            let core = ClientCore::new();
+            let shared = SharedState::new();
+            let plan = core.subscribe_account_summary(7, "All", "$LEDGER:ALL").unwrap();
+            assert_eq!(plan.wire_tags, "$LEDGER");
+            let row = |account: &str, currency: &str, values: Vec<(u32, f64)>| crate::bridge::LedgerRow {
+                account: account.into(), currency: currency.into(), real_currency: currency.into(), values,
+            };
+            shared.portfolio.push_account_summary_event(crate::bridge::AccountSummaryEvent {
+                sr_id: plan.sr_id.clone(), rows: vec![], ledger: true, end: false,
+                ledgers: vec![row("DU1", "BASE", vec![(9806, 10.5), (6242, 1.0)]), row("DU1", "USD", vec![(9806, 10.5)]),
+                    row("DU2", "USD", vec![(9806, 0.25), (6242, 2.0)])],
+            });
+            assert!(core.prepare_account_summary(&shared).is_empty(), "no rows at the ledger frame");
+            shared.portfolio.push_account_summary_event(crate::bridge::AccountSummaryEvent {
+                sr_id: plan.sr_id.clone(), rows: vec![], ledger: false, end: true, ledgers: vec![],
+            });
+            let out = core.prepare_account_summary(&shared);
+            let lines: Vec<String> = out.iter().flat_map(|b| {
+                let account = b.account.clone().unwrap_or_default();
+                let mut l: Vec<String> = b.rows.iter().filter(|r| matches!(r.key.as_str(), "Currency" | "CashBalance" | "AccruedCash"))
+                    .map(|r| format!("{account}|{}|{}|{}", r.key, r.value, r.currency)).collect();
+                if b.end { l.push("end".into()); }
+                l
+            }).collect();
+            let once = ["All|Currency|USD|USD", "All|CashBalance|10.75|USD", "All|AccruedCash|2.00|USD",
+                "All|Currency|BASE|BASE", "All|CashBalance|10.50|BASE", "All|AccruedCash|1.00|BASE", "end"];
+            assert_eq!(lines, once.repeat(times), "level {level}");
+        }
     }
 
     // ibx#251: a request is held only while the order replay is pending,
@@ -9111,6 +9144,7 @@ mod tests {
 
     #[test]
     fn hedge_orders_read_checked_and_sent() {
+        crate::client_core::set_session_level_for_test(Some(214)); // a capture at level 214 (ibx#602)
         let core = ClientCore::new();
         let shared = SharedState::new();
         let aapl = ApiContract { con_id: 265598, symbol: "AAPL".into(), sec_type: "STK".into(), exchange: "SMART".into(), ..Default::default() };
@@ -9174,6 +9208,7 @@ mod tests {
     // hedge's size stops its tree: the parent is discarded, the hedge kept.
     #[test]
     fn the_hedge_size_precaution_of_a_transmitted_tree() {
+        crate::client_core::set_session_level_for_test(Some(214)); // a capture at level 214 (ibx#602)
         let core = ClientCore::new();
         let shared = SharedState::new();
         let aapl = ApiContract { symbol: "AAPL".into(), sec_type: "STK".into(), exchange: "SMART".into(), currency: "USD".into(), ..Default::default() };
@@ -9220,7 +9255,7 @@ mod tests {
         assert_eq!(empty_tif_refusal(225, &order), Some((10052, "Invalid time in force:Empty".into())));
         assert_eq!(empty_tif_refusal(214, &order), None);
         assert_eq!(empty_tif_refusal(225, &ApiOrder { tif: "DAY".into(), ..lmt(100.0) }), None);
-        assert!(SERVER_VERSION < LEVEL_EMPTY_TIF_REFUSED, "at the session's level the preset's time in force is taken");
+        assert_eq!(empty_tif_refusal(session_level(), &order).map(|r| r.0), Some(10052), "refused at the session's level");
     }
 
     // ibx#609 (the reference 10.51, paper, 15 and 16/10/2026): the reading
@@ -9436,6 +9471,7 @@ mod tests {
     // reading errors as 320 (only the last one), the order rules as 321.
     #[test]
     fn number_rules_of_the_reference_are_refused() {
+        crate::client_core::set_session_level_for_test(Some(214)); // a capture at level 214 (ibx#602)
         let rule = |cause: &str| Some((321, format!("Error validating request.-'PlaceOrder(3)' : cause - {}", cause)));
         let read = |cause: &str| Some((320, format!("Error reading request:{}", cause)));
         for qty in [-1.0, 1_000_000_000.0, f64::INFINITY] {
@@ -9466,6 +9502,7 @@ mod tests {
     // a number; a set price passes.
     #[test]
     fn stop_and_trigger_prices_follow_the_reference() {
+        crate::client_core::set_session_level_for_test(Some(214)); // a capture at level 214 (ibx#602)
         let rule = |cause: &str| Some((321, format!("Error validating request.-'PlaceOrder(3)' : cause - {}", cause)));
         let typed = |t: &str, aux: f64| ApiOrder { order_type: t.into(), aux_price: aux, ..lmt(100.0) };
         for t in ["STP", "STP LMT", "STP PRT"] {
@@ -9492,6 +9529,7 @@ mod tests {
     //, nothing sent.
     #[test]
     fn an_order_with_no_exchange_is_refused() {
+        crate::client_core::set_session_level_for_test(Some(214)); // a capture at level 214 (ibx#602)
         let text = "Error validating request.-'PlaceOrder(3)' : cause - Missing order exchange.".to_string();
         assert_eq!(ClientCore::refusal_before_sending(&lmt(100.0), ""), Some((321, text.clone())));
         let unknown_side = ApiOrder { action: "X".into(), ..lmt(100.0) };
@@ -9624,6 +9662,7 @@ mod tests {
     // without what-if is refused (its id not used: the cancel gave 10147).
     #[test]
     fn the_what_if_type_is_checked_as_the_order_is_read() {
+        crate::client_core::set_session_level_for_test(Some(214)); // a capture at level 214 (ibx#602)
         let check = |what_if: bool, what_if_type: i32| {
             let order = ApiOrder { what_if, what_if_type, ..lmt(100.0) };
             ClientCore::refusal_before_sending_for(&order, "SMART", "", false, false)
@@ -9671,6 +9710,7 @@ mod tests {
     // ibx#468: two local refusals of the reference.
     #[test]
     fn midprice_outside_rth_and_trail_limit_fields_are_refused() {
+        crate::client_core::set_session_level_for_test(Some(214)); // a capture at level 214 (ibx#602)
         let midprice = ApiOrder { order_type: "MIDPRICE".into(), outside_rth: true, ..lmt(100.0) };
         let (code, text) = ClientCore::refusal_before_sending(&midprice, "SMART").expect("refused");
         assert_eq!(code, 321);
@@ -9768,6 +9808,7 @@ mod tests {
     // and the 443 ends it in the client.
     #[test]
     fn the_algo_refusal_of_an_order_by_symbol_comes_after_its_lookup() {
+        crate::client_core::set_session_level_for_test(Some(214)); // a capture at level 214 (ibx#602)
         let core = ClientCore::new();
         let shared = SharedState::new();
         shared.reference.add_algo_definitions(include_str!("../tests/fixtures/algo/IBALGO-AE-20261002.xml"));
@@ -9803,6 +9844,7 @@ mod tests {
     // not known yet is checked later, by the engine, against that zone.
     #[test]
     fn a_foreign_zone_waits_for_the_contracts_zone() {
+        crate::client_core::set_session_level_for_test(Some(214)); // a capture at level 214 (ibx#602)
         let core = ClientCore::new();
         let shared = SharedState::new();
         let machine = crate::gateway::machine_time_zone();
@@ -9825,6 +9867,7 @@ mod tests {
     // is a new order.
     #[test]
     fn an_order_refused_after_the_id_check_has_used_its_id() {
+        crate::client_core::set_session_level_for_test(Some(214)); // a capture at level 214 (ibx#602)
         let core = ClientCore::new();
         let shared = SharedState::new();
         shared.reference.cache_time_zone_id(265598, "US/Eastern");
@@ -10108,10 +10151,12 @@ mod session_tests {
     }
 
 
-    // ibx#426: the level the reference answers a current client.
+    // ibx#426, ibx#602: the level the reference 10.51 answers a current
+    // client.
     #[test]
     fn server_version_is_the_reference_level() {
-        assert_eq!(SERVER_VERSION, 214);
+        assert_eq!(SERVER_VERSION, 225);
+        assert_eq!(session_level(), 225);
     }
 
     // ibx#557 (the reference 10.51, paper, 14/10/2026: the official client

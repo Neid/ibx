@@ -1054,6 +1054,7 @@ fn a_futures_option_order_asks_the_index_of_its_future() {
 // request of a futures option starts none.
 #[test]
 fn the_index_part_waits_for_a_frozen_status_and_a_named_index() {
+    crate::client_core::set_session_level_for_test(Some(214)); // a capture at level 214 (ibx#602)
     let (mut engine, mut ccp_side, _farm_side, id) = fop_engine();
     engine.context.order_models.push((id, ES_PUT, "CME".into()));
     engine.service_option_models(Instant::now());
@@ -1277,6 +1278,7 @@ fn a_futures_option_order_model_asks_what_the_reference_asks() {
 // it waits for. When the underlying is known, nothing is asked (8 of 8).
 #[test]
 fn a_client_model_asks_an_unknown_underlying_as_the_reference() {
+    crate::client_core::set_session_level_for_test(Some(214)); // a capture at level 214 (ibx#602)
     let (mut engine, _shared, mut farm_side, id) = order_engine();
     engine.set_routing_table(crate::engine::routing::TableKind::MarketData,
         "BEST,STK,Top,1,*,cdc1.example,4000,usfarm;BEST,OPT,Top,1,*,cdc1.example,4000,usfarm");

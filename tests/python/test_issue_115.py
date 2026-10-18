@@ -152,6 +152,7 @@ class TestAuxPriceValidation:
         order.action = "SELL"
         order.total_quantity = 1
         order.order_type = "TRAIL"
+        order.tif = "DAY"  # without one: 10052 at session level 225 (ibx#602)
         # neither trailing_percent nor aux_price set
         client.place_order(3, make_spy(), order)
         client._test_dispatch_once()
@@ -170,6 +171,7 @@ class TestAuxPriceValidation:
         order.action = "SELL"
         order.total_quantity = 1
         order.order_type = "TRAIL LIMIT"
+        order.tif = "DAY"  # without one: 10052 at session level 225 (ibx#602)
         order.lmt_price = 148.0
         client.place_order(4, make_spy(), order)
         client._test_dispatch_once()

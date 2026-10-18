@@ -377,11 +377,11 @@ impl EClient {
 
     // ── Connection ──
 
-    /// API level the session follows: 214, the level the reference gives a
+    /// API level the session follows: 225, the level the reference gives a
     /// current client (ibx#426). Matches `serverVersion()` in C++, for code
     /// that tests it before using a feature.
     pub fn server_version(&self) -> i32 {
-        crate::client_core::SERVER_VERSION
+        crate::client_core::session_level()
     }
 
     /// Time the session started, as `yyyyMMdd HH:mm:ss {zone}` in the

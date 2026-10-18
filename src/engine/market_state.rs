@@ -794,7 +794,7 @@ impl MarketState {
                 self.marks[i].set_seen(SizeKind::Ask);
             }
             td::O_LAST_SIZE => {
-                set(&mut q.last_size, last_size_value(crate::client_core::SERVER_VERSION, tick, m, sizes));
+                set(&mut q.last_size, last_size_value(crate::client_core::session_level(), tick, m, sizes));
                 self.marks[i].set_seen(SizeKind::Last);
             }
             // The 10.51 form gives the volume in shares with decimals; the

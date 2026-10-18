@@ -74,6 +74,7 @@ def test_order_on_new_contract_waits_with_the_lock_released():
     o.total_quantity = 1
     o.order_type = "LMT"
     o.lmt_price = 10.0
+    o.tif = "DAY"  # without one: 10052 at session level 225 (ibx#602)
     assert runs_while_waiting(lambda: c.place_order(1, stock(1002), o))
 
 

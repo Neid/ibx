@@ -115,7 +115,7 @@ fn order(price: f64) -> Order {
         action: "BUY".into(), total_quantity: 1.0, order_type: "LMT".into(), lmt_price: price,
         order_ref: "ibx470".into(),
         smart_combo_routing_params: vec![TagValue { tag: "NonGuaranteed".into(), value: "1".into() }],
-        ..Default::default()
+        tif: "DAY".into(), ..Default::default()
     }
 }
 

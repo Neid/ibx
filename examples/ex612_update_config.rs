@@ -1,7 +1,7 @@
-//! ibx#610 / ibx#612 probe. Paper account only. Changes nothing: at the
-//! session level ibx answers (214) a configuration request and an update
-//! are refused with 503 for their id, or -1 without one, and nothing is
-//! sent.
+//! ibx#610 / ibx#612 probe. Paper account only. Prints the answers to a
+//! configuration request and an update at the session level ibx answers
+//! (225): the installation's configuration, and the update's answer
+//! (below level 219 and 221 they were refused with 503).
 //!
 //! Env: IB_USERNAME, IB_PASSWORD.
 use std::env;

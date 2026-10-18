@@ -107,6 +107,7 @@ impl EClient {
         // The replay runs in the recording's machine zone (`run`); this
         // thread gets its own zone back after it.
         let zone_before = crate::gateway::machine_zone_for_test();
+        let level_before = crate::client_core::session_level_for_test();
         let mut links = Links::new();
         // Attached as a connected client of this engine.
         *self.shared.lock().unwrap() = Some(links.shared.clone());
@@ -117,6 +118,7 @@ impl EClient {
         let mut d = PyDriver { client: self, driver, error: None };
         let outcome = run(&scenario, &opts, &mut links, &mut d);
         crate::gateway::set_machine_zone_for_test(zone_before.as_deref());
+        crate::client_core::set_session_level_for_test(level_before);
         if let Some(e) = d.error.take() {
             return Err(e);
         }

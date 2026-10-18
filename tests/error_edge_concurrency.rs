@@ -118,6 +118,7 @@ fn place_order_unknown_order_type_is_refused_by_callback() {
 // given, as the reference sends it.
 #[test]
 fn place_order_unknown_algo_is_sent() {
+    ibx::client_core::set_session_level_for_test(Some(214)); // a capture at level 214 (ibx#602)
     let (client, rx, shared) = test_client();
     shared.market.set_instrument_count(1);
     let order = Order {
@@ -134,6 +135,7 @@ fn place_order_unknown_algo_is_sent() {
 // the engine looks up before the order goes out (ibx#486).
 #[test]
 fn place_order_zero_con_id_still_sends() {
+    ibx::client_core::set_session_level_for_test(Some(214)); // a capture at level 214 (ibx#602)
     let (client, rx, shared) = test_client();
     shared.market.set_instrument_count(1);
     let contract = Contract { con_id: 0, symbol: "TEST".into(), sec_type: "STK".into(), exchange: "SMART".into(), currency: "USD".into(), ..Default::default() };
