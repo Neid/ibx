@@ -1749,6 +1749,10 @@ pub struct ClientCore {
     /// Ids of tracked orders placed again under the same id (a modify):
     /// their openOrder shows no derived trail stop price (ibx#521).
     pub modified_orders: Mutex<HashSet<OrderId>>,
+    /// The order as it was before a modify placed while it was not
+    /// answered yet: put back when the engine answers 103, the order not
+    /// sent yet (ibx#688).
+    modify_undo: Mutex<HashMap<OrderId, (ApiContract, ApiOrder, InstrumentId)>>,
     /// Executions of other clients' orders, by execution id without its
     /// revision: their commission reports are not given.
     pub silent_executions: Mutex<HashSet<String>>,
@@ -2453,6 +2457,7 @@ impl ClientCore {
             finished_orders: Mutex::new(HashSet::new()),
             unknown_parent_refused: Mutex::new(HashMap::new()),
             modified_orders: Mutex::new(HashSet::new()),
+            modify_undo: Mutex::new(HashMap::new()),
             silent_executions: Mutex::new(HashSet::new()),
             observed_fills: Mutex::new(HashSet::new()),
             highest_order_id: Arc::new(AtomicI64::new(0)),
@@ -4697,6 +4702,10 @@ impl ClientCore {
             // working order went out without a parent and its openOrder
             // kept parent 0).
             order.parent_id = o.order.parent_id;
+            if o.status == "PendingSubmit" {
+                self.modify_undo.lock().unwrap().entry(order_id)
+                    .or_insert_with(|| (o.contract.clone(), o.order.clone(), o.instrument));
+            }
             o.contract = contract;
             o.order = order;
             o.instrument = instrument;
@@ -4875,6 +4884,16 @@ impl ClientCore {
     /// TRAIL orders of premarket_order_types, 28/09/2026: openOrder shows
     /// outsideRth false, also after a replace).
     pub fn note_order_error(&self, order_id: OrderId, code: i64, message: &str) {
+        // A modify refused while the order was not sent yet: the order
+        // stays as placed (ibx#688).
+        if code == DUPLICATE_ORDER_ID.0
+            && let Some((contract, order, instrument)) = self.modify_undo.lock().unwrap().remove(&order_id)
+            && let Some(o) = self.open_orders.lock().unwrap().get_mut(&order_id)
+        {
+            o.contract = contract;
+            o.order = order;
+            o.instrument = instrument;
+        }
         // A refusal given after the contract's lookup (ibx#665): the order
         // is gone, its id used; a lookup that failed ends it too.
         {
@@ -5061,6 +5080,9 @@ impl ClientCore {
             o.status = status.into();
             o.filled = filled;
             o.remaining = remaining;
+            if status != "PendingSubmit" {
+                self.modify_undo.lock().unwrap().remove(&order_id);
+            }
             if matches!(status, "Filled" | "Cancelled") {
                 self.finished_orders.lock().unwrap().insert(order_id);
             }
@@ -5083,12 +5105,16 @@ impl ClientCore {
     /// what-if preview). Any other id must be above the highest id the
     /// client placed, else error 103 and nothing sent.
     ///
-    /// The reference looks each order's contract up on the server before
-    /// it puts the order in its book, so an order just placed is not there
-    /// for about one server round trip: a what-if sent right after a live
-    /// order with the same id got 103 (ibx#462, captured 02/10/2026), a
-    /// modify too (ibx#688, paper 17/10/2026). ibx counts a tracked order
-    /// as not in the book until the server answered it.
+    /// The reference puts an order in its book once it sent it: placed
+    /// again before that, the order gets 103 and stays as placed (ibx#688:
+    /// the reference 10.51, paper, 17/10 and 18/10/2026, market closed, 103
+    /// to a re-place 3 ms after, given before the order went out; a modify
+    /// 60 ms after, sent before the server's first answer). ibx sends an
+    /// order as soon as it is read: the engine answers 103 to a re-place of
+    /// an order it still holds (waiting for a lookup), the others go on. A
+    /// what-if sent right after a live order with the same id got 103 while
+    /// the live order waited for its contract's lookup (ibx#462, captured
+    /// 02/10/2026): ibx gives it 103 until the server answered the order.
     ///
     /// An order this client tracked that is filled or cancelled: error
     /// 104 and nothing sent (ibx#463); a what-if is not a modify and
@@ -5103,13 +5129,12 @@ impl ClientCore {
             let (code, message) = MODIFY_OF_FINISHED_ORDER;
             return Some((code, message.into()));
         }
-        // Placed again before the server answered it: 103, the order
-        // stays as it was placed (a what-if, ibx#462; a modify too, ibx#688:
-        // the reference 10.51, paper, 17/10/2026, market closed, an AAPL
-        // order placed again 3 ms after with another price).
+        // A what-if with the id of an order the server has not answered
+        // yet: 103 (ibx#462, captured 02/10/2026). A modify goes on; one of
+        // an order not sent yet gets 103 from the engine (ibx#688).
         let pending = self.open_orders.lock().unwrap().get(&order_id).map(|t| t.status == "PendingSubmit");
         if let Some(pending) = pending {
-            return if pending { duplicate() } else { None };
+            return if pending && order.what_if { duplicate() } else { None };
         }
         // A new id: above the highest placed one, unless the server knows
         // the order (one of an earlier session).
@@ -5884,20 +5909,10 @@ impl ClientCore {
 
         // Reject orders that require aux_price when it is zero — prevents silent no-trigger bugs.
         // See: https://github.com/deepentropy/ibx/issues/115
+        // A stop or touched type at 0 is the reference's 321 "Invalid
+        // offset value", given at the reading (`order_rule_refusal`,
+        // ibx#688).
         match order_type.as_str() {
-            "STP" | "STP PRT" | "MIT" if order.aux_price == 0.0 => {
-                return Err(format!(
-                    "{} order requires aux_price (stop/trigger price) but got 0.0 — \
-                     set aux_price to the desired trigger price, not lmt_price",
-                    order.order_type
-                ));
-            }
-            "STP LMT" | "LIT" if order.aux_price == 0.0 => {
-                return Err(format!(
-                    "{} order requires aux_price (stop/trigger price) but got 0.0",
-                    order.order_type
-                ));
-            }
             // A TRAIL without its trailing amount is the reference's 321,
             // given at the reading (`order_rule_refusal`, ibx#688), as a
             // TRAIL LIMIT without its trailing stop price; a TRAIL LIMIT
@@ -6527,9 +6542,18 @@ impl ClientCore {
     /// `form_10_40`: the rules of the reference 10.40, for its replays.
     /// `contract_month`: the contract's month or date, as given.
     pub fn refusal_before_sending_for(order: &ApiOrder, exchange: &str, contract_month: &str, account_pending: bool, form_10_40: bool) -> Option<(i64, String)> {
+        Self::refusal_before_sending_with(order, exchange, contract_month, account_pending, form_10_40, false)
+    }
+
+    /// [`Self::refusal_before_sending_for`] on a session that must give the
+    /// open or close intent of its orders when `open_close_required` (an
+    /// institutional or omnibus logon, see [`Self::order_rule_refusal`]).
+    pub fn refusal_before_sending_with(order: &ApiOrder, exchange: &str, contract_month: &str, account_pending: bool,
+        form_10_40: bool, open_close_required: bool) -> Option<(i64, String)>
+    {
         Self::read_refusal(order)
             .or_else(|| Self::exchange_refusal(exchange))
-            .or_else(|| Self::order_rule_refusal(order, exchange, contract_month, account_pending, form_10_40))
+            .or_else(|| Self::order_rule_refusal(order, exchange, contract_month, account_pending, form_10_40, open_close_required))
             .or_else(|| Self::fractional_quantity_refusal(order))
             .or_else(|| Self::good_till_date_unreadable(order, form_10_40))
             .or_else(|| Self::good_after_time_unreadable(order, form_10_40))
@@ -7151,7 +7175,13 @@ impl ClientCore {
     /// 321 with the rule text (ibx#468), in the reference's order
     /// (it stops at the first). The text after "cause - " is
     /// the rule's; for the TRAIL LIMIT rule only its end is known.
-    fn order_rule_refusal(order: &ApiOrder, exchange: &str, contract_month: &str, account_pending: bool, form_10_40: bool) -> Option<(i64, String)> {
+    /// `open_close_required`: the session must give the open or close
+    /// intent of its orders; the reference 10.51's rule takes it from an
+    /// institutional or omnibus logon and some other account kinds, ibx
+    /// from the first two (ibx#688).
+    fn order_rule_refusal(order: &ApiOrder, exchange: &str, contract_month: &str, account_pending: bool, form_10_40: bool,
+        open_close_required: bool) -> Option<(i64, String)>
+    {
         let refuse = |cause: &str| Some((321, format!("Error validating request.-'PlaceOrder(3)' : cause - {}", cause)));
         let order_type = order.order_type.to_uppercase();
         // An action the reference does not know reads as side 0, refused
@@ -7185,6 +7215,13 @@ impl ClientCore {
         let duration = order.duration != i32::MAX;
         let gtd = order.tif == "GTD";
         let end_time = !order.good_till_date.trim().is_empty();
+        // An end time on an order whose time in force is not GTD, before
+        // the duration rules (ibx#688; the reference 10.51's rule, in both
+        // versions, not observed yet). One that cannot be read is refused
+        // as it is read, first (343, or 391 in the 10.40 form).
+        if end_time && !gtd && crate::config::parse_ib_expiry_zoned(&order.good_till_date).is_ok() {
+            return refuse("GoodTilDate field is only valid with time-in-force of GTD");
+        }
         if duration && !gtd {
             return Some((10272, "Duration field is only valid with time-in-force of GTD".into()));
         }
@@ -7240,12 +7277,42 @@ impl ClientCore {
             let trailing = order_type == "TRAIL LIMIT" && !form_10_40;
             return refuse(if trailing { "Please enter a trailing stop price" } else { "Please enter a stop price" });
         }
+        // The open or close intent, then the delta-neutral one (ibx#688; the
+        // reference 10.51's rules, in both versions, not observed yet): its
+        // first character, case ignored, is O or C, or the default (empty, a
+        // leading space or "?"). A session that must give it gives O or C,
+        // and C is refused on a short sale. The delta-neutral intent is read
+        // only with a delta-neutral order type, as the client sends it.
+        let intent = |v: &str| v.chars().next().filter(|c| *c > ' ').map(|c| c.to_ascii_uppercase());
+        let open_close = intent(&order.open_close);
+        if open_close.is_some_and(|c| !matches!(c, 'O' | 'C' | '?')) {
+            return refuse("Invalid openClose value was entered");
+        }
+        if open_close_required {
+            if !matches!(open_close, Some('O' | 'C')) {
+                return refuse("You must specify Open/Close attibute");
+            }
+            let short = ["SSHORT", "SSHRT", "SSHORTX", "SSHRTX"].iter().any(|a| order.action.eq_ignore_ascii_case(a));
+            if short && open_close == Some('C') {
+                return refuse("You cannot set Open/Close attibute to C for Sell Short order");
+            }
+        }
+        if !order.delta_neutral_order_type.is_empty()
+            && intent(&order.delta_neutral_open_close).is_some_and(|c| !matches!(c, 'O' | 'C' | '?'))
+        {
+            return refuse("Invalid deltaNeutralOpenClose value was entered");
+        }
         // A trigger method that is not one of the reference's (ibx#263,
         // error 146's text): 0 default, 1 double bid/ask, 2 last, 3 double
         // last, 4 bid/ask, 7 last or bid/ask, 8 midpoint.
         if !matches!(order.trigger_method, 0..=4 | 7 | 8) {
             return refuse("Invalid trigger method");
         }
+        // An auxPrice of 0 is not refused here: the reference 10.51 sends
+        // such a stop, touched or RPI order and the server refuses or
+        // cancels it (ibx#688; paper, 18/10/2026, market closed: STP and
+        // STP LMT 201 "Invalid Price", MIT and LIT 201 for the missing stop
+        // price, RPI cancelled with no route).
         // A what-if with transmit off (ibx#462;
         // captured 02/10/2026, with this check's own 'v' in the text).
         if order.what_if && !order.transmit {
@@ -7548,7 +7615,11 @@ impl ClientCore {
             .or_else(|| Self::volatility_type_refusal(order))
             .or_else(|| self.hedge_read_refusal(order_id, sec_type, order, shared))
             .or_else(|| Self::sell_long_refusal(order))
-            .or_else(|| Self::refusal_before_sending_for(order, exchange, contract_month, account_pending, shared.reference.form_10_40()))
+            .or_else(|| {
+                let (super_user, omnibus) = shared.reference.short_sale_flags();
+                Self::refusal_before_sending_with(order, exchange, contract_month, account_pending,
+                    shared.reference.form_10_40(), super_user || omnibus)
+            })
             .or_else(|| Self::combo_discretionary_refusal(sec_type, order))
             .or_else(|| self.parent_refusal(order, shared))
             .or_else(|| Self::scale_size_refusal(order))
@@ -8233,13 +8304,14 @@ impl ClientCore {
             }
             "MIT" => {
                 let stop = price_or_zero(order.aux_price);
-                if extended { ex(OrderKind::Mit { stop_price: stop }) }
+                // A trigger of 0 is not written: the extended form (ibx#688).
+                if extended || stop == 0 { ex(OrderKind::Mit { stop_price: stop }) }
                 else { OrderRequest::SubmitMit { order_id, instrument, side, qty, stop_price: stop } }
             }
             "LIT" => {
                 let price = price_or_zero(order.lmt_price);
                 let stop = price_or_zero(order.aux_price);
-                if extended { ex(OrderKind::Lit { price, stop_price: stop }) }
+                if extended || stop == 0 { ex(OrderKind::Lit { price, stop_price: stop }) }
                 else { OrderRequest::SubmitLit { order_id, instrument, side, qty, price, stop_price: stop } }
             }
             "MTL" | "BOX TOP" => {
@@ -10453,9 +10525,27 @@ mod tests {
 
     // ibx#462: a what-if with the id of an order the server has not
     // answered yet gets 103 (captured 02/10/2026); once answered, it is a
-    // preview. A modify too gets 103 before the answer (ibx#688, paper
-    // 17/10/2026), and goes on after it. An id below the highest that
-    // the server knows (an order of an earlier session) is no new id.
+    // preview. A modify goes on before the answer too; the engine answers
+    // 103 while it still holds the order (ibx#688, the reference 10.51,
+    // paper, 18/10/2026). An id below the highest that the server knows (an
+    // order of an earlier session) is no new id.
+    // ibx#688: a modify the engine refuses with 103 (the order not sent
+    // yet) leaves the order as placed; once the server answered, a modify
+    // is kept.
+    #[test]
+    fn a_modify_refused_with_103_leaves_the_order_as_placed() {
+        let core = ClientCore::new();
+        core.track_order(81, ApiContract::default(), lmt(50.0), 0);
+        core.update_order_status(81, "PendingSubmit", 0.0, 1.0);
+        core.track_order(81, ApiContract::default(), lmt(51.0), 0);
+        core.note_order_error(81, 103, "Duplicate order id: 81");
+        assert_eq!(core.tracked_order(81).map(|o| o.lmt_price), Some(50.0));
+        core.update_order_status(81, "PreSubmitted", 0.0, 1.0);
+        core.track_order(81, ApiContract::default(), lmt(52.0), 0);
+        core.note_order_error(81, 103, "Duplicate order id: 81");
+        assert_eq!(core.tracked_order(81).map(|o| o.lmt_price), Some(52.0));
+    }
+
     #[test]
     fn what_if_on_an_order_not_answered_yet_and_known_ids() {
         let core = ClientCore::new();
@@ -10463,7 +10553,7 @@ mod tests {
         let what_if = ApiOrder { what_if: true, ..lmt(101.0) };
         core.track_order(79, ApiContract::default(), lmt(100.0), 0);
         assert_eq!(core.refusal_for_order_id(79, &what_if, &shared).map(|r| r.0), Some(103));
-        assert_eq!(core.refusal_for_order_id(79, &lmt(101.0), &shared).map(|r| r.0), Some(103), "a modify before the answer");
+        assert!(core.refusal_for_order_id(79, &lmt(101.0), &shared).is_none(), "a modify before the answer");
         core.update_order_status(79, "Submitted", 0.0, 1.0);
         assert!(core.refusal_for_order_id(79, &lmt(101.0), &shared).is_none(), "a modify");
         assert!(core.refusal_for_order_id(79, &what_if, &shared).is_none(), "a preview");

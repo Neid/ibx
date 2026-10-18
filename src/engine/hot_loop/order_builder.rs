@@ -131,6 +131,26 @@ fn send_orders(
         if let OrderRequest::Cancel { order_id } = order_req && api_cancel(context, shared, order_id) {
             continue;
         }
+        // Placed again while its new order still waits here (for a
+        // lookup): 103, the order stays as placed, as the reference answers
+        // a re-place of an order it has not sent yet (ibx#688; paper,
+        // 18/10/2026, market closed).
+        // A what-if with that id too (ibx#462, captured 02/10/2026: the
+        // live order waiting for its contract's lookup).
+        let replaced = match &order_req {
+            OrderRequest::Modify { order_id, .. } => Some(*order_id),
+            OrderRequest::SubmitWhatIf { request } => Some(request.order_id()),
+            _ => None,
+        };
+        if let Some(order_id) = &replaced
+            && context.rth_parked.iter().any(|r| !matches!(r, OrderRequest::Modify { .. } | OrderRequest::SubmitWhatIf { .. })
+                && r.order_id() == *order_id)
+        {
+            let (code, message) = crate::client_core::duplicate_order_id(*order_id);
+            log::warn!("Modify of order {} refused: the order is not sent yet", order_id);
+            shared.orders.push_order_error(*order_id, code, message);
+            continue;
+        }
         if waits_behind(&order_req, &context.rth_parked) {
             context.rth_parked.push(rewrap(order_req));
             continue;
@@ -408,18 +428,24 @@ fn send_orders(
         }
         // A pegged or protection type the contract's list does not allow
         // on the order's exchange is refused, as the reference (ibx#414,
-        // ibx#493).
-        match pegged_type_refusal(&order_req, context, conn, hb, shared) {
-            Some(false) => { context.rth_parked.push(rewrap(order_req)); continue; }
-            Some(true) => continue,
-            None => {}
-        }
-        // All-or-none where the contract's list does not allow it on the
-        // order's exchange (ibx#263).
-        match all_or_none_refusal(&order_req, context, conn, hb, shared) {
-            Some(false) => { context.rth_parked.push(rewrap(order_req)); continue; }
-            Some(true) => continue,
-            None => {}
+        // ibx#493). A stock order directed away from SMART meets the
+        // redirect precaution first, and these two checks after it
+        // (ibx#688; the reference 10.51, paper, 18/10/2026, market closed:
+        // STP PRT on ISLAND discarded with 10311, on SMART refused with 387).
+        let redirect_first = !what_if && redirect_applies(&order_req, context);
+        if !redirect_first {
+            match pegged_type_refusal(&order_req, context, conn, hb, shared) {
+                Some(false) => { context.rth_parked.push(rewrap(order_req)); continue; }
+                Some(true) => continue,
+                None => {}
+            }
+            // All-or-none where the contract's list does not allow it on
+            // the order's exchange (ibx#263).
+            match all_or_none_refusal(&order_req, context, conn, hb, shared) {
+                Some(false) => { context.rth_parked.push(rewrap(order_req)); continue; }
+                Some(true) => continue,
+                None => {}
+            }
         }
         // Outside RTH: kept only where the reference keeps it, from the
         // contract definition of the order's exchange (ibx#465).
@@ -464,6 +490,18 @@ fn send_orders(
                 Some(false) => { context.rth_parked.push(rewrap(order_req)); continue; }
                 Some(true) => continue,
                 None => {}
+            }
+            if redirect_first {
+                match pegged_type_refusal(&order_req, context, conn, hb, shared) {
+                    Some(false) => { context.rth_parked.push(rewrap(order_req)); continue; }
+                    Some(true) => continue,
+                    None => {}
+                }
+                match all_or_none_refusal(&order_req, context, conn, hb, shared) {
+                    Some(false) => { context.rth_parked.push(rewrap(order_req)); continue; }
+                    Some(true) => continue,
+                    None => {}
+                }
             }
             // routeMarketableToBbo: discarded unless bypassed (ibx#608).
             if route_bbo_precaution(&order_req, context, shared) {
@@ -3098,15 +3136,20 @@ fn modify_fields(
         }
         K::Moc => "5",
         K::Loc { price } => { before_account.push((44, p(price))); "B" }
+        // A trigger price of 0 is not written (ibx#688).
         K::Mit { stop_price } => {
-            before_account.push((99, p(stop_price)));
-            touched_trigger = Some(p(stop_price));
+            if stop_price != 0 {
+                before_account.push((99, p(stop_price)));
+                touched_trigger = Some(p(stop_price));
+            }
             "J"
         }
         K::Lit { price, stop_price } => {
             before_account.push((44, p(price)));
-            before_account.push((99, p(stop_price)));
-            touched_trigger = Some(p(stop_price));
+            if stop_price != 0 {
+                before_account.push((99, p(stop_price)));
+                touched_trigger = Some(p(stop_price));
+            }
             "LT"
         }
         K::Mtl => "K",
@@ -5052,6 +5095,22 @@ pub(crate) fn redirect_warning(exchange: &str) -> (i64, String) {
 /// Its permId is the id it would have gone out under. `Some(false)` while
 /// the contract's definition on that exchange is asked, `Some(true)` when
 /// discarded, `None` to go on.
+/// Whether the redirect precaution looks at this order: a stock order
+/// directed away from SMART, not to an algo provider, the precaution on.
+fn redirect_applies(req: &OrderRequest, context: &Context) -> bool {
+    if context.bypass_redirect_warning || req.combo().is_some()
+        || matches!(req, OrderRequest::SubmitBracket { .. } | OrderRequest::CancelAll { .. })
+        || req.new_order_qty().is_none()
+    {
+        return false;
+    }
+    let Some(instrument) = req.instrument() else { return false };
+    let exchange = context.market.exchange(instrument);
+    context.market.order_routing(instrument).0 == "STK"
+        && !matches!(exchange, "" | "SMART" | "IBDESK" | "ZERO")
+        && !context.algo_providers.iter().any(|p| p.eq_ignore_ascii_case(exchange))
+}
+
 fn redirect_precaution(
     req: &OrderRequest,
     context: &mut Context,
@@ -5838,14 +5897,17 @@ fn send_order_ex(
             fields.push((40, "B".to_string()));
             fields.push((44, format_price_ref(price).to_string()));
         }
+        // A trigger price of 0 is not written, nor its touched trigger, as
+        // the reference 10.51 sends it (ibx#688; paper, 18/10/2026, market
+        // closed: the server refuses the order).
         K::Mit { stop_price } => {
             fields.push((40, "J".to_string()));
-            fields.push((99, format_price_ref(stop_price).to_string()));
+            if stop_price != 0 { fields.push((99, format_price_ref(stop_price).to_string())); }
         }
         K::Lit { price, stop_price } => {
             fields.push((40, "LT".to_string())); // per ib-agent#138
             fields.push((44, format_price_ref(price).to_string()));
-            fields.push((99, format_price_ref(stop_price).to_string()));
+            if stop_price != 0 { fields.push((99, format_price_ref(stop_price).to_string())); }
         }
         K::Mtl => fields.push((40, "K".to_string())),
         K::MktPrt => fields.push((40, "U".to_string())),
@@ -6815,7 +6877,7 @@ mod tests {
     // goes out; with the bypass on, or a contract not on SMART, it goes.
     #[test]
     fn a_directed_stock_order_is_discarded_unless_bypassed() {
-        let run = |exchange: &str, smart: bool, bypass: bool| {
+        let run_with = |exchange: &str, smart: bool, bypass: bool, stp_prt: bool| {
             let mut context = order_context();
             context.bypass_redirect_warning = bypass;
             context.algo_providers = vec!["FOXRIVER".into()];
@@ -6824,9 +6886,14 @@ mod tests {
             context.market.set_symbol(id, "AAPL".into());
             context.market.set_routing(id, "STK", exchange);
             context.rth_types.insert((265598, exchange.to_string()), crate::engine::outside_rth::RthTypes {
-                rth: true, sec_type: "STK".into(), smart, ..Default::default()
+                rth: true, sec_type: "STK".into(), smart, types_known: true, ..Default::default()
             });
-            context.pending_orders.push(OrderRequest::SubmitLimit { order_id: 8, instrument: id, side: Side::Buy, qty: 1, price: 100 * P });
+            context.pending_orders.push(if stp_prt {
+                OrderRequest::SubmitEx { order_id: 8, instrument: id, side: Side::Buy, qty: 1,
+                    kind: crate::types::OrderKind::StpPrt { stop_price: 400 * P }, tif: b'0', attrs: Default::default() }
+            } else {
+                OrderRequest::SubmitLimit { order_id: 8, instrument: id, side: Side::Buy, qty: 1, price: 100 * P }
+            });
             let shared = Arc::new(SharedState::new());
             let (client, mut server) = crate::protocol::connection::mem_pair();
             let mut conn = Some(Connection::new_mem(client));
@@ -6838,6 +6905,7 @@ mod tests {
             let notices = shared.orders.drain_order_notices();
             (sent, errors, statuses, notices)
         };
+        let run = |exchange: &str, smart: bool, bypass: bool| run_with(exchange, smart, bypass, false);
         let (sent, errors, statuses, notices) = run("OVERNIGHT", true, false);
         assert!(!sent);
         assert_eq!(errors, [(8, 10329, "This order will be directly routed to OVERNIGHT.\nRestriction is specified in Precautionary Settings of Global Configuration/API.".to_string())]);
@@ -6855,6 +6923,14 @@ mod tests {
         // ibx#505: an algo provider's destination goes through SMART.
         let (sent, errors, ..) = run("FOXRIVER", true, false);
         assert!(sent && errors.is_empty(), "an algo provider");
+        // ibx#688: before the order-type check (the reference 10.51, paper,
+        // 18/10/2026: STP PRT on ISLAND discarded with 10311, not 387).
+        let (sent, errors, ..) = run_with("ISLAND", true, false, true);
+        assert!(!sent);
+        assert_eq!(errors.iter().map(|e| e.1).collect::<Vec<_>>(), [10311]);
+        let (sent, errors, ..) = run_with("ISLAND", true, true, true);
+        assert!(!sent);
+        assert_eq!(errors.iter().map(|e| e.1).collect::<Vec<_>>(), [387], "bypassed: the type check");
     }
 
     // ibx#486: an order on a contract given without a conId waits for the
@@ -6884,6 +6960,29 @@ mod tests {
         assert!(context.rth_types.get(&(265598, "BEST".to_string())).is_some_and(|t| t.price_chk && t.smart));
         let frames = drain_frames(&mut context, &shared, &mut conn, &mut server);
         assert!(frames.iter().all(|f| !tag(f, 320).is_some_and(|v| v.starts_with(crate::control::contracts::SECDEF_ORDER_TYPES_NAME))), "{frames:?}");
+    }
+
+    // ibx#688: placed again while its new order waits for a lookup: 103,
+    // the order stays as placed and goes out alone (the reference 10.51,
+    // paper, 18/10/2026: 103 to a re-place before the order went out).
+    #[test]
+    fn a_re_place_of_an_order_not_sent_yet_is_a_duplicate() {
+        let mut context = order_context();
+        let slot = context.market.try_register_unresolved().unwrap();
+        context.market.set_symbol(slot, "AAPL".into());
+        context.market.set_routing(slot, "STK", "SMART");
+        context.market.set_currency(slot, "USD");
+        context.pending_orders.push(OrderRequest::SubmitLimit { order_id: 6, instrument: slot, side: Side::Buy, qty: 1, price: 100 * P });
+        let shared = Arc::new(SharedState::new());
+        let (client, mut server) = crate::protocol::connection::mem_pair();
+        let mut conn = Some(Connection::new_mem(client));
+        assert_eq!(drain_frames(&mut context, &shared, &mut conn, &mut server).len(), 1, "the lookup");
+        context.pending_orders.push(OrderRequest::Modify {
+            new_order_id: 6, order_id: 6, qty: 1, kind: crate::types::OrderKind::Limit { price: 101 * P }, tif: b'0', attrs: Default::default(),
+        });
+        assert!(drain_frames(&mut context, &shared, &mut conn, &mut server).is_empty());
+        assert_eq!(shared.orders.drain_order_errors(), [(6, 103, "Duplicate order id: 6".to_string())]);
+        assert!(context.rth_parked.iter().all(|r| !matches!(r, OrderRequest::Modify { .. })), "the modify is dropped");
     }
 
     // ibx#667: an order for the broker's ATS venue given by symbol is
@@ -8162,6 +8261,28 @@ mod tests {
         assert_eq!(tag(&mit, 6117), Some("235.00"));
     }
 
+    // ibx#688, the reference 10.51 on paper, 18/10/2026, market closed: an
+    // offset of 0 is sent; the stop types write it in their stop price and
+    // stop trigger, MIT and LIT write neither, RPI writes it in its offset.
+    #[test]
+    fn zero_offset_orders_are_written_as_the_reference() {
+        use crate::types::OrderKind as K;
+        let ex = |kind| wire_tags(OrderRequest::SubmitEx {
+            order_id: 15, instrument: 0, side: Side::Sell, qty: 1, kind, tif: b'0', attrs: Default::default(),
+        });
+        for kind in [K::Stop { stop_price: 0 }, K::StopLimit { price: 100 * P, stop_price: 0 }, K::StpPrt { stop_price: 0 }] {
+            let tags = ex(kind);
+            assert_eq!((tag(&tags, 99), tag(&tags, 6117)), (Some("0.00"), Some("0.00")), "{kind:?}");
+        }
+        for kind in [K::Mit { stop_price: 0 }, K::Lit { price: 100 * P, stop_price: 0 }] {
+            let tags = ex(kind);
+            assert_eq!((tag(&tags, 99), tag(&tags, 6117)), (None, None), "{kind:?}");
+            assert_eq!(tag(&tags, 6115), Some("0"), "{kind:?}");
+        }
+        let rpi = ex(K::Rpi { price: 100 * P, offset: 0 });
+        assert_eq!((tag(&rpi, 44), tag(&rpi, 99), tag(&rpi, 211)), (Some("100.00"), Some("0.00"), Some("0.00")));
+    }
+
     // ib-agent#194, captured 25/09/2026: a TRAIL LIMIT with lmtPrice only
     // sends the limit price and no limit offset: a new order with the limit
     // price 745.66, stop price 20.00, stop trigger 750.66, type TSL, peg offset 20.00.
@@ -9180,6 +9301,11 @@ mod tests {
             assert!(frames.is_empty(), "nothing sent: {frames:?}");
             assert_eq!(errors, [(94, 387, "Unsupported order type for this exchange and security type.".to_string())]);
         }
+        // ibx#688: with a stop price of 0, sent (the reference 10.51,
+        // paper, 18/10/2026).
+        let stp_prt_zero = OrderRequest::SubmitEx { order_id: 98, instrument: 0, side: Side::Sell, qty: 1,
+            kind: crate::types::OrderKind::StpPrt { stop_price: 0 }, tif: b'0', attrs: Default::default() };
+        assert!(crate::engine::outside_rth::pegged_type_check(&stp_prt_zero).is_none());
         let with_prot = format!("{BEST_LIST},MKTPROT/1,STPPROT/1");
         let (frames, errors) = run("SMART", &with_prot, mkt_prt(97));
         assert_eq!((frames.len(), tag(&frames[0], 40)), (1, Some("U")));

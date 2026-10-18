@@ -11,7 +11,7 @@ ibx code.
 |---|---|---|
 | `error_codes.csv` | 637 | `code`, `message`, `wrapping`, `captured_text` (as in 1040) |
 | `order_attributes.csv` | 336 | `tag`, `attribute`, `kind` (as in 1040) |
-| `order_local_rules.csv` | 205 | `id`, `code`, `api_code`, `stage`, `text`, `condition` (as in 1040) |
+| `order_local_rules.csv` | 218 | `id`, `code`, `api_code`, `stage`, `text`, `condition` (as in 1040) |
 | `order_writers.csv` | 985 | `msg`, `pos`, `tag`, `block`, `when`, `condition` (as in 1040) |
 
 The tests read each file from 1051 when it is here and from 1040 otherwise (`version_of` in
@@ -51,6 +51,18 @@ with these differences:
   10010 and 10033 come as 320, and 10027 as 321 at the first checks, while ibx sends 320 (ibx#688).
 - `text`: the handler named in a 321 text is `PlaceOrder(3)`, as a client at session level 225 gets it (seen on
   12/10/2026); the tests read it as the name ibx gives at level 214 (ibx#591).
+
+Added on 18/10/2026 (ibx#688, point 3, decision of the project manager): 13 rules of the first checks that both
+versions have and that were not in the 10.40 table, after the row 10340-3. A goodTillDate with a time in force
+other than GTD (321-4); the open or close intent and the delta-neutral one (321-5 to 321-8); 378, which no allowed
+delta-neutral order type can reach; an offset of 0 or below 0 on the types that do not take it (10115-1, 10115-2);
+the limit of the requests for quote (321-9); and the FA session's places of 10136 and 10226 (10136-2, 10226-2 to
+10226-4). Their ids go on from the last number of their code. The 10.40 table does not have them.
+
+Observed on the reference 10.51 on 18/10/2026 (paper, market closed, ibx#688): 321-4, 321-5 and 321-8 as written.
+10115-1 is not applied: STP, STP LMT, STP PRT, MIT, LIT and RPI with an offset of 0 are sent and the server refuses
+or cancels them; PEG MKT and PEG BENCH are refused by another rule first (387, and 321 for the missing reference
+contract).
 
 Not observed on the reference yet, and the rows ibx is not compared with: ibx#688 and the line "local order rules of
 10.51" of ibx#635.

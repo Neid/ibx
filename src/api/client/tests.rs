@@ -2182,19 +2182,27 @@ fn req_global_cancel_without_contracts_still_goes() {
 //  Order validation — aux_price guards (issue #115)
 // ═══════════════════════════════════════════════════════════════════
 
-#[test]
-fn stp_order_with_zero_aux_price_is_rejected() {
-    let (client, _rx, shared) = test_client();
+/// An order of `order_type` with an auxPrice of 0 (and `lmt_price`): sent,
+/// no callback, as the reference 10.51 sends it and the server refuses it
+/// (ibx#688; paper, 18/10/2026, market closed). ibx used to fail the call
+/// (ibx#115).
+fn zero_offset_is_sent(order_type: &str, lmt_price: f64) {
+    crate::client_core::set_session_level_for_test(Some(214)); // a capture at level 214 (ibx#602)
+    let (client, rx, shared) = test_client();
     shared.market.set_instrument_count(1);
     let order = Order {
-        action: "SELL".into(), total_quantity: 100.0, order_type: "STP".into(),
-        lmt_price: 145.0, // common mistake: setting lmt_price instead of aux_price
-        aux_price: 0.0,
+        action: "SELL".into(), total_quantity: 100.0, order_type: order_type.into(), lmt_price, aux_price: 0.0,
         ..Default::default()
     };
-    let result = client.place_order(1, &spy(), &order);
-    assert!(result.is_err());
-    assert!(result.unwrap_err().contains("aux_price"));
+    client.place_order(1, &spy(), &order).unwrap();
+    assert!(rx.try_iter().any(|c| matches!(c, ControlCommand::Order(_))), "{order_type}: sent");
+    assert!(shared.orders.drain_order_errors().is_empty(), "{order_type}");
+}
+
+#[test]
+fn stp_order_with_zero_aux_price_is_sent() {
+    // A common mistake: the lmt_price set instead of the aux_price.
+    zero_offset_is_sent("STP", 145.0);
 }
 
 // The auxPrice left unset (the official API's default): the reference's
@@ -2238,16 +2246,8 @@ fn stp_order_with_valid_aux_price_succeeds() {
 }
 
 #[test]
-fn stp_lmt_order_with_zero_aux_price_is_rejected() {
-    let (client, _rx, shared) = test_client();
-    shared.market.set_instrument_count(1);
-    let order = Order {
-        action: "SELL".into(), total_quantity: 100.0, order_type: "STP LMT".into(),
-        lmt_price: 144.0, aux_price: 0.0, ..Default::default()
-    };
-    let result = client.place_order(1, &spy(), &order);
-    assert!(result.is_err());
-    assert!(result.unwrap_err().contains("aux_price"));
+fn stp_lmt_order_with_zero_aux_price_is_sent() {
+    zero_offset_is_sent("STP LMT", 144.0);
 }
 
 // ibx#688: the reference's 321 callback, nothing sent (observed on paper,
@@ -2301,42 +2301,18 @@ fn trail_limit_order_with_zero_aux_price_is_rejected() {
 }
 
 #[test]
-fn mit_order_with_zero_aux_price_is_rejected() {
-    let (client, _rx, shared) = test_client();
-    shared.market.set_instrument_count(1);
-    let order = Order {
-        action: "BUY".into(), total_quantity: 100.0, order_type: "MIT".into(),
-        aux_price: 0.0, ..Default::default()
-    };
-    let result = client.place_order(1, &spy(), &order);
-    assert!(result.is_err());
-    assert!(result.unwrap_err().contains("aux_price"));
+fn mit_order_with_zero_aux_price_is_sent() {
+    zero_offset_is_sent("MIT", 0.0);
 }
 
 #[test]
-fn stp_prt_order_with_zero_aux_price_is_rejected() {
-    let (client, _rx, shared) = test_client();
-    shared.market.set_instrument_count(1);
-    let order = Order {
-        action: "SELL".into(), total_quantity: 100.0, order_type: "STP PRT".into(),
-        aux_price: 0.0, ..Default::default()
-    };
-    let result = client.place_order(1, &spy(), &order);
-    assert!(result.is_err());
-    assert!(result.unwrap_err().contains("aux_price"));
+fn stp_prt_order_with_zero_aux_price_is_sent() {
+    zero_offset_is_sent("STP PRT", 0.0);
 }
 
 #[test]
-fn lit_order_with_zero_aux_price_is_rejected() {
-    let (client, _rx, shared) = test_client();
-    shared.market.set_instrument_count(1);
-    let order = Order {
-        action: "BUY".into(), total_quantity: 100.0, order_type: "LIT".into(),
-        lmt_price: 150.0, aux_price: 0.0, ..Default::default()
-    };
-    let result = client.place_order(1, &spy(), &order);
-    assert!(result.is_err());
-    assert!(result.unwrap_err().contains("aux_price"));
+fn lit_order_with_zero_aux_price_is_sent() {
+    zero_offset_is_sent("LIT", 150.0);
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -4184,10 +4160,11 @@ fn modify_order_before_ack_no_panic() {
     }
     let mut count = 0;
     while rx.try_recv().is_ok() { count += 1; }
-    // Placed again before the server answered it: 103 each time, as the
-    // reference (ibx#688, paper 17/10/2026).
-    assert_eq!(count, 1, "the first order only");
-    assert_eq!(shared.orders.drain_order_errors().iter().filter(|e| e.1 == 103).count(), 9);
+    // Placed again before the server answered it: a modify each time, as
+    // the reference once the order went out (ibx#688, paper 18/10/2026);
+    // the engine answers 103 while it still holds the order.
+    assert_eq!(count, 10, "the order and nine modifies");
+    assert_eq!(shared.orders.drain_order_errors().iter().filter(|e| e.1 == 103).count(), 0);
 }
 
 #[test]

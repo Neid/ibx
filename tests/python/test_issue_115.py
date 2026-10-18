@@ -105,40 +105,41 @@ def _next_oid(wrapper):
 #  No live connection needed: validation runs inside place_order()
 # ═══════════════════════════════════════════════════════════════════
 
-@pytest.fixture(scope="module")
-def local_client():
-    """Unconnected client — sufficient for testing pre-send validation."""
+def _zero_offset_sent(order_id, action, order_type, lmt_price=None):
+    """An auxPrice of 0 on a stop or touched type: sent, no callback, as the
+    reference 10.51 sends it and the server refuses it (ibx#688; paper,
+    18/10/2026, market closed). ibx#115 failed the call."""
+    if not hasattr(EClient, "_test_connect"):
+        pytest.skip("built without the test-support feature")
     wrapper = Wrapper()
     client = EClient(wrapper)
-    return wrapper, client
+    client._test_connect()
+    client._test_set_instrument_count(1)
+    client._test_seed_instrument(SPY_CON_ID, 0)  # known: the order goes out
+    order = Order()
+    order.action = action
+    order.total_quantity = 1
+    order.order_type = order_type
+    order.tif = "DAY"  # without one: 10052 at session level 225 (ibx#602)
+    if lmt_price is not None:
+        order.lmt_price = lmt_price
+    order.aux_price = 0.0  # unset (the API's default) gets the stop price rule instead
+    client.place_order(order_id, make_spy(), order)
+    client._test_dispatch_once()
+    assert wrapper.events == []
 
 
 class TestAuxPriceValidation:
-    """Verify that orders requiring aux_price raise RuntimeError when aux_price=0."""
+    """Orders whose aux_price is missing are refused; an aux_price of 0 is
+    sent where the reference sends it."""
 
-    def test_stp_order_zero_aux_price_rejected(self, local_client):
-        """STP with lmt_price but no aux_price must raise, not silently submit."""
-        wrapper, client = local_client
-        order = Order()
-        order.action = "SELL"
-        order.total_quantity = 1
-        order.order_type = "STP"
-        order.lmt_price = 145.0  # common mistake
-        order.aux_price = 0.0  # unset (the API's default) gets the reference's 321 instead
-        with pytest.raises(RuntimeError, match="aux_price"):
-            client.place_order(1, make_spy(), order)
+    def test_stp_order_zero_aux_price_sent(self):
+        """STP with lmt_price but an aux_price of 0 (a common mistake)."""
+        _zero_offset_sent(1, "SELL", "STP", 145.0)
 
-    def test_stp_lmt_order_zero_aux_price_rejected(self, local_client):
-        """STP LMT with only lmt_price must raise."""
-        _, client = local_client
-        order = Order()
-        order.action = "SELL"
-        order.total_quantity = 1
-        order.order_type = "STP LMT"
-        order.lmt_price = 144.0
-        order.aux_price = 0.0  # unset (the API's default) gets the reference's 321 instead
-        with pytest.raises(RuntimeError, match="aux_price"):
-            client.place_order(2, make_spy(), order)
+    def test_stp_lmt_order_zero_aux_price_sent(self):
+        """STP LMT with only lmt_price."""
+        _zero_offset_sent(2, "SELL", "STP LMT", 144.0)
 
     def test_trail_order_zero_both_rejected(self):
         """TRAIL with neither trailing_percent nor aux_price: the reference's
@@ -178,39 +179,17 @@ class TestAuxPriceValidation:
         assert wrapper.events == [("error", 4, 321,
             "Error validating request.-'PlaceOrder(3)' : cause - Please enter a trailing stop price")]
 
-    def test_mit_order_zero_aux_price_rejected(self, local_client):
-        """MIT with no aux_price must raise."""
-        _, client = local_client
-        order = Order()
-        order.action = "BUY"
-        order.total_quantity = 1
-        order.order_type = "MIT"
-        order.aux_price = 0.0  # unset (the API's default) gets the reference's 321 instead
-        with pytest.raises(RuntimeError, match="aux_price"):
-            client.place_order(5, make_spy(), order)
+    def test_mit_order_zero_aux_price_sent(self):
+        """MIT with an aux_price of 0."""
+        _zero_offset_sent(5, "BUY", "MIT")
 
-    def test_lit_order_zero_aux_price_rejected(self, local_client):
-        """LIT with only lmt_price must raise."""
-        _, client = local_client
-        order = Order()
-        order.action = "BUY"
-        order.total_quantity = 1
-        order.order_type = "LIT"
-        order.lmt_price = 150.0
-        order.aux_price = 0.0  # unset (the API's default) gets the reference's 321 instead
-        with pytest.raises(RuntimeError, match="aux_price"):
-            client.place_order(6, make_spy(), order)
+    def test_lit_order_zero_aux_price_sent(self):
+        """LIT with only lmt_price."""
+        _zero_offset_sent(6, "BUY", "LIT", 150.0)
 
-    def test_stp_prt_order_zero_aux_price_rejected(self, local_client):
-        """STP PRT with no aux_price must raise."""
-        _, client = local_client
-        order = Order()
-        order.action = "SELL"
-        order.total_quantity = 1
-        order.order_type = "STP PRT"
-        order.aux_price = 0.0  # unset (the API's default) gets the reference's 321 instead
-        with pytest.raises(RuntimeError, match="aux_price"):
-            client.place_order(7, make_spy(), order)
+    def test_stp_prt_order_zero_aux_price_sent(self):
+        """STP PRT with an aux_price of 0."""
+        _zero_offset_sent(7, "SELL", "STP PRT")
 
 
 # ═══════════════════════════════════════════════════════════════════

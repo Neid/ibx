@@ -107,8 +107,10 @@ impl EClient {
         // A smart combo goes out on its currency's smart combo conId.
         let con_id = combo.as_ref().map(|c| c.smart_con_id).filter(|&c| c > 0).unwrap_or(contract.con_id);
         // A contract without a conId is looked up by the engine before the
-        // order goes out (ibx#486).
-        let instrument = if con_id == 0 && !contract.sec_type.eq_ignore_ascii_case("BAG") {
+        // order goes out (ibx#486); one with a conId takes the slot of its
+        // exchange, as in the Rust client (ibx#688: an AAPL order on ISLAND
+        // after one on SMART was checked with the SMART rules).
+        let instrument = if !contract.sec_type.eq_ignore_ascii_case("BAG") {
             py.detach(|| self.core.order_instrument(&tx, oid, api_order.what_if, con_id, &contract.symbol,
                 &contract.exchange, &contract.sec_type, &contract.currency, crate::types::SecDefFilters {
                     // The primary exchange goes into the order's lookup (ibx#710).

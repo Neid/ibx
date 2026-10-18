@@ -56,9 +56,10 @@ fn assert_refused_as(engine: &mut Engine, id: i64, rule: &str, code: Option<i64>
         "rule {} (gateway code {}): want {} {:?}, got {:?}", rule.id, rule.code, want, seen.unwrap_or(&rule.text), errors,
     );
     // Nothing sent for the refused order: the next order is the first the
-    // server reads after it.
+    // server reads after it. It opens, which an institutional session must
+    // say (rule 321-6).
     let before = engine.orders(0).len();
-    engine.client.place_order(NEXT, &aapl(), &lmt("BUY", 1.0, 100.0)).unwrap();
+    engine.client.place_order(NEXT, &aapl(), &Order { open_close: "O".into(), ..lmt("BUY", 1.0, 100.0) }).unwrap();
     let frames = engine.orders(before + 1);
     let after = &frames[before..];
     assert!(!after.is_empty(), "the valid order after it is sent");
@@ -255,13 +256,14 @@ fn short_side_without_the_logon_flags() {
 }
 
 /// An institutional session (the logon's super-user flag) for the short
-/// sale slot rules.
+/// sale slot rules. Such a session gives the open or close intent of its
+/// orders (rule 321-6).
 fn short_sale(rule: &str, slot: i32, location: &str, exempt_code: i32) {
     let mut engine = Engine::start();
     engine.shared.reference.set_short_sale_flags(true, false);
     let order = Order {
         action: "SSHORT".into(), short_sale_slot: slot, designated_location: location.into(), exempt_code,
-        ..order("LMT")
+        open_close: "O".into(), ..order("LMT")
     };
     engine.client.place_order(REFUSED, &aapl(), &order).unwrap();
     assert_refused(&mut engine, REFUSED, rule);
@@ -292,7 +294,7 @@ fn short_sale_slot_on_a_non_institutional_session() {
     // The omnibus flag alone: a short side is allowed, a slot is not.
     let mut engine = Engine::start();
     engine.shared.reference.set_short_sale_flags(false, true);
-    let order = Order { action: "SSHORT".into(), short_sale_slot: 1, ..order("LMT") };
+    let order = Order { action: "SSHORT".into(), short_sale_slot: 1, open_close: "O".into(), ..order("LMT") };
     engine.client.place_order(REFUSED, &aapl(), &order).unwrap();
     assert_refused(&mut engine, REFUSED, "346-1");
 }
@@ -1118,3 +1120,81 @@ fn limit_order_at_zero_is_written_without_its_price() {
     let sent = frames.iter().find(|f| field(f, 6121) == Some("7")).expect("the order is sent");
     assert_eq!(field(sent, 44), None, "{sent:?}");
 }
+
+// ── Rules of both versions that were not in the table before (ibx#688,
+// point 3): the reference 10.51's rules, not observed yet. ──
+
+/// `order` on AAPL is sent: its new order message reaches the server.
+fn sent(order: &Order) {
+    let mut engine = Engine::start();
+    engine.client.place_order(6, &aapl(), order).unwrap();
+    let frames = engine.orders(1);
+    assert!(frames.iter().any(|f| field(f, 6121) == Some("6")), "sent: {frames:?} {:?}", engine.errors());
+}
+
+// An end time with a time in force other than GTD.
+#[test]
+fn good_till_date_without_gtd() {
+    let end = "20261120 15:00:00 US/Eastern".to_string();
+    refused("321-4", &aapl(), &Order { good_till_date: end.clone(), ..order("LMT") });
+    refused("321-4", &aapl(), &Order { tif: "GTC".into(), good_till_date: end, ..order("LMT") });
+}
+
+// An open or close intent whose first character is not O or C; a small
+// letter is taken.
+#[test]
+fn open_close_not_open_or_close() {
+    refused("321-5", &aapl(), &Order { open_close: "X".into(), ..order("LMT") });
+    sent(&Order { open_close: "c".into(), ..order("LMT") });
+}
+
+/// `order` on AAPL on a session whose logon has the super-user flag
+/// (`super_user`) or the omnibus one: refused with `rule`.
+fn refused_on_an_institutional_session(rule: &str, super_user: bool, order: &Order) {
+    let mut engine = Engine::start();
+    engine.shared.reference.set_short_sale_flags(super_user, !super_user);
+    engine.client.place_order(REFUSED, &aapl(), order).unwrap();
+    assert_refused(&mut engine, REFUSED, rule);
+}
+
+// An institutional or omnibus session gives the open or close intent.
+#[test]
+fn open_close_missing_on_an_institutional_session() {
+    refused_on_an_institutional_session("321-6", true, &order("LMT"));
+    refused_on_an_institutional_session("321-6", false, &order("LMT"));
+}
+
+// Such a session cannot close by a short sale.
+#[test]
+fn close_on_a_short_sale() {
+    refused_on_an_institutional_session("321-7", true, &Order {
+        action: "SSHORT".into(), short_sale_slot: 1, open_close: "C".into(), ..order("LMT")
+    });
+}
+
+// A delta-neutral open or close intent whose first character is not O or
+// C, with a delta-neutral order type.
+#[test]
+fn delta_neutral_open_close_not_open_or_close() {
+    refused("321-8", &aapl(), &Order {
+        delta_neutral_order_type: "LMT".into(), delta_neutral_open_close: "X".into(), ..order("LMT")
+    });
+}
+
+// An offset (the auxPrice) of 0: the table's rule is not applied by the
+// reference 10.51, which sends the order (ibx#688; paper, 18/10/2026,
+// market closed: STP, STP LMT, STP PRT, MIT, LIT and RPI sent, the server's
+// refusal after). ibx sends it too; STP PRT and RPI wait for the contract's
+// order types, which this server does not answer, and is written as the
+// reference in `zero_offset_orders_are_written_as_the_reference`.
+#[test]
+fn zero_offset_on_a_type_without_one() {
+    for order_type in ["STP", "STP LMT", "MIT", "LIT"] {
+        let mut engine = Engine::start();
+        engine.client.place_order(6, &aapl(), &Order { action: "SELL".into(), aux_price: 0.0, ..order(order_type) }).unwrap();
+        engine.answer_preset("STK", "DAY");
+        let frames = engine.orders(1);
+        assert!(frames.iter().any(|f| field(f, 6121) == Some("6")), "{order_type} sent: {frames:?} {:?}", engine.errors());
+    }
+}
+

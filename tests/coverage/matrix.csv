@@ -1642,6 +1642,19 @@ local_rule,464-2,464 check: allowPreOpen or ignoreOpenAuction set and the destin
 local_rule,10052-7,10052 check: allowPreOpen or ignoreOpenAuction set with time in force OVERNIGHT + DAY,tests/gw_catalog/refusals.rs::open_flags_overnight_and_day
 local_rule,10340-2,"10340 check: ignoreOpenAuction set, destination SMART, and the pre-open reroute attribute set",open #688
 local_rule,10340-3,10340 check: ignoreOpenAuction set and the scale auto-reset attribute set,tests/gw_catalog/refusals.rs::ignore_open_auction_with_scale_auto_reset
+local_rule,321-4,321 check: goodTillDate not empty and a time in force other than GTD (the first of the first checks; a goodTillDate that cannot be read is refused at the reading before it),tests/gw_catalog/refusals.rs::good_till_date_without_gtd
+local_rule,321-5,"321 check: openClose given and its first character (case ignored) not O or C; empty, a leading space or ? is the default",tests/gw_catalog/refusals.rs::open_close_not_open_or_close
+local_rule,321-6,"321 check: a session that must give the open or close intent (institutional or omnibus logon, and some other account kinds) and openClose not O or C, empty included",tests/gw_catalog/refusals.rs::open_close_missing_on_an_institutional_session
+local_rule,321-7,"321 check: such a session, a short side (SSHORT or SSHORTX) and openClose C",tests/gw_catalog/refusals.rs::close_on_a_short_sale
+local_rule,321-8,"321 check: deltaNeutralOrderType given (the client sends the delta-neutral open or close only then) and deltaNeutralOpenClose given with a first character (case ignored) not O or C (empty, a leading space or ? is the default)",tests/gw_catalog/refusals.rs::delta_neutral_open_close_not_open_or_close
+local_rule,378-1,"378 check: a delta-neutral order type allowed as one (REL, RPI, LMT, MKT, PASSV REL) that needs an aux price, and deltaNeutralAuxPrice unset; none of the allowed types needs one, so the rule does not fire",open #739
+local_rule,10115-1,"10115 check: auxPrice 0 on an order type that is not trailing, takes an aux price and does not take 0: STP, STP LMT, STP PRT, MIT, LIT, PEG MKT, PEG BENCH, PEG STK, RPI, PEG MKT VOL",tests/gw_catalog/refusals.rs::zero_offset_on_a_type_without_one
+local_rule,10115-2,10115 check: auxPrice below 0 on PEG PRM VOL or PEG MKT VOL (PEG MID VOL and PEG SURF VOL take it),open #673
+local_rule,321-9,"321 check: order type QUOTE (a request for quote) and already 2 of them in the same second on the client's connection; text = 2, then 1",open #688
+local_rule,10136-2,10136 check: FA session: the order is allocated to one account whose application is not approved (after 'Invalid account specified' for an account not known and 10132 for a read-only one),open #507
+local_rule,10226-2,"10226 check: FA session with the allocation checks on: an FA method, and a group that exists whose own method is set and is another; an exemption of some orders not identified",open #507
+local_rule,10226-3,"10226 check: FA session with the allocation checks on: an FA method, no group that exists, and an allocation profile that exists; an exemption of some orders not identified",open #507
+local_rule,10226-4,"10226 check: FA session with the allocation checks on: no FA method, and a group that exists",open #507
 local_rule,10007-1,"10007 read: hedge type not D, B, F or P",tests/gw_catalog/refusals.rs::hedge_of_an_unknown_kind
 local_rule,10006-1,"10006 read: hedge order (hedge type set) whose parent order is not found, for a new order (a known order id is only logged); text = the message, then client id, order id, parent id and hedge type",tests/gw_catalog/refusals.rs::hedge_without_its_parent
 local_rule,10010-1,"10010 read: delta hedge whose parent or hedge contract does not fit (parent an option; hedge stock, CFD, or futures for an index option); text = the message, then client id, order id, parent id and hedge type",tests/gw_catalog/refusals.rs::delta_hedge_not_on_an_option

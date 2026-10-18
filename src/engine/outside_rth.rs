@@ -311,7 +311,10 @@ pub(crate) const UNSUPPORTED_ORDER_TYPE: &str = "Unsupported order type for this
 /// no RPI key and the order is refused, the IBM list has it and the order
 /// is sent), and for passive relative, key PASSVREL (no
 /// recorded list has it, and the reference refused the type on every
-/// route tried).
+/// route tried). A stop with protection whose stop price is 0 is not
+/// checked: the reference 10.51 sends it and the server refuses it
+/// (ibx#688; paper, 18/10/2026, market closed: AAPL on SMART, 387 with a
+/// stop price, sent without).
 pub(crate) fn pegged_type_check(req: &OrderRequest) -> Option<(u32, fn(&RthTypes) -> bool)> {
     use OrderRequest as R;
     let mkt: fn(&RthTypes) -> bool = |t| t.peg_mkt;
@@ -325,6 +328,7 @@ pub(crate) fn pegged_type_check(req: &OrderRequest) -> Option<(u32, fn(&RthTypes
         R::SubmitPegMkt { instrument, .. } | R::SubmitEx { instrument, kind: OrderKind::PegMkt { .. }, .. } => Some((*instrument, mkt)),
         R::SubmitPegMid { instrument, .. } | R::SubmitEx { instrument, kind: OrderKind::PegMid { .. }, .. } => Some((*instrument, mid)),
         R::SubmitMktPrt { instrument, .. } | R::SubmitEx { instrument, kind: OrderKind::MktPrt, .. } => Some((*instrument, mkt_prot)),
+        R::SubmitStpPrt { stop_price: 0, .. } | R::SubmitEx { kind: OrderKind::StpPrt { stop_price: 0 }, .. } => None,
         R::SubmitStpPrt { instrument, .. } | R::SubmitEx { instrument, kind: OrderKind::StpPrt { .. }, .. } => Some((*instrument, stp_prot)),
         R::SubmitEx { instrument, kind: OrderKind::PegBest { .. }, .. } => Some((*instrument, peg_best)),
         R::SubmitEx { instrument, kind: OrderKind::Rpi { .. }, .. } => Some((*instrument, rpi)),

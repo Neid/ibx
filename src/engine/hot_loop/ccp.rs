@@ -2316,8 +2316,10 @@ impl CcpState {
         // reason for a user cancel). Not for a status report in the
         // rejected state: the reference sets that one cancelled without the
         // notice (ibx#252).
+        // The reason without its trailing spaces (ibx#688; the reference
+        // 10.51, paper, 18/10/2026: an RPI order with no route).
         if status == crate::types::OrderStatus::Cancelled && status_changed && ord_status != "8" {
-            let reason = parsed.get(&58).copied().unwrap_or("");
+            let reason = parsed.get(&58).copied().unwrap_or("").trim_end();
             notice_out = Some((202, format!("Order Canceled - reason:{}", reason)));
         }
         // An order message of the server (6360 type, 6361 text): the
