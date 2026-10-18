@@ -218,8 +218,10 @@ pub fn build_scanner_params_request(seq: u32) -> Vec<u8> {
 }
 
 /// Build the XML payload for a scanner subscription request; `max_items`
-/// comes from `scanner_max_items`.
-pub fn build_scanner_subscribe_xml(sub: &ScannerSubscription, scan_id: &str, max_items: i32) -> String {
+/// comes from `scanner_max_items`. The manual flag only in the 10.40 form
+/// (its replays): the reference 10.51 does not write it (recorded at
+/// levels 214 and 225, 12/10 to 18/10/2026, ibx#604).
+pub fn build_scanner_subscribe_xml(sub: &ScannerSubscription, scan_id: &str, max_items: i32, form_10_40: bool) -> String {
     // The filters, only when there is one (ibx#456).
     let mut filter = String::new();
     if !sub.filters.is_empty() {
@@ -241,9 +243,10 @@ pub fn build_scanner_subscribe_xml(sub: &ScannerSubscription, scan_id: &str, max
          {filter}\
          <suspend>no</suspend>\
          <inclRestrictedLocations>yes</inclRestrictedLocations>\
-         <apiManual>no</apiManual>\
+         {manual}\
          <aggGroup>-1</aggGroup>\
          </ScanSubscription>",
+        manual = if form_10_40 { "<apiManual>no</apiManual>" } else { "" },
         id = scan_id,
         instrument = sub.instrument,
         locations = sub.location_code,
@@ -352,7 +355,7 @@ mod tests {
             number_of_rows: -1,
             filters: Vec::new(),
         };
-        let xml = build_scanner_subscribe_xml(&sub, "APISCAN1:1", 50);
+        let xml = build_scanner_subscribe_xml(&sub, "APISCAN1:1", 50, false);
         assert!(xml.starts_with("<?xml version=\"1.0\" encoding=\"UTF-8\"?><ScanSubscription>"), "{xml}");
         assert!(!xml.contains("<Filter"), "no filter block without a filter");
         assert!(xml.contains("<id>APISCAN1:1</id>"));
@@ -361,7 +364,10 @@ mod tests {
         assert!(xml.contains("<scanCode>TOP_PERC_GAIN</scanCode>"));
         assert!(xml.contains("<maxItems>50</maxItems>"));
         assert!(xml.contains("<source>API</source>"));
-        assert!(xml.contains("<aggGroup>-1</aggGroup>"));
+        assert!(xml.contains("<inclRestrictedLocations>yes</inclRestrictedLocations><aggGroup>-1</aggGroup>"), "{xml}");
+        // The manual flag of the 10.40 form (ibx#604).
+        assert!(build_scanner_subscribe_xml(&sub, "APISCAN1:1", 50, true)
+            .contains("<inclRestrictedLocations>yes</inclRestrictedLocations><apiManual>no</apiManual><aggGroup>-1</aggGroup>"));
     }
 
     // ibx#456: one filter block between the row count and the suspend flag.
@@ -375,7 +381,7 @@ mod tests {
             filters: vec![("priceAbove".into(), "10.0".into()), ("stkTypes".into(), "inc:ETF".into()),
                           ("x".into(), "a<b".into())],
         };
-        let xml = build_scanner_subscribe_xml(&sub, "APISCAN0:1", 10);
+        let xml = build_scanner_subscribe_xml(&sub, "APISCAN0:1", 10, false);
         assert!(xml.contains("<maxItems>10</maxItems><Filter varName=\"filter\"><priceAbove>10.0</priceAbove>\
                               <stkTypes>inc:ETF</stkTypes><x>a&lt;b</x></Filter><suspend>no</suspend>"), "{xml}");
     }

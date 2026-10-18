@@ -2155,7 +2155,7 @@ impl HmdsState {
         let xml = sub.xml.get_or_insert_with(|| {
             let limit = self.scan_size_limits.get(&sub.request.scan_code).copied();
             let max_items = crate::control::scanner::scanner_max_items(sub.request.number_of_rows, limit);
-            crate::control::scanner::build_scanner_subscribe_xml(&sub.request, &sub.scan_id, max_items)
+            crate::control::scanner::build_scanner_subscribe_xml(&sub.request, &sub.scan_id, max_items, shared.reference.form_10_40())
         });
         sub.sent = Self::send_scanner_xml(xml, hmds_conn, hb);
         if sub.sent {
