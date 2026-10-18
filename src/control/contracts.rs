@@ -206,6 +206,10 @@ pub struct ContractDefinition {
     pub fractional: bool,
     /// Fractional size increment (detail 8175), None when absent.
     pub fraction_size: Option<f64>,
+    /// Precision of the last price and of the last size (details 8598 and
+    /// 8599), None when absent (ibx#605).
+    pub last_price_precision: Option<f64>,
+    pub last_size_precision: Option<f64>,
     /// Size set and price magnifier of the record's market rule.
     pub size_increments: Vec<PriceIncrement>,
     pub price_magnifier: i32,
@@ -326,6 +330,8 @@ impl Default for ContractDefinition {
             ev_rule: String::new(),
             fractional: false,
             fraction_size: None,
+            last_price_precision: None,
+            last_size_precision: None,
             size_increments: Vec::new(),
             price_magnifier: 1,
             ineligibility: Vec::new(),
@@ -751,6 +757,8 @@ fn apply_secdef_fields<'a>(def: &mut ContractDefinition, keys: &mut RecordKeys<'
             6858 => def.ev_rule = v.to_string(),
             8193 => def.fractional = int_flag(v),
             8175 => def.fraction_size = v.trim().parse().ok(),
+            8598 => def.last_price_precision = v.trim().parse().ok(),
+            8599 => def.last_size_precision = v.trim().parse().ok(),
             // Fund
             6481 => def.fund.name = v.to_string(),
             6472 => def.fund.family = v.to_string(),
@@ -1137,44 +1145,43 @@ pub fn parse_schedule_response(data: &[u8]) -> Option<ContractSchedule> {
         .unwrap_or_default();
 
     // Parse repeating session groups.
-    // Each session starts with its start time and includes its end time, its trade
-    // date, and either the trading hours flag or the liquid hours flag.
+    // Each session has its start time, its end time and its trade date; the
+    // trading hours flag or the liquid hours flag (or both, on 24h venues
+    // such as FOREX) closes a group of one or more sessions and applies to
+    // all of them: a day with two trading sessions (an early session, then
+    // the regular one) gives both before one flag (ibx#605; an AAPL option,
+    // 18/10/2026). A session with no flag that has no length is a closed day.
     let mut trading_hours = Vec::new();
     let mut liquid_hours = Vec::new();
 
-    let mut start = String::new();
-    let mut end = String::new();
-    let mut trade_date = String::new();
+    let mut group: Vec<ScheduleSession> = Vec::new();
     let mut is_trading = false;
     let mut is_liquid = false;
-    let mut in_session = false;
 
-    // 24h venues (e.g. FOREX) emit sessions with both hours flags set — append
-    // to both lists independently.
     for (tag, val) in &tags {
         match *tag {
             TAG_SESSION_START => {
-                if in_session {
-                    flush_session(&mut trading_hours, &mut liquid_hours,
-                        start.clone(), end.clone(), trade_date.clone(), is_trading, is_liquid);
+                let closed_day = group.last().is_some_and(|s| s.end.is_empty() || s.end == s.start);
+                if is_trading || is_liquid || closed_day {
+                    for s in group.drain(..) {
+                        flush_session(&mut trading_hours, &mut liquid_hours,
+                            s.start, s.end, s.trade_date, is_trading, is_liquid);
+                    }
+                    is_trading = false;
+                    is_liquid = false;
                 }
-                start = val.clone();
-                end.clear();
-                trade_date.clear();
-                is_trading = false;
-                is_liquid = false;
-                in_session = true;
+                group.push(ScheduleSession { start: val.clone(), end: String::new(), trade_date: String::new() });
             }
-            TAG_SESSION_END => end = val.clone(),
-            TAG_TRADE_DATE => trade_date = val.clone(),
-            TAG_IS_TRADING_HOURS => is_trading = val == "1",
-            TAG_IS_LIQUID_HOURS => is_liquid = val == "1",
+            TAG_SESSION_END => if let Some(s) = group.last_mut() { s.end = val.clone() },
+            TAG_TRADE_DATE => if let Some(s) = group.last_mut() { s.trade_date = val.clone() },
+            TAG_IS_TRADING_HOURS => is_trading |= val == "1",
+            TAG_IS_LIQUID_HOURS => is_liquid |= val == "1",
             _ => {}
         }
     }
-    if in_session {
+    for s in group {
         flush_session(&mut trading_hours, &mut liquid_hours,
-            start, end, trade_date, is_trading, is_liquid);
+            s.start, s.end, s.trade_date, is_trading, is_liquid);
     }
 
     Some(ContractSchedule { timezone, trading_hours, liquid_hours })
@@ -1306,24 +1313,26 @@ fn starts_before(date: jiff::civil::Date, sessions: &[Session], tz: &jiff::tz::T
     })
 }
 
-/// An hours text of the API row, as the reference writes it: the first
-/// day always; a later closed day is left out when the next day is open
-/// and starts on an earlier date (its session covers the closed day).
+/// An hours text of the API row, as the reference writes it: a closed day
+/// is left out when the next day is open and starts on an earlier date (its
+/// session covers the closed day); the first day keeps its place, empty
+/// (`;20261018:1700-...`: a future's trading hours on a Sunday, ibx#605;
+/// the reference 10.51, 18/10/2026, and the same form recorded on
+/// 26/04/2026 for a future and a currency pair).
 fn hours_text(days: &[(jiff::civil::Date, Vec<Session>)], tz: &jiff::tz::TimeZone) -> String {
     let mut out = String::new();
     for (i, (date, sessions)) in days.iter().enumerate() {
-        if i > 0
-            && sessions.is_empty()
-            && let Some((next_date, next)) = days.get(i + 1)
-            && !next.is_empty()
-            && starts_before(*next_date, next, tz)
-        {
+        let covered = sessions.is_empty()
+            && days.get(i + 1).is_some_and(|(next_date, next)| !next.is_empty() && starts_before(*next_date, next, tz));
+        if covered && i > 0 {
             continue;
         }
-        if !out.is_empty() {
+        if i > 0 {
             out.push(';');
         }
-        out.push_str(&day_text(*date, sessions, tz));
+        if !covered {
+            out.push_str(&day_text(*date, sessions, tz));
+        }
     }
     out
 }
@@ -2684,6 +2693,45 @@ pub(crate) mod tests {
         let mut def = ContractDefinition::default();
         apply_schedule(&mut def, &empty, at("20261002-15:00:00"));
         assert_eq!(def.trading_hours.as_deref(), Some("20261002:CLOSED;20261003:CLOSED"));
+    }
+
+    // ibx#605 (the reference 10.51, paper, 18/10/2026, a Sunday): one flag
+    // closes a group of sessions, so a day with an early and a regular
+    // session gives both (an AAPL option); a future's Sunday, covered by
+    // the session of Monday that starts on it, keeps its place empty in
+    // the trading hours and is CLOSED in the liquid hours.
+    #[test]
+    fn a_flag_closes_a_group_of_sessions_and_a_covered_first_day_is_empty() {
+        // A session with no flag ("") belongs to the group of the next flag.
+        let sched = schedule("US/Eastern", &[
+            ("20261019-11:30:00", "20261019-13:25:00", "20261019", ""),
+            ("20261019-13:30:00", "20261019-20:15:00", "20261019", "T"),
+            ("20261020-11:30:00", "20261020-13:25:00", "20261020", ""),
+            ("20261020-13:30:00", "20261020-20:15:00", "20261020", "T"),
+            ("20261019-13:30:00", "20261019-20:00:00", "20261019", "L"),
+            ("20261020-13:30:00", "20261020-20:00:00", "20261020", "L"),
+        ]);
+        assert_eq!(sched.trading_hours.len(), 4);
+        assert_eq!(sched.liquid_hours.len(), 2);
+        let mut def = ContractDefinition { wire_sec_type: "OPT".into(), ..Default::default() };
+        apply_schedule(&mut def, &sched, at("20261018-16:44:00"));
+        assert_eq!(def.trading_hours.as_deref(), Some(
+            "20261018:CLOSED;20261019:0730-20261019:0925;20261019:0930-20261019:1615;20261020:0730-20261020:0925;20261020:0930-20261020:1615"));
+        assert_eq!(def.liquid_hours.as_deref(), Some(
+            "20261018:CLOSED;20261019:0930-20261019:1600;20261020:0930-20261020:1600"));
+
+        let sched = schedule("US/Central", &[
+            ("20261018-22:00:00", "20261019-21:00:00", "20261019", "T"),
+            ("20261019-22:00:00", "20261020-21:00:00", "20261020", "T"),
+            ("20261019-13:30:00", "20261019-21:00:00", "20261019", "L"),
+            ("20261020-13:30:00", "20261020-21:00:00", "20261020", "L"),
+        ]);
+        let mut def = ContractDefinition { wire_sec_type: "FUT".into(), ..Default::default() };
+        apply_schedule(&mut def, &sched, at("20261018-16:44:00"));
+        assert_eq!(def.trading_hours.as_deref(), Some(
+            ";20261018:1700-20261019:1600;20261019:1700-20261020:1600"));
+        assert_eq!(def.liquid_hours.as_deref(), Some(
+            "20261018:CLOSED;20261019:0830-20261019:1600;20261020:0830-20261020:1600"));
     }
 
     fn option_week() -> ContractSchedule {

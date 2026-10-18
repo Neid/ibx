@@ -1228,6 +1228,13 @@ impl ContractDetails {
             min_size,
             size_increment,
             suggested_size_increment,
+            // The reference 10.51 gives the minimum algo size as 0 and the
+            // last price and size precisions of the definition, at every
+            // session level from 214 to 225 (ibx#605; paper, 18/10/2026);
+            // 10.40 left all three unset.
+            min_algo_size: 0.0,
+            last_price_precision: def.last_price_precision.unwrap_or(f64::MAX),
+            last_size_precision: def.last_size_precision.unwrap_or(f64::MAX),
             ineligibility_reason_list: def.ineligibility.iter()
                 .map(|(id, description)| IneligibilityReason { id: id.clone(), description: description.clone() })
                 .collect(),
@@ -1678,6 +1685,23 @@ mod tests {
         def.size_increments.clear();
         assert_eq!(ContractDetails::from_definition(&def).min_size, f64::MAX);
         assert_eq!(ContractDetails::default().min_algo_size, f64::MAX);
+    }
+
+    // ibx#605 (the reference 10.51, paper, 18/10/2026, levels 214 to 225):
+    // a row's minimum algo size is 0, its last price and size precisions
+    // those of the record (BRK A, AAPL: 0.000001), unset without them (a
+    // future).
+    #[test]
+    fn min_algo_size_and_precisions_of_a_row() {
+        let fields: [(u32, &str); 12] = [(35, "d"), (320, "1"), (55, "BRK A"), (167, "STK"), (207, "BEST"), (6008, "5222"),
+            (15, "USD"), (146, "0"), (6344, "1"), (6008, "5222"), (8598, "0.000001"), (8599, "0.000001")];
+        let msg = crate::protocol::fix::fix_build(&fields, 1);
+        let def = crate::control::contracts::parse_secdef_response(&msg).unwrap();
+        let d = ContractDetails::from_definition(&def);
+        assert_eq!((d.min_algo_size, d.last_price_precision, d.last_size_precision), (0.0, 0.000001, 0.000001));
+        let fut = crate::control::contracts::ContractDefinition { wire_sec_type: "FUT".into(), ..Default::default() };
+        let d = ContractDetails::from_definition(&fut);
+        assert_eq!((d.min_algo_size, d.last_price_precision, d.last_size_precision), (0.0, f64::MAX, f64::MAX));
     }
 
     // Order types without their flags, the multiplier as received, the
