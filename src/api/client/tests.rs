@@ -5687,6 +5687,38 @@ fn account_summary_is_a_server_subscription() {
     assert!(w.events.is_empty(), "{:?}", w.events);
 }
 
+// ibx#602 (the reference 10.51 at level 225, paper, 18/10/2026, two fresh
+// sessions): the cancel changes nothing. Nothing goes to the server, the
+// rows keep coming under the id, the request still counts in the limit,
+// and a new request with the same id replaces it.
+#[test]
+fn account_summary_cancel_changes_nothing_at_level_225() {
+    crate::client_core::set_session_level_for_test(Some(225));
+    let (client, rx, shared) = test_client();
+    client.req_account_summary(1, "All", "NetLiquidation");
+    assert_eq!(summary_sent(&rx), ["sub:SR.Socket.1:NetLiquidation:All"]);
+    client.cancel_account_summary(1);
+    assert!(summary_sent(&rx).is_empty());
+    shared.portfolio.push_account_summary_event(summary_event(vec![summary_row("NetLiquidation", "953642.02", "USD")], vec![], false));
+    let mut w = SummaryRec::default();
+    client.process_msgs(&mut w);
+    assert_eq!(w.events, ["row:1:NetLiquidation:953642.02:USD"]);
+
+    client.req_account_summary(2, "All", "NetLiquidation");
+    client.req_account_summary(3, "All", "TotalCashValue");
+    client.req_account_summary(1, "All", "NetLiquidation");
+    let mut w = SummaryRec::default();
+    client.process_msgs(&mut w);
+    assert_eq!(w.events, [
+        "error:3:322:Error processing request.-'ReqAccountSummary(62)' : cause - Maximum number of account summary requests exceeded; \
+         desubscribe to previous request first",
+    ]);
+    assert_eq!(summary_sent(&rx), [
+        "sub:SR.Socket.2:NetLiquidation:All", "cancel:SR.Socket.1", "sub:SR.Socket.3:NetLiquidation:All",
+    ]);
+    crate::client_core::set_session_level_for_test(None);
+}
+
 #[test]
 fn account_summary_refusals_and_limit() {
     let (client, rx, _shared) = test_client();
@@ -5704,7 +5736,7 @@ fn account_summary_refusals_and_limit() {
         "error:1:321:Error validating request.-'ReqAccountSummary(62)' : cause - Tags cannot be null",
         "error:2:321:Error validating request.-'ReqAccountSummary(62)' : cause - Group name cannot be null",
         "error:3:321:Error validating request.-'ReqAccountSummary(62)' : cause - Unified group name is invalid",
-        "error:6:322:Error processing request.-'b2' : cause - Maximum number of account summary requests exceeded; \
+        "error:6:322:Error processing request.-'ReqAccountSummary(62)' : cause - Maximum number of account summary requests exceeded; \
          desubscribe to previous request first",
     ]);
     assert_eq!(summary_sent(&rx), [

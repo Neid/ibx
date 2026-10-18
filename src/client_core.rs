@@ -561,6 +561,13 @@ pub const LEVEL_FRACTIONAL_LAST_SIZE: i32 = 222;
 /// below it, twice (ibx#486, ibx#662).
 const LEVEL_SUMMARY_FRAMES_ONCE: i32 = 225;
 
+/// From this session level a cancel of an account summary changes nothing
+/// (ibx#602; the reference 10.51 at level 225, paper, 18/10/2026, two
+/// fresh sessions): the rows keep coming under the request id, the request
+/// still counts in the limit of two, and the server subscription ends with
+/// the session. A new request with the same id still replaces it.
+const LEVEL_SUMMARY_CANCEL_IGNORED: i32 = 225;
+
 /// The odd-lot quotes (generic tick 787) are given from session level 225
 /// (ibx#616).
 const LEVEL_ODD_LOT_QUOTES: i32 = 225;
@@ -3754,9 +3761,10 @@ impl ClientCore {
         }
         let mut reqs = self.account_summaries.lock().unwrap();
         let cancel_sr_id = reqs.iter().position(|r| r.req_id == req_id).map(|i| reqs.remove(i).sr_id);
-        // The reference's 322 has the rule as its cause (ibx#485).
+        // The reference's 322 has the rule as its cause (ibx#485) and names
+        // the request's handler as 10.51 does (ibx#602, observed 18/10/2026).
         if reqs.len() >= ACCOUNT_SUMMARY_MAX {
-            return Err((322, "Error processing request.-'b2' : cause - Maximum number of account summary requests \
+            return Err((322, "Error processing request.-'ReqAccountSummary(62)' : cause - Maximum number of account summary requests \
                 exceeded; desubscribe to previous request first".into()));
         }
         let sr_id = format!("SR.Socket.{}", self.next_account_summary.fetch_add(1, Ordering::Relaxed));
@@ -3765,8 +3773,12 @@ impl ClientCore {
     }
 
     /// Forget an account summary request; returns its subscription id to
-    /// cancel on the server.
+    /// cancel on the server. From level 225 the request is kept and nothing
+    /// is cancelled, as the reference does.
     pub fn unsubscribe_account_summary(&self, req_id: i64) -> Option<String> {
+        if session_level() >= LEVEL_SUMMARY_CANCEL_IGNORED {
+            return None;
+        }
         let mut reqs = self.account_summaries.lock().unwrap();
         let i = reqs.iter().position(|r| r.req_id == req_id)?;
         Some(reqs.remove(i).sr_id)
