@@ -1607,7 +1607,7 @@ local_rule,10351-2,"10351 check: whatIf true, whatIfType above 1, and the accoun
 local_rule,413-1,413 check: whatIf true and transmit false (10.51: checked with the what-if type rules),tests/gw_catalog/refusals.rs::what_if_without_transmit
 local_rule,457-1,457 check: FA / account rule,open #481
 local_rule,10136-1,10136 check: account application not approved (non-FA session),open #481
-local_rule,10132-1,10132 check: read-only account,open #688
+local_rule,10132-1,10132 check: read-only account,open #634
 local_rule,10226-1,10226 check: invalid FA method,open #481
 local_rule,435-1,435 check: multi-account non-FA session and no account,open #481
 local_rule,10368-1,"10368 check: BAG with NonGuaranteed set, and not exactly 2 legs or not routed to SMART",tests/gw_catalog/refusals.rs::non_guaranteed_combo_not_smart
@@ -1615,10 +1615,10 @@ local_rule,10369-1,"10369 check: BAG with more than 2 legs, an order type that c
 local_rule,10265-1,10265 check: FA group without a method,open #481
 local_rule,10030-1,10030 check: discretionary amount and percent both set,src/client_core.rs::sell_long_slot_discretionary_pair_and_trail_limit_under_a_stop
 local_rule,10061-1,10061 check: trailing unit percent and the value < 0 or > 100,tests/gw_catalog/refusals.rs::trailing_percent_above_100
-local_rule,10081-1,10081 check: custom SMART strategy invalid,open #688
-local_rule,10100-1,"10100 check: combo hedging strategy, non-cleared account",open #688
+local_rule,10081-1,10081 check: custom SMART strategy invalid,open #635
+local_rule,10100-1,"10100 check: combo hedging strategy, non-cleared account",open #634
 local_rule,10099-1,10099 check: parent hedged with a combination order,src/client_core.rs::reading_rules_of_19_10_2026
-local_rule,10131-1,10131 check: RTH flag on BAG or PDC,open #688
+local_rule,10131-1,10131 check: RTH flag on BAG or PDC,src/engine/outside_rth.rs::a_combo_never_keeps_outside_rth
 local_rule,10075-1,10075 check: PEG BENCH with referenceContractId <= 0,tests/gw_catalog/refusals.rs::pegged_to_benchmark_without_its_reference
 local_rule,362-1,362 check: adjusted stop price invalid,tests/gw_catalog/refusals.rs::adjusted_stop_prices_not_valid
 local_rule,363-1,363 check: adjusted stop-limit price invalid,tests/gw_catalog/refusals.rs::adjusted_stop_prices_not_valid
@@ -1629,7 +1629,7 @@ local_rule,321-3,"321 check: TRAIL LIMIT family: both lmtPrice and lmtPriceOffse
 local_rule,10210-1,10210 check: MIDPRICE with outsideRth true,tests/gw_catalog/refusals.rs::midprice_outside_regular_hours
 local_rule,10274-2,10274 check: postToAts out of range,tests/gw_catalog/refusals.rs::post_to_ats_out_of_range
 local_rule,10315-2,10315 check: time algo parameter bad value,tests/gw_catalog/refusals.rs::own_algo_active_time_not_a_time
-local_rule,10341-1,10341 check: orderId already live with another parentId,open #688
+local_rule,10341-1,10341 check: orderId already live with another parentId,src/client_core.rs::a_modify_keeps_its_own_parent
 local_rule,135-1,135 check: parent order id not found; text = the parent id after the message,tests/gw_catalog/refusals.rs::child_of_an_unknown_parent
 local_rule,417-1,417 check: scale initial component size vs total size,tests/gw_catalog/refusals.rs::scale_first_component_above_the_order
 local_rule,145-2,145 check: customerAccount set and the account configuration does not allow a customer account,tests/gw_catalog/refusals.rs::customer_account_without_the_account_config
@@ -1640,7 +1640,7 @@ local_rule,442-1,442 check: postOnly set on an algo order of a kind that exclude
 local_rule,10052-6,10052 check: postOnly set with time in force OVERNIGHT + DAY,tests/gw_catalog/refusals.rs::post_only_overnight_and_day
 local_rule,464-2,464 check: allowPreOpen or ignoreOpenAuction set and the destination is an overnight venue (OVERNIGHT or its electronic overnight venue),tests/gw_catalog/refusals.rs::open_flags_on_an_overnight_venue
 local_rule,10052-7,10052 check: allowPreOpen or ignoreOpenAuction set with time in force OVERNIGHT + DAY,tests/gw_catalog/refusals.rs::open_flags_overnight_and_day
-local_rule,10340-2,"10340 check: ignoreOpenAuction set, destination SMART, and the pre-open reroute attribute set",open #688
+local_rule,10340-2,"10340 check: ignoreOpenAuction set, destination SMART, and the pre-open reroute attribute set",open #635
 local_rule,10340-3,10340 check: ignoreOpenAuction set and the scale auto-reset attribute set,tests/gw_catalog/refusals.rs::ignore_open_auction_with_scale_auto_reset
 local_rule,321-4,321 check: goodTillDate not empty and a time in force other than GTD (the first of the first checks; a goodTillDate that cannot be read is refused at the reading before it),tests/gw_catalog/refusals.rs::good_till_date_without_gtd
 local_rule,321-5,"321 check: openClose given and its first character (case ignored) not O or C; empty, a leading space or ? is the default",tests/gw_catalog/refusals.rs::open_close_not_open_or_close
@@ -1683,11 +1683,11 @@ local_rule,10208-1,10208 build: stock size with more decimals than allowed,tests
 local_rule,10286-1,10286 build: total quantity with too many decimals,tests/gw_catalog/refusals.rs::quantity_decimals_and_fractions
 local_rule,10292-1,10292 build: order not allowed for this instrument,src/engine/hot_loop/order_builder.rs::an_index_order_is_refused_with_10345
 local_rule,464-3,464 build: invalid exchange,src/engine/hot_loop/order_builder.rs::an_order_on_an_exchange_without_a_definition_gets_200
-local_rule,10080-1,10080 build: custom SMART strategy not supported,open #688
+local_rule,10080-1,10080 build: custom SMART strategy not supported,open #635
 local_rule,10031-1,10031 build: hedge child with a limit price,tests/gw_catalog/refusals.rs::hedge_with_a_limit_price
 local_rule,10032-1,10032 build: hedge child with a size,tests/gw_catalog/refusals.rs::hedge_with_a_size
 local_rule,10063-1,10063 build: invalid FX hedge,tests/gw_catalog/refusals.rs::fx_hedge_not_on_a_currency_pair
-local_rule,10195-1,10195 build: use-parent-price parameters invalid,open #688
+local_rule,10195-1,10195 build: use-parent-price parameters invalid,open #635
 local_rule,463-1,463 build: no valid price,tests/gw_catalog/refusals.rs::limit_order_at_zero
 local_rule,388-1,388 build: size below the minimum size,src/engine/hot_loop/order_builder.rs::an_order_below_the_minimum_size_is_388
 local_rule,10083-1,10083 build: display size below the minimum,src/engine/hot_loop/order_builder.rs::an_order_below_the_minimum_size_is_388
@@ -1714,16 +1714,16 @@ local_rule,10051-2,10051 rules: unknown order type,tests/gw_catalog/refusals.rs:
 local_rule,10052-8,10052 rules: TIF not valid,tests/gw_catalog/refusals.rs::time_in_force_not_valid_on_the_destination
 local_rule,10070-1,10070 rules: order type not in the type list (server data),src/engine/hot_loop/order_builder.rs::market_on_close_follows_the_list
 local_rule,464-4,464 rules: destination not valid for the contract and the order does not use auto-routing (several exemptions; new in 10.51: the AVGCOST destination is exempt),src/engine/hot_loop/order_builder.rs::a_directed_order_to_an_exchange_the_contract_does_not_list_gets_464
-local_rule,10166-1,"10166 rules: destination not valid for the contract and the order uses auto-routing (same exemptions as 464, AVGCOST exempt in 10.51)",open #688
-local_rule,412-1,412 rules: contract not tradable,open #688
-local_rule,154-1,154 rules: halted security,open #688
-local_rule,107-1,107 rules: incomplete order,open #688
+local_rule,10166-1,"10166 rules: destination not valid for the contract and the order uses auto-routing (same exemptions as 464, AVGCOST exempt in 10.51)",src/engine/hot_loop/order_builder.rs::an_order_on_an_exchange_without_a_definition_gets_200
+local_rule,412-1,412 rules: contract not tradable,open #635
+local_rule,154-1,154 rules: halted security,open #739
+local_rule,107-1,107 rules: incomplete order,open #635
 local_rule,328-1,328 rules: trailing child on a parent that is not LMT or STP LMT,tests/gw_catalog/refusals.rs::trailing_stop_under_a_stop_parent
 local_rule,401-1,401 rules: OCA name over 64 characters,tests/gw_catalog/refusals.rs::oca_group_name_too_long
 local_rule,461-1,461 rules: size not a multiple of the lot,open #634
 local_rule,10098-1,10098 rules: SNAP order with a negative offset,tests/gw_catalog/refusals.rs::snap_order_with_a_negative_offset
-local_rule,2137-1,"2137 rules: closing order larger than the position: warning code, order refused",open #688
-local_rule,10132-2,10132 rules: read-only account,open #688
+local_rule,2137-1,"2137 rules: closing order larger than the position: warning code, order refused",tests/gw_catalog/refusals.rs::closing_order_larger_than_the_position
+local_rule,10132-2,10132 rules: read-only account,open #634
 local_rule,10361-1,10361 rules: VOL order whose volatility is below the minimum of its volatility type,open #673
 local_rule,10364-1,10364 rules: an attached hedge child of the kind that takes a maximum hedge size has none,tests/gw_catalog/refusals.rs::selling_beta_hedge_without_a_max_size
 local_rule,10365-1,10365 rules: the maximum hedge size of such a hedge child is below its filled quantity,src/client_core.rs::the_hedge_size_precaution_of_a_transmitted_tree

@@ -1347,3 +1347,11 @@ fn hidden_and_a_far_order_id() {
     assert!(frames.iter().any(|f| field(f, 6121) == Some("100006")), "sent: {frames:?} {:?}", engine.errors());
     assert!(engine.errors().iter().all(|e| e.1 != 2146), "no warning");
 }
+
+// A closing order larger than the position (2137-1): sent (ibx#688; the
+// reference 10.51, paper, 19/10/2026, market closed: SELL 200 SPY against
+// a position of 79, with and without the close intent).
+#[test]
+fn closing_order_larger_than_the_position() {
+    sent_on(&aapl(), &Order { action: "SELL".into(), total_quantity: 200.0, open_close: "C".into(), ..order("LMT") });
+}

@@ -10606,6 +10606,20 @@ mod tests {
     // 103 while it still holds the order (ibx#688, the reference 10.51,
     // paper, 18/10/2026). An id below the highest that the server knows (an
     // order of an earlier session) is no new id.
+    // ibx#688 (rule 10341-1; the reference 10.51, paper, 17/10/2026, market
+    // closed): a working order placed again under another working order
+    // keeps its own parent, none here, and goes out as a modify.
+    #[test]
+    fn a_modify_keeps_its_own_parent() {
+        let core = ClientCore::new();
+        core.track_order(50, ApiContract::default(), lmt(50.0), 0);
+        core.update_order_status(50, "PreSubmitted", 0.0, 1.0);
+        core.track_order(51, ApiContract::default(), lmt(40.0), 0);
+        core.track_order(50, ApiContract::default(), ApiOrder { parent_id: 51, ..lmt(51.0) }, 0);
+        let o = core.tracked_order(50).unwrap();
+        assert_eq!((o.parent_id, o.lmt_price), (0, 51.0));
+    }
+
     // ibx#688 (the reference 10.51, paper, 19/10/2026, market closed): the
     // own ATS destination with no security type and no conId, and the
     // pseudo forex destination, are 321 at the reading; a block order below
