@@ -7794,7 +7794,7 @@ impl ClientCore {
             "TRAIL MIT" | "TRAIL LIT" | "PEG BEST" | "RPI" | "PASSV REL" => Self::new_type_kind(order),
             "VOL" => Self::volatility_kind(order),
             // Refused by the engine before anything is sent (ibx#745).
-            "PEG STK" => OrderKind::PegStk,
+            "PEG STK" => OrderKind::PegStk { delta: order.delta },
             _ => return Err(format!("Unsupported order type: '{}'", order.order_type)),
         })
     }
@@ -8202,7 +8202,7 @@ impl ClientCore {
             "TRAIL MIT" | "TRAIL LIT" | "PEG BEST" | "RPI" | "PASSV REL" => ex(Self::new_type_kind(order)),
             "VOL" => ex(Self::volatility_kind(order)),
             // Refused by the engine before anything is sent (ibx#745).
-            "PEG STK" => ex(OrderKind::PegStk),
+            "PEG STK" => ex(OrderKind::PegStk { delta: order.delta }),
             // The offset is the API auxPrice, 0.00 when unset (ibx#413).
             "SNAP MKT" => {
                 let offset = price_or_zero(order.aux_price);

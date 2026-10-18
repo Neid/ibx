@@ -339,24 +339,39 @@ fn send_orders(
             // reference prices it from the market (an AAPL stock order went
             // out as a limit order at the ask, paper 16/10/2026); not
             // modelled yet (ibx#673).
-            // A pegged-to-stock order: on a stock, whose order types do not
-            // include it, refused with 387 at once and kept for its cancel
-            // (Cancelled, 202, 161), as the reference 10.51 (ibx#745;
-            // paper, 17/10/2026, market closed, AAPL); on the contracts
-            // that take it, its message is not written yet.
-            if matches!(&order_req, OrderRequest::SubmitEx { kind: crate::types::OrderKind::PegStk, .. }) {
+            // A pegged-to-stock order, as the reference 10.51 (ibx#745;
+            // paper, 17/10 and 18/10/2026, market closed): on a stock,
+            // whose order types do not include it, refused with 387 at
+            // once; on an option on BOX with a delta outside 1 to 100,
+            // refused with 341; both kept for their cancel (Cancelled, 202,
+            // 161). An option order goes on to its permission check (460
+            // without it); other contracts, and an option with the
+            // permission, are not written yet.
+            if let OrderRequest::SubmitEx { kind: crate::types::OrderKind::PegStk { delta }, .. } = &order_req {
                 let oid = order_req.order_id();
+                let exchange = context.market.exchange(instrument).to_ascii_uppercase();
+                let keep = |context: &mut Context| {
+                    let parent = order_req.new_order_side().and_then(|(_, a)| a).map_or(0, |a| a.parent_id);
+                    context.unsent.insert(oid, (instrument, order_req.new_order_qty().unwrap_or(0), parent));
+                };
                 if sec_type == "STK" {
                     log::warn!("Order {} refused: PEG STK on a stock", oid);
                     shared.orders.push_order_error(oid, 387, crate::engine::outside_rth::UNSUPPORTED_ORDER_TYPE.to_string());
-                    let parent = order_req.new_order_side().and_then(|(_, a)| a).map_or(0, |a| a.parent_id);
-                    context.unsent.insert(oid, (instrument, order_req.new_order_qty().unwrap_or(0), parent));
-                } else {
+                    keep(context);
+                    continue;
+                }
+                if sec_type == "OPT" && exchange == "BOX" && !(1.0..=100.0).contains(delta) {
+                    log::warn!("Order {} refused: PEG STK delta {} outside 1 to 100", oid, delta);
+                    shared.orders.push_order_error(oid, 341, PEG_STK_DELTA_INVALID.to_string());
+                    keep(context);
+                    continue;
+                }
+                if sec_type != "OPT" {
                     log::warn!("Order {} refused: PEG STK order on {}", oid, sec_type);
                     shared.orders.push_order_error(oid, 321, format!(
                         "Error validating request.-'PlaceOrder(3)' : cause - PEG STK orders on {sec_type} are not written by ibx yet (ibx#745)"));
+                    continue;
                 }
-                continue;
             }
             if is_volatility(&order_req) && !matches!(sec_type.as_str(), "OPT" | "FOP") {
                 let oid = order_req.order_id();
@@ -3028,7 +3043,7 @@ fn modify_fields(
         }
         // Refused before anything is sent (ibx#673, ibx#745): never written.
         K::Volatility { .. } => "VOL",
-        K::PegStk => "PEG STK",
+        K::PegStk { .. } => "PEG STK",
         K::PassvRel { price, offset } => {
             if price > 0 { before_account.push((44, p(price))); }
             before_account.push((99, p(offset)));
@@ -3541,6 +3556,15 @@ fn permission_refusal(
                 "Error validating request.-'PlaceOrder(3)' : cause - VOL orders are not written by ibx yet (ibx#673)".to_string());
             Some(true)
         }
+        // A pegged-to-stock option order with the permission: its message
+        // is not written yet (ibx#745).
+        Some(true) if matches!(req, OrderRequest::SubmitEx { kind: crate::types::OrderKind::PegStk { .. }, .. }) => {
+            let oid = req.order_id();
+            log::warn!("Order {} refused: PEG STK order", oid);
+            shared.orders.push_order_error(oid, 321,
+                "Error validating request.-'PlaceOrder(3)' : cause - PEG STK orders are not written by ibx yet (ibx#745)".to_string());
+            Some(true)
+        }
         Some(true) => None,
         // A crypto order without the permission: no error, nothing sent;
         // it stays pending until its cancel (ApiCancelled).
@@ -3636,6 +3660,10 @@ fn unwritten_type_refusal(req: &OrderRequest, sec_type: &str) -> Option<(i64, St
     if sec_type == "FUND" { return None; }
     Some((321, format!("Error validating request.-'PlaceOrder(3)' : cause - {} orders are not written by ibx yet (ibx#666)", sec_type)))
 }
+
+/// Text of the refusal 341 of a pegged-to-stock order whose delta is
+/// outside 1 to 100 (the reference 10.51, paper, 18/10/2026).
+pub(crate) const PEG_STK_DELTA_INVALID: &str = "The delta is invalid. Valid values are from 1 to 100.\n\nYou can set the delta from the \"Pegged to Stock\" section of the Order Ticket Panel,\nor by selecting Page/Layout from the main menu and adding the Delta column.";
 
 /// A new volatility order (ibx#673).
 fn is_volatility(req: &OrderRequest) -> bool {
@@ -5568,7 +5596,7 @@ fn send_order_ex(
         K::Rpi { price, offset } => (crate::types::ORD_RPI, price, offset),
         K::PassvRel { price, offset } => (crate::types::ORD_PASSV_REL, price, offset),
         K::Volatility { .. } => (b'V', 0, 0),
-        K::PegStk => (b'V', 0, 0),
+        K::PegStk { .. } => (b'V', 0, 0),
     };
     context.insert_order(crate::types::Order::new(
         order_id, instrument, side, qty, track_price, ord_type_byte, tif, track_stop,
@@ -5774,7 +5802,7 @@ fn send_order_ex(
         // improvement type, no instruction.
         // Refused before anything is sent (ibx#673, ibx#745): never written.
         K::Volatility { .. } => fields.push((40, "VOL".to_string())),
-        K::PegStk => fields.push((40, "PEG STK".to_string())),
+        K::PegStk { .. } => fields.push((40, "PEG STK".to_string())),
         K::PassvRel { price, offset } => {
             let o = format_price_ref(offset).to_string();
             fields.push((40, "PSVR".to_string()));
@@ -9531,7 +9559,7 @@ mod tests {
     #[test]
     fn a_pegged_to_stock_order_on_a_stock_is_refused_with_387_and_kept() {
         let peg_stk = |id| OrderRequest::SubmitEx { order_id: id, instrument: 0, side: Side::Buy, qty: 1,
-            kind: crate::types::OrderKind::PegStk, tif: b'0', attrs: crate::types::OrderAttrs::default() };
+            kind: crate::types::OrderKind::PegStk { delta: f64::MAX }, tif: b'0', attrs: crate::types::OrderAttrs::default() };
         let stock = [(55, "AAPL"), (167, "STK"), (15, "USD"), (207, "SMART"), (6431, "DAY/3,LMT/3")];
         let (frames, shared, mut context, mut conn, mut server) = order_by_con_id("265598", "SMART", peg_stk(93), &stock);
         assert!(frames.iter().all(|f| tag(f, 35) != Some("D")), "nothing sent: {frames:?}");
@@ -9546,6 +9574,28 @@ mod tests {
         let (frames, shared, ..) = order_by_con_id("123456", "FWB", peg_stk(94), &SAP_WARRANT);
         assert!(frames.iter().all(|f| tag(f, 35) != Some("D")), "nothing sent: {frames:?}");
         assert_eq!(shared.orders.drain_order_errors().iter().map(|e| (e.0, e.1)).collect::<Vec<_>>(), [(94, 321)]);
+
+        // An AAPL option: on BOX with a delta of 0.5, 341 and kept; on
+        // SMART, the permission check first (460 without it).
+        let call = [(55, "AAPL"), (167, "OPT"), (15, "USD"), (207, "SMART"), (200, "202611"), (541, "20261120"),
+            (201, "1"), (202, "250"), (231, "100"), (6411, "2/OPT/R"), (6431, "DAY/3,LMT/3")];
+        let with_delta = |id, delta| OrderRequest::SubmitEx { order_id: id, instrument: 0, side: Side::Buy, qty: 1,
+            kind: crate::types::OrderKind::PegStk { delta }, tif: b'0', attrs: crate::types::OrderAttrs::default() };
+        let (frames, shared, mut context, mut conn, mut server) = order_by_con_id("700000001", "BOX", with_delta(95, 0.5), &call);
+        assert!(frames.iter().all(|f| tag(f, 35) != Some("D")), "nothing sent: {frames:?}");
+        let errors = shared.orders.drain_order_errors();
+        assert_eq!(errors.iter().map(|e| (e.0, e.1)).collect::<Vec<_>>(), [(95, 341)]);
+        assert!(errors[0].2.starts_with("The delta is invalid. Valid values are from 1 to 100.
+
+"));
+        context.pending_orders.push(OrderRequest::Cancel { order_id: 95 });
+        drain_frames(&mut context, &shared, &mut conn, &mut server);
+        assert_eq!(shared.orders.drain_order_notices().iter().map(|n| (n.0, n.1)).collect::<Vec<_>>(), [(95, 202), (95, 161)]);
+        let (frames, shared, mut context, mut conn, mut server) = order_by_con_id("700000001", "SMART", with_delta(96, 0.5), &call);
+        assert!(frames.iter().any(|f| tag(f, 6411) == Some("2/OPT/R")), "the permission is asked: {frames:?}");
+        permission_reply(&mut context, &fix::field_view(&permission_answer("2/OPT/R", "0")));
+        assert!(drain_frames(&mut context, &shared, &mut conn, &mut server).iter().all(|f| tag(f, 35) != Some("D")));
+        assert_eq!(shared.orders.drain_order_errors().iter().map(|e| (e.0, e.1)).collect::<Vec<_>>(), [(96, 460)]);
     }
 
     #[test]

@@ -904,8 +904,8 @@ pub enum OrderKind {
     Volatility { volatility: Price, vol_type: u8 },
     /// Pegged to stock (PEG STK, ibx#745): refused before anything is
     /// sent, with 387 on a stock as the reference; its message is not
-    /// written yet.
-    PegStk,
+    /// written yet. `delta`: the order's delta as given (`f64::MAX` unset).
+    PegStk { delta: f64 },
     /// Adjustable stop, same fields as `OrderRequest::SubmitAdjustableStop`.
     /// On this path it also carries parent, OCA and tif, so it can be a
     /// bracket child (ibx#240).
@@ -951,7 +951,7 @@ impl OrderKind {
             OrderKind::TrailLit { price, trail, percent, .. } => [price, if percent { 0 } else { trail }],
             OrderKind::PegBest { price } => [price, 0],
             OrderKind::Rpi { price, offset } | OrderKind::PassvRel { price, offset } => [price, offset],
-            OrderKind::Volatility { .. } | OrderKind::PegStk => [0, 0],
+            OrderKind::Volatility { .. } | OrderKind::PegStk { .. } => [0, 0],
         }
     }
 }
