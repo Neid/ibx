@@ -4898,9 +4898,10 @@ mod tests {
             server.set_read_timeout(Some(std::time::Duration::from_millis(200))).unwrap();
             let mut chunk = [0u8; 8192];
             let n = server.read(&mut chunk).unwrap_or(0);
-            String::from_utf8_lossy(&chunk[..n]).replace('', "|")
+            crate::protocol::fix::fix_parse(&chunk[..n])
         };
-        assert!(sent.contains("35=c|") && sent.contains("6008=265598|"), "the definition is asked: {sent}");
+        assert_eq!((sent.get(&35).map(String::as_str), sent.get(&6008).map(String::as_str)), (Some("c"), Some("265598")),
+            "the definition is asked: {sent:?}");
         assert_eq!(engine.context.def_parked.len(), 1, "the snapshot waits");
         engine.context.agg_groups.insert(272093, -1);
         tx.send(snapshot(272093)).unwrap();

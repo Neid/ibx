@@ -2555,7 +2555,8 @@ impl FarmState {
     }
 
     /// The cancel of a regulatory snapshot's subscription, as the reference
-    /// 10.51 sends it when the fetch ends (ibx#645): the same entries, 263=2.
+    /// 10.51 sends it when the fetch ends (ibx#645): the same entries, as a
+    /// cancel.
     pub(crate) fn cancel_snapshot_message(&mut self, instrument: InstrumentId) -> Option<(FarmId, Vec<(u32, String)>)> {
         let at = self.snapshot_wire.iter().position(|(i, ..)| *i == instrument)?;
         let (_, sub, entries, us_lot, farm) = self.snapshot_wire.swap_remove(at);
