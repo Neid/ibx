@@ -202,7 +202,33 @@ fn note_record_terms(context: &mut Context, con_id: i64, def: &crate::control::c
     // The steps of its last size and price, from session level 222
     // (ibx#613).
     if crate::client_core::SERVER_VERSION >= crate::client_core::LEVEL_FRACTIONAL_LAST_SIZE {
-        context.def_increments.insert(con_id, definition_increments(def));
+        let increments = definition_increments(def);
+        if context.def_increments.insert(con_id, increments) != Some(increments) {
+            context.increments_due.push(con_id);
+        }
+    }
+}
+
+/// Whether a subscription of `con_id` at session level `level` asks the
+/// contract's definition (ibx#613): from level 222, when ibx has not read
+/// it, so that its last size takes the definition's steps once it came.
+/// The subscription does not wait for it (no wait the client would see);
+/// the reference knows the contract before it subscribes.
+pub(crate) fn increments_lookup_needed(level: i32, context: &Context, con_id: i64) -> bool {
+    level >= crate::client_core::LEVEL_FRACTIONAL_LAST_SIZE && con_id > 0 && !context.def_increments.contains_key(&con_id)
+}
+
+/// The increments of definitions that came give their contracts' market
+/// data slots their steps (ibx#613).
+pub(crate) fn publish_answered_increments(context: &mut Context, shared: &SharedState) {
+    if context.increments_due.is_empty() {
+        return;
+    }
+    for con_id in std::mem::take(&mut context.increments_due) {
+        let (size, price) = context.def_increments.get(&con_id).copied().unwrap_or((0, 0));
+        for instrument in context.market.instruments_of(con_id) {
+            shared.market.set_last_increments(instrument, size, price);
+        }
     }
 }
 
@@ -4660,6 +4686,31 @@ mod tests {
         let shared = SharedState::new();
         publish_increments(&context, &shared, 3, 265598);
         assert_eq!(shared.market.last_increments(3), (0, 0));
+    }
+
+    // ibx#613: from level 222 a subscription of a contract whose definition
+    // ibx has not read asks it; when it comes, every slot of the contract
+    // takes its increments.
+    #[test]
+    fn a_definition_that_comes_after_the_subscription_gives_its_increments() {
+        use crate::md_events::Increment;
+        let mut context = Context::new();
+        let live = context.market.register(265598);
+        let frozen = context.market.try_register_unresolved().unwrap();
+        context.market.resolve_con_id(frozen, 265598);
+        let other = context.market.register(272093);
+        assert!(!increments_lookup_needed(214, &context, 265598), "below 222: not asked");
+        assert!(increments_lookup_needed(222, &context, 265598));
+        assert!(!increments_lookup_needed(222, &context, 0), "no conId: nothing to ask");
+        let size = Increment::from_step(0.0001).unwrap().pack();
+        context.def_increments.insert(265598, (size, 0));
+        assert!(!increments_lookup_needed(222, &context, 265598), "read: not asked again");
+        context.increments_due.push(265598);
+        let shared = SharedState::new();
+        publish_answered_increments(&mut context, &shared);
+        assert_eq!((shared.market.last_increments(live), shared.market.last_increments(frozen)), ((size, 0), (size, 0)));
+        assert_eq!(shared.market.last_increments(other), (0, 0));
+        assert!(context.increments_due.is_empty());
     }
 
     // ibx#287: a definition reply sets the round lot and releases the

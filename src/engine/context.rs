@@ -348,6 +348,9 @@ pub struct Context {
     /// packed (`md_events::Increment`), kept from session level 222, whose
     /// last size and price are given in their steps (ibx#613).
     pub(crate) def_increments: HashMap<i64, (u64, u64)>,
+    /// The conIds whose increments came since the last publication to
+    /// their market data slots (ibx#613).
+    pub(crate) increments_due: Vec<i64>,
     /// The conIds of US stocks and warrants among the definitions read
     /// (ibx#648).
     pub(crate) us_lots: std::collections::HashSet<i64>,
@@ -606,6 +609,7 @@ impl Context {
             price_mgmt_send: false,
             round_lots: HashMap::new(),
             def_increments: HashMap::new(),
+            increments_due: Vec::new(),
             order_lookup_filters: HashMap::new(),
             us_lots: std::collections::HashSet::new(),
             agg_groups: HashMap::new(),

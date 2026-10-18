@@ -1624,7 +1624,11 @@ impl CcpState {
     ) -> bool {
         match kind {
             b"0" => {}
-            b"d" => self.handle_secdef_reply(msg, ccp_conn, context, shared, event_tx, hb),
+            b"d" => {
+                self.handle_secdef_reply(msg, ccp_conn, context, shared, event_tx, hb);
+                // Increments of a definition that came, to its slots (ibx#613).
+                super::farm::publish_answered_increments(context, shared);
+            }
             b"UT" | b"UM" | b"RL" => handle_account_update(msg, context, shared),
             b"EB" => handle_account_end(msg, shared),
             b"UP" => {

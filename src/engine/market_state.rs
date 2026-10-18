@@ -71,6 +71,20 @@ fn scale_size(size_min_tick: Option<f64>) -> i64 {
     if scaled.is_finite() && scaled >= 1.0 { scaled as i64 } else { QTY_SCALE }
 }
 
+/// A last size of the farm as kept (ibx#613): from session level 222 with
+/// the decimals the farm gave it (the 10.51 form's extended entries), down
+/// to the quantity's steps of 0.0001; below 222 in whole units, `whole`
+/// (the value without its decimals) times `sizes`, as before. The 10.51
+/// rule, not observed yet: no fractional trade on the paper account.
+#[inline(always)]
+fn last_size_value(level: i32, tick: &RawTick, whole: i64, sizes: i64) -> Option<i64> {
+    if level < crate::client_core::LEVEL_FRACTIONAL_LAST_SIZE || tick.scale == 0 {
+        return whole.checked_mul(sizes);
+    }
+    let v = tick.magnitude as i128 * sizes as i128 / 10i128.pow(tick.scale.min(30) as u32);
+    i64::try_from(v).ok()
+}
+
 #[inline(always)]
 fn tag_key(farm: u8, server_tag: u32) -> u64 {
     ((farm as u64) << 32) | server_tag as u64
@@ -548,6 +562,11 @@ impl MarketState {
 
     /// Look up con_id by InstrumentId. O(1) flat array lookup. None for
     /// out-of-range ids and freed slots.
+    /// The slots of a contract (ibx#613).
+    pub fn instruments_of(&self, con_id: i64) -> impl Iterator<Item = InstrumentId> + '_ {
+        (0..self.active_count).filter(move |i| self.instrument_to_con_id[*i as usize] == con_id)
+    }
+
     pub fn con_id(&self, instrument: InstrumentId) -> Option<i64> {
         if instrument < self.active_count {
             let con_id = self.instrument_to_con_id[instrument as usize];
@@ -775,7 +794,7 @@ impl MarketState {
                 self.marks[i].set_seen(SizeKind::Ask);
             }
             td::O_LAST_SIZE => {
-                set(&mut q.last_size, m.checked_mul(sizes));
+                set(&mut q.last_size, last_size_value(crate::client_core::SERVER_VERSION, tick, m, sizes));
                 self.marks[i].set_seen(SizeKind::Last);
             }
             // The 10.51 form gives the volume in shares with decimals; the
@@ -1629,6 +1648,21 @@ mod tests {
         assert_eq!(ms.round_lot(id), 1);
         ms.apply_tick(id, CENT, false, &raw(4, 5));
         assert_eq!(ms.quote(id).bid_size, 5 * QTY_SCALE);
+    }
+
+    #[test]
+    fn last_size_decimals_from_level_222() {
+        // ibx#613: a last size of 0.4 shares, one decimal, on an increment of
+        // 1: whole units below 222 (0), its decimals from 222.
+        let tick = RawTick { server_tag: 1, tick_type: td::O_LAST_SIZE, magnitude: 4, stats_block: false, first: true, scale: 1 };
+        assert_eq!(last_size_value(214, &tick, 0, QTY_SCALE), Some(0));
+        assert_eq!(last_size_value(222, &tick, 0, QTY_SCALE), Some(QTY_SCALE * 4 / 10));
+        // Finer than the quantity's steps: kept to 0.0001.
+        let fine = RawTick { magnitude: 123_456, scale: 8, ..tick };
+        assert_eq!(last_size_value(222, &fine, 0, QTY_SCALE), Some(12));
+        // A whole value: as before.
+        let whole = RawTick { magnitude: 80, scale: 0, ..tick };
+        assert_eq!(last_size_value(222, &whole, 80, QTY_SCALE), Some(80 * QTY_SCALE));
     }
 
     #[test]

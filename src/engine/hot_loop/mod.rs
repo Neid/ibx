@@ -826,6 +826,11 @@ impl HotLoop {
             f.note_client_request();
         }
         farm::publish_increments(&self.context, &self.shared, sub.instrument, sub.con_id);
+        // From level 222, the definition of a contract ibx has not read, for
+        // the steps of its last size (ibx#613).
+        if farm::increments_lookup_needed(crate::client_core::SERVER_VERSION, &self.context, sub.con_id) {
+            self.ask_own_definition(sub.con_id, &sub.exchange);
+        }
         // A contract asked before in the session: its request parameters
         // are known now, before any acknowledgement; the client gives them
         // now to the requests the reference gives them to (ibx#535).

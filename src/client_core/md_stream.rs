@@ -293,11 +293,13 @@ struct Out<'a> {
     increments: (u64, u64),
 }
 
-/// The last size or the last price as the client gets it at session level
-/// `level` (ibx#613; the 10.51 rules, not observed yet: no fractional trade
-/// on the paper account): from level 222 in the steps of the increment of
-/// the contract's definition, with the increment's decimals; below 222, or
-/// with no increment known, as it came. The rule's exception, market data
+/// The last size as the client gets it at session level `level` (ibx#613;
+/// the 10.51 rule, not observed yet on a fractional trade: none on the
+/// paper account): from level 222 in the steps of the size increment of
+/// the contract's definition; below 222, or with no increment known, as
+/// it came. A whole number is given without decimals ("80", the reference
+/// 10.51 at level 225, paper, regular hours 13, 14 and 16/10/2026, stocks
+/// whose size increment is 0.0001). The rule's exception, market data
 /// in lots, has no setting in ibx: never on.
 #[inline(always)]
 pub(crate) fn last_at_level(level: i32, value: f64, increment: u64) -> f64 {
@@ -319,11 +321,12 @@ impl Out<'_> {
         self.out.push(MdOut::Tick(self.req_id, tick));
     }
 
+    /// A price as it came, the last price too at every level: the
+    /// reference 10.51 at level 225 gave sub-penny last prices of a stock
+    /// whose definition's price increment is 0.01 (ibx#613; paper, regular
+    /// hours 13/10/2026, MSFT: 545.655 and 545.665).
     fn price(&mut self, tick_type: i32, idx: usize, can_auto_execute: bool) {
-        let mut value = self.fields[idx] as f64 / PRICE_SCALE_F;
-        if tick_type == TICK_LAST {
-            value = last_at_level(self.level, value, self.increments.1);
-        }
+        let value = self.fields[idx] as f64 / PRICE_SCALE_F;
         let tick_type = self.api(tick_type);
         self.push(MdTick::Price { tick_type, value, can_auto_execute, pre_open: false });
     }
@@ -1521,17 +1524,26 @@ mod tests {
         lines(&out)
     }
 
-    // ibx#613 (the 10.51 rules, not observed yet: no fractional trade on the
+    // ibx#613 (the 10.51 rule, not observed yet: no fractional trade on the
     // paper account): from session level 222 the last size is given in the
-    // steps of the definition's size increment with its decimals, the last
-    // price in the steps of its price increment, real-time and delayed;
-    // other sizes as they came. Below 222, as today.
+    // steps of the definition's size increment, real-time and delayed;
+    // other sizes as they came. The last price as it came at every level
+    // (observed at 225, regular hours 13/10/2026: sub-penny last prices of
+    // MSFT, whose price increment is 0.01). Below 222, as today.
     #[test]
-    fn the_last_size_and_price_take_the_definition_steps_from_level_222() {
+    fn the_last_size_takes_the_definition_steps_from_level_222() {
         assert_eq!(last_at(214, false, 0.01, 0.05), ["price:1:4:1.13", "size:1:5:0.4567", "size:1:0:0.4567"]);
         assert_eq!(last_at(214, true, 0.01, 0.05), ["price:1:68:1.13", "size:1:71:0.4567", "size:1:69:0.4567"]);
-        assert_eq!(last_at(222, false, 0.01, 0.05), ["price:1:4:1.15", "size:1:5:0.46", "size:1:0:0.4567"]);
-        assert_eq!(last_at(222, true, 0.01, 0.05), ["price:1:68:1.15", "size:1:71:0.46", "size:1:69:0.4567"]);
+        assert_eq!(last_at(222, false, 0.01, 0.05), ["price:1:4:1.13", "size:1:5:0.46", "size:1:0:0.4567"]);
+        assert_eq!(last_at(222, true, 0.01, 0.05), ["price:1:68:1.13", "size:1:71:0.46", "size:1:69:0.4567"]);
+        // A sub-penny last price on a definition of 0.01 (MSFT, 13/10/2026).
+        let mut fields = [0i64; field::COUNT];
+        fields[field::LAST] = 545_655 * PRICE_SCALE / 1000;
+        let (shared, mut out) = (SharedState::new(), Vec::new());
+        let pack = crate::md_events::Increment::from_step(0.01).unwrap().pack();
+        Out { out: &mut out, req_id: 1, fields: &fields, delayed: false, shared: &shared, instrument: 5, seq: 0, level: 225, increments: (0, pack) }
+            .price(TICK_LAST, field::LAST, false);
+        assert_eq!(lines(&out), ["price:1:4:545.655"]);
         // A fractional size in finer steps keeps its fraction.
         assert_eq!(last_at(222, false, 0.0001, 0.01), ["price:1:4:1.13", "size:1:5:0.4567", "size:1:0:0.4567"]);
         // A whole-number increment: whole sizes.
