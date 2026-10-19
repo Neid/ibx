@@ -55,7 +55,8 @@ fn spy_and_qqq_in_the_session() {
     // Up to the second SPY request: the reference then held a SPY record
     // of its own with data (the orders of the scenario), which the new
     // request joined; that record's frames are not in the recording.
-    assert!(replay_and_compare("l1_spy_qqq_rth", Some(6581), &[]) > 40);
+    let n = replay_and_compare("l1_spy_qqq_rth", Some(2217), &[]);
+    assert!(n > 20, "{n}");
 }
 
 // AAPL before the open with delayed data asked (19/10/2026 on 10.51,
@@ -108,7 +109,8 @@ fn ticks_read_once_as_the_reference(name: &str, until: Option<u64>, reqs: &[i64]
 #[test]
 fn tick_callbacks_do_not_depend_on_when_the_client_reads() {
     assert!(ticks_read_once_as_the_reference("l1_aapl_spy_preopen", Some(2742), &[]) > 25);
-    assert!(ticks_read_once_as_the_reference("l1_spy_qqq_rth", Some(6581), &[]) > 40);
+    let n = ticks_read_once_as_the_reference("l1_spy_qqq_rth", Some(2217), &[]);
+    assert!(n > 20, "{n}");
     let n = ticks_read_once_as_the_reference("l1_aapl_preopen_delayed", Some(2773), &[9001]);
     assert!(n > 10, "{n}");
 }
@@ -142,7 +144,11 @@ fn requests_of(name: &str, until: Option<u64>, skip: &[u64]) -> [(Vec<String>, V
     let form_10_40 = fx.header["gateway_version"].as_str().is_some_and(|v| v.starts_with("1040"));
     let farm_v: Vec<String> = theirs("V").iter().map(|m| if form_10_40 { with_entry_marks(m) } else { m.clone() }).collect();
     let on_farm = |m: &String| farm_v.iter().any(|t| t.split('|').find(|f| f.starts_with("6008=")) == m.split('|').find(|f| f.starts_with("6008=")));
-    [(v.into_iter().filter(on_farm).collect(), farm_v.clone()), (c, theirs("c"))]
+    // The lookups without repeats: the reference 10.51 looked QQQ up twice
+    // in a row (19/10/2026, its own traffic, nothing the client sees).
+    let mut lookups = theirs("c");
+    lookups.dedup();
+    [(v.into_iter().filter(on_farm).collect(), farm_v.clone()), (c, lookups)]
 }
 
 // The requests of the top of book replays (02/10 and 28/09/2026): the
@@ -156,7 +162,7 @@ fn requests_of(name: &str, until: Option<u64>, skip: &[u64]) -> [(Vec<String>, V
 fn market_data_requests_as_the_reference() {
     for (name, until, skip) in [
         ("l1_aapl_spy_preopen", Some(2744), &[2742][..]),
-        ("l1_spy_qqq_rth", Some(5410), &[][..]),
+        ("l1_spy_qqq_rth", Some(1380), &[][..]),
         ("l1_aapl_preopen_delayed", Some(2773), &[][..]),
     ] {
         for (ours, theirs) in requests_of(name, until, skip) {

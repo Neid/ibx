@@ -243,9 +243,21 @@ fn overnight_time_in_force_on_10_51() {
 // seq 2461 and 2590, 28/09/2026 seq 5292 and 22088) (ibx#487).
 #[test]
 fn rth_order_types() {
-    let o = check("20260928/rth_order_types", Options::default().mask(known).skip_orders(&[1, 2, 3, 4, 5, 6, 7]).until(6581)
-        .keep(|l| !l.starts_with("commissionAndFeesReport")));
-    assert!(o.frames_compared > 10, "{}", o.frames_compared);
+    // Recorded again on 10.51 at level 225 (19/10/2026, ibx#604): the
+    // orders numbered 15 to 28, the second SPY request at 2217; the
+    // gateway's own exchange map entries are left out (the reference 10.51
+    // cancels SPY's once the map came, before the QQQ request; nothing the
+    // client sees).
+    for (name, first, until) in [("gw1051/20261019rth/rth_order_types", 15, 2217), ("20260928/rth_order_types", 1, 6581)] {
+        let skip: Vec<i64> = (first..first + 7).collect();
+        let mut opts = Options::default().mask(known).skip_orders(&skip).until(until)
+            .keep(|l| !l.starts_with("commissionAndFeesReport"));
+        if name.starts_with("gw1051/") {
+            opts = opts.skip_frame(exchange_map);
+        }
+        let o = check(name, opts);
+        assert!(o.frames_compared >= 10, "{name}: {}", o.frames_compared);
+    }
 }
 
 // A SMART stock combo (SPY, QQQ) bought and sold in RTH (30/09/2026,
@@ -585,8 +597,19 @@ fn dump_all_scenarios() {
 // acknowledgement, their cancels; the API ticks of each block.
 #[test]
 fn generic_ticks() {
-    let o = check("20261005/b2_generic", Options::default().farms(&["cashfarm", "usfuture"]));
-    assert!(o.frames_compared > 10, "{}", o.frames_compared);
+    for name in B2.map(|d| format!("{d}/b2_generic")) {
+        let o = check(&name, Options::default().farms(&["cashfarm", "usfuture"]));
+        assert!(o.frames_compared > 10, "{name}: {}", o.frames_compared);
+    }
+}
+
+/// The regular-hours family b2: on 10.51 at level 225 (19/10/2026,
+/// ibx#604), and on 10.40 (05/10/2026).
+const B2: [&str; 2] = ["gw1051/20261019b2", "20261005"];
+
+/// The seqs of a recording's requests of one kind.
+fn seqs_of(name: &str, msg: &str) -> Vec<u64> {
+    load_scenario(name).recs.iter().filter(|r| r.leg == "api_out" && r.msg == msg).map(|r| r.seq).collect()
 }
 
 // ── Market data errors (ibx#444) ──
@@ -600,9 +623,26 @@ fn generic_ticks() {
 #[test]
 fn market_data_errors() {
     // The cancel of the last request: the client left before its answer.
-    check("20261005/b2_mkt_errors", Options::default().farms(&["jfarm"]).skip_frame(exchange_map).skip_seqs(&[18512])
+    let last_cancel = *seqs_of("20261005/b2_mkt_errors", "CANCEL_MKT_DATA").last().unwrap();
+    check("20261005/b2_mkt_errors", Options::default().farms(&["jfarm"]).skip_frame(exchange_map).skip_seqs(&[last_cancel])
         .keep(|l| !l.starts_with("tickString|9650|32|") && !l.starts_with("tickString|9650|33|")
             && !l.starts_with("tickString|9651|32|") && !l.starts_with("tickString|9651|33|")));
+    // On 10.51 at level 225 (19/10/2026, ibx#604) the 7203 requests: the
+    // reference had kept AAPL's quote and trade from the earlier scenarios
+    // of its process, which the replay has not: the AAPL requests and
+    // frames are left out.
+    let name = "gw1051/20261019b2/b2_mkt_errors";
+    let sc = load_scenario(name);
+    let skip: Vec<u64> = sc.recs.iter()
+        .filter(|r| r.leg == "api_out" && matches!(r.msg.as_str(), "REQ_MKT_DATA" | "CANCEL_MKT_DATA")
+            && matches!(r.request["reqId"].as_i64(), Some(9650 | 9651)))
+        .map(|r| r.seq).collect();
+    fn aapl_or_map(f: &Fields) -> bool {
+        exchange_map(f) || f.iter().any(|(t, v)| *t == 6008 && v == "265598")
+    }
+    let o = check(name, Options::default().farms(&["jfarm"]).skip_frame(aapl_or_map).skip_seqs(&skip)
+        .keep(|l| !matches!(l.split('|').nth(1), Some("9650" | "9651"))));
+    assert!(o.theirs.iter().any(|(_, l)| l.contains("|354|")), "{:?}", o.theirs);
 }
 
 // ── Tick-by-tick data, real-time bars, trailing stops (05/10/2026) ──
@@ -613,7 +653,9 @@ fn market_data_errors() {
 // ibx#455).
 #[test]
 fn tick_by_tick_types() {
-    check("20261005/b2_tbt", Options::default().hmds_farms(&["cashfarm"]));
+    for name in B2.map(|d| format!("{d}/b2_tbt")) {
+        check(&name, Options::default().hmds_farms(&["cashfarm"]));
+    }
 }
 
 // Real-time bars of AAPL TRADES asked twice, MIDPOINT, AXTI TRADES (with
@@ -622,7 +664,9 @@ fn tick_by_tick_types() {
 // (84.90555555555557, ibx#604).
 #[test]
 fn real_time_bars_shared() {
-    check("20261005/b2_rtbars", Options::default());
+    for name in B2.map(|d| format!("{d}/b2_rtbars")) {
+        check(&name, Options::default());
+    }
 }
 
 // Plain TRAIL orders, by amount and by percent: openOrder shows the stop
@@ -632,8 +676,11 @@ fn real_time_bars_shared() {
 // `open_orders_show_the_reported_contract_and_trail_stop`).
 #[test]
 fn plain_trail_follows_the_server() {
-    let listings: Vec<u64> = [15585u64, 15768, 15964, 16182, 16349, 16522].iter().flat_map(|&s| s..=s + 5).collect();
-    check("20261005/b2_trail", orders().skip_seqs(&listings));
+    for name in B2.map(|d| format!("{d}/b2_trail")) {
+        let listings: Vec<u64> = seqs_of(&name, "REQ_OPEN_ORDERS").iter().flat_map(|&s| s..=s + 5).collect();
+        assert_eq!(listings.len(), 36, "{name}");
+        check(&name, orders().skip_seqs(&listings));
+    }
 }
 
 // Session start (07/10/2026, ibx#487): the server frames of the logon

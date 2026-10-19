@@ -417,7 +417,7 @@ def specs_1051(cap: Path):
 
 # The market data requests of the regular-hours order types run of 10.51
 # (SPY, QQQ, SPY again): set from its recording.
-RTH_MD_RANGES = []
+RTH_MD_RANGES = [(1174, 1400), (2217, 2330)]
 
 
 def main():

@@ -12,7 +12,8 @@ use base64::Engine as _;
 const ROOTS: &[&str] = &["tests/fixtures", "tests/coverage"];
 
 /// `DU`, `DF`, `U` or `F` followed by 6 to 8 digits, as a whole word, and
-/// not an 8349 signature (8 hex characters that may look like an account).
+/// not an 8349 signature (8 hex characters that may look like an account),
+/// on the wire or in a decoded field list (`["8349","F5261414"]`, ibx#604).
 fn account_ids(b: &[u8]) -> Vec<String> {
     let word = |i: usize| b.get(i).is_some_and(|c| c.is_ascii_alphanumeric());
     let mut out = Vec::new();
@@ -29,7 +30,7 @@ fn account_ids(b: &[u8]) -> Vec<String> {
         };
         let digits = b[i + prefix..].iter().take_while(|c| c.is_ascii_digit()).count();
         let end = i + prefix + digits;
-        if (6..=8).contains(&digits) && !word(end) && !b[..i].ends_with(b"8349=") {
+        if (6..=8).contains(&digits) && !word(end) && !b[..i].ends_with(b"8349=") && !b[..i].ends_with(b"\"8349\",\"") {
             out.push(String::from_utf8_lossy(&b[i..end]).into_owned());
         }
     }

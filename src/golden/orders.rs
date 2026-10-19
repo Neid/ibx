@@ -381,18 +381,20 @@ fn overnight_time_in_force_on_smart() {
     replay_and_compare("orders_i196_overnight", |r| r.seq < 1237, KNOWN, &[]);
 }
 
-// The session's order types (28/09/2026, rth_order_types): TRAIL MIT by
+// The session's order types (19/10/2026 on 10.51, rth_order_types,
+// ibx#604; first recorded 28/09/2026): TRAIL MIT by
 // amount (filled at once) and by percent with its replace, TRAIL LIT,
 // PASSV REL and RPI refused with 387 (the SPY list has no key for them),
 // after the lookup of the contract's order types,
 // PEG BEST sent and rejected by the server (ibx#469); PEG BENCH, its
 // replace and cancel (openOrder auxPrice = the starting price);
-// OVERNIGHT, OVERNIGHT + DAY and includeOvernight in the session, the
-// directed OVERNIGHT order discarded (10). Left out here, in an ignored
-// test below: the option combos refused with 460 (13, 14).
+// OVERNIGHT and OVERNIGHT + DAY refused with 10052 (10.40 took them, the
+// directed OVERNIGHT order discarded), includeOvernight placed, changed and
+// cancelled. Left out here, in an ignored test below: the option combos
+// refused with 460 (27, 28).
 #[test]
 fn session_order_types() {
-    replay_and_compare("orders_rth_order_types", all, KNOWN, &[13, 14]);
+    replay_and_compare("orders_rth_order_types", all, KNOWN, &[27, 28]);
 }
 
 // What-if previews (02/10/2026, b1_462_whatif): LMT, MKT and a margin
@@ -487,7 +489,7 @@ fn condition_time_in_another_zone() {
 #[test]
 fn overnight_directed_order() {
     replay_and_compare("orders_i196_overnight", all, KNOWN, &[]);
-    replay_and_compare("orders_rth_order_types", all, KNOWN, &[1, 2, 3, 4, 5, 6, 7, 13, 14]);
+    replay_and_compare("orders_rth_order_types", all, KNOWN, &[15, 16, 17, 18, 19, 20, 21, 27, 28]);
 }
 
 // SPY option combos (a call spread, SMART and CBOE): the reference
@@ -498,7 +500,7 @@ fn overnight_directed_order() {
 #[test]
 #[ignore = "ibx#510: the data behind 460 is not in the logon or the contract replies"]
 fn option_combo_without_permission() {
-    replay_and_compare("orders_rth_order_types", all, KNOWN, &[1, 2, 3, 4, 5, 6, 7]);
+    replay_and_compare("orders_rth_order_types", all, KNOWN, &[15, 16, 17, 18, 19, 20, 21]);
 }
 
 // The algo refusals 441 / 443 need the algo definitions the reference

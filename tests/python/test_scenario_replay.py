@@ -571,20 +571,11 @@ def test_tick_by_tick_types():
     assert any(l.startswith("tickByTickMidPoint|9608|") for l in theirs)
 
 
-def rtbar_wap(line):
-    """The average price of a real-time bar to 12 decimals (one AXTI bar of
-    the reference is one unit in the last place off), as the Rust test."""
-    f = line.split("|")
-    if f[0] == "realtimeBar" and len(f) == 10:
-        f[8] = f"{float(f[8]):.12f}"
-    return "|".join(f)
-
-
 # Real-time bars shared by four requests, empty bars, the cancel of one
 # (05/10/2026, ibx#454).
 def test_real_time_bars_shared():
     out = replay("20261005/b2_rtbars")
-    theirs = assert_same(out, mask=rtbar_wap)
+    theirs = assert_same(out)
     assert sum(l.startswith("realtimeBar|9642|") for l in theirs) > 3
 
 
@@ -595,3 +586,31 @@ def test_plain_trail_follows_the_server():
     out = replay("20261005/b2_trail", compare=["order"], skip_seqs=[s + k for s in (15585, 15768, 15964, 16182, 16349, 16522) for k in range(6)])
     theirs = assert_same(out)
     assert any("trailStopPrice=775.06" in l for l in theirs)
+
+
+# The regular-hours family b2 recorded again on 10.51 at level 225
+# (19/10/2026, ibx#604), as the Rust tests.
+def api_seqs(name, keep):
+    """The seqs of the decoded API records of a 10.51 recording that `keep` takes."""
+    import pathlib
+    path = pathlib.Path(__file__).resolve().parents[1] / "fixtures/gw1051/scenarios" / (name[len("gw1051/"):] + ".api.jsonl")
+    return [r["seq"] for r in map(json.loads, open(path, encoding="utf-8")) if "seq" in r and keep(r)]
+
+
+def test_b2_on_10_51():
+    b2 = "gw1051/20261019b2"
+    out = replay(f"{b2}/b2_generic", farms=["cashfarm", "usfuture"])
+    assert_same(out)
+    assert out["frames_compared"] > 10
+    assert any(l.startswith("historicalTicksLast|") for l in assert_same(replay(f"{b2}/b2_tbt", hmds_farms=["cashfarm"])))
+    assert any(l.startswith("realtimeBar|9642|") for l in assert_same(replay(f"{b2}/b2_rtbars")))
+    listings = [s + k for s in api_seqs(f"{b2}/b2_trail", lambda r: r.get("msg_name") == "REQ_OPEN_ORDERS") for k in range(6)]
+    assert len(listings) == 36
+    assert_same(replay(f"{b2}/b2_trail", compare=["order"], skip_seqs=listings))
+    # The 7203 requests: the reference had kept AAPL's quote and trade from
+    # the earlier scenarios of its process (the Rust test).
+    aapl = api_seqs(f"{b2}/b2_mkt_errors", lambda r: r.get("msg_name") in ("REQ_MKT_DATA", "CANCEL_MKT_DATA")
+                    and r["request"].get("reqId") in (9650, 9651))
+    theirs = assert_same(replay(f"{b2}/b2_mkt_errors", farms=["jfarm"], skip_seqs=aapl, compare=[]),
+                         keep=lambda l: l.split("|")[1] not in ("9650", "9651"))
+    assert any("|354|" in l for l in theirs)
