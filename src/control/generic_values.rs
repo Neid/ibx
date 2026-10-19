@@ -424,6 +424,10 @@ pub fn decode(code: i32, payload: &[u8], rec: &mut GenericRecord, ctx: DecodeCtx
         }
         // Int pairs, then float pairs; 207 is the
         // average volume, 201 to 206 the 13, 26 and 52 week highs and lows.
+        // The 10.51 form gives the average volume in shares as 768, given in
+        // round lots, rounded down (the reference 10.51 at level 225, AAPL,
+        // 19/10/2026 regular hours: 44451884 shares, a lot of 40, gave
+        // 1111297; ibx#604). The 10.40 form gives none from it (05/10/2026).
         MISC_STATS => {
             let mut ints: HashMap<i32, i32> = HashMap::new();
             let mut floats: HashMap<i32, f64> = HashMap::new();
@@ -437,7 +441,9 @@ pub fn decode(code: i32, payload: &[u8], rec: &mut GenericRecord, ctx: DecodeCtx
                 let (Some(k), Some(v)) = (r.int(), r.float()) else { return out };
                 floats.insert(k, v);
             }
-            let avg = ints.get(&207).is_some_and(|&v| rec.set_int(Field::AvgVolume, v as i64));
+            let average = ints.get(&207).map(|&v| v as i64)
+                .or_else(|| ints.get(&768).filter(|_| ctx.rt_in_shares).map(|&v| v as i64 / ctx.round_lot.max(1)));
+            let avg = average.is_some_and(|v| rec.set_int(Field::AvgVolume, v));
             if avg { size(&mut out, 21, rec.int(Field::AvgVolume)); }
             for (key, field, tick) in [
                 (201, Field::Week13Hi, 16), (202, Field::Week13Lo, 15), (203, Field::Week26Hi, 18),
@@ -882,6 +888,20 @@ mod tests {
     // ibx#495: the index future premium is one double, tick 31 as it
     // changes, for an index only (the reference 10.51 on SPX, 12/10/2026:
     // tickGeneric 31 0.0004214518350973517).
+    // ibx#604: the average volume of the 10.51 form, in shares under 768,
+    // given in round lots rounded down (AAPL, a lot of 40, 19/10/2026:
+    // 44451884 gave 1111297); the 10.40 form gives none from it; 207 is
+    // given as it comes.
+    #[test]
+    fn average_volume_of_the_statistics_block() {
+        let ctx = |shares| DecodeCtx { min_tick: 0.01, now_ms: 0, round_lot: 40, entry_min_tick: 0.01, rt_in_shares: shares };
+        let shares = hex("000000010000030002a6482c00000000");
+        assert_eq!(decode(MISC_STATS, &shares, &mut GenericRecord::default(), ctx(true)), [GenTick::Size(21, 1111297.0)]);
+        assert!(decode(MISC_STATS, &shares, &mut GenericRecord::default(), ctx(false)).is_empty());
+        let lots = hex("00000001000000cf00118d2a00000000");
+        assert_eq!(decode(MISC_STATS, &lots, &mut GenericRecord::default(), ctx(true)), [GenTick::Size(21, 1150250.0)]);
+    }
+
     #[test]
     fn etf_net_asset_values() {
         // ibx#641: the blocks of 13/10/2026 (SPY): 577 then 623.

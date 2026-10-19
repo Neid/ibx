@@ -291,6 +291,25 @@ pub(crate) fn trade_size_at(level: i32, raw: u64, size_min_tick: Option<f64>, in
     }
 }
 
+/// The bars of one frame in the order the reference gives them: the first
+/// bar of each stream, then the second ones, and so on (the reference
+/// 10.51, 19/10/2026 regular hours, b2_rtbars: a frame with an AAPL TRADES
+/// bar of :50 and :55 and a MIDPOINT bar of :55 gave the :50 TRADES bar,
+/// the MIDPOINT bar, then the :55 TRADES bar, ibx#604). Within a rank the
+/// frame's order is kept.
+fn by_rank<T>(entries: Vec<(u32, u32, T)>) -> Vec<(u32, u32, T)> {
+    let mut seen: Vec<(u32, usize)> = Vec::new();
+    let mut ranked: Vec<(usize, usize, (u32, u32, T))> = entries.into_iter().enumerate().map(|(i, e)| {
+        let rank = match seen.iter_mut().find(|(t, _)| *t == e.0) {
+            Some((_, n)) => { *n += 1; *n }
+            None => { seen.push((e.0, 0)); 0 }
+        };
+        (rank, i, e)
+    }).collect();
+    ranked.sort_by_key(|(rank, i, _)| (*rank, *i));
+    ranked.into_iter().map(|(_, _, e)| e).collect()
+}
+
 /// The attribute bit of a tick-by-tick trade whose size is in the
 /// fractional step (ibx#604).
 const TBT_FRACTIONAL_SIZE: u64 = 0x20;
@@ -1341,7 +1360,7 @@ impl HmdsState {
         let body = if let Some(pos) = sig_pos { &body[..pos] } else { body };
         let farm = self.rx_farm;
         let mut unknown: Vec<u32> = Vec::new();
-        for (ticker_id, timestamp, payload) in rtbar_entries(body) {
+        for (ticker_id, timestamp, payload) in by_rank(rtbar_entries(body)) {
             // Every request on the router gets the bar (ibx#454).
             let subs: Vec<(ReqId, f64)> = self.rtbar_subs.iter()
                 .filter(|s| farm == super::pool::PRIMARY_HMDS && s.ticker_id == Some(ticker_id))
@@ -3485,6 +3504,13 @@ pub(crate) mod tests {
 
     fn rt_sub(query_id: &str, req_id: ReqId, ticker_id: Option<u32>) -> RtBarSub {
         RtBarSub { query_id: query_id.to_string(), req_id, con_id: 265598, data: "Last", use_rth: true, ticker_id, min_tick: 0.01 }
+    }
+
+    #[test]
+    fn bars_of_a_frame_by_rank() {
+        let e = vec![(1u32, 350u32, 'a'), (1, 355, 'b'), (2, 355, 'c'), (1, 360, 'd'), (3, 355, 'e')];
+        let order: Vec<char> = by_rank(e).into_iter().map(|(_, _, x)| x).collect();
+        assert_eq!(order, ['a', 'c', 'e', 'b', 'd']);
     }
 
     #[test]

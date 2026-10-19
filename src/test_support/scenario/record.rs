@@ -123,10 +123,17 @@ pub fn load_path(path: &Path) -> Scenario {
     Scenario { header, recs }
 }
 
+/// The client library's unset Decimal, as its text.
+const UNSET_DECIMAL: &str = "170141183460469231731687303715884105727";
+
 /// A number of the client library as text: `"80"` (a decimal) or `80.0`.
 pub fn num(v: &Value) -> f64 {
     match v {
         Value::String(s) if s == "MAX" => f64::MAX,
+        // The client library's unset Decimal (2**127 - 1), given from level
+        // 225 where 214 gave the unset double: unset either way, which is
+        // f64::MAX in ibx (ibx#604).
+        Value::String(s) if s == UNSET_DECIMAL => f64::MAX,
         Value::String(s) => s.parse().unwrap_or_else(|_| panic!("number {s}")),
         Value::Number(n) => n.as_f64().unwrap(),
         Value::Bool(b) => *b as u8 as f64,
