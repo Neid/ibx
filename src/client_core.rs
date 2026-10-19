@@ -1717,6 +1717,9 @@ pub struct ClientCore {
     /// Orders that went out without outside RTH (warning 2109): their
     /// openOrder shows it off, as the reference's order record (ibx#486).
     rth_dropped: Mutex<HashSet<OrderId>>,
+    /// Orders a report of the server gave as including the overnight
+    /// session: they show outside RTH from then on (ibx#604).
+    overnight_reported: Mutex<HashSet<OrderId>>,
     /// AccuDistr orders with post-only whose first openOrder was given
     /// (ibx#622).
     post_only_shown: Mutex<HashSet<OrderId>>,
@@ -2463,6 +2466,7 @@ impl ClientCore {
             executions: Mutex::new(Vec::new()),
             client_id: AtomicI64::new(0),
             rth_dropped: Mutex::new(HashSet::new()),
+            overnight_reported: Mutex::new(HashSet::new()),
             post_only_shown: Mutex::new(HashSet::new()),
             discarded: Mutex::new(HashSet::new()),
             hedge_precaution: Mutex::new(HashMap::new()),
@@ -4811,13 +4815,23 @@ impl ClientCore {
                     order.aux_price = order.starting_price;
                 }
                 let dropped = self.rth_dropped.lock().unwrap().contains(&order_id);
-                // An order with includeOvernight shows outside RTH on 10.51
-                // (ibx#604; the reference 10.51, paper, 19/10/2026 overnight:
-                // a DAY SPY order with it, every openOrder; 10.40 showed it
+                // An order shows outside RTH on 10.51 once a report of the
+                // server gave it as including the overnight session, and
+                // from then on (ibx#604; the reference 10.51, paper,
+                // 19/10/2026: a DAY SPY order with includeOvernight, every
+                // openOrder in the overnight session; in regular hours off
+                // after the first report, which has no such mark, then on,
+                // also after a replace report without it; 10.40 showed it
                 // off, captured 28/09/2026).
+                let overnight = info.as_ref().is_some_and(|i| i.order.tif == "OVERNIGHT + DAY") && !shared.reference.form_10_40();
+                let overnight = {
+                    let mut seen = self.overnight_reported.lock().unwrap();
+                    if overnight { seen.insert(order_id); }
+                    seen.contains(&order_id)
+                };
                 order.outside_rth = (order.outside_rth && !dropped)
                     || info.as_ref().is_some_and(|i| i.order.outside_rth)
-                    || (order.include_overnight && !shared.reference.form_10_40());
+                    || overnight;
                 // The hedge as the reference shows it (ibx#614; paper,
                 // 16/10/2026): the parameter of a beta or pair hedge as a
                 // decimal number ("1.0", "0.5"), the max size of a beta
