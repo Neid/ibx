@@ -223,6 +223,7 @@ fn pnl_rows(shared: &SharedState, single_con_ids: &HashSet<i64>, priced_before: 
     let midnight = shared.portfolio.midnight_prices();
     let realized_since = shared.portfolio.realized_since_seed();
     let money_since = shared.portfolio.money_since_seed();
+    let rates = exchange_rates(shared);
     // A seed-only contract counts from the computation after the one that
     // first had its P&L price, whatever was asked (ibx#753; the reference
     // 10.51, paper, 18/10/2026 weekend, two fresh processes: AAPL closed
@@ -244,9 +245,18 @@ fn pnl_rows(shared: &SharedState, single_con_ids: &HashSet<i64>, priced_before: 
         let qty = qty_fixed as f64 / QTY_SCALE_F;
         let avg_cost = pi.map_or(0.0, |p| p.avg_cost);
         let qty_midnight = seed.map_or(0, |s| s.qty_midnight_fixed) as f64 / QTY_SCALE_F;
+        // A contract's multiplier and its currency's rate (ibx#715): the
+        // price is per unit and in the contract's currency, the average
+        // cost per contract; the row is in the account's currency. No
+        // rate known for a currency the account lists without one: no
+        // price, rather than a value in the wrong currency.
+        let mult = pi.map_or(1.0, |p| position_multiplier(&p.multiplier));
+        let fx = pi.map_or(Some(1.0), |p| rate_of(&rates, &p.currency));
         let price = prices.get(&con_id).copied().filter(|&p| p != f64::MAX)
-            .or_else(|| pi.map(|p| p.market_price).filter(|&p| p != 0).map(|p| p as f64 / PRICE_SCALE_F));
-        let money = money_traded_today(seed, money_since.get(&con_id).copied(), qty, avg_cost);
+            .or_else(|| pi.map(|p| p.market_price).filter(|&p| p != 0).map(|p| p as f64 / PRICE_SCALE_F))
+            .and_then(|p| fx.map(|f| p * mult * f));
+        let fx = fx.unwrap_or(1.0);
+        let money = money_traded_today(seed, money_since.get(&con_id).copied(), qty, avg_cost) * fx;
         let seed_only = pi.is_none();
         let daily = match (price, qty_midnight != 0.0) {
             _ if seed_only && qty_midnight == 0.0 => PnlValue::Valid(money),
@@ -255,7 +265,7 @@ fn pnl_rows(shared: &SharedState, single_con_ids: &HashSet<i64>, priced_before: 
             // have (a Sunday): not valid, with its 2150 (ibx#737; the
             // reference 10.51 at level 225, paper, 18/10/2026).
             (Some(p), true) => match midnight.get(&con_id) {
-                Some(&m) if m.is_finite() => PnlValue::Valid(qty * p - qty_midnight * m + money),
+                Some(&m) if m.is_finite() => PnlValue::Valid(qty * p - qty_midnight * m * mult * fx + money),
                 _ => PnlValue::Invalid,
             },
             (Some(p), false) => PnlValue::Valid(qty * p - 0.0 + money),
@@ -264,19 +274,42 @@ fn pnl_rows(shared: &SharedState, single_con_ids: &HashSet<i64>, priced_before: 
             _ if seed_only => PnlValue::Invalid,
             None => PnlValue::Unset,
             Some(_) if qty != 0.0 && avg_cost == 0.0 => PnlValue::Unset,
-            Some(p) => match qty * p - cost_basis(qty_fixed, avg_cost) {
+            Some(p) => match qty * p - cost_basis(qty_fixed, avg_cost) * fx {
                 0.0 => PnlValue::Invalid,
                 u => PnlValue::Valid(u),
             },
         };
         let realized = match seed.map_or(0.0, |s| s.realized_pnl) + realized_since.get(&con_id).copied().unwrap_or(0.0) {
             0.0 => PnlValue::Unset,
-            v => PnlValue::Valid(v),
+            v => PnlValue::Valid(v * fx),
         };
         let value = if seed_only { PnlValue::Unset } else { price.map_or(PnlValue::Unset, |p| PnlValue::Valid(qty * p)) };
         let in_totals = !seed_only || listed.contains(&con_id) || priced(&con_id);
         PnlRow { con_id, qty_fixed, daily, unrealized, realized, value, in_totals }
     }).collect()
+}
+
+/// A position's contract multiplier: 1 for a stock or a pair (none).
+fn position_multiplier(text: &str) -> f64 {
+    text.trim().parse::<f64>().ok().filter(|m| m.is_finite() && *m > 0.0).unwrap_or(1.0)
+}
+
+/// The account's exchange rate of each currency (its ExchangeRate rows).
+fn exchange_rates(shared: &SharedState) -> HashMap<String, f64> {
+    shared.portfolio.account_rows().rows.iter()
+        .filter(|r| r.key == "ExchangeRate" && !r.currency.is_empty())
+        .filter_map(|r| r.value.trim().parse::<f64>().ok().filter(|v| v.is_finite() && *v > 0.0).map(|v| (r.currency.clone(), v)))
+        .collect()
+}
+
+/// The rate of `currency` into the account's currency: 1 for none, or
+/// when the account lists no rate at all (a USD account seen so far);
+/// None for a currency the account lists without a rate (ibx#715).
+fn rate_of(rates: &HashMap<String, f64>, currency: &str) -> Option<f64> {
+    if currency.is_empty() || rates.is_empty() {
+        return Some(1.0);
+    }
+    rates.get(currency).copied()
 }
 
 /// The cost of a position: its quantity times its average cost, taken as
@@ -3270,13 +3303,13 @@ impl ClientCore {
 
         let infos: HashMap<i64, PositionInfo> = shared.portfolio.position_infos()
             .into_iter().map(|p| (p.con_id, p)).collect();
-        // Stocks and currency pairs (ibx#715; the other types are not
-        // observed yet).
-        let is_stock = |con_id: i64| infos.get(&con_id).is_none_or(|p| p.sec_type.is_empty() || p.sec_type == "STK" || p.sec_type == "CASH");
+        // Every position but a combo's, each on its own route (ibx#715;
+        // stocks and currency pairs observed, the other types not yet).
+        let quoted = |con_id: i64| infos.get(&con_id).is_none_or(|p| !p.sec_type.eq_ignore_ascii_case("BAG"));
         // A seed's contract with no position row is asked too, though it
         // makes no P&L row (ibx#737; observed on paper, 17/10/2026).
         let mut con_ids: Vec<i64> = infos.keys().copied().chain(seeds.iter().map(|s| s.con_id))
-            .filter(|&c| c != 0 && is_stock(c))
+            .filter(|&c| c != 0 && quoted(c))
             .collect();
         // Ascending, as the 10.40 recordings; the order of 10.51 is not
         // known yet (15/10/2026: neither this nor the positions' order).
@@ -9051,6 +9084,42 @@ mod tests {
         assert_eq!(u.errors, 0);
         assert!((u.unrealized_pnl - 31.0 * (770.0 - 764.59)).abs() < 1e-3, "unreal={}", u.unrealized_pnl);
         assert!((u.realized_pnl - 37.12).abs() < 1e-9);
+    }
+
+    // ibx#715: a future's row counts its multiplier (its average cost is per
+    // contract), a stock in another currency is given in the account's at
+    // the account's rate; a currency the account lists without a rate has
+    // no price.
+    #[test]
+    fn pnl_rows_count_the_multiplier_and_the_currency_rate() {
+        let shared = SharedState::new();
+        shared.portfolio.set_position_info(PositionInfo {
+            con_id: 1, position_fixed: 2 * crate::types::QTY_SCALE, avg_cost: 5.0 * 6800.0,
+            sec_type: "FUT".into(), currency: "USD".into(), multiplier: "5".into(), ..Default::default()
+        });
+        shared.portfolio.set_position_info(PositionInfo {
+            con_id: 2, position_fixed: 10 * crate::types::QTY_SCALE, avg_cost: 150.0,
+            sec_type: "STK".into(), currency: "CAD".into(), ..Default::default()
+        });
+        shared.portfolio.set_position_info(PositionInfo {
+            con_id: 3, position_fixed: crate::types::QTY_SCALE, avg_cost: 10.0,
+            sec_type: "STK".into(), currency: "JPY".into(), ..Default::default()
+        });
+        shared.portfolio.update_account_rows(|r| {
+            r.set("ExchangeRate", "USD", "1.00");
+            r.set("ExchangeRate", "CAD", "0.72");
+        });
+        shared.portfolio.set_pnl_price(1, 6810.0);
+        shared.portfolio.set_pnl_price(2, 160.0);
+        shared.portfolio.set_pnl_price(3, 11.0);
+        let rows = pnl_rows(&shared, &HashSet::new(), &HashSet::new());
+        let unreal = |c: i64| match rows.iter().find(|r| r.con_id == c).unwrap().unrealized {
+            PnlValue::Valid(v) => Some(v),
+            _ => None,
+        };
+        assert!((unreal(1).unwrap() - 2.0 * 5.0 * 10.0).abs() < 1e-6, "{:?}", unreal(1));
+        assert!((unreal(2).unwrap() - 10.0 * 10.0 * 0.72).abs() < 1e-6, "{:?}", unreal(2));
+        assert_eq!(unreal(3), None, "no rate for JPY");
     }
 
     // The same inputs give the same P&L, whatever the order of the positions

@@ -702,11 +702,29 @@ pub(crate) struct PnlQuoteEntry {
     pub(crate) code: i32,
     /// From its acknowledgement.
     pub(crate) tag: Option<u32>,
-    /// The farm it is asked on: the main one for a stock, the currency
-    /// pair's own for a pair (ibx#715).
+    /// The farm it is asked on: the main one for a US stock, the farm of
+    /// the contract's own route for the others (ibx#715).
     pub(crate) farm: FarmId,
-    /// A currency pair's entry: on IDEALPRO, as CASH (ibx#715).
-    pub(crate) cash: bool,
+    /// The exchange and type as the contract's market data request writes
+    /// them: BEST and CS for a stock, IDEALPRO and CASH for a pair
+    /// (ibx#715).
+    pub(crate) exchange: String,
+    pub(crate) sec_type: String,
+    /// A stock's entry: it has the dividends entry and asks its exchange
+    /// map.
+    pub(crate) stock: bool,
+}
+
+/// A P&L quote of a position that is not a US stock (ibx#715): asked on
+/// the farm of its own route, with its exchange and type as its market
+/// data request writes them.
+#[derive(Debug, Clone)]
+pub(crate) struct PnlRoute {
+    pub(crate) con_id: i64,
+    pub(crate) farm: FarmId,
+    pub(crate) exchange: String,
+    pub(crate) sec_type: String,
+    pub(crate) stock: bool,
 }
 
 /// One entry of the top of book a fund order asks for the engine itself
@@ -1332,7 +1350,9 @@ impl FarmState {
             if let Some(i) = self.pnl_quotes.iter().position(|e| e.farm == rx_farm && e.farm_req != 0 && e.farm_req == req_id) {
                 self.pnl_quotes[i].tag = Some(server_tag);
                 let con_id = self.pnl_quotes[i].con_id;
-                let map = self.observe_pnl_exchange_map(con_id, parts.get(5).copied(), shared);
+                // A stock's on the main farm: the map is asked there.
+                let main_stock = self.pnl_quotes[i].stock && self.pnl_quotes[i].farm == PRIMARY_MD;
+                let map = if main_stock { self.observe_pnl_exchange_map(con_id, parts.get(5).copied(), shared) } else { None };
                 self.send_after_ack(&[], map, sink, hb);
                 return;
             }
@@ -1743,12 +1763,14 @@ impl FarmState {
     /// order of the two price kinds varies between versions (10.40 asked
     /// 504 first): not a rule. Entries already asked are not asked again.
     ///
-    /// A currency pair (`pairs`, with the farm of its route) is asked on
-    /// that farm, on IDEALPRO as CASH, the second price kind (504) first
-    /// and without dividends, in a message of its own (ibx#715; the
-    /// reference 10.51, paper, 16/10/2026: EUR.USD on its farm, after the
-    /// stocks' message).
-    pub(crate) fn pnl_quotes(&mut self, con_ids: &[i64], pairs: &[(i64, FarmId)], second_price: bool) -> Vec<(FarmId, Vec<(u32, String)>)> {
+    /// Any other position (`routes`) is asked on the farm of its own route,
+    /// with its exchange and type as its market data request writes them,
+    /// in a message per farm after the main farm's (ibx#715; the reference
+    /// 10.51, paper, 16/10/2026: EUR.USD on its farm, on IDEALPRO as CASH,
+    /// the second price kind (504) first and without dividends, after the
+    /// stocks' message). A stock of another farm has a stock's codes; any
+    /// other type the pair's (a future, an option, not observed yet).
+    pub(crate) fn pnl_quotes(&mut self, con_ids: &[i64], routes: &[PnlRoute], second_price: bool) -> Vec<(FarmId, Vec<(u32, String)>)> {
         use crate::control::generic_values::{DIVIDENDS, PL_PRICE};
         let mut entries: Vec<PnlQuoteEntry> = Vec::new();
         for &con_id in con_ids {
@@ -1761,7 +1783,8 @@ impl FarmState {
                 codes.push(DIVIDENDS);
             }
             for code in codes {
-                entries.push(PnlQuoteEntry { farm_req: self.next_md_req_id, con_id, code, tag: None, farm: PRIMARY_MD, cash: false });
+                entries.push(PnlQuoteEntry { farm_req: self.next_md_req_id, con_id, code, tag: None, farm: PRIMARY_MD,
+                    exchange: "BEST".into(), sec_type: "CS".into(), stock: true });
                 self.next_md_req_id += 1;
             }
         }
@@ -1770,15 +1793,29 @@ impl FarmState {
             out.push((PRIMARY_MD, pnl_quotes_message("1", &entries)));
             self.pnl_quotes.extend(entries);
         }
-        let mut farms: Vec<FarmId> = pairs.iter().map(|&(_, f)| f).collect();
-        farms.dedup();
+        let mut farms: Vec<FarmId> = Vec::new();
+        for r in routes {
+            if !farms.contains(&r.farm) { farms.push(r.farm); }
+        }
         for farm in farms {
             let mut entries: Vec<PnlQuoteEntry> = Vec::new();
-            for &(con_id, _) in pairs.iter().filter(|&&(_, f)| f == farm) {
-                let mut codes = if second_price { vec![PNL_SECOND_PRICE, PL_PRICE] } else { vec![PL_PRICE] };
+            for r in routes.iter().filter(|r| r.farm == farm) {
+                let con_id = r.con_id;
+                // A stock's codes as on the main farm; any other type the
+                // pair's: the second price first, no dividends.
+                let mut codes = match (r.stock, second_price) {
+                    (true, true) => vec![PL_PRICE, PNL_SECOND_PRICE],
+                    (true, false) => vec![PL_PRICE],
+                    (false, true) => vec![PNL_SECOND_PRICE, PL_PRICE],
+                    (false, false) => vec![PL_PRICE],
+                };
                 codes.retain(|&c| !self.pnl_quotes.iter().any(|e| e.con_id == con_id && e.code == c));
+                if r.stock && self.pnl_dividends_asked.insert(con_id) {
+                    codes.push(DIVIDENDS);
+                }
                 for code in codes {
-                    entries.push(PnlQuoteEntry { farm_req: self.next_md_req_id, con_id, code, tag: None, farm, cash: true });
+                    entries.push(PnlQuoteEntry { farm_req: self.next_md_req_id, con_id, code, tag: None, farm,
+                        exchange: r.exchange.clone(), sec_type: r.sec_type.clone(), stock: r.stock });
                     self.next_md_req_id += 1;
                 }
             }
@@ -3541,8 +3578,8 @@ fn pnl_quotes_message(action: &str, entries: &[PnlQuoteEntry]) -> Vec<(u32, Stri
         msg.extend([
             (262, e.farm_req.to_string()),
             (6008, e.con_id.to_string()),
-            (207, if e.cash { "IDEALPRO" } else { "BEST" }.to_string()),
-            (167, if e.cash { "CASH" } else { "CS" }.to_string()),
+            (207, e.exchange.clone()),
+            (167, e.sec_type.clone()),
             (264, e.code.to_string()),
         ]);
     }
@@ -4379,12 +4416,25 @@ mod tests {
         assert!(farm.pnl_quotes(&[756733], &[], false).is_empty());
         // ibx#715 (the reference 10.51, paper, 16/10/2026): a currency pair
         // on its own farm, on IDEALPRO as CASH, 504 first, no dividends.
-        let pair = farm.pnl_quotes(&[], &[(12087792, 3)], true);
+        let pair_route = PnlRoute { con_id: 12087792, farm: 3, exchange: "IDEALPRO".into(), sec_type: "CASH".into(), stock: false };
+        let pair = farm.pnl_quotes(&[], &[pair_route], true);
         assert_eq!(pair.len(), 1);
         assert_eq!(pair[0].0, 3);
         assert_eq!(wire(&pair[0].1), "35=V|263=1|146=2|262=7|6008=12087792|207=IDEALPRO|167=CASH|264=504|262=8|6008=12087792|207=IDEALPRO|167=CASH|264=232|");
-        farm.pnl_quotes.retain(|e| !e.cash);
-        farm.next_md_req_id -= 2;
+        // A future on its farm, on its exchange as FUT, the pair's form; a
+        // stock of another farm with a stock's codes (ibx#715, not
+        // observed yet).
+        let fut = PnlRoute { con_id: 730283085, farm: 4, exchange: "CME".into(), sec_type: "FUT".into(), stock: false };
+        let ry = PnlRoute { con_id: 4458964, farm: 5, exchange: "BEST".into(), sec_type: "CS".into(), stock: true };
+        let others = farm.pnl_quotes(&[], &[fut, ry], true);
+        assert_eq!(others.iter().map(|(f, _)| *f).collect::<Vec<_>>(), [4, 5]);
+        // Each entry's exchange, type and code, in order.
+        let entries = |m: &Vec<(u32, String)>| m.iter().filter(|(t, _)| matches!(*t, 207 | 167 | 264))
+            .map(|(_, v)| v.as_str()).collect::<Vec<_>>().join(",");
+        assert_eq!(entries(&others[0].1), "CME,FUT,504,CME,FUT,232");
+        assert_eq!(entries(&others[1].1), "BEST,CS,232,BEST,CS,504,BEST,CS,456");
+        farm.pnl_quotes.retain(|e| e.stock && e.farm == PRIMARY_MD);
+        farm.next_md_req_id -= 7;
 
         // The acks of 15/10/2026: 9c for 272093, a6 for 756733.
         for ack in ["1337,1,0.01,0,0,9c,,0,1", "2299,3,0.01,0,0,9c,,0,1", "1778,4,0.01,0,0,a6,,0,1"] {

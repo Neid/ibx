@@ -477,6 +477,59 @@ impl HotLoop {
 
     /// The farm of the route of a contract's market data (#445), for its
     /// top of book and its news (ibx#458).
+    /// The route of a position's P&L quote (ibx#715): None for a US stock
+    /// (the main farm, as recorded); else the farm of the contract's own
+    /// route, with its exchange and type as its market data request writes
+    /// them; Some(None) when it has no route or no definition to ask it by.
+    /// Its type from the position's row, else from its definition (the
+    /// portfolio's batch lookup, ibx#705).
+    fn pnl_route(&mut self, con_id: i64) -> Option<Option<farm::PnlRoute>> {
+        let info = self.shared.portfolio.position_info(con_id);
+        let def = self.shared.reference.get_contract(con_id);
+        let pick = |a: Option<&str>, b: Option<&str>| a.filter(|s| !s.is_empty()).or(b).unwrap_or("").to_string();
+        let sec_type = pick(info.as_ref().map(|p| p.sec_type.as_str()), def.as_ref().map(|k| k.sec_type.as_str()));
+        let currency = pick(info.as_ref().map(|p| p.currency.as_str()), def.as_ref().map(|k| k.currency.as_str()));
+        let symbol = pick(info.as_ref().map(|p| p.symbol.as_str()), def.as_ref().map(|k| k.symbol.as_str()));
+        let stock = sec_type.is_empty() || sec_type == "STK";
+        if stock && (currency.is_empty() || currency == "USD") {
+            return None;
+        }
+        // A pair on IDEALPRO, a stock through SMART, any other type on the
+        // exchange of its definition.
+        let exchange = match sec_type.as_str() {
+            "CASH" => "IDEALPRO".to_string(),
+            _ if stock => "SMART".to_string(),
+            _ => match def.as_ref().map(|k| k.exchange.clone()).filter(|e| !e.is_empty()) {
+                Some(e) => e,
+                None => {
+                    log::warn!("P&L quote of conId {} ({} {}): no definition to ask it by", con_id, symbol, sec_type);
+                    return Some(None);
+                }
+            },
+        };
+        let route_type = if stock { "STK" } else { sec_type.as_str() };
+        let sub = farm::MdSubscribe {
+            con_id, symbol, exchange: exchange.clone(), sec_type: route_type.to_string(),
+            last_trade_date: def.as_ref().map(|k| k.last_trade_date_or_contract_month.clone()).unwrap_or_default(),
+            strike: def.as_ref().map_or(0.0, |k| k.strike),
+            right: def.as_ref().map(|k| k.right.clone()).unwrap_or_default(),
+            multiplier: def.as_ref().map(|k| k.multiplier.clone()).unwrap_or_default(),
+            instrument: 0, mode_9887: 0, snapshot: false,
+        };
+        // No route: not asked (md_route logs it).
+        let Some(farm) = self.md_route(&sub) else { return Some(None) };
+        // A stock the main farm serves goes with the main farm's stocks.
+        if stock && farm == PRIMARY_MD {
+            return None;
+        }
+        Some(Some(farm::PnlRoute {
+            con_id, farm,
+            exchange: farm::routing_exchange(&exchange, route_type).to_string(),
+            sec_type: farm::fix_sec_type(route_type).to_string(),
+            stock,
+        }))
+    }
+
     fn md_route(&mut self, sub: &farm::MdSubscribe) -> Option<pool::FarmId> {
         let Some(table) = self.farm.routing.as_ref() else { return Some(PRIMARY_MD) };
         let sec_type = if sub.sec_type.is_empty() { "STK" } else { sub.sec_type.as_str() };
@@ -3110,23 +3163,18 @@ impl HotLoop {
                 }
                 ControlCommand::PnlQuotes { con_ids, second_price } => {
                     self.ccp.start_pnl_partition(Instant::now());
-                    // A currency pair's quotes go to the farm of its own
-                    // route (ibx#715).
-                    // Its type from the position's row, else from its
-                    // definition (the portfolio's batch lookup, ibx#705).
-                    let (pairs, stocks): (Vec<i64>, Vec<i64>) = con_ids.into_iter().partition(|&c|
-                        self.shared.portfolio.position_info(c).is_some_and(|p| p.sec_type == "CASH")
-                            || self.shared.reference.get_contract(c).is_some_and(|k| k.sec_type == "CASH"));
-                    let pairs: Vec<(i64, pool::FarmId)> = pairs.into_iter().filter_map(|con_id| {
-                        let symbol = self.shared.portfolio.position_info(con_id).map(|p| p.symbol).unwrap_or_default();
-                        let sub = farm::MdSubscribe {
-                            con_id, symbol, exchange: "IDEALPRO".into(), sec_type: "CASH".into(),
-                            last_trade_date: String::new(), strike: 0.0, right: String::new(), multiplier: String::new(),
-                            instrument: 0, mode_9887: 0, snapshot: false,
-                        };
-                        self.md_route(&sub).map(|f| (con_id, f))
-                    }).collect();
-                    let msgs = self.farm.pnl_quotes(&stocks, &pairs, second_price);
+                    // A US stock's quotes go to the main farm; any other
+                    // position's to the farm of its own route (ibx#715).
+                    let mut stocks = Vec::new();
+                    let mut routes = Vec::new();
+                    for con_id in con_ids {
+                        match self.pnl_route(con_id) {
+                            None => stocks.push(con_id),
+                            Some(Some(route)) => routes.push(route),
+                            Some(None) => {}
+                        }
+                    }
+                    let msgs = self.farm.pnl_quotes(&stocks, &routes, second_price);
                     self.send_farm_messages(msgs);
                 }
                 ControlCommand::SetInstrumentCurrency { con_id, currency } => {
