@@ -38,16 +38,26 @@ const SECDEF_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 /// (ibx#689; about 2,670 a second).
 const FANOUT_SEND_GAP: std::time::Duration = std::time::Duration::from_micros(375);
 
-/// The API order type of an order report's type code: the codes ibx's
-/// order messages write, read back (the reference gives "STP PRT" for a
-/// stop-protect order among the completed orders, 10.51, 19/10/2026,
-/// ibx#604). A code not known is kept as it is.
-pub(crate) fn report_order_type(code: &str) -> &str {
+/// The API order type of an order report's type code and instructions:
+/// the codes ibx's order messages write, read back; the pegged code is a
+/// relative order, a midpoint or a market peg by its instruction, a
+/// trailing stop otherwise (the reference 10.51, 19/10/2026 pre-market,
+/// paper, ibx#604: STP PRT, RPI, LIT, TRAIL LIMIT, MIDPRICE, SNAP MKT,
+/// SNAP MID, PEG BENCH, TRAIL MIT, TRAIL LIT, REL, PEG MID, LOC, PEG BEST
+/// among the completed orders and the orders of another client). A code
+/// not known is kept as it is.
+pub(crate) fn report_order_type<'a>(code: &'a str, instructions: &str) -> &'a str {
     match code {
+        "P" => match instructions.split(' ').find(|i| matches!(*i, "R" | "M" | "P")) {
+            Some("R") => "REL",
+            Some("M") => "PEG MID",
+            Some(_) => "PEG MKT",
+            None => "TRAIL",
+        },
         "1" => "MKT", "2" => "LMT", "3" => "STP", "4" => "STP LMT",
-        "P" => "TRAIL", "5" => "MOC", "B" => "LOC", "J" => "MIT",
+        "5" => "MOC", "B" => "LOC", "J" => "MIT",
         "K" => "MTL", "R" => "REL", "U" => "MKT PRT", "SP" => "STP PRT", "LT" => "LIT", "TSL" => "TRAIL LIMIT",
-        "MIDPX" => "MIDPRICE", "SMKT" => "SNAP MKT", "SMID" => "SNAP MID", "SREL" => "SNAP PRI", "PB" => "PEG BENCH",
+        "MIDPX" => "MIDPRICE", "SMKT" => "SNAP MKT", "SMID" => "SNAP MID", "SREL" => "SNAP PRIM", "PB" => "PEG BENCH",
         "TMIT" => "TRAIL MIT", "TLIT" => "TRAIL LIT", "E2M" => "PEG BEST", "PSVR" => "PASSV REL", "RPI" => "RPI",
         other => other,
     }
@@ -300,7 +310,7 @@ fn completed_row(parsed: &fix::FieldMap<'_>, account_id: &str) -> CompletedOrder
         local_symbol: get(6035),
         ..Default::default()
     };
-    let order_type = report_order_type(&get(40)).to_string();
+    let order_type = report_order_type(&get(40), &get(18)).to_string();
     let order = api::Order {
         action: match get(54).as_str() { "1" => "BUY", "2" => "SELL", "5" => "SSHORT", _ => "" }.to_string(),
         // The quantity not filled: 0 for a filled order (the reference's
@@ -2570,7 +2580,7 @@ impl CcpState {
                 _ => &sec_type,
             };
 
-            let order_type_str = report_order_type(ord_type_tag);
+            let order_type_str = report_order_type(ord_type_tag, parsed.get(&18).copied().unwrap_or(""));
 
             // As the reference: an unknown code is kept ("???"), not read
             // as DAY; each report sets the order's time in force (ibx#307).
@@ -5682,6 +5692,18 @@ fn rounds_to(value: f64, text: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ibx#604: the type names of the server's order reports, as the
+    // reference 10.51 reads them (paper, 19/10/2026 pre-market).
+    #[test]
+    fn report_order_type_names() {
+        for (code, inst, name) in [("P", "R", "REL"), ("P", "M", "PEG MID"), ("P", "P", "PEG MKT"), ("P", "", "TRAIL"),
+            ("SP", "", "STP PRT"), ("LT", "", "LIT"), ("TSL", "", "TRAIL LIMIT"), ("MIDPX", "", "MIDPRICE"),
+            ("SMKT", "", "SNAP MKT"), ("SMID", "", "SNAP MID"), ("SREL", "", "SNAP PRIM"), ("PB", "R", "PEG BENCH"),
+            ("TMIT", "", "TRAIL MIT"), ("TLIT", "", "TRAIL LIT"), ("B", "", "LOC"), ("E2M", "", "PEG BEST"), ("RPI", "", "RPI")] {
+            assert_eq!(report_order_type(code, inst), name, "{code} {inst}");
+        }
+    }
 
     // Regression for ibx#198: the fill-dedup set must NOT be wiped wholesale
     // when it reaches its cap. A recently-seen ExecID has to stay deduplicated

@@ -11154,7 +11154,7 @@ mod tests {
             ("5", _) => "MOC", ("B", _) => "LOC", ("K", _) => "MTL", ("U", _) => "MKT PRT",
             ("J", _) => "MIT", ("LT", _) => "LIT", ("SP", _) => "STP PRT", ("TSL", _) => "TRAIL LIMIT",
             ("MIDPX", _) => "MIDPRICE", ("SMKT", _) => "SNAP MKT", ("SMID", _) => "SNAP MID",
-            ("SREL", _) => "SNAP PRI", ("PB", _) => "PEG BENCH",
+            ("SREL", _) => "SNAP PRIM", ("PB", _) => "PEG BENCH",
             ("TMIT", _) => "TRAIL MIT", ("TLIT", _) => "TRAIL LIT", ("E2M", _) => "PEG BEST", ("RPI", _) => "RPI",
             ("P", "a") => "TRAIL", ("P", "R") => "REL", ("P", "M") => "PEG MID", ("P", "P") => "PEG MKT",
             _ => return None,
@@ -11205,7 +11205,7 @@ mod tests {
                 if let Some(v) = num(44) { o.lmt_price = v; }
                 o.aux_price = num(211).unwrap_or(0.0);
             }
-            "SNAP MKT" | "SNAP MID" | "SNAP PRI" => o.aux_price = num(99).unwrap_or(0.0),
+            "SNAP MKT" | "SNAP MID" | "SNAP PRIM" => o.aux_price = num(99).unwrap_or(0.0),
             "PEG BENCH" => {
                 if let Some(v) = num(99) { o.starting_price = v; }
                 if let Some(v) = num(6580) { o.stock_ref_price = v; }

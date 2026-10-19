@@ -2079,9 +2079,9 @@ const ORDER_TYPE_ALIASES: [(&str, &str); 15] = [
 ];
 
 /// The order types ibx sends, under the names ibx uses.
-const ORDER_TYPES_SENT: [&str; 34] = [
+const ORDER_TYPES_SENT: [&str; 33] = [
     "MKT", "LMT", "STP", "STP LMT", "TRAIL", "TRAIL LIMIT", "MOC", "LOC", "MIT", "LIT", "MTL", "MKT PRT", "STP PRT",
-    "REL", "PEG MKT", "PEG MID", "PEG MIDPT", "MIDPX", "MIDPRICE", "SNAP MKT", "SNAP MID", "SNAP MIDPT", "SNAP PRI",
+    "REL", "PEG MKT", "PEG MID", "PEG MIDPT", "MIDPX", "MIDPRICE", "SNAP MKT", "SNAP MID", "SNAP MIDPT",
     "SNAP PRIM", "BOX TOP", "PEG BENCH", "TRAIL MIT", "TRAIL LIT", "PEG BEST", "RPI", "PASSV REL", "VOL", "PEG STK",
     "QUOTE",
 ];
@@ -6985,7 +6985,7 @@ impl ClientCore {
         let order_type = order.order_type.to_uppercase();
         if !order.conditions.is_empty() {
             let submit = matches!(order_type.as_str(), "LMT" | "MKT" | "MIDPRICE" | "MIDPX" | "REL"
-                | "SNAP MKT" | "SNAP MID" | "SNAP MIDPT" | "SNAP PRI" | "SNAP PRIM");
+                | "SNAP MKT" | "SNAP MID" | "SNAP MIDPT" | "SNAP PRIM");
             let cancel = matches!(order_type.as_str(), "LMT" | "MIDPRICE" | "MIDPX");
             if !submit || (order.conditions_cancel_order && !cancel) {
                 return Some((148, "Conditional submission of orders is supported for Limit, Market, MidPrice, Relative and Snap order types only. Conditional cancellation of orders is supported for Limit, MidPrice, IBAlgo - Limit order types only.".into()));
@@ -8041,7 +8041,7 @@ impl ClientCore {
             "MIDPX" | "MIDPRICE" => OrderKind::MidPrice { price_cap: scale(order.lmt_price) },
             "SNAP MKT" => OrderKind::SnapMkt { offset: scale(aux_or_zero(order.aux_price)) },
             "SNAP MID" | "SNAP MIDPT" => OrderKind::SnapMid { offset: scale(aux_or_zero(order.aux_price)) },
-            "SNAP PRI" | "SNAP PRIM" => OrderKind::SnapPri { offset: scale(aux_or_zero(order.aux_price)) },
+            "SNAP PRIM" => OrderKind::SnapPri { offset: scale(aux_or_zero(order.aux_price)) },
             "PEG BENCH" => Self::peg_bench_kind(order),
             "TRAIL MIT" | "TRAIL LIT" | "PEG BEST" | "RPI" | "PASSV REL" => Self::new_type_kind(order),
             "VOL" => Self::volatility_kind(order),
@@ -8475,7 +8475,7 @@ impl ClientCore {
                 if extended { ex(OrderKind::SnapMid { offset }) }
                 else { OrderRequest::SubmitSnapMid { order_id, instrument, side, qty, offset } }
             }
-            "SNAP PRI" | "SNAP PRIM" => {
+            "SNAP PRIM" => {
                 let offset = price_or_zero(order.aux_price);
                 if extended { ex(OrderKind::SnapPri { offset }) }
                 else { OrderRequest::SubmitSnapPri { order_id, instrument, side, qty, offset } }

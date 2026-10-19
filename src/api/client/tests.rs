@@ -1791,12 +1791,29 @@ fn place_order_snap_pri() {
     let (client, rx, shared) = test_client();
     shared.market.set_instrument_count(1);
     let order = Order {
-        action: "BUY".into(), total_quantity: 100.0, tif: "DAY".into(), order_type: "SNAP PRI".into(), ..Default::default()
+        action: "BUY".into(), total_quantity: 100.0, tif: "DAY".into(), order_type: "SNAP PRIM".into(), ..Default::default()
     };
     client.place_order(1, &spy(), &order).unwrap();
 
     let cmd = rx.try_recv().unwrap();
     assert!(matches!(cmd, ControlCommand::Order(OrderRequest::SubmitSnapPri { .. })));
+}
+
+// ibx#604: "SNAP PRI" is no order type of the reference 10.51: 321, nothing
+// sent (paper, 19/10/2026 pre-market; its name is SNAP PRIM).
+#[test]
+fn snap_pri_is_no_order_type() {
+    let (client, rx, shared) = test_client();
+    shared.market.set_instrument_count(1);
+    let order = Order {
+        action: "BUY".into(), total_quantity: 1.0, tif: "DAY".into(), order_type: "SNAP PRI".into(), ..Default::default()
+    };
+    client.place_order(1, &spy(), &order).unwrap();
+    assert!(rx.try_iter().all(|c| !matches!(c, ControlCommand::Order(_))), "nothing sent");
+    let mut w = RecordingWrapper::default();
+    client.process_msgs(&mut w);
+    let want = "error:1:321:Error validating request.-'PlaceOrder(3)' : cause - Invalid order type was entered".to_string();
+    assert!(w.events.contains(&want), "{:?}", w.events);
 }
 
 #[test]
