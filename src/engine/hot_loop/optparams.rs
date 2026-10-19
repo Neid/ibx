@@ -465,7 +465,11 @@ mod tests {
     }
 
     fn scenario(name: &str) -> Vec<Record> {
-        let path = format!("{}/tests/fixtures/gw1040/scenarios/{}", env!("CARGO_MANIFEST_DIR"), name);
+        // A recording of 10.51 under gw1051/ (ibx#604).
+        let path = match name.strip_prefix("gw1051/") {
+            Some(rest) => format!("{}/tests/fixtures/gw1051/scenarios/{}", env!("CARGO_MANIFEST_DIR"), rest),
+            None => format!("{}/tests/fixtures/gw1040/scenarios/{}", env!("CARGO_MANIFEST_DIR"), name),
+        };
         let text = std::fs::read_to_string(&path).unwrap();
         let b64 = |v: &serde_json::Value| base64::engine::general_purpose::STANDARD.decode(v.as_str().unwrap_or("")).unwrap();
         text.lines().skip(1).map(|line| {
@@ -613,6 +617,8 @@ mod tests {
     // each of the trading classes AAPL and 2AAPL.
     #[test]
     fn aapl_chain_as_the_reference() {
+        // Recorded again on 10.51 at level 225 (19/10/2026, ibx#604).
+        replay("gw1051/20261019rth/option_chain_aapl.jsonl", "AAPL", 265598);
         replay("20260928/option_chain_aapl.jsonl", "AAPL", 265598);
         let (rows, _) = recorded_rows(&scenario("20260928/option_chain_aapl.jsonl"));
         assert_eq!(rows.len(), 41);

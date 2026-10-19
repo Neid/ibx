@@ -352,8 +352,9 @@ def test_combo_orders_on_10_51():
 # book's order (order id 0, client 0), reqGlobalCancel sends the 8 cancels
 # tagged ALL in that order and gives client 193 nothing of their reports, as
 # the Rust test (tests/scenario_replay.rs).
-def test_global_cancel_of_orders_of_earlier_sessions():
-    out = replay("20261001/global_cancel_replayed", compare=["order"])
+@pytest.mark.parametrize("name", ["gw1051/20261019rth/global_cancel_replayed", "20261001/global_cancel_replayed"])
+def test_global_cancel_of_orders_of_earlier_sessions(name):
+    out = replay(name, compare=["order"])
     assert out["frames_compared"] == 8
     assert len(assert_same(out)) == 18
 
@@ -361,8 +362,9 @@ def test_global_cancel_of_orders_of_earlier_sessions():
 # A SMART combo bought and sold (30/09/2026, ibx#474, ibx#471): the fills of
 # the combo and its legs, commissions. As the Rust test: QQQ's top of book
 # and the positions are left out (the reference's session state).
-def test_combo_fill_executions_and_commissions():
-    out = replay("20260930/i105_combo_fill", compare=["order"])
+@pytest.mark.parametrize("name", ["gw1051/20261019rth/i105_combo_fill", "20260930/i105_combo_fill"])
+def test_combo_fill_executions_and_commissions(name):
+    out = replay(name, compare=["order"])
     theirs = assert_same(out, keep=lambda l: not l.startswith("position") and l.split("|")[1:2] != ["9501"])
     assert any(l.startswith("execDetails|") for l in theirs)
     assert any(l.startswith("commissionAndFeesReport|") for l in theirs)

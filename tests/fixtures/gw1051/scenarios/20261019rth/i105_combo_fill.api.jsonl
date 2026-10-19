@@ -1,0 +1,242 @@
+{"type":"header","format":"four-leg-api/1","source":"20261019rth/i105_combo_fill.jsonl","scenario":"i105_combo_fill","decoder":"official client library 10.46.01","machine_zone":"Europe/Paris"}
+{"seq":1384,"leg":"api_out","msg_name":"START_API","request":{"clientId":198}}
+{"seq":1385,"leg":"api_in","msg_name":"MANAGED_ACCTS","callbacks":[["managedAccounts","DUXXXXXXX"]]}
+{"seq":1386,"leg":"api_in","msg_name":"NEXT_VALID_ID","callbacks":[["nextValidId",158483]]}
+{"seq":1387,"leg":"api_in","msg_name":"ERR_MSG","callbacks":[["error",-1,null,2104,"Market data farm connection is OK:usfarm",""]]}
+{"seq":1388,"leg":"api_in","msg_name":"ERR_MSG","callbacks":[["error",-1,null,2106,"HMDS data farm connection is OK:ushmds",""]]}
+{"seq":1389,"leg":"api_in","msg_name":"ERR_MSG","callbacks":[["error",-1,null,2158,"Sec-def data farm connection is OK:secdefil",""]]}
+{"seq":1390,"leg":"api_out","msg_name":"REQ_POSITIONS","request":{}}
+{"seq":1391,"leg":"api_in","msg_name":"POSITION_DATA","callbacks":[["position","DUXXXXXXX",{"conId":4726868,"symbol":"AXTI","secType":"STK","strike":0.0,"exchange":"NASDAQ","currency":"USD","localSymbol":"AXTI","tradingClass":"NMS"},"1",44.8]]}
+{"seq":1392,"leg":"api_in","msg_name":"POSITION_DATA","callbacks":[["position","DUXXXXXXX",{"conId":272093,"symbol":"MSFT","secType":"STK","strike":0.0,"exchange":"NASDAQ","currency":"USD","localSymbol":"MSFT","tradingClass":"NMS"},"-10",482.08897]]}
+{"seq":1393,"leg":"api_in","msg_name":"POSITION_DATA","callbacks":[["position","DUXXXXXXX",{"conId":265598,"symbol":"AAPL","secType":"STK","strike":0.0,"exchange":"NASDAQ","currency":"USD","localSymbol":"AAPL","tradingClass":"NMS"},"0",0.0]]}
+{"seq":1394,"leg":"api_in","msg_name":"POSITION_DATA","callbacks":[["position","DUXXXXXXX",{"conId":756733,"symbol":"SPY","secType":"STK","strike":0.0,"exchange":"ARCA","currency":"USD","localSymbol":"SPY","tradingClass":"SPY"},"77",775.57342025]]}
+{"seq":1395,"leg":"api_in","msg_name":"POSITION_DATA","callbacks":[["position","DUXXXXXXX",{"conId":9579970,"symbol":"IWM","secType":"STK","strike":0.0,"exchange":"ARCA","currency":"USD","localSymbol":"IWM","tradingClass":"IWM"},"-20",277.144285]]}
+{"seq":1396,"leg":"api_in","msg_name":"POSITION_END","callbacks":[["positionEnd"]]}
+{"seq":1397,"leg":"api_out","msg_name":"CANCEL_POSITIONS","request":{}}
+{"seq":1398,"leg":"api_out","msg_name":"REQ_MKT_DATA","request":{"reqId":9500,"contract":{"conId":0,"symbol":"SPY","secType":"STK","exchange":"SMART","currency":"USD"}}}
+{"seq":1420,"leg":"api_in","msg_name":"MARKET_DATA_TYPE","callbacks":[["marketDataType",9500,1]]}
+{"seq":1421,"leg":"api_in","msg_name":"TICK_REQ_PARAMS","callbacks":[["tickReqParams",9500,0.01,"a60001",3]]}
+{"seq":1448,"leg":"api_in","msg_name":"TICK_STRING","callbacks":[["tickString",9500,45,"1792418300"]]}
+{"seq":1449,"leg":"api_in","msg_name":"TICK_PRICE","callbacks":[["tickPrice",9500,4,766.545,{}],["tickSize",9500,5,"60"]]}
+{"seq":1450,"leg":"api_in","msg_name":"TICK_SIZE","callbacks":[["tickSize",9500,5,"60"]]}
+{"seq":1451,"leg":"api_in","msg_name":"TICK_SIZE","callbacks":[["tickSize",9500,8,"111759"]]}
+{"seq":1452,"leg":"api_in","msg_name":"TICK_PRICE","callbacks":[["tickPrice",9500,6,768.06,{}]]}
+{"seq":1453,"leg":"api_in","msg_name":"TICK_PRICE","callbacks":[["tickPrice",9500,7,766.29,{}]]}
+{"seq":1454,"leg":"api_in","msg_name":"TICK_PRICE","callbacks":[["tickPrice",9500,9,763.25,{}]]}
+{"seq":1455,"leg":"api_in","msg_name":"TICK_PRICE","callbacks":[["tickPrice",9500,14,767.25,{}]]}
+{"seq":1456,"leg":"api_in","msg_name":"TICK_PRICE","callbacks":[["tickPrice",9500,1,766.54,{"canAutoExecute":true}],["tickSize",9500,0,"320"]]}
+{"seq":1457,"leg":"api_in","msg_name":"TICK_PRICE","callbacks":[["tickPrice",9500,2,766.56,{"canAutoExecute":true}],["tickSize",9500,3,"120"]]}
+{"seq":1458,"leg":"api_in","msg_name":"TICK_SIZE","callbacks":[["tickSize",9500,0,"320"]]}
+{"seq":1459,"leg":"api_in","msg_name":"TICK_SIZE","callbacks":[["tickSize",9500,3,"120"]]}
+{"seq":1486,"leg":"api_in","msg_name":"TICK_STRING","callbacks":[["tickString",9500,45,"1792418301"]]}
+{"seq":1487,"leg":"api_in","msg_name":"TICK_STRING","callbacks":[["tickString",9500,84,"T"]]}
+{"seq":1488,"leg":"api_in","msg_name":"TICK_PRICE","callbacks":[["tickPrice",9500,4,766.56,{}],["tickSize",9500,5,"40"]]}
+{"seq":1489,"leg":"api_in","msg_name":"TICK_SIZE","callbacks":[["tickSize",9500,5,"40"]]}
+{"seq":1490,"leg":"api_in","msg_name":"TICK_SIZE","callbacks":[["tickSize",9500,8,"111760"]]}
+{"seq":1491,"leg":"api_in","msg_name":"TICK_PRICE","callbacks":[["tickPrice",9500,1,766.56,{"canAutoExecute":true}],["tickSize",9500,0,"480"]]}
+{"seq":1492,"leg":"api_in","msg_name":"TICK_PRICE","callbacks":[["tickPrice",9500,2,766.58,{"canAutoExecute":true}],["tickSize",9500,3,"240"]]}
+{"seq":1493,"leg":"api_in","msg_name":"TICK_SIZE","callbacks":[["tickSize",9500,0,"480"]]}
+{"seq":1494,"leg":"api_in","msg_name":"TICK_SIZE","callbacks":[["tickSize",9500,3,"240"]]}
+{"seq":1495,"leg":"api_in","msg_name":"TICK_STRING","callbacks":[["tickString",9500,32,"NKPTZ"]]}
+{"seq":1496,"leg":"api_in","msg_name":"TICK_STRING","callbacks":[["tickString",9500,33,"NTV"]]}
+{"seq":1504,"leg":"api_in","msg_name":"TICK_PRICE","callbacks":[["tickPrice",9500,1,766.57,{"canAutoExecute":true}],["tickSize",9500,0,"160"]]}
+{"seq":1505,"leg":"api_in","msg_name":"TICK_SIZE","callbacks":[["tickSize",9500,0,"160"]]}
+{"seq":1506,"leg":"api_in","msg_name":"TICK_SIZE","callbacks":[["tickSize",9500,3,"120"]]}
+{"seq":1507,"leg":"api_in","msg_name":"TICK_STRING","callbacks":[["tickString",9500,32,"T"]]}
+{"seq":1508,"leg":"api_in","msg_name":"TICK_STRING","callbacks":[["tickString",9500,33,"NT"]]}
+{"seq":1516,"leg":"api_in","msg_name":"TICK_SIZE","callbacks":[["tickSize",9500,0,"120"]]}
+{"seq":1517,"leg":"api_in","msg_name":"TICK_STRING","callbacks":[["tickString",9500,32,"TZ"]]}
+{"seq":1518,"leg":"api_in","msg_name":"TICK_STRING","callbacks":[["tickString",9500,33,"NPT"]]}
+{"seq":1526,"leg":"api_in","msg_name":"TICK_STRING","callbacks":[["tickString",9500,45,"1792418302"]]}
+{"seq":1527,"leg":"api_in","msg_name":"TICK_STRING","callbacks":[["tickString",9500,84,"D"]]}
+{"seq":1528,"leg":"api_in","msg_name":"TICK_PRICE","callbacks":[["tickPrice",9500,4,766.58,{}],["tickSize",9500,5,"50"]]}
+{"seq":1529,"leg":"api_in","msg_name":"TICK_SIZE","callbacks":[["tickSize",9500,5,"50"]]}
+{"seq":1530,"leg":"api_in","msg_name":"TICK_SIZE","callbacks":[["tickSize",9500,8,"111764"]]}
+{"seq":1531,"leg":"api_in","msg_name":"TICK_SIZE","callbacks":[["tickSize",9500,0,"160"]]}
+{"seq":1539,"leg":"api_in","msg_name":"TICK_SIZE","callbacks":[["tickSize",9500,0,"40"]]}
+{"seq":1540,"leg":"api_in","msg_name":"TICK_STRING","callbacks":[["tickString",9500,32,"Z"]]}
+{"seq":1548,"leg":"api_in","msg_name":"TICK_STRING","callbacks":[["tickString",9500,84,"Z"]]}
+{"seq":1549,"leg":"api_in","msg_name":"TICK_PRICE","callbacks":[["tickPrice",9500,4,766.57,{}],["tickSize",9500,5,"40"]]}
+{"seq":1550,"leg":"api_in","msg_name":"TICK_SIZE","callbacks":[["tickSize",9500,5,"40"]]}
+{"seq":1551,"leg":"api_in","msg_name":"TICK_SIZE","callbacks":[["tickSize",9500,8,"111765"]]}
+{"seq":1552,"leg":"api_in","msg_name":"TICK_PRICE","callbacks":[["tickPrice",9500,1,766.55,{"canAutoExecute":true}],["tickSize",9500,0,"40"]]}
+{"seq":1553,"leg":"api_in","msg_name":"TICK_PRICE","callbacks":[["tickPrice",9500,2,766.56,{"canAutoExecute":true}],["tickSize",9500,3,"80"]]}
+{"seq":1554,"leg":"api_in","msg_name":"TICK_SIZE","callbacks":[["tickSize",9500,3,"80"]]}
+{"seq":1555,"leg":"api_in","msg_name":"TICK_STRING","callbacks":[["tickString",9500,32,"N"]]}
+{"seq":1556,"leg":"api_in","msg_name":"TICK_STRING","callbacks":[["tickString",9500,33,"T"]]}
+{"seq":1564,"leg":"api_in","msg_name":"TICK_STRING","callbacks":[["tickString",9500,45,"1792418303"]]}
+{"seq":1565,"leg":"api_in","msg_name":"TICK_STRING","callbacks":[["tickString",9500,84,"D"]]}
+{"seq":1566,"leg":"api_in","msg_name":"TICK_PRICE","callbacks":[["tickPrice",9500,4,766.55,{}],["tickSize",9500,5,"40"]]}
+{"seq":1567,"leg":"api_in","msg_name":"TICK_SIZE","callbacks":[["tickSize",9500,8,"111766"]]}
+{"seq":1568,"leg":"api_in","msg_name":"TICK_PRICE","callbacks":[["tickPrice",9500,1,766.54,{"canAutoExecute":true}],["tickSize",9500,0,"120"]]}
+{"seq":1569,"leg":"api_in","msg_name":"TICK_PRICE","callbacks":[["tickPrice",9500,2,766.55,{"canAutoExecute":true}],["tickSize",9500,3,"80"]]}
+{"seq":1570,"leg":"api_in","msg_name":"TICK_SIZE","callbacks":[["tickSize",9500,0,"120"]]}
+{"seq":1571,"leg":"api_in","msg_name":"TICK_STRING","callbacks":[["tickString",9500,32,"Z"]]}
+{"seq":1572,"leg":"api_in","msg_name":"TICK_STRING","callbacks":[["tickString",9500,33,"P"]]}
+{"seq":1580,"leg":"api_in","msg_name":"TICK_SIZE","callbacks":[["tickSize",9500,3,"240"]]}
+{"seq":1581,"leg":"api_in","msg_name":"TICK_STRING","callbacks":[["tickString",9500,33,"PTV"]]}
+{"seq":1589,"leg":"api_in","msg_name":"TICK_PRICE","callbacks":[["tickPrice",9500,4,766.54,{}],["tickSize",9500,5,"40"]]}
+{"seq":1590,"leg":"api_in","msg_name":"TICK_SIZE","callbacks":[["tickSize",9500,8,"111769"]]}
+{"seq":1591,"leg":"api_in","msg_name":"TICK_PRICE","callbacks":[["tickPrice",9500,1,766.53,{"canAutoExecute":true}],["tickSize",9500,0,"80"]]}
+{"seq":1592,"leg":"api_in","msg_name":"TICK_SIZE","callbacks":[["tickSize",9500,0,"80"]]}
+{"seq":1593,"leg":"api_in","msg_name":"TICK_SIZE","callbacks":[["tickSize",9500,3,"1320"]]}
+{"seq":1594,"leg":"api_in","msg_name":"TICK_STRING","callbacks":[["tickString",9500,32,"P"]]}
+{"seq":1595,"leg":"api_in","msg_name":"TICK_STRING","callbacks":[["tickString",9500,33,"KPTVZUF"]]}
+{"seq":1603,"leg":"api_in","msg_name":"TICK_PRICE","callbacks":[["tickPrice",9500,1,766.54,{"canAutoExecute":true}],["tickSize",9500,0,"120"]]}
+{"seq":1604,"leg":"api_in","msg_name":"TICK_SIZE","callbacks":[["tickSize",9500,0,"120"]]}
+{"seq":1605,"leg":"api_in","msg_name":"TICK_SIZE","callbacks":[["tickSize",9500,3,"160"]]}
+{"seq":1606,"leg":"api_in","msg_name":"TICK_STRING","callbacks":[["tickString",9500,32,"T"]]}
+{"seq":1607,"leg":"api_in","msg_name":"TICK_STRING","callbacks":[["tickString",9500,33,"PT"]]}
+{"seq":1608,"leg":"api_out","msg_name":"CANCEL_MKT_DATA","request":{"reqId":9500}}
+{"seq":1609,"leg":"api_out","msg_name":"REQ_MKT_DATA","request":{"reqId":9501,"contract":{"conId":0,"symbol":"QQQ","secType":"STK","exchange":"SMART","currency":"USD"}}}
+{"seq":1645,"leg":"api_in","msg_name":"MARKET_DATA_TYPE","callbacks":[["marketDataType",9501,1]]}
+{"seq":1646,"leg":"api_in","msg_name":"TICK_REQ_PARAMS","callbacks":[["tickReqParams",9501,0.01,"9c0001",3]]}
+{"seq":1673,"leg":"api_in","msg_name":"TICK_STRING","callbacks":[["tickString",9501,45,"1792418304"]]}
+{"seq":1674,"leg":"api_in","msg_name":"TICK_PRICE","callbacks":[["tickPrice",9501,4,718.04,{}],["tickSize",9501,5,"40"]]}
+{"seq":1675,"leg":"api_in","msg_name":"TICK_SIZE","callbacks":[["tickSize",9501,5,"40"]]}
+{"seq":1676,"leg":"api_in","msg_name":"TICK_SIZE","callbacks":[["tickSize",9501,8,"170660"]]}
+{"seq":1677,"leg":"api_in","msg_name":"TICK_PRICE","callbacks":[["tickPrice",9501,6,720.22,{}]]}
+{"seq":1678,"leg":"api_in","msg_name":"TICK_PRICE","callbacks":[["tickPrice",9501,7,717.532,{}]]}
+{"seq":1679,"leg":"api_in","msg_name":"TICK_PRICE","callbacks":[["tickPrice",9501,9,709.799988,{}]]}
+{"seq":1680,"leg":"api_in","msg_name":"TICK_PRICE","callbacks":[["tickPrice",9501,14,719.64,{}]]}
+{"seq":1681,"leg":"api_in","msg_name":"TICK_PRICE","callbacks":[["tickPrice",9501,1,718.03,{"canAutoExecute":true}],["tickSize",9501,0,"120"]]}
+{"seq":1682,"leg":"api_in","msg_name":"TICK_PRICE","callbacks":[["tickPrice",9501,2,718.06,{"canAutoExecute":true}],["tickSize",9501,3,"1400"]]}
+{"seq":1683,"leg":"api_in","msg_name":"TICK_SIZE","callbacks":[["tickSize",9501,0,"120"]]}
+{"seq":1684,"leg":"api_in","msg_name":"TICK_SIZE","callbacks":[["tickSize",9501,3,"1400"]]}
+{"seq":1711,"leg":"api_in","msg_name":"TICK_PRICE","callbacks":[["tickPrice",9501,1,718.05,{"canAutoExecute":true}],["tickSize",9501,0,"240"]]}
+{"seq":1712,"leg":"api_in","msg_name":"TICK_SIZE","callbacks":[["tickSize",9501,0,"240"]]}
+{"seq":1713,"leg":"api_in","msg_name":"TICK_SIZE","callbacks":[["tickSize",9501,3,"160"]]}
+{"seq":1714,"leg":"api_in","msg_name":"TICK_STRING","callbacks":[["tickString",9501,32,"KVZ"]]}
+{"seq":1715,"leg":"api_in","msg_name":"TICK_STRING","callbacks":[["tickString",9501,33,"P"]]}
+{"seq":1723,"leg":"api_in","msg_name":"TICK_STRING","callbacks":[["tickString",9501,84,"P"]]}
+{"seq":1724,"leg":"api_in","msg_name":"TICK_PRICE","callbacks":[["tickPrice",9501,4,718.06,{}],["tickSize",9501,5,"105"]]}
+{"seq":1725,"leg":"api_in","msg_name":"TICK_SIZE","callbacks":[["tickSize",9501,5,"105"]]}
+{"seq":1726,"leg":"api_in","msg_name":"TICK_SIZE","callbacks":[["tickSize",9501,8,"170662"]]}
+{"seq":1727,"leg":"api_in","msg_name":"TICK_PRICE","callbacks":[["tickPrice",9501,1,718.01,{"canAutoExecute":true}],["tickSize",9501,0,"200"]]}
+{"seq":1728,"leg":"api_in","msg_name":"TICK_PRICE","callbacks":[["tickPrice",9501,2,718.04,{"canAutoExecute":true}],["tickSize",9501,3,"120"]]}
+{"seq":1729,"leg":"api_in","msg_name":"TICK_SIZE","callbacks":[["tickSize",9501,0,"200"]]}
+{"seq":1730,"leg":"api_in","msg_name":"TICK_SIZE","callbacks":[["tickSize",9501,3,"120"]]}
+{"seq":1731,"leg":"api_in","msg_name":"TICK_STRING","callbacks":[["tickString",9501,32,"KQZ"]]}
+{"seq":1732,"leg":"api_in","msg_name":"TICK_STRING","callbacks":[["tickString",9501,33,"K"]]}
+{"seq":1740,"leg":"api_in","msg_name":"TICK_STRING","callbacks":[["tickString",9501,84,"Z"]]}
+{"seq":1741,"leg":"api_in","msg_name":"TICK_PRICE","callbacks":[["tickPrice",9501,4,718.02,{}],["tickSize",9501,5,"40"]]}
+{"seq":1742,"leg":"api_in","msg_name":"TICK_SIZE","callbacks":[["tickSize",9501,5,"40"]]}
+{"seq":1743,"leg":"api_in","msg_name":"TICK_SIZE","callbacks":[["tickSize",9501,8,"170663"]]}
+{"seq":1744,"leg":"api_in","msg_name":"TICK_SIZE","callbacks":[["tickSize",9501,0,"320"]]}
+{"seq":1745,"leg":"api_in","msg_name":"TICK_SIZE","callbacks":[["tickSize",9501,3,"80"]]}
+{"seq":1746,"leg":"api_in","msg_name":"TICK_STRING","callbacks":[["tickString",9501,32,"KQV"]]}
+{"seq":1754,"leg":"api_in","msg_name":"TICK_STRING","callbacks":[["tickString",9501,84,"D"]]}
+{"seq":1755,"leg":"api_in","msg_name":"TICK_PRICE","callbacks":[["tickPrice",9501,4,718.025,{}],["tickSize",9501,5,"200"]]}
+{"seq":1756,"leg":"api_in","msg_name":"TICK_SIZE","callbacks":[["tickSize",9501,5,"200"]]}
+{"seq":1757,"leg":"api_in","msg_name":"TICK_SIZE","callbacks":[["tickSize",9501,8,"170668"]]}
+{"seq":1758,"leg":"api_in","msg_name":"TICK_PRICE","callbacks":[["tickPrice",9501,1,717.98,{"canAutoExecute":true}],["tickSize",9501,0,"240"]]}
+{"seq":1759,"leg":"api_in","msg_name":"TICK_PRICE","callbacks":[["tickPrice",9501,2,718.01,{"canAutoExecute":true}],["tickSize",9501,3,"80"]]}
+{"seq":1760,"leg":"api_in","msg_name":"TICK_SIZE","callbacks":[["tickSize",9501,0,"240"]]}
+{"seq":1761,"leg":"api_in","msg_name":"TICK_STRING","callbacks":[["tickString",9501,32,"KQZ"]]}
+{"seq":1762,"leg":"api_in","msg_name":"TICK_STRING","callbacks":[["tickString",9501,33,"KZ"]]}
+{"seq":1770,"leg":"api_in","msg_name":"TICK_PRICE","callbacks":[["tickPrice",9501,1,717.97,{"canAutoExecute":true}],["tickSize",9501,0,"440"]]}
+{"seq":1771,"leg":"api_in","msg_name":"TICK_PRICE","callbacks":[["tickPrice",9501,2,718.0,{"canAutoExecute":true}],["tickSize",9501,3,"120"]]}
+{"seq":1772,"leg":"api_in","msg_name":"TICK_SIZE","callbacks":[["tickSize",9501,0,"440"]]}
+{"seq":1773,"leg":"api_in","msg_name":"TICK_SIZE","callbacks":[["tickSize",9501,3,"120"]]}
+{"seq":1774,"leg":"api_in","msg_name":"TICK_STRING","callbacks":[["tickString",9501,32,"KQVZ"]]}
+{"seq":1775,"leg":"api_in","msg_name":"TICK_STRING","callbacks":[["tickString",9501,33,"K"]]}
+{"seq":1826,"leg":"api_in","msg_name":"TICK_STRING","callbacks":[["tickString",9501,45,"1792418305"]]}
+{"seq":1827,"leg":"api_in","msg_name":"TICK_STRING","callbacks":[["tickString",9501,84,"P"]]}
+{"seq":1828,"leg":"api_in","msg_name":"TICK_PRICE","callbacks":[["tickPrice",9501,4,717.98,{}],["tickSize",9501,5,"40"]]}
+{"seq":1829,"leg":"api_in","msg_name":"TICK_SIZE","callbacks":[["tickSize",9501,5,"40"]]}
+{"seq":1830,"leg":"api_in","msg_name":"TICK_SIZE","callbacks":[["tickSize",9501,8,"170672"]]}
+{"seq":1831,"leg":"api_in","msg_name":"TICK_PRICE","callbacks":[["tickPrice",9501,1,717.96,{"canAutoExecute":true}],["tickSize",9501,0,"40"]]}
+{"seq":1832,"leg":"api_in","msg_name":"TICK_PRICE","callbacks":[["tickPrice",9501,2,717.98,{"canAutoExecute":true}],["tickSize",9501,3,"200"]]}
+{"seq":1833,"leg":"api_in","msg_name":"TICK_SIZE","callbacks":[["tickSize",9501,0,"40"]]}
+{"seq":1834,"leg":"api_in","msg_name":"TICK_SIZE","callbacks":[["tickSize",9501,3,"200"]]}
+{"seq":1835,"leg":"api_in","msg_name":"TICK_STRING","callbacks":[["tickString",9501,32,"P"]]}
+{"seq":1836,"leg":"api_in","msg_name":"TICK_STRING","callbacks":[["tickString",9501,33,"KQZ"]]}
+{"seq":1844,"leg":"api_in","msg_name":"TICK_PRICE","callbacks":[["tickPrice",9501,2,717.99,{"canAutoExecute":true}],["tickSize",9501,3,"80"]]}
+{"seq":1845,"leg":"api_in","msg_name":"TICK_SIZE","callbacks":[["tickSize",9501,0,"320"]]}
+{"seq":1846,"leg":"api_in","msg_name":"TICK_SIZE","callbacks":[["tickSize",9501,3,"80"]]}
+{"seq":1847,"leg":"api_in","msg_name":"TICK_STRING","callbacks":[["tickString",9501,32,"KPZ"]]}
+{"seq":1848,"leg":"api_in","msg_name":"TICK_STRING","callbacks":[["tickString",9501,33,"KZ"]]}
+{"seq":1856,"leg":"api_in","msg_name":"TICK_PRICE","callbacks":[["tickPrice",9501,1,717.97,{"canAutoExecute":true}],["tickSize",9501,0,"280"]]}
+{"seq":1857,"leg":"api_in","msg_name":"TICK_PRICE","callbacks":[["tickPrice",9501,2,718.0,{"canAutoExecute":true}],["tickSize",9501,3,"120"]]}
+{"seq":1858,"leg":"api_in","msg_name":"TICK_SIZE","callbacks":[["tickSize",9501,0,"280"]]}
+{"seq":1859,"leg":"api_in","msg_name":"TICK_SIZE","callbacks":[["tickSize",9501,3,"120"]]}
+{"seq":1860,"leg":"api_in","msg_name":"TICK_STRING","callbacks":[["tickString",9501,32,"KQZ"]]}
+{"seq":1861,"leg":"api_in","msg_name":"TICK_STRING","callbacks":[["tickString",9501,33,"K"]]}
+{"seq":1869,"leg":"api_in","msg_name":"TICK_PRICE","callbacks":[["tickPrice",9501,2,717.99,{"canAutoExecute":true}],["tickSize",9501,3,"40"]]}
+{"seq":1870,"leg":"api_in","msg_name":"TICK_SIZE","callbacks":[["tickSize",9501,0,"80"]]}
+{"seq":1871,"leg":"api_in","msg_name":"TICK_SIZE","callbacks":[["tickSize",9501,3,"40"]]}
+{"seq":1872,"leg":"api_in","msg_name":"TICK_STRING","callbacks":[["tickString",9501,32,"KZ"]]}
+{"seq":1873,"leg":"api_in","msg_name":"TICK_STRING","callbacks":[["tickString",9501,33,"V"]]}
+{"seq":1881,"leg":"api_in","msg_name":"TICK_STRING","callbacks":[["tickString",9501,45,"1792418306"]]}
+{"seq":1882,"leg":"api_in","msg_name":"TICK_PRICE","callbacks":[["tickPrice",9501,4,717.96,{}],["tickSize",9501,5,"49"]]}
+{"seq":1883,"leg":"api_in","msg_name":"TICK_SIZE","callbacks":[["tickSize",9501,5,"49"]]}
+{"seq":1884,"leg":"api_in","msg_name":"TICK_SIZE","callbacks":[["tickSize",9501,8,"170673"]]}
+{"seq":1885,"leg":"api_in","msg_name":"TICK_PRICE","callbacks":[["tickPrice",9501,1,717.93,{"canAutoExecute":true}],["tickSize",9501,0,"160"]]}
+{"seq":1886,"leg":"api_in","msg_name":"TICK_PRICE","callbacks":[["tickPrice",9501,2,717.96,{"canAutoExecute":true}],["tickSize",9501,3,"160"]]}
+{"seq":1887,"leg":"api_in","msg_name":"TICK_SIZE","callbacks":[["tickSize",9501,0,"160"]]}
+{"seq":1888,"leg":"api_in","msg_name":"TICK_SIZE","callbacks":[["tickSize",9501,3,"160"]]}
+{"seq":1889,"leg":"api_in","msg_name":"TICK_STRING","callbacks":[["tickString",9501,33,"KQZ"]]}
+{"seq":1897,"leg":"api_in","msg_name":"TICK_PRICE","callbacks":[["tickPrice",9501,1,717.92,{"canAutoExecute":true}],["tickSize",9501,0,"200"]]}
+{"seq":1898,"leg":"api_in","msg_name":"TICK_PRICE","callbacks":[["tickPrice",9501,2,717.95,{"canAutoExecute":true}],["tickSize",9501,3,"280"]]}
+{"seq":1899,"leg":"api_in","msg_name":"TICK_SIZE","callbacks":[["tickSize",9501,0,"200"]]}
+{"seq":1900,"leg":"api_in","msg_name":"TICK_SIZE","callbacks":[["tickSize",9501,3,"280"]]}
+{"seq":1901,"leg":"api_in","msg_name":"TICK_STRING","callbacks":[["tickString",9501,32,"KPZU"]]}
+{"seq":1902,"leg":"api_out","msg_name":"CANCEL_MKT_DATA","request":{"reqId":9501}}
+{"seq":1903,"leg":"api_out","msg_name":"PLACE_ORDER","request":{"orderId":158483,"contract":{"symbol":"QQQ,SPY","secType":"BAG","exchange":"SMART","currency":"USD","comboLegs":[{"conId":756733,"ratio":1,"action":"BUY","exchange":"SMART"},{"conId":320227571,"ratio":1,"action":"SELL","exchange":"SMART"}]},"order":{"softDollarTier":{},"orderId":158483,"action":"BUY","totalQuantity":"1","orderType":"LMT","lmtPrice":49.13,"tif":"DAY","orderRef":"fourleg","smartComboRoutingParams":[{"tag":"NonGuaranteed","value":"1"}],"orderComboLegs":[{},{}]},"attachedOrders":{}}}
+{"seq":1985,"leg":"api_in","msg_name":"OPEN_ORDER","callbacks":[["openOrder",158483,{"conId":28812380,"symbol":"QQQ,SPY","secType":"BAG","strike":0.0,"exchange":"SMART","currency":"USD","localSymbol":"QQQ,SPY","tradingClass":"COMB","comboLegsDescrip":"756733|1,320227571|-1","comboLegs":[{"conId":756733,"ratio":1,"action":"BUY","exchange":"SMART"},{"conId":320227571,"ratio":1,"action":"SELL","exchange":"SMART"}]},{"softDollarTier":{},"orderId":158483,"clientId":198,"permId":1817828861,"action":"BUY","totalQuantity":"1","orderType":"LMT","lmtPrice":49.13,"auxPrice":0.0,"tif":"DAY","ocaType":3,"orderRef":"fourleg","trailStopPrice":50.13,"volatilityType":0,"deltaNeutralOrderType":"None","referencePriceType":0,"account":"DUXXXXXXX","clearingIntent":"IB","smartComboRoutingParams":[{"tag":"NonGuaranteed","value":"1"}],"orderComboLegs":[{},{}],"adjustedOrderType":"None","dontUseAutoPriceForHedge":true,"filledQuantity":"0","shareholder":"Not an insider or substantial shareholder","routeMarketableToBbo":0,"usePriceMgmtAlgo":0,"submitter":"{user}","seekPriceImprovement":0},{"status":"PreSubmitted"}]]}
+{"seq":1986,"leg":"api_in","msg_name":"ORDER_STATUS","callbacks":[["orderStatus",158483,"PreSubmitted","0","1",0.0,1817828861,0,0.0,198,"",0.0]]}
+{"seq":1990,"leg":"api_in","msg_name":"OPEN_ORDER","callbacks":[["openOrder",158483,{"conId":28812380,"symbol":"QQQ,SPY","secType":"BAG","strike":0.0,"exchange":"SMART","currency":"USD","localSymbol":"QQQ,SPY","tradingClass":"COMB","comboLegsDescrip":"756733|1,320227571|-1","comboLegs":[{"conId":756733,"ratio":1,"action":"BUY","exchange":"SMART"},{"conId":320227571,"ratio":1,"action":"SELL","exchange":"SMART"}]},{"softDollarTier":{},"orderId":158483,"clientId":198,"permId":1817828861,"action":"BUY","totalQuantity":"1","orderType":"LMT","lmtPrice":49.13,"auxPrice":0.0,"tif":"DAY","ocaType":3,"orderRef":"fourleg","trailStopPrice":50.13,"volatilityType":0,"deltaNeutralOrderType":"None","referencePriceType":0,"account":"DUXXXXXXX","clearingIntent":"IB","smartComboRoutingParams":[{"tag":"NonGuaranteed","value":"1"}],"orderComboLegs":[{},{}],"adjustedOrderType":"None","dontUseAutoPriceForHedge":true,"filledQuantity":"0","shareholder":"Not an insider or substantial shareholder","routeMarketableToBbo":0,"usePriceMgmtAlgo":0,"submitter":"{user}","seekPriceImprovement":0},{"status":"PreSubmitted"}]]}
+{"seq":1991,"leg":"api_in","msg_name":"ORDER_STATUS","callbacks":[["orderStatus",158483,"PreSubmitted","0","1",0.0,1817828861,0,0.0,198,"",0.0]]}
+{"seq":2010,"leg":"api_in","msg_name":"EXECUTION_DATA","callbacks":[["execDetails",-1,{"conId":28812380,"symbol":"QQQ,SPY","secType":"BAG","strike":0.0,"exchange":"SMART","currency":"USD","localSymbol":"QQQ,SPY","tradingClass":"COMB"},{"execId":"000225ed.6ad59976.01.01","time":"20261019 09:58:29 US/Eastern","acctNumber":"DUXXXXXXX","exchange":"SMART","side":"BOT","shares":"1","price":48.56,"permId":1817828861,"clientId":198,"orderId":158483,"cumQty":"1","avgPrice":48.56,"orderRef":"fourleg","lastLiquidity":1}]]}
+{"seq":2011,"leg":"api_in","msg_name":"OPEN_ORDER","callbacks":[["openOrder",158483,{"conId":28812380,"symbol":"QQQ,SPY","secType":"BAG","strike":0.0,"exchange":"SMART","currency":"USD","localSymbol":"QQQ,SPY","tradingClass":"COMB","comboLegsDescrip":"756733|1,320227571|-1","comboLegs":[{"conId":756733,"ratio":1,"action":"BUY","exchange":"SMART"},{"conId":320227571,"ratio":1,"action":"SELL","exchange":"SMART"}]},{"softDollarTier":{},"orderId":158483,"clientId":198,"permId":1817828861,"action":"BUY","totalQuantity":"1","orderType":"LMT","lmtPrice":49.13,"auxPrice":0.0,"tif":"DAY","ocaType":3,"orderRef":"fourleg","trailStopPrice":50.13,"volatilityType":0,"deltaNeutralOrderType":"None","referencePriceType":0,"account":"DUXXXXXXX","clearingIntent":"IB","smartComboRoutingParams":[{"tag":"NonGuaranteed","value":"1"}],"orderComboLegs":[{},{}],"adjustedOrderType":"None","dontUseAutoPriceForHedge":true,"filledQuantity":"1","shareholder":"Not an insider or substantial shareholder","routeMarketableToBbo":0,"usePriceMgmtAlgo":0,"submitter":"{user}","seekPriceImprovement":0},{"status":"Filled","commissionAndFeesCurrency":"USD","completedTime":"20261019 09:58:29 US/Eastern","completedStatus":"Filled Size: 1"}]]}
+{"seq":2012,"leg":"api_in","msg_name":"ORDER_STATUS","callbacks":[["orderStatus",158483,"Filled","1","0",48.56,1817828861,0,48.56,198,"",0.0]]}
+{"seq":2016,"leg":"api_in","msg_name":"EXECUTION_DATA","callbacks":[["execDetails",-1,{"conId":756733,"symbol":"SPY","secType":"STK","strike":0.0,"exchange":"IEX","currency":"USD","localSymbol":"SPY"},{"execId":"00025b49.6ad5dc63.01.01.01","time":"20261019 09:58:29 US/Eastern","acctNumber":"DUXXXXXXX","exchange":"IEX","side":"BOT","shares":"1","price":766.59,"permId":1817828861,"clientId":198,"orderId":158483,"cumQty":"1","avgPrice":766.59,"orderRef":"fourleg","lastLiquidity":2}]]}
+{"seq":2017,"leg":"api_in","msg_name":"OPEN_ORDER","callbacks":[["openOrder",158483,{"conId":28812380,"symbol":"QQQ,SPY","secType":"BAG","strike":0.0,"exchange":"SMART","currency":"USD","localSymbol":"QQQ,SPY","tradingClass":"COMB","comboLegsDescrip":"756733|1,320227571|-1","comboLegs":[{"conId":756733,"ratio":1,"action":"BUY","exchange":"SMART"},{"conId":320227571,"ratio":1,"action":"SELL","exchange":"SMART"}]},{"softDollarTier":{},"orderId":158483,"clientId":198,"permId":1817828861,"action":"BUY","totalQuantity":"1","orderType":"LMT","lmtPrice":49.13,"auxPrice":0.0,"tif":"DAY","ocaType":3,"orderRef":"fourleg","trailStopPrice":50.13,"volatilityType":0,"deltaNeutralOrderType":"None","referencePriceType":0,"account":"DUXXXXXXX","clearingIntent":"IB","smartComboRoutingParams":[{"tag":"NonGuaranteed","value":"1"}],"orderComboLegs":[{},{}],"adjustedOrderType":"None","dontUseAutoPriceForHedge":true,"filledQuantity":"1","shareholder":"Not an insider or substantial shareholder","routeMarketableToBbo":0,"usePriceMgmtAlgo":0,"submitter":"{user}","seekPriceImprovement":0},{"status":"Filled","commissionAndFeesCurrency":"USD","completedTime":"20261019 09:58:29 US/Eastern","completedStatus":"Filled Size: 1"}]]}
+{"seq":2018,"leg":"api_in","msg_name":"ORDER_STATUS","callbacks":[["orderStatus",158483,"Filled","1","0",48.56,1817828861,0,48.56,198,"",0.0]]}
+{"seq":2022,"leg":"api_in","msg_name":"EXECUTION_DATA","callbacks":[["execDetails",-1,{"conId":320227571,"symbol":"QQQ","secType":"STK","strike":0.0,"exchange":"NASDAQ","currency":"USD","localSymbol":"QQQ"},{"execId":"00025b49.6ad5dc64.01.01.01","time":"20261019 09:58:29 US/Eastern","acctNumber":"DUXXXXXXX","exchange":"NASDAQ","side":"SLD","shares":"1","price":718.03,"permId":1817828861,"clientId":198,"orderId":158483,"cumQty":"1","avgPrice":718.03,"orderRef":"fourleg","lastLiquidity":2}]]}
+{"seq":2023,"leg":"api_in","msg_name":"OPEN_ORDER","callbacks":[["openOrder",158483,{"conId":28812380,"symbol":"QQQ,SPY","secType":"BAG","strike":0.0,"exchange":"SMART","currency":"USD","localSymbol":"QQQ,SPY","tradingClass":"COMB","comboLegsDescrip":"756733|1,320227571|-1","comboLegs":[{"conId":756733,"ratio":1,"action":"BUY","exchange":"SMART"},{"conId":320227571,"ratio":1,"action":"SELL","exchange":"SMART"}]},{"softDollarTier":{},"orderId":158483,"clientId":198,"permId":1817828861,"action":"BUY","totalQuantity":"1","orderType":"LMT","lmtPrice":49.13,"auxPrice":0.0,"tif":"DAY","ocaType":3,"orderRef":"fourleg","trailStopPrice":50.13,"volatilityType":0,"deltaNeutralOrderType":"None","referencePriceType":0,"account":"DUXXXXXXX","clearingIntent":"IB","smartComboRoutingParams":[{"tag":"NonGuaranteed","value":"1"}],"orderComboLegs":[{},{}],"adjustedOrderType":"None","dontUseAutoPriceForHedge":true,"filledQuantity":"1","shareholder":"Not an insider or substantial shareholder","routeMarketableToBbo":0,"usePriceMgmtAlgo":0,"submitter":"{user}","seekPriceImprovement":0},{"status":"Filled","commissionAndFeesCurrency":"USD","completedTime":"20261019 09:58:29 US/Eastern","completedStatus":"Filled Size: 1"}]]}
+{"seq":2024,"leg":"api_in","msg_name":"ORDER_STATUS","callbacks":[["orderStatus",158483,"Filled","1","0",48.56,1817828861,0,48.56,198,"",0.0]]}
+{"seq":2028,"leg":"api_in","msg_name":"OPEN_ORDER","callbacks":[["openOrder",158483,{"conId":28812380,"symbol":"QQQ,SPY","secType":"BAG","strike":0.0,"exchange":"SMART","currency":"USD","localSymbol":"QQQ,SPY","tradingClass":"COMB","comboLegsDescrip":"756733|1,320227571|-1","comboLegs":[{"conId":756733,"ratio":1,"action":"BUY","exchange":"SMART"},{"conId":320227571,"ratio":1,"action":"SELL","exchange":"SMART"}]},{"softDollarTier":{},"orderId":158483,"clientId":198,"permId":1817828861,"action":"BUY","totalQuantity":"1","orderType":"LMT","lmtPrice":49.13,"auxPrice":0.0,"tif":"DAY","ocaType":3,"orderRef":"fourleg","trailStopPrice":50.13,"volatilityType":0,"deltaNeutralOrderType":"None","referencePriceType":0,"account":"DUXXXXXXX","clearingIntent":"IB","smartComboRoutingParams":[{"tag":"NonGuaranteed","value":"1"}],"orderComboLegs":[{},{}],"adjustedOrderType":"None","dontUseAutoPriceForHedge":true,"filledQuantity":"1","shareholder":"Not an insider or substantial shareholder","routeMarketableToBbo":0,"usePriceMgmtAlgo":0,"submitter":"{user}","seekPriceImprovement":0},{"status":"Filled","commissionAndFeesCurrency":"USD","completedTime":"20261019 09:58:29 US/Eastern","completedStatus":"Filled Size: 1"}]]}
+{"seq":2029,"leg":"api_in","msg_name":"ORDER_STATUS","callbacks":[["orderStatus",158483,"Filled","1","0",48.56,1817828861,0,48.56,198,"",0.0]]}
+{"seq":2030,"leg":"api_in","msg_name":"COMMISSION_REPORT","callbacks":[["commissionAndFeesReport",{"execId":"00025b49.6ad5dc63.01.01.01","commissionAndFees":1.000003,"currency":"USD"}]]}
+{"seq":2034,"leg":"api_in","msg_name":"OPEN_ORDER","callbacks":[["openOrder",158483,{"conId":28812380,"symbol":"QQQ,SPY","secType":"BAG","strike":0.0,"exchange":"SMART","currency":"USD","localSymbol":"QQQ,SPY","tradingClass":"COMB","comboLegsDescrip":"756733|1,320227571|-1","comboLegs":[{"conId":756733,"ratio":1,"action":"BUY","exchange":"SMART"},{"conId":320227571,"ratio":1,"action":"SELL","exchange":"SMART"}]},{"softDollarTier":{},"orderId":158483,"clientId":198,"permId":1817828861,"action":"BUY","totalQuantity":"1","orderType":"LMT","lmtPrice":49.13,"auxPrice":0.0,"tif":"DAY","ocaType":3,"orderRef":"fourleg","trailStopPrice":50.13,"volatilityType":0,"deltaNeutralOrderType":"None","referencePriceType":0,"account":"DUXXXXXXX","clearingIntent":"IB","smartComboRoutingParams":[{"tag":"NonGuaranteed","value":"1"}],"orderComboLegs":[{},{}],"adjustedOrderType":"None","dontUseAutoPriceForHedge":true,"filledQuantity":"1","shareholder":"Not an insider or substantial shareholder","routeMarketableToBbo":0,"usePriceMgmtAlgo":0,"submitter":"{user}","seekPriceImprovement":0},{"status":"Filled","commissionAndFeesCurrency":"USD","completedTime":"20261019 09:58:29 US/Eastern","completedStatus":"Filled Size: 1"}]]}
+{"seq":2035,"leg":"api_in","msg_name":"ORDER_STATUS","callbacks":[["orderStatus",158483,"Filled","1","0",48.56,1817828861,0,48.56,198,"",0.0]]}
+{"seq":2036,"leg":"api_in","msg_name":"COMMISSION_REPORT","callbacks":[["commissionAndFeesReport",{"execId":"00025b49.6ad5dc64.01.01.01","commissionAndFees":1.014794,"currency":"USD"}]]}
+{"seq":2052,"leg":"api_out","msg_name":"PLACE_ORDER","request":{"orderId":158484,"contract":{"symbol":"QQQ,SPY","secType":"BAG","exchange":"SMART","currency":"USD","comboLegs":[{"conId":756733,"ratio":1,"action":"BUY","exchange":"SMART"},{"conId":320227571,"ratio":1,"action":"SELL","exchange":"SMART"}]},"order":{"softDollarTier":{},"orderId":158484,"action":"SELL","totalQuantity":"1","orderType":"LMT","lmtPrice":48.09,"tif":"DAY","orderRef":"fourleg","smartComboRoutingParams":[{"tag":"NonGuaranteed","value":"1"}],"orderComboLegs":[{},{}]},"attachedOrders":{}}}
+{"seq":2061,"leg":"api_in","msg_name":"OPEN_ORDER","callbacks":[["openOrder",158484,{"conId":28812380,"symbol":"QQQ,SPY","secType":"BAG","strike":0.0,"exchange":"SMART","currency":"USD","localSymbol":"QQQ,SPY","tradingClass":"COMB","comboLegsDescrip":"756733|1,320227571|-1","comboLegs":[{"conId":756733,"ratio":1,"action":"BUY","exchange":"SMART"},{"conId":320227571,"ratio":1,"action":"SELL","exchange":"SMART"}]},{"softDollarTier":{},"orderId":158484,"clientId":198,"permId":1817828862,"action":"SELL","totalQuantity":"1","orderType":"LMT","lmtPrice":48.09,"auxPrice":0.0,"tif":"DAY","ocaType":3,"orderRef":"fourleg","trailStopPrice":49.09,"volatilityType":0,"deltaNeutralOrderType":"None","referencePriceType":0,"account":"DUXXXXXXX","clearingIntent":"IB","smartComboRoutingParams":[{"tag":"NonGuaranteed","value":"1"}],"orderComboLegs":[{},{}],"adjustedOrderType":"None","dontUseAutoPriceForHedge":true,"filledQuantity":"0","shareholder":"Not an insider or substantial shareholder","routeMarketableToBbo":0,"usePriceMgmtAlgo":0,"submitter":"{user}","seekPriceImprovement":0},{"status":"PreSubmitted"}]]}
+{"seq":2062,"leg":"api_in","msg_name":"ORDER_STATUS","callbacks":[["orderStatus",158484,"PreSubmitted","0","1",0.0,1817828862,0,0.0,198,"",0.0]]}
+{"seq":2066,"leg":"api_in","msg_name":"OPEN_ORDER","callbacks":[["openOrder",158484,{"conId":28812380,"symbol":"QQQ,SPY","secType":"BAG","strike":0.0,"exchange":"SMART","currency":"USD","localSymbol":"QQQ,SPY","tradingClass":"COMB","comboLegsDescrip":"756733|1,320227571|-1","comboLegs":[{"conId":756733,"ratio":1,"action":"BUY","exchange":"SMART"},{"conId":320227571,"ratio":1,"action":"SELL","exchange":"SMART"}]},{"softDollarTier":{},"orderId":158484,"clientId":198,"permId":1817828862,"action":"SELL","totalQuantity":"1","orderType":"LMT","lmtPrice":48.09,"auxPrice":0.0,"tif":"DAY","ocaType":3,"orderRef":"fourleg","trailStopPrice":49.09,"volatilityType":0,"deltaNeutralOrderType":"None","referencePriceType":0,"account":"DUXXXXXXX","clearingIntent":"IB","smartComboRoutingParams":[{"tag":"NonGuaranteed","value":"1"}],"orderComboLegs":[{},{}],"adjustedOrderType":"None","dontUseAutoPriceForHedge":true,"filledQuantity":"0","shareholder":"Not an insider or substantial shareholder","routeMarketableToBbo":0,"usePriceMgmtAlgo":0,"submitter":"{user}","seekPriceImprovement":0},{"status":"PreSubmitted"}]]}
+{"seq":2067,"leg":"api_in","msg_name":"ORDER_STATUS","callbacks":[["orderStatus",158484,"PreSubmitted","0","1",0.0,1817828862,0,0.0,198,"",0.0]]}
+{"seq":2079,"leg":"api_in","msg_name":"EXECUTION_DATA","callbacks":[["execDetails",-1,{"conId":28812380,"symbol":"QQQ,SPY","secType":"BAG","strike":0.0,"exchange":"SMART","currency":"USD","localSymbol":"QQQ,SPY","tradingClass":"COMB"},{"execId":"000225ed.6ad59978.01.01","time":"20261019 09:58:33 US/Eastern","acctNumber":"DUXXXXXXX","exchange":"SMART","side":"SLD","shares":"1","price":48.5,"permId":1817828862,"clientId":198,"orderId":158484,"cumQty":"1","avgPrice":48.5,"orderRef":"fourleg","lastLiquidity":1}]]}
+{"seq":2080,"leg":"api_in","msg_name":"OPEN_ORDER","callbacks":[["openOrder",158484,{"conId":28812380,"symbol":"QQQ,SPY","secType":"BAG","strike":0.0,"exchange":"SMART","currency":"USD","localSymbol":"QQQ,SPY","tradingClass":"COMB","comboLegsDescrip":"756733|1,320227571|-1","comboLegs":[{"conId":756733,"ratio":1,"action":"BUY","exchange":"SMART"},{"conId":320227571,"ratio":1,"action":"SELL","exchange":"SMART"}]},{"softDollarTier":{},"orderId":158484,"clientId":198,"permId":1817828862,"action":"SELL","totalQuantity":"1","orderType":"LMT","lmtPrice":48.09,"auxPrice":0.0,"tif":"DAY","ocaType":3,"orderRef":"fourleg","trailStopPrice":49.09,"volatilityType":0,"deltaNeutralOrderType":"None","referencePriceType":0,"account":"DUXXXXXXX","clearingIntent":"IB","smartComboRoutingParams":[{"tag":"NonGuaranteed","value":"1"}],"orderComboLegs":[{},{}],"adjustedOrderType":"None","dontUseAutoPriceForHedge":true,"filledQuantity":"1","shareholder":"Not an insider or substantial shareholder","routeMarketableToBbo":0,"usePriceMgmtAlgo":0,"submitter":"{user}","seekPriceImprovement":0},{"status":"Filled","commissionAndFeesCurrency":"USD","completedTime":"20261019 09:58:33 US/Eastern","completedStatus":"Filled Size: 1"}]]}
+{"seq":2081,"leg":"api_in","msg_name":"ORDER_STATUS","callbacks":[["orderStatus",158484,"Filled","1","0",48.5,1817828862,0,48.5,198,"",0.0]]}
+{"seq":2085,"leg":"api_in","msg_name":"EXECUTION_DATA","callbacks":[["execDetails",-1,{"conId":756733,"symbol":"SPY","secType":"STK","strike":0.0,"exchange":"ARCA","currency":"USD","localSymbol":"SPY"},{"execId":"00025b49.6ad5dc73.01.01.01","time":"20261019 09:58:33 US/Eastern","acctNumber":"DUXXXXXXX","exchange":"ARCA","side":"SLD","shares":"1","price":766.58,"permId":1817828862,"clientId":198,"orderId":158484,"cumQty":"1","avgPrice":766.58,"orderRef":"fourleg","lastLiquidity":2}]]}
+{"seq":2086,"leg":"api_in","msg_name":"OPEN_ORDER","callbacks":[["openOrder",158484,{"conId":28812380,"symbol":"QQQ,SPY","secType":"BAG","strike":0.0,"exchange":"SMART","currency":"USD","localSymbol":"QQQ,SPY","tradingClass":"COMB","comboLegsDescrip":"756733|1,320227571|-1","comboLegs":[{"conId":756733,"ratio":1,"action":"BUY","exchange":"SMART"},{"conId":320227571,"ratio":1,"action":"SELL","exchange":"SMART"}]},{"softDollarTier":{},"orderId":158484,"clientId":198,"permId":1817828862,"action":"SELL","totalQuantity":"1","orderType":"LMT","lmtPrice":48.09,"auxPrice":0.0,"tif":"DAY","ocaType":3,"orderRef":"fourleg","trailStopPrice":49.09,"volatilityType":0,"deltaNeutralOrderType":"None","referencePriceType":0,"account":"DUXXXXXXX","clearingIntent":"IB","smartComboRoutingParams":[{"tag":"NonGuaranteed","value":"1"}],"orderComboLegs":[{},{}],"adjustedOrderType":"None","dontUseAutoPriceForHedge":true,"filledQuantity":"1","shareholder":"Not an insider or substantial shareholder","routeMarketableToBbo":0,"usePriceMgmtAlgo":0,"submitter":"{user}","seekPriceImprovement":0},{"status":"Filled","commissionAndFeesCurrency":"USD","completedTime":"20261019 09:58:33 US/Eastern","completedStatus":"Filled Size: 1"}]]}
+{"seq":2087,"leg":"api_in","msg_name":"ORDER_STATUS","callbacks":[["orderStatus",158484,"Filled","1","0",48.5,1817828862,0,48.5,198,"",0.0]]}
+{"seq":2091,"leg":"api_in","msg_name":"EXECUTION_DATA","callbacks":[["execDetails",-1,{"conId":320227571,"symbol":"QQQ","secType":"STK","strike":0.0,"exchange":"DRCTEDGE","currency":"USD","localSymbol":"QQQ"},{"execId":"00025b49.6ad5dc72.01.01.01","time":"20261019 09:58:33 US/Eastern","acctNumber":"DUXXXXXXX","exchange":"DRCTEDGE","side":"BOT","shares":"1","price":718.08,"permId":1817828862,"clientId":198,"orderId":158484,"cumQty":"1","avgPrice":718.08,"orderRef":"fourleg","lastLiquidity":2}]]}
+{"seq":2092,"leg":"api_in","msg_name":"OPEN_ORDER","callbacks":[["openOrder",158484,{"conId":28812380,"symbol":"QQQ,SPY","secType":"BAG","strike":0.0,"exchange":"SMART","currency":"USD","localSymbol":"QQQ,SPY","tradingClass":"COMB","comboLegsDescrip":"756733|1,320227571|-1","comboLegs":[{"conId":756733,"ratio":1,"action":"BUY","exchange":"SMART"},{"conId":320227571,"ratio":1,"action":"SELL","exchange":"SMART"}]},{"softDollarTier":{},"orderId":158484,"clientId":198,"permId":1817828862,"action":"SELL","totalQuantity":"1","orderType":"LMT","lmtPrice":48.09,"auxPrice":0.0,"tif":"DAY","ocaType":3,"orderRef":"fourleg","trailStopPrice":49.09,"volatilityType":0,"deltaNeutralOrderType":"None","referencePriceType":0,"account":"DUXXXXXXX","clearingIntent":"IB","smartComboRoutingParams":[{"tag":"NonGuaranteed","value":"1"}],"orderComboLegs":[{},{}],"adjustedOrderType":"None","dontUseAutoPriceForHedge":true,"filledQuantity":"1","shareholder":"Not an insider or substantial shareholder","routeMarketableToBbo":0,"usePriceMgmtAlgo":0,"submitter":"{user}","seekPriceImprovement":0},{"status":"Filled","commissionAndFeesCurrency":"USD","completedTime":"20261019 09:58:33 US/Eastern","completedStatus":"Filled Size: 1"}]]}
+{"seq":2093,"leg":"api_in","msg_name":"ORDER_STATUS","callbacks":[["orderStatus",158484,"Filled","1","0",48.5,1817828862,0,48.5,198,"",0.0]]}
+{"seq":2097,"leg":"api_in","msg_name":"OPEN_ORDER","callbacks":[["openOrder",158484,{"conId":28812380,"symbol":"QQQ,SPY","secType":"BAG","strike":0.0,"exchange":"SMART","currency":"USD","localSymbol":"QQQ,SPY","tradingClass":"COMB","comboLegsDescrip":"756733|1,320227571|-1","comboLegs":[{"conId":756733,"ratio":1,"action":"BUY","exchange":"SMART"},{"conId":320227571,"ratio":1,"action":"SELL","exchange":"SMART"}]},{"softDollarTier":{},"orderId":158484,"clientId":198,"permId":1817828862,"action":"SELL","totalQuantity":"1","orderType":"LMT","lmtPrice":48.09,"auxPrice":0.0,"tif":"DAY","ocaType":3,"orderRef":"fourleg","trailStopPrice":49.09,"volatilityType":0,"deltaNeutralOrderType":"None","referencePriceType":0,"account":"DUXXXXXXX","clearingIntent":"IB","smartComboRoutingParams":[{"tag":"NonGuaranteed","value":"1"}],"orderComboLegs":[{},{}],"adjustedOrderType":"None","dontUseAutoPriceForHedge":true,"filledQuantity":"1","shareholder":"Not an insider or substantial shareholder","routeMarketableToBbo":0,"usePriceMgmtAlgo":0,"submitter":"{user}","seekPriceImprovement":0},{"status":"Filled","commissionAndFeesCurrency":"USD","completedTime":"20261019 09:58:33 US/Eastern","completedStatus":"Filled Size: 1"}]]}
+{"seq":2098,"leg":"api_in","msg_name":"ORDER_STATUS","callbacks":[["orderStatus",158484,"Filled","1","0",48.5,1817828862,0,48.5,198,"",0.0]]}
+{"seq":2099,"leg":"api_in","msg_name":"COMMISSION_REPORT","callbacks":[["commissionAndFeesReport",{"execId":"00025b49.6ad5dc73.01.01.01","commissionAndFees":1.015795,"currency":"USD","realizedPNL":-9.906863}]]}
+{"seq":2103,"leg":"api_in","msg_name":"OPEN_ORDER","callbacks":[["openOrder",158484,{"conId":28812380,"symbol":"QQQ,SPY","secType":"BAG","strike":0.0,"exchange":"SMART","currency":"USD","localSymbol":"QQQ,SPY","tradingClass":"COMB","comboLegsDescrip":"756733|1,320227571|-1","comboLegs":[{"conId":756733,"ratio":1,"action":"BUY","exchange":"SMART"},{"conId":320227571,"ratio":1,"action":"SELL","exchange":"SMART"}]},{"softDollarTier":{},"orderId":158484,"clientId":198,"permId":1817828862,"action":"SELL","totalQuantity":"1","orderType":"LMT","lmtPrice":48.09,"auxPrice":0.0,"tif":"DAY","ocaType":3,"orderRef":"fourleg","trailStopPrice":49.09,"volatilityType":0,"deltaNeutralOrderType":"None","referencePriceType":0,"account":"DUXXXXXXX","clearingIntent":"IB","smartComboRoutingParams":[{"tag":"NonGuaranteed","value":"1"}],"orderComboLegs":[{},{}],"adjustedOrderType":"None","dontUseAutoPriceForHedge":true,"filledQuantity":"1","shareholder":"Not an insider or substantial shareholder","routeMarketableToBbo":0,"usePriceMgmtAlgo":0,"submitter":"{user}","seekPriceImprovement":0},{"status":"Filled","commissionAndFeesCurrency":"USD","completedTime":"20261019 09:58:33 US/Eastern","completedStatus":"Filled Size: 1"}]]}
+{"seq":2104,"leg":"api_in","msg_name":"ORDER_STATUS","callbacks":[["orderStatus",158484,"Filled","1","0",48.5,1817828862,0,48.5,198,"",0.0]]}
+{"seq":2105,"leg":"api_in","msg_name":"COMMISSION_REPORT","callbacks":[["commissionAndFeesReport",{"execId":"00025b49.6ad5dc72.01.01.01","commissionAndFees":1.000003,"currency":"USD","realizedPNL":-2.064797}]]}
+{"seq":2164,"leg":"api_out","msg_name":"REQ_POSITIONS","request":{}}
+{"seq":2165,"leg":"api_in","msg_name":"POSITION_DATA","callbacks":[["position","DUXXXXXXX",{"conId":4726868,"symbol":"AXTI","secType":"STK","strike":0.0,"exchange":"NASDAQ","currency":"USD","localSymbol":"AXTI","tradingClass":"NMS"},"1",44.8]]}
+{"seq":2166,"leg":"api_in","msg_name":"POSITION_DATA","callbacks":[["position","DUXXXXXXX",{"conId":272093,"symbol":"MSFT","secType":"STK","strike":0.0,"exchange":"NASDAQ","currency":"USD","localSymbol":"MSFT","tradingClass":"NMS"},"-10",482.08897]]}
+{"seq":2167,"leg":"api_in","msg_name":"POSITION_DATA","callbacks":[["position","DUXXXXXXX",{"conId":265598,"symbol":"AAPL","secType":"STK","strike":0.0,"exchange":"NASDAQ","currency":"USD","localSymbol":"AAPL","tradingClass":"NMS"},"0",0.0]]}
+{"seq":2168,"leg":"api_in","msg_name":"POSITION_DATA","callbacks":[["position","DUXXXXXXX",{"conId":320227571,"symbol":"QQQ","secType":"STK","strike":0.0,"exchange":"NASDAQ","currency":"USD","localSymbol":"QQQ","tradingClass":"NMS"},"0",0.0]]}
+{"seq":2169,"leg":"api_in","msg_name":"POSITION_DATA","callbacks":[["position","DUXXXXXXX",{"conId":756733,"symbol":"SPY","secType":"STK","strike":0.0,"exchange":"ARCA","currency":"USD","localSymbol":"SPY","tradingClass":"SPY"},"77",775.4710687467949]]}
+{"seq":2170,"leg":"api_in","msg_name":"POSITION_DATA","callbacks":[["position","DUXXXXXXX",{"conId":9579970,"symbol":"IWM","secType":"STK","strike":0.0,"exchange":"ARCA","currency":"USD","localSymbol":"IWM","tradingClass":"IWM"},"-20",277.144285]]}
+{"seq":2171,"leg":"api_in","msg_name":"POSITION_END","callbacks":[["positionEnd"]]}
+{"seq":2172,"leg":"api_out","msg_name":"CANCEL_POSITIONS","request":{}}
+{"seq":2173,"leg":"api_out","msg_name":"REQ_POSITIONS","request":{}}
+{"seq":2174,"leg":"api_in","msg_name":"POSITION_DATA","callbacks":[["position","DUXXXXXXX",{"conId":4726868,"symbol":"AXTI","secType":"STK","strike":0.0,"exchange":"NASDAQ","currency":"USD","localSymbol":"AXTI","tradingClass":"NMS"},"1",44.8]]}
+{"seq":2175,"leg":"api_in","msg_name":"POSITION_DATA","callbacks":[["position","DUXXXXXXX",{"conId":272093,"symbol":"MSFT","secType":"STK","strike":0.0,"exchange":"NASDAQ","currency":"USD","localSymbol":"MSFT","tradingClass":"NMS"},"-10",482.08897]]}
+{"seq":2176,"leg":"api_in","msg_name":"POSITION_DATA","callbacks":[["position","DUXXXXXXX",{"conId":265598,"symbol":"AAPL","secType":"STK","strike":0.0,"exchange":"NASDAQ","currency":"USD","localSymbol":"AAPL","tradingClass":"NMS"},"0",0.0]]}
+{"seq":2177,"leg":"api_in","msg_name":"POSITION_DATA","callbacks":[["position","DUXXXXXXX",{"conId":320227571,"symbol":"QQQ","secType":"STK","strike":0.0,"exchange":"NASDAQ","currency":"USD","localSymbol":"QQQ","tradingClass":"NMS"},"0",0.0]]}
+{"seq":2178,"leg":"api_in","msg_name":"POSITION_DATA","callbacks":[["position","DUXXXXXXX",{"conId":756733,"symbol":"SPY","secType":"STK","strike":0.0,"exchange":"ARCA","currency":"USD","localSymbol":"SPY","tradingClass":"SPY"},"77",775.4710687467949]]}
+{"seq":2179,"leg":"api_in","msg_name":"POSITION_DATA","callbacks":[["position","DUXXXXXXX",{"conId":9579970,"symbol":"IWM","secType":"STK","strike":0.0,"exchange":"ARCA","currency":"USD","localSymbol":"IWM","tradingClass":"IWM"},"-20",277.144285]]}
+{"seq":2180,"leg":"api_in","msg_name":"POSITION_END","callbacks":[["positionEnd"]]}
+{"seq":2181,"leg":"api_out","msg_name":"CANCEL_POSITIONS","request":{}}

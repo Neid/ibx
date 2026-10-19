@@ -9442,6 +9442,10 @@ mod depth_tests {
         let b64 = |v: &serde_json::Value| base64::engine::general_purpose::STANDARD.decode(v.as_str().unwrap()).unwrap();
         let text = std::fs::read_to_string(path).unwrap();
         let recs: Vec<serde_json::Value> = text.lines().skip(1).map(|l| serde_json::from_str(l).unwrap()).collect();
+        // A recording of 10.51: its sizes come in shares, no lot applies,
+        // as the engine's depth lot in that form (ibx#604).
+        let header: serde_json::Value = serde_json::from_str(text.lines().next().unwrap()).unwrap();
+        let in_shares = header["gateway_version"].as_str().and_then(|v| v.parse::<i64>().ok()).is_some_and(|v| v >= 10500);
         let farm_of = |conn: &str| -> pool::FarmId { if conn == "usfarm" { pool::PRIMARY_MD } else { 1 } };
         let shared = Arc::new(SharedState::new());
         let mut engine = HotLoop::new(shared.clone(), None, None);
@@ -9515,7 +9519,7 @@ mod depth_tests {
                     }
                     _ => None,
                 }).collect();
-                let lot = lots.get(&con_id).copied().unwrap_or(1);
+                let lot = if in_shares { 1 } else { lots.get(&con_id).copied().unwrap_or(1) };
                 engine.farm.start_depth(req_id, con_id, "STK", smart, num_rows, lot, false, specs, None, &shared);
             } else if leg == "api_out" && name == "CANCEL_MKT_DEPTH" {
                 let f = proto_fields(&b64(&r["body_b64"]));
@@ -9547,7 +9551,8 @@ mod depth_tests {
                             engine.inject_farm_message(&fix::fix_build(&[(35, "3"), (262, &id), (58, &text)], 1));
                         }
                     }
-                    "Y" | "P" => engine.inject_farm_message(&raw),
+                    // Z: the extended depth frame of 10.51's recordings (ibx#604).
+                    "Y" | "P" | "Z" => engine.inject_farm_message(&raw),
                     _ => {}
                 }
                 drain(&shared, &mut ours);
@@ -9585,6 +9590,11 @@ mod depth_tests {
         let (ours, theirs) = replay_depth(&path);
         assert_eq!(theirs.len(), 610);
         assert_same_callbacks(&ours, &theirs);
+        // Recorded again on 10.51 at level 225 (19/10/2026, ibx#604).
+        let path = format!("{}/tests/fixtures/gw1051/scenarios/20261019rth/depth_single_iex.jsonl", env!("CARGO_MANIFEST_DIR"));
+        let (ours, theirs) = replay_depth(&path);
+        assert!(theirs.len() > 500, "{}", theirs.len());
+        assert_same_callbacks(&ours, &theirs);
     }
 
     // #451: AAPL SmartDepth, 50 rows (the IEX book with the top of book of
@@ -9596,6 +9606,11 @@ mod depth_tests {
         let path = format!("{}/tests/fixtures/gw1040/scenarios/20260928/depth_smart.jsonl", env!("CARGO_MANIFEST_DIR"));
         let (ours, theirs) = replay_depth(&path);
         assert_eq!(theirs.len(), 1177);
+        assert!(theirs.iter().any(|c| c.2 == 2), "the slice has deletes");
+        assert_same_callbacks(&ours, &theirs);
+        // Recorded again on 10.51 at level 225 (19/10/2026, ibx#604).
+        let path = format!("{}/tests/fixtures/gw1051/scenarios/20261019rth/depth_smart.jsonl", env!("CARGO_MANIFEST_DIR"));
+        let (ours, theirs) = replay_depth(&path);
         assert!(theirs.iter().any(|c| c.2 == 2), "the slice has deletes");
         assert_same_callbacks(&ours, &theirs);
     }

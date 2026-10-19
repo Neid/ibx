@@ -270,10 +270,13 @@ fn rth_order_types() {
 // left out.
 #[test]
 fn combo_fill_executions_and_commissions() {
-    let o = check("20260930/i105_combo_fill", Options::default().mask(known).skip_frame(exchange_map)
-        .keep(|l| !l.starts_with("position") && l.split('|').nth(1) != Some("9501")));
-    assert!(o.theirs.iter().any(|(_, l)| l.starts_with("execDetails|")));
-    assert!(o.theirs.iter().any(|(_, l)| l.starts_with("commissionAndFeesReport|")));
+    // Recorded again on 10.51 at level 225 (19/10/2026, ibx#604).
+    for name in ["gw1051/20261019rth/i105_combo_fill", "20260930/i105_combo_fill"] {
+        let o = check(name, Options::default().mask(known).skip_frame(exchange_map)
+            .keep(|l| !l.starts_with("position") && l.split('|').nth(1) != Some("9501")));
+        assert!(o.theirs.iter().any(|(_, l)| l.starts_with("execDetails|")), "{name}");
+        assert!(o.theirs.iter().any(|(_, l)| l.starts_with("commissionAndFeesReport|")), "{name}");
+    }
 }
 
 // Partial fills in RTH (14/10/2026, the reference 10.51 with the client
@@ -433,9 +436,13 @@ fn pnl_and_pnl_single() {
 // reqAllOpenOrders then lists none.
 #[test]
 fn global_cancel_of_orders_of_earlier_sessions() {
-    let o = check("20261001/global_cancel_replayed", orders());
-    assert_eq!(o.frames_compared, 8, "the 8 cancels");
-    assert_eq!(o.theirs.len(), 18);
+    // Recorded again on 10.51 at level 225 (19/10/2026, regular hours,
+    // ibx#604): eight SPY orders of client 0 left working, a restart.
+    for name in ["gw1051/20261019rth/global_cancel_replayed", "20261001/global_cancel_replayed"] {
+        let o = check(name, orders());
+        assert_eq!(o.frames_compared, 8, "{name}: the 8 cancels");
+        assert_eq!(o.theirs.len(), 18, "{name}");
+    }
 }
 
 // ── Historical data, scanners, news ──
