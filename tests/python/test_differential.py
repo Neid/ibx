@@ -41,6 +41,28 @@ def test_two_sessions_of_the_same_behaviour_have_no_difference():
     assert d.compare(run(1, 111), run(31, 999, "DU7654321", 250.5)) == []
 
 
+def test_the_state_earlier_runs_left_is_not_compared():
+    # #489 step 4: the completed orders and the executions of the day that
+    # the scenario did not place, and their commission reports, are left
+    # out; the scenario's own are kept.
+    other = {**ORDER, "permId": 555}
+    earlier = [
+        ["completedOrder", CONTRACT, other, {"status": "Filled"}],
+        ["execDetails", 9001, CONTRACT, {"execId": "e-old", "permId": 555, "orderId": 3}],
+        ["commissionAndFeesReport", {"execId": "e-old", "commissionAndFees": 1.0}],
+    ]
+    mine = [
+        ["completedOrder", CONTRACT, {**ORDER, "permId": 111}, {"status": "Cancelled"}],
+        ["execDetails", 9001, CONTRACT, {"execId": "e-mine", "permId": 111, "orderId": 1}],
+        ["commissionAndFeesReport", {"execId": "e-mine", "commissionAndFees": 1.0}],
+    ]
+    calls = run(1, 111)
+    kept = d.own_state(calls[:-1] + earlier + mine + calls[-1:])
+    assert [c for c in kept if c in earlier] == []
+    assert [c for c in kept if c in mine] == mine
+    assert d.compare(run(1, 111), run(1, 111)[:-1] + earlier + run(1, 111)[-1:]) == []
+
+
 def test_a_field_that_differs_is_one_row():
     ours = run(1, 111)
     ours[4][2] = "PreSubmitted"
