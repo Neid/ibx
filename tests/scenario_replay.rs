@@ -539,19 +539,27 @@ fn two_scanner_subscriptions_on_10_51() {
 
 // News ticks on a contract asked twice, then on a second contract with
 // one provider (02/10/2026, ibx#458): the news subscription lists the
-// session's news providers, or the one asked (ibx#514). Stops before the
-// cancels, which the reference groups into one message per kind: the
-// engine does it in its market data passes (ibx#560), which the replay
-// does not run yet (ibx#563). The order of marketDataType and tickReqParams on a contract
-// asked before is ibx#535: left out.
+// session's news providers, or the one asked (ibx#514). The order of
+// marketDataType and tickReqParams on a contract asked before is ibx#535:
+// left out. Up to the cancels in both replays; the cancels, grouped by the
+// market data passes (ibx#560), in the paced replay of the 10.51 recording
+// (ibx#605). The 10.40 recording grouped them in one message for both
+// contracts: its own traffic, not compared.
 #[test]
 fn news_ticks_twice() {
+    let opts = || Options::default().compare(&[MARKET_DATA, HISTORICAL]).skip_frame(exchange_map)
+        .keep(|l| !l.starts_with("marketDataType|") && !l.starts_with("tickReqParams|"));
     for (name, until) in [("gw1051/20261019b1/b1_458_news_dup", 16439), ("20261002/b1_458_news_dup", 15737)] {
-        let o = check(name, Options::default().compare(&[MARKET_DATA, HISTORICAL])
-            .skip_frame(exchange_map).until(until)
-            .keep(|l| !l.starts_with("marketDataType|") && !l.starts_with("tickReqParams|")));
+        let o = check(name, opts().until(until));
         assert_eq!(o.frames_compared, 4, "{name}");
     }
+    let name = "gw1051/20261019b1/b1_458_news_dup";
+    let o = replay(&load_scenario(name), &opts().paced());
+    if std::env::var_os("IBX_SCENARIO_DUMP").is_some() {
+        dump(name, &o);
+    }
+    o.assert_same();
+    assert_eq!(o.frames_compared, 8, "{name}: the cancels too");
 }
 
 fn dump(name: &str, o: &Outcome) {
