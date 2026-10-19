@@ -1,7 +1,8 @@
 """Codec fixtures (ibx#486): slices of the four-leg reference scenarios with
 the API side decoded, for the golden codec tests.
 
-Each fixture is one JSONL file under tests/fixtures/gw1040/codec/:
+Each fixture is one JSONL file under tests/fixtures/gw1040/codec/ (or
+gw1051/codec/ with `--version 1051`, ibx#604):
 
 - line 1, the header: `format` (`codec/1`), `scenario`, `area`, `source` (the
   four-leg file), `capture_date` (dd/mm/yyyy), `market_session`,
@@ -194,6 +195,17 @@ def export(src: Path, name: str, area: str, keep, notes: str):
         # zone is read in it (all captures so far: the Paris desktop).
         "machine_zone": "Europe/Paris", "notes": notes,
     }]
+    # The level the recording's client was given, and the session's logon
+    # features: the replay sets both (ibx#604).
+    for line in lines[1:]:
+        r = json.loads(line)
+        if r.get("leg") == "api_in" and r.get("msg_name") == "SERVER_VERSION" and r.get("raw_b64"):
+            level = base64.b64decode(r["raw_b64"]).split(b"\x00")[0].strip()
+            if level.isdigit():
+                out[0]["client_level"] = int(level)
+            break
+    if head.get("logon_features"):
+        out[0]["logon_features"] = head["logon_features"]
     for line in lines[1:]:
         r = json.loads(line)
         if not keep(r):
@@ -368,9 +380,52 @@ def specs(cap: Path):
                f"{name}: the API orders, the gateway's order messages and the server reports")
 
 
+def specs_1051(cap: Path):
+    """The same slices from the recordings of the reference 10.51 with the
+    client at its own level (225), ibx#604: the closed family of
+    18/10/2026, the pre-market family of 19/10/2026 and the regular-hours
+    family of the same day (`20261019rth`, once recorded)."""
+    b1 = cap / "four-leg" / "20261019-b1" / "scenarios"
+    fx = SCENARIOS_1051
+    yield (b1 / "b1_441_smart_components.jsonl", "l1_aapl_spy_preopen", "decode-l1",
+           fix_types(*L1_IN, *L1_OUT, conns=("usfarm", "CCP")),
+           "AAPL and SPY top of book before the open: acks, definitions, trades, quotes, smart components")
+    rth = fx / "20261019rth" / "rth_order_types.jsonl"
+    if rth.exists():
+        yield (rth, "l1_spy_qqq_rth", "decode-l1", md_slice(RTH_MD_RANGES),
+               "SPY then QQQ, then SPY again, in the session (top of book streams)")
+    yield (fx / "20261019pre" / "premarket_order_types.jsonl", "l1_aapl_preopen_delayed", "decode-l1",
+           md_slice([(2165, 2880)]),
+           "AAPL (and BMW, 7203 on other farms) with delayed data asked, then AAPL with real-time data, before the open")
+    yield (b1 / "b1_431_hist_format.jsonl", "hmds_bars_and_head_timestamp", "decode-hmds", hmds_slice(),
+           "AAPL bars with formatDate 1 and 2, head timestamps and cancels, before the open")
+    yield (fx / "20261018" / "account_summary.jsonl", "account_summary", "decode-account", account_slice(),
+           "reqAccountSummary of four tags and $LEDGER:ALL, its rows and ends, its cancel (market closed)")
+    for name in ("lmt_cancel", "modify_cancelled", "bracket", "oca_group"):
+        yield (fx / "20261018" / f"{name}.jsonl", f"orders_{name}", "orders", order_slice(),
+               f"{name}: the API orders, the gateway's order messages and the server reports")
+    yield (fx / "20261018b" / "bracket.jsonl", "orders_bracket_b", "orders", order_slice(),
+           "bracket (second session): the API orders, the gateway's order messages and the server reports")
+    for folder, name in (("20261019pre", "premarket_order_types"), ("20261019rth", "rth_order_types")):
+        if (fx / folder / f"{name}.jsonl").exists():
+            yield (fx / folder / f"{name}.jsonl", f"orders_{name}", "orders", order_slice(),
+                   f"{name}: the API orders, the gateway's order messages and the server reports")
+    for name in ("b1_416_time_condition", "b1_416_time_near", "b1_462_whatif", "b1_263_algo_refusals"):
+        yield (b1 / f"{name}.jsonl", f"orders_{name}", "orders", order_slice(),
+               f"{name}: the API orders, the gateway's order messages and the server reports")
+
+
+# The market data requests of the regular-hours order types run of 10.51
+# (SPY, QQQ, SPY again): set from its recording.
+RTH_MD_RANGES = []
+
+
 def main():
+    global OUT
     ap = argparse.ArgumentParser()
     ap.add_argument("--captures", type=Path)
+    ap.add_argument("--version", default="1040", choices=("1040", "1051"),
+                    help="the reference version of the codec fixtures (tests/fixtures/gw<version>/codec)")
     ap.add_argument("--only")
     ap.add_argument("--scenarios", action="store_true",
                     help="write the decoded API side of every scenario file (<name>.api.jsonl)")
@@ -387,7 +442,9 @@ def main():
         return
     if a.captures is None:
         ap.error("--captures is needed for the codec fixtures")
-    for src, name, area, keep, notes in specs(a.captures):
+    if a.version == "1051":
+        OUT = SCENARIOS_1051.parent / "codec"
+    for src, name, area, keep, notes in (specs_1051 if a.version == "1051" else specs)(a.captures):
         if a.only and a.only not in name:
             continue
         export(src, name, area, keep, notes)

@@ -144,7 +144,7 @@ pub(crate) fn replay_market_data_without(fx: &Fixture, farm_conn: &str, keep: &[
 pub(crate) fn replay_market_data_read(
     fx: &Fixture, farm_conn: &str, keep: &[&str], until: Option<u64>, skip: &[u64], read_each: bool,
 ) -> Replayed {
-    let mut s = Session::new().in_zone(&fx.header);
+    let mut s = Session::new().as_recorded(&fx.header);
     s.read_each = read_each;
     let mut ids = Ids::default();
     let mut theirs = Vec::new();
@@ -213,9 +213,10 @@ pub(crate) fn replay_market_data_read(
     s.settle();
     s.read();
     let wanted = |line: &String| keep.iter().any(|k| line.split('|').next() == Some(*k));
-    // The codec fixtures are 10.40 recordings: 10.40 gives no last trade's
-    // exchange (tick 84), left out as in the scenario replays (ibx#638).
-    let last_exchange = |line: &String| line.starts_with("tickString|") && line.split('|').nth(2) == Some("84");
+    // 10.40 gives no last trade's exchange (tick 84): left out of the
+    // replays of its slices, as in the scenario replays (ibx#638).
+    let form_10_40 = fx.header["gateway_version"].as_str().is_some_and(|v| v.starts_with("1040"));
+    let last_exchange = |line: &String| form_10_40 && line.starts_with("tickString|") && line.split('|').nth(2) == Some("84");
     let ours = s.callbacks.iter().filter(|l| wanted(l) && !last_exchange(l)).cloned().collect();
     let theirs = theirs.into_iter().filter(wanted).collect();
     Replayed { ours, theirs, unsent, requests_theirs, session: s }

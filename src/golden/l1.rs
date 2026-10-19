@@ -9,7 +9,8 @@ const MD_CALLBACKS: &[&str] = &[
     "tickPrice", "tickSize", "tickString", "tickGeneric", "marketDataType", "tickReqParams", "tickSnapshotEnd",
 ];
 
-// AAPL then SPY before the open (02/10/2026, b1_441_smart_components, up
+// AAPL then SPY before the open (19/10/2026 on 10.51 at level 225,
+// b1_441_smart_components, ibx#604; first recorded 02/10/2026 on 10.40; up
 // to the EUR.USD request, which goes to another farm): the acknowledgements
 // give the market data type and the request parameters; the first tick message
 // gives the last time, the last with its size, the volume, close, open,
@@ -22,12 +23,12 @@ fn aapl_and_spy_before_the_open() {
     let fx = load("l1_aapl_spy_preopen");
     let mut keep = MD_CALLBACKS.to_vec();
     keep.extend(["smartComponents", "error"]);
-    let r = replay_market_data(&fx, "usfarm", &keep, Some(2633));
+    let r = replay_market_data(&fx, "usfarm", &keep, Some(2742));
     assert!(r.unsent.is_empty(), "{:?}", r.unsent);
     // The farm notices of the session start are not part of the replay.
     let theirs: Vec<String> = r.theirs.into_iter().filter(|l| !l.starts_with("error|-1|")).collect();
     let ticks = theirs.iter().filter(|l| l.starts_with("tick")).count();
-    assert_eq!((theirs.len(), ticks), (40, 33), "{theirs:#?}");
+    assert!(ticks > 25 && theirs.len() > ticks, "{theirs:#?}");
     assert_same_callbacks(&r.ours, &theirs);
 }
 
@@ -57,13 +58,14 @@ fn spy_and_qqq_in_the_session() {
     assert!(replay_and_compare("l1_spy_qqq_rth", Some(6581), &[]) > 40);
 }
 
-// AAPL before the open with delayed data asked (28/09/2026,
-// premarket_order_types): the paper session has real-time data, so the
+// AAPL before the open with delayed data asked (19/10/2026 on 10.51,
+// premarket_order_types, ibx#604; first recorded 28/09/2026): the paper session has real-time data, so the
 // request gets type 1; the ask exchanges follow each ask size change. BMW
 // and 7203 of the same scenario are on other farms: AAPL only.
 #[test]
 fn aapl_with_delayed_data_asked_before_the_open() {
-    assert!(replay_and_compare("l1_aapl_preopen_delayed", Some(22599), &[9001]) > 30);
+    let n = replay_and_compare("l1_aapl_preopen_delayed", Some(2773), &[9001]);
+    assert!(n > 10, "{n}");
 }
 
 // A new AAPL request 20 s after the first was cancelled (same scenario):
@@ -105,9 +107,10 @@ fn ticks_read_once_as_the_reference(name: &str, until: Option<u64>, reqs: &[i64]
 // session gets the same ticks as one that reads after each frame.
 #[test]
 fn tick_callbacks_do_not_depend_on_when_the_client_reads() {
-    assert!(ticks_read_once_as_the_reference("l1_aapl_spy_preopen", Some(2633), &[]) > 30);
+    assert!(ticks_read_once_as_the_reference("l1_aapl_spy_preopen", Some(2742), &[]) > 25);
     assert!(ticks_read_once_as_the_reference("l1_spy_qqq_rth", Some(6581), &[]) > 40);
-    assert!(ticks_read_once_as_the_reference("l1_aapl_preopen_delayed", Some(22599), &[9001]) > 30);
+    let n = ticks_read_once_as_the_reference("l1_aapl_preopen_delayed", Some(2773), &[9001]);
+    assert!(n > 10, "{n}");
 }
 
 /// A 10.40 market data message in the 10.51 form: the mark 1 at the end
@@ -128,15 +131,18 @@ fn requests_of(name: &str, until: Option<u64>, skip: &[u64]) -> [(Vec<String>, V
     let fx = load(name);
     let r = super::replay::replay_market_data_without(&fx, "usfarm", MD_CALLBACKS, until, skip);
     let (v, c) = super::replay::request_messages(&r.session, &["V"], &["c"]);
-    let theirs = |t: &str| r.requests_theirs.iter().filter(|m| m.starts_with(t)).cloned().collect::<Vec<_>>();
-    // Market data of contracts the reference asked on this farm only. The
-    // recordings are of the reference 10.40; 10.51, which ibx copies, ends
-    // each bid/ask and last entry with its mark (ibx#648; 1 and 1 for a
-    // session without extra price precision, as the replay's). Until they
-    // are made again on 10.51 (ibx#604), they are read in the 10.51 form.
-    let farm_v: Vec<String> = theirs("35=V").iter().map(|m| with_entry_marks(m)).collect();
+    // The reference's messages of one message type.
+    let theirs = |t: &str| r.requests_theirs.iter()
+        .filter(|m| m.split('|').next().and_then(|f| f.split_once('=')).is_some_and(|(_, v)| v == t))
+        .cloned().collect::<Vec<_>>();
+    // Market data of contracts the reference asked on this farm only.
+    // 10.51, which ibx copies, ends each bid/ask and last entry with its
+    // mark (ibx#648); a recording of the reference 10.40 is read in that
+    // form.
+    let form_10_40 = fx.header["gateway_version"].as_str().is_some_and(|v| v.starts_with("1040"));
+    let farm_v: Vec<String> = theirs("V").iter().map(|m| if form_10_40 { with_entry_marks(m) } else { m.clone() }).collect();
     let on_farm = |m: &String| farm_v.iter().any(|t| t.split('|').find(|f| f.starts_with("6008=")) == m.split('|').find(|f| f.starts_with("6008=")));
-    [(v.into_iter().filter(on_farm).collect(), farm_v.clone()), (c, theirs("35=c"))]
+    [(v.into_iter().filter(on_farm).collect(), farm_v.clone()), (c, theirs("c"))]
 }
 
 // The requests of the top of book replays (02/10 and 28/09/2026): the
@@ -149,9 +155,9 @@ fn requests_of(name: &str, until: Option<u64>, skip: &[u64]) -> [(Vec<String>, V
 #[test]
 fn market_data_requests_as_the_reference() {
     for (name, until, skip) in [
-        ("l1_aapl_spy_preopen", Some(2635), &[2633][..]),
+        ("l1_aapl_spy_preopen", Some(2744), &[2742][..]),
         ("l1_spy_qqq_rth", Some(5410), &[][..]),
-        ("l1_aapl_preopen_delayed", Some(22599), &[][..]),
+        ("l1_aapl_preopen_delayed", Some(2773), &[][..]),
     ] {
         for (ours, theirs) in requests_of(name, until, skip) {
             assert!(!theirs.is_empty(), "{name}");

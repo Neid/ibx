@@ -20,9 +20,12 @@ mod l1;
 mod orders;
 mod replay;
 
-use crate::test_support::scenario::{load_codec, Scenario};
+use crate::test_support::scenario::{load_codec, load_path, Scenario};
 
-/// A codec fixture by name.
+/// A codec fixture by name: the slice of the reference 10.51's recording
+/// (tests/fixtures/gw1051/codec/, ibx#604), or of 10.40's when 10.51 has
+/// none of that name yet.
 fn load(name: &str) -> Scenario {
-    load_codec(name)
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/gw1051/codec").join(format!("{name}.jsonl"));
+    if path.exists() { load_path(&path) } else { load_codec(name) }
 }

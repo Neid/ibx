@@ -741,6 +741,26 @@ pub fn level_of(sc: &Scenario) -> i32 {
         .map_or(super::session::RECORDING_LEVEL, |n| n.min(crate::client_core::SERVER_VERSION))
 }
 
+/// The session of a recording: at the level its client was given
+/// (ibx#602); the order rules of 10.40 for a recording of 10.40, or one
+/// with no version (ibx#660), else the shares and entry marks of 10.51
+/// (ibx#663); the logon features of its session when its header has them
+/// (ibx#515). For the scenario replays and the codec replays (ibx#604).
+pub fn as_recorded(header: &serde_json::Value, level: i32, links: &mut Links) {
+    crate::client_core::set_session_level_for_test(Some(level));
+    let version = header.get("gateway_version")
+        .and_then(|v| v.as_i64().or_else(|| v.as_str().and_then(|t| t.parse().ok())));
+    if version.is_none_or(|v| v < 10500) {
+        links.shared.reference.set_form_10_40(true);
+    } else {
+        links.engine.set_lot_sizes(false);
+    }
+    if let Some(features) = header.get("logon_features").and_then(|v| v.as_str()) {
+        links.shared.reference.set_logon_features(features);
+        links.shared.reference.set_api_features(crate::control::logon::ApiFeatures::parse(features));
+    }
+}
+
 /// Replay a scenario through the Rust API client.
 pub fn replay(sc: &Scenario, opts: &Options) -> Outcome {
     let mut links = Links::new();
@@ -755,25 +775,7 @@ pub fn replay(sc: &Scenario, opts: &Options) -> Outcome {
 /// the recording (`session::zone_of`) on this thread.
 pub fn run(sc: &Scenario, opts: &Options, links: &mut Links, driver: &mut dyn Driver) -> Outcome {
     crate::gateway::set_machine_zone_for_test(Some(super::session::zone_of(&sc.header)));
-    // At the level the recording's client was given (ibx#602).
-    crate::client_core::set_session_level_for_test(Some(level_of(sc)));
-    // A recording of 10.40 follows its order rules (ibx#660); one with no
-    // version is from before 10.51.
-    let version = sc.header.get("gateway_version")
-        .and_then(|v| v.as_i64().or_else(|| v.as_str().and_then(|t| t.parse().ok())));
-    if version.is_none_or(|v| v < 10500) {
-        links.shared.reference.set_form_10_40(true);
-    } else {
-        // 10.51 marks its entries and sizes come in shares (ibx#663).
-        links.engine.set_lot_sizes(false);
-    }
-    // The logon features of the recording's session, when its header has
-    // them (a recording of 10.51, ibx#515): the market data entry marks
-    // and the requests they gate follow them.
-    if let Some(features) = sc.header.get("logon_features").and_then(|v| v.as_str()) {
-        links.shared.reference.set_logon_features(features);
-        links.shared.reference.set_api_features(crate::control::logon::ApiFeatures::parse(features));
-    }
+    as_recorded(&sc.header, level_of(sc), links);
     let recs = prepare(sc, opts);
     // The contracts the recording orders on with no second lookup before
     // its first order: the reference made it earlier in its session

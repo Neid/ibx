@@ -308,6 +308,22 @@ impl Session {
         self
     }
 
+    /// Run as the fixture's recording ran: its machine zone, and for a
+    /// recording of 10.51 its client's level, the 10.51 forms and its
+    /// logon features (`runner::as_recorded`, ibx#604). A codec fixture of
+    /// 10.40 keeps the session the codec replays always had.
+    pub fn as_recorded(mut self, header: &serde_json::Value) -> Self {
+        self = self.in_zone(header);
+        let version = header.get("gateway_version")
+            .and_then(|v| v.as_i64().or_else(|| v.as_str().and_then(|t| t.parse().ok())));
+        if version.is_some_and(|v| v >= 10500) {
+            let level = header.get("client_level").and_then(|v| v.as_i64()).map_or(RECORDING_LEVEL, |l| l as i32)
+                .min(crate::client_core::SERVER_VERSION);
+            super::runner::as_recorded(header, level, &mut self.links);
+        }
+        self
+    }
+
     /// Call the API client; the engine runs on this thread meanwhile (a
     /// call may wait for the engine's answer). Then the engine settles and
     /// the callbacks are taken.

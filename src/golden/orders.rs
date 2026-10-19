@@ -71,11 +71,22 @@ pub(crate) struct OrderReplay {
 pub(crate) fn replay_orders(fx: &Fixture) -> OrderReplay {
     let recs = at_their_effect(&fx.recs);
     let fx = &Fixture { header: fx.header.clone(), recs };
-    let mut s = Session::new().in_zone(&fx.header);
+    let mut s = Session::new().as_recorded(&fx.header);
     // A recording of 10.40 follows its order rules (ibx#660); one with no
     // version is from before 10.51.
-    if fx.header.get("gateway_version").and_then(|v| v.as_i64()).is_none_or(|v| v < 10500) {
+    if fx.header.get("gateway_version").and_then(|v| v.as_i64().or_else(|| v.as_str().and_then(|t| t.parse().ok())))
+        .is_none_or(|v| v < 10500) {
         s.shared.reference.set_form_10_40(true);
+    } else {
+        // The reference 10.51 had the trading schedules of these US
+        // contracts before its recordings (none is asked in them): their
+        // zone, which an order with a time in another zone waits for
+        // (ibx#668), is taken as known (ibx#604).
+        for r in fx.recs.iter().filter(|r| r.is("fix_in", "CCP", "d")) {
+            if let Some(con_id) = tag(&r.fields(), 6008).and_then(|c| c.parse::<i64>().ok()) {
+                s.shared.reference.cache_time_zone_id(con_id, "US/Eastern");
+            }
+        }
     }
     if let Some(start) = fx.recs.iter().find(|r| r.msg == "START_API") {
         // The client id of the recorded session, on the wire and in
@@ -313,15 +324,15 @@ fn lmt_order_before_the_open() {
     replay_and_compare("orders_lmt_cancel", all, KNOWN, &[]);
 }
 
-// A LMT order, its cancel and a modify after the cancel (26/09/2026,
-// modify_cancelled): no callback at the cancel itself; the working
-// reports after the cancel request give PendingCancel; the Cancelled
-// status keeps 1 remaining (leaves quantity 0 on the wire), then 202. The answer to
-// the modify is not in the recording.
+// A LMT order, its cancel and a modify after the cancel (18/10/2026 on
+// 10.51, modify_cancelled, ibx#604; first recorded 26/09/2026): no
+// callback at the cancel itself; the working reports after the cancel
+// request give PendingCancel; the Cancelled status keeps 1 remaining
+// (leaves quantity 0 on the wire), then 202; the modify then gets 104.
 #[test]
 fn cancel_gives_pending_cancel_then_cancelled_then_202() {
-    let r = replay_and_compare("orders_modify_cancelled", |r| r.seq < 2441, KNOWN, &[]);
-    assert!(r.cb_theirs.iter().any(|l| l.starts_with("orderStatus|2|PendingCancel")));
+    let r = replay_and_compare("orders_modify_cancelled", all, KNOWN, &[]);
+    assert!(r.cb_theirs.iter().any(|l| l.starts_with("orderStatus|") && l.contains("|PendingCancel|")));
 }
 
 // Two orders in one OCA group (26/09/2026, oca_group): the 583 group and
@@ -350,13 +361,14 @@ fn time_conditions_near_dates() {
     replay_and_compare("orders_b1_416_time_near", all, KNOWN, &[]);
 }
 
-// Time conditions (02/10/2026, b1_416_time_condition): the server refuses
+// Time conditions (19/10/2026 on 10.51, b1_416_time_condition, ibx#604;
+// first recorded 02/10/2026): the server refuses
 // the far date with 201 "Invalid value in field # 6223": Inactive, 201,
 // Inactive again; 2174 for a time without a zone. Up to the Asia/Tokyo
 // one (see the ignored test below).
 #[test]
 fn time_conditions_refused_by_the_server() {
-    replay_and_compare("orders_b1_416_time_condition", |r| r.seq < 1530, KNOWN, &[]);
+    replay_and_compare("orders_b1_416_time_condition", |r| r.seq < 1552, KNOWN, &[]);
 }
 
 // OVERNIGHT time in force (28/09/2026, i196_overnight): the order and the
@@ -388,14 +400,14 @@ fn session_order_types() {
 // order after them. The combo preview is in the ignored test below.
 #[test]
 fn what_if_previews() {
-    replay_and_compare("orders_b1_462_whatif", all, KNOWN, &[78]);
+    replay_and_compare("orders_b1_462_whatif", all, KNOWN, &[158431]);
 }
 
 // An algo order and the algo refusals (02/10/2026, b1_263_algo_refusals):
 // the STP order, its cancel; prices off the grid refused with 110.
 #[test]
 fn algo_scenario_orders() {
-    replay_and_compare("orders_b1_263_algo_refusals", all, KNOWN, &[80, 82, 83, 84]);
+    replay_and_compare("orders_b1_263_algo_refusals", all, KNOWN, &[158433, 158435, 158436, 158437]);
 }
 
 // ── Differences found by the replays, each its own test ──
@@ -405,7 +417,7 @@ fn algo_scenario_orders() {
 // conId; ibx too (ibx#486). Every order replay compares the 399 text.
 #[test]
 fn order_message_names_the_listing_exchange() {
-    let r = replay_and_compare("orders_modify_cancelled", |r| r.seq < 2441, KNOWN, &[]);
+    let r = replay_and_compare("orders_modify_cancelled", all, KNOWN, &[]);
     assert!(r.cb_ours.iter().any(|l| l.contains("|399|") && l.contains("BUY 1 AAPL NASDAQ.NMS")));
 }
 
@@ -440,7 +452,7 @@ fn bracket_with_transmit_off() {
 // the preview's openOrder the permId of that order (ibx#486).
 #[test]
 fn what_if_clord_id_and_perm_id() {
-    let r = replay_and_compare("orders_b1_462_whatif", all, KNOWN, &[78]);
+    let r = replay_and_compare("orders_b1_462_whatif", all, KNOWN, &[158431]);
     let previews: Vec<&str> = r.pairs.iter().filter_map(|(_, mine, _)| mine.as_ref())
         .filter(|f| tag(f, 6091) == Some("1")).filter_map(|f| tag(f, 11)).collect();
     assert_eq!(previews, ["{id}.0"; 3]);
@@ -455,13 +467,11 @@ fn what_if_of_a_combo() {
 }
 
 // A condition time in Asia/Tokyo on a US stock: the reference refuses it
-// with 10314 after the contract lookup (not the contract's zone). It read
-// the zone from a trading schedule it had before the recording (no
-// schedule request in it: the schedule is asked only when not
-// cached); ibx asks no schedule for an order, knows
-// no zone, and sends the order.
+// with 10314 after the contract lookup (not the contract's zone), and so
+// does ibx. The reference read the zone from a trading schedule it had
+// before the recording (none is asked in it); the replay takes that zone
+// as known (19/10/2026 on 10.51, ibx#604).
 #[test]
-#[ignore = "ibx#510: the contract's zone comes from a schedule the reference had before the recording"]
 fn condition_time_in_another_zone() {
     replay_and_compare("orders_b1_416_time_condition", all, KNOWN, &[]);
 }
