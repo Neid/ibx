@@ -61,6 +61,18 @@ pub fn render_exchange_mask(mask: i64, instrument: InstrumentId, shared: &Shared
     render_exchange_mask_at(mask, instrument, shared, u64::MAX)
 }
 
+/// The letter of one exchange of the map, by its bit number: the last
+/// trade's exchange is one exchange, sent as its number, not a mask (the
+/// reference 10.51: 6 is the map's bit 6, "K", 19/10/2026 pre-market,
+/// ibx#604).
+pub fn render_exchange_index_at(index: i64, instrument: InstrumentId, shared: &SharedState, seq: u64) -> String {
+    if index <= 0 {
+        return String::new();
+    }
+    let Some(components) = shared.reference.instrument_exchange_map_at(instrument, seq) else { return String::new() };
+    components.iter().find(|c| c.bit_number as i64 == index).map(|c| c.exchange_letter.clone()).unwrap_or_default()
+}
+
 /// [`render_exchange_mask`] for a step of the market data queue: with the
 /// map as known when the engine wrote it (ibx#446).
 pub fn render_exchange_mask_at(mask: i64, instrument: InstrumentId, shared: &SharedState, seq: u64) -> String {
@@ -3147,7 +3159,8 @@ impl ClientCore {
             let fields = SnapshotFields {
                 bid: price(q.bid), ask: price(q.ask), last: price(q.last),
                 bid_size: size(q.bid_size), ask_size: size(q.ask_size), last_size: size(q.last_size),
-                bid_exchange: exch(q.bid_exch_mask), ask_exchange: exch(q.ask_exch_mask), last_exchange: exch(q.last_exch_mask),
+                bid_exchange: exch(q.bid_exch_mask), ask_exchange: exch(q.ask_exch_mask),
+                last_exchange: (q.last_exch_mask != 0).then(|| render_exchange_index_at(q.last_exch_mask, f.instrument, shared, u64::MAX)),
                 high: price(q.high), low: price(q.low), close: price(q.close), volume: size(q.volume),
                 last_snapshot_time: None,
             };

@@ -88,6 +88,9 @@ pub struct StreamState {
     zeros_sent: u8,
     /// An option or futures option: a time of 0 is given (ibx#756).
     option: bool,
+    /// The exchanges a step of this request carried (bit per bid, ask and
+    /// last trade's exchange, ibx#604).
+    exch_sent: u8,
 }
 
 impl StreamState {
@@ -370,7 +373,11 @@ impl Out<'_> {
             field::ASK_EXCH => TICK_ASK_EXCHANGE,
             _ => TICK_LAST_EXCHANGE,
         };
-        let value = render_exchange_mask_at(self.fields[idx], self.instrument, self.shared, self.seq);
+        let value = if idx == field::LAST_EXCH {
+            render_exchange_index_at(self.fields[idx], self.instrument, self.shared, self.seq)
+        } else {
+            render_exchange_mask_at(self.fields[idx], self.instrument, self.shared, self.seq)
+        };
         if !value.is_empty() {
             self.push(MdTick::Text { tick_type, value });
         }
@@ -390,6 +397,15 @@ fn pre_open_mark(out: &mut Out, m: &Mirror) {
         && let Some(MdOut::Tick(_, MdTick::Price { pre_open, .. })) = out.out.last_mut()
     {
         *pre_open = true;
+    }
+}
+
+/// The bit of an exchange field in `StreamState::exch_sent`.
+fn exch_bit(idx: usize) -> u8 {
+    match idx {
+        field::BID_EXCH => 1,
+        field::ASK_EXCH => 2,
+        _ => 4,
     }
 }
 
@@ -425,7 +441,23 @@ fn stream_pass(st: &mut StreamState, m: &Mirror, pass: Pass, out: &mut Out) {
             }
             // Each exchange when it changes: the last trade's exchange is
             // not given again for a trade on the same exchange (ibx#638).
-            field::BID_EXCH | field::ASK_EXCH | field::LAST_EXCH => fields[idx] != st.fields[idx],
+            // The first step of this request that carries one gives it,
+            // also when the contract kept it from an earlier request (the
+            // reference 10.51 at level 225, a second AAPL stream,
+            // 19/10/2026 pre-market, ibx#604); one carried before the
+            // exchange map came is not given again.
+            field::BID_EXCH | field::ASK_EXCH | field::LAST_EXCH => {
+                // A join gives the whole quote: every exchange is carried.
+                let carried = match pass {
+                    Pass::Join => true,
+                    Pass::Step(_, set) => set & (1 << idx) != 0,
+                };
+                let first = carried && st.exch_sent & exch_bit(idx) == 0;
+                if carried {
+                    st.exch_sent |= exch_bit(idx);
+                }
+                fields[idx] != st.fields[idx] || first
+            }
             // A step that sets a time of 0 on an option, and a delayed open
             // of 0, give it once (ibx#756; the reference 10.51, paper,
             // 18/10/2026 weekend, two runs: a frozen option's last time "0"
@@ -528,7 +560,7 @@ fn stream_pass(st: &mut StreamState, m: &Mirror, pass: Pass, out: &mut Out) {
             field::TIME => out.time(),
             // The delayed sender sends no exchanges.
             field::BID_EXCH | field::ASK_EXCH | field::LAST_EXCH if delayed => {}
-            field::BID_EXCH | field::ASK_EXCH | field::LAST_EXCH => out.exchanges(idx),
+            field::BID_EXCH | field::ASK_EXCH | field::LAST_EXCH => { out.exchanges(idx); }
             _ => {}
         }
     }

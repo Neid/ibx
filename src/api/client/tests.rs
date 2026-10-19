@@ -6468,9 +6468,11 @@ fn set_exchange_map(shared: &SharedState, instrument: u32, map: Vec<crate::types
 fn regulatory_snapshot_delivers_one_batch_then_the_end() {
     let (client, rx, shared) = test_client();
     let engine = snapshot_engine(rx);
-    set_exchange_map(&shared, 5, vec![crate::types::SmartComponent {
-        bit_number: 0, exchange: "NYSE".into(), exchange_letter: "N".into(),
-    }]);
+    // The last trade's exchange is one exchange by its bit number (ibx#604).
+    set_exchange_map(&shared, 5, vec![
+        crate::types::SmartComponent { bit_number: 0, exchange: "NYSE".into(), exchange_letter: "N".into() },
+        crate::types::SmartComponent { bit_number: 1, exchange: "ARCA".into(), exchange_letter: "P".into() },
+    ]);
     client.req_mkt_data(1, &spy(), "", false, true).unwrap();
     // The same contract again: 10169; the same request id again: duplicate.
     client.req_mkt_data(2, &spy(), "", false, true).unwrap();
@@ -6493,7 +6495,7 @@ fn regulatory_snapshot_delivers_one_batch_then_the_end() {
     client.process_msgs(&mut w);
     assert_eq!(w.events, vec![
         "price:1:2:101", "size:1:3:3", "price:1:1:100", "size:1:0:2", "price:1:4:100", "size:1:5:1",
-        "string:1:33:N", "string:1:32:N", "string:1:84:N", "price:1:6:102", "price:1:7:99", "price:1:9:98",
+        "string:1:33:N", "string:1:32:N", "string:1:84:P", "price:1:6:102", "price:1:7:99", "price:1:9:98",
         "size:1:8:50", "end:1",
     ]);
     // Done: a cancel now is for an unknown request.
@@ -7073,7 +7075,7 @@ fn stock_stream_gives_the_last_trade_exchange_when_it_changes() {
         ..Default::default() };
     client.req_mkt_data(1, &aapl, "", false, false).unwrap();
     let (mut q, _) = aapl_join_messages();
-    q.last_exch_mask = 2;
+    q.last_exch_mask = 1;
     let whole = TestMessage { steps: Some(&[MdStep::CatchUp]), halted: Some(0), sizes_seen: true, ..Default::default() };
     shared.market.push_test_message(5, &q, &whole);
     client.core.join_stream(1, shared.market.md_events.head());
@@ -7085,7 +7087,7 @@ fn stock_stream_gives_the_last_trade_exchange_when_it_changes() {
 
     // A trade on another exchange: time, exchange, then price.
     let trade = [MdStep::Time, MdStep::Exchange, MdStep::Last];
-    q.last_exch_mask = 4;
+    q.last_exch_mask = 2;
     q.last = q.last + crate::types::PRICE_SCALE / 100;
     q.timestamp_ns += 1_000_000_000;
     shared.market.push_test_message(5, &q, &TestMessage { steps: Some(&trade), sizes_seen: true, ..Default::default() });

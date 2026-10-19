@@ -213,7 +213,10 @@ pub(crate) fn replay_market_data_read(
     s.settle();
     s.read();
     let wanted = |line: &String| keep.iter().any(|k| line.split('|').next() == Some(*k));
-    let ours = s.callbacks.iter().filter(|l| wanted(l)).cloned().collect();
+    // The codec fixtures are 10.40 recordings: 10.40 gives no last trade's
+    // exchange (tick 84), left out as in the scenario replays (ibx#638).
+    let last_exchange = |line: &String| line.starts_with("tickString|") && line.split('|').nth(2) == Some("84");
+    let ours = s.callbacks.iter().filter(|l| wanted(l) && !last_exchange(l)).cloned().collect();
     let theirs = theirs.into_iter().filter(wanted).collect();
     Replayed { ours, theirs, unsent, requests_theirs, session: s }
 }

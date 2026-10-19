@@ -122,6 +122,8 @@ pub struct Quote {
     /// Hypothesis pending wire-format confirmation; see deepentropy/ib-agent#120.
     pub bid_exch_mask: i64,
     pub ask_exch_mask: i64,
+    /// The last trade's exchange: one exchange, its bit number in the
+    /// exchange map (not a mask, ibx#604).
     pub last_exch_mask: i64,
 }
 
