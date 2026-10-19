@@ -77,6 +77,11 @@ const FIRST_PASS: Duration = Duration::from_millis(1000);
 const CLOCK: Duration = Duration::from_secs(2);
 /// The pass after the requests moved onto the frozen slot (ibx#494).
 const SWITCH_PASS: Duration = Duration::from_millis(250);
+/// The second pass after a switch: tick 13 again, now with the dividends
+/// (ibx#494; the reference 10.51, paper, 14/10 after hours and 15/10/2026
+/// before the open, case C: the first without them, the complete one
+/// 0.37 s later).
+const SWITCH_SECOND_PASS: Duration = Duration::from_millis(370);
 /// The first pass of a model that starts from the values kept from an
 /// earlier request of the option, after the request's first data (ibx#646).
 const KEPT_PASS: Duration = Duration::from_millis(150);
@@ -164,6 +169,9 @@ pub(crate) struct OptionModel {
     /// Its own greeks came before its first pass: a second pass right
     /// after it.
     own_pending: bool,
+    /// Its requests moved onto the frozen slot: the next pass gives tick
+    /// 13 without the dividends, a second one the complete tick (ibx#494).
+    switch_first: bool,
     /// The price tick of the underlying's kept quote.
     kept_tick: f64,
     /// Started by an order on that exchange (ibx#693): the engine's own
@@ -569,7 +577,7 @@ impl OptMd {
             instrument, snapshot, terms, opt_farm, under_farm, entries, vols_sent: false,
             under_bid: None, under_ask: None, under_last: None, under_wire: [None; 4], under_auto: None, under_trade: None,
             state: market::ModelState::default(), next_pass: None, passes: 0, sent: [None; 4], frozen: false,
-            frozen_asked: false, again: false, seeded: false, kept_wait: false, own_wait: false, own_pending: false, kept_tick: 0.0,
+            frozen_asked: false, again: false, seeded: false, kept_wait: false, own_wait: false, own_pending: false, switch_first: false, kept_tick: 0.0,
             order,
         };
         // An option whose model ran earlier in the session: the new model
@@ -987,6 +995,7 @@ impl OptMd {
         for m in self.models.iter_mut().filter(|m| m.instrument == instrument) {
             m.sent = [None; 4];
             m.next_pass = Some(now + SWITCH_PASS);
+            m.switch_first = true;
         }
     }
 
@@ -1028,6 +1037,15 @@ impl OptMd {
                 continue;
             }
             let q = context.quote(slot);
+            let on_frozen_slot = slot != m.instrument;
+            // On the frozen slot the pass waits for the frozen image: tick
+            // 13 comes after it (ibx#494; the reference 10.51, paper, case
+            // B on 14/10 after hours and 15/10/2026 before the open: 0.45
+            // to 0.5 s after the image; ibx gave it before).
+            if on_frozen_slot && q.bid <= 0 && q.ask <= 0 {
+                m.next_pass = Some(now + KEPT_POLL);
+                continue;
+            }
             let px = |v: i64| (v > 0).then(|| v as f64 / PRICE_SCALE as f64);
             let (bid, ask, last) = (px(q.bid), px(q.ask), px(q.last));
             let under = m.under_price();
@@ -1037,8 +1055,8 @@ impl OptMd {
             // before the open: a snapshot ticks 13, 11 and 12 with greeks,
             // two streams tick 13 only; in real-time mode, 12/10 and
             // 13/10/2026, a stream none and a snapshot tick 13).
-            let on_frozen_slot = slot != m.instrument;
             let frozen = m.frozen && !(on_frozen_slot && m.snapshot);
+            let switch_first = std::mem::take(&mut m.switch_first);
             let form = if frozen {
                 market::Form::Volatility
             } else if m.passes > 0 || m.seeded {
@@ -1051,7 +1069,8 @@ impl OptMd {
             let (terms, st) = (&m.terms, &m.state);
             inputs(terms, &mut |inp| {
                 let pv = market::pv_dividend(terms, under.unwrap_or(f64::NAN), inp);
-                comps.push(market::model_computation(st, pv, snapshot));
+                let model_pv = if switch_first { crate::control::optcalc::NOT_COMPUTED } else { pv };
+                comps.push(market::model_computation(st, model_pv, snapshot));
                 comps.push(market::side_computation(market::BID, terms, st.bid_vol, bid, under, pv, inp, form));
                 comps.push(market::side_computation(market::ASK, terms, st.ask_vol, ask, under, pv, inp, form));
                 comps.push(market::side_computation(market::LAST, terms, st.last_vol, last, under, pv, inp, form));
@@ -1100,6 +1119,9 @@ impl OptMd {
             m.next_pass = Some(tick_after(origin, now));
             if std::mem::take(&mut m.own_pending) {
                 m.next_pass = Some(now);
+            }
+            if switch_first {
+                m.next_pass = Some(now + SWITCH_SECOND_PASS);
             }
             for (code, ticks) in [(market::COMPUTATIONS, sent), (market::COMPUTATIONS_KEPT, kept)] {
                 if !ticks.is_empty() {
@@ -1267,6 +1289,46 @@ mod clock_tests {
         // A pass done late stays on the clock.
         run(&mut md, &context, &shared, base + CLOCK * 5 + ms(40));
         assert_eq!(md.models.iter().map(|m| m.next_pass).collect::<Vec<_>>(), [Some(base + CLOCK * 6); 2]);
+    }
+
+    // ibx#494 (the reference 10.51, paper, case B on 14/10 after hours and
+    // 15/10/2026 before the open): on the frozen slot the pass waits for
+    // the frozen image, so tick 13 comes after it.
+    #[test]
+    fn a_model_on_the_frozen_slot_waits_for_the_frozen_image() {
+        let base = Instant::now();
+        let (mut md, mut context, shared, ids) = setup(base, &[(OPT_A, true)]);
+        let slot = context.market.register(OPT_A + 1_000_000);
+        md.models[0].next_pass = Some(base);
+        let to_slot = |i: InstrumentId| if i == ids[0] { slot } else { i };
+        md.passes(base, &context, &shared, to_slot, |_, f| f(None));
+        assert!(given(&shared).is_empty(), "no image yet");
+        assert_eq!(md.models[0].next_pass, Some(base + KEPT_POLL));
+        let q = context.market.quote_mut(slot);
+        q.bid = 9280 * PRICE_SCALE / 100;
+        q.ask = 9555 * PRICE_SCALE / 100;
+        md.passes(base + KEPT_POLL, &context, &shared, to_slot, |_, f| f(None));
+        assert_eq!(md.models[0].passes, 1, "the pass once the image came");
+    }
+
+    // ibx#494 (the reference 10.51, paper, case C on 14/10 after hours and
+    // 15/10/2026 before the open): after requests moved onto the frozen
+    // slot, tick 13 first without the dividends, then complete 0.37 s
+    // later.
+    #[test]
+    fn after_a_switch_tick_13_comes_without_then_with_the_dividends() {
+        let base = Instant::now();
+        let (mut md, context, shared, ids) = setup(base, &[(OPT_A, false)]);
+        md.models[0].state.greeks = Some(market::ServerGreeks { price: 94.0, delta: 0.99, gamma: 0.0004, vega: 0.02, theta: -0.01 });
+        md.switched(ids[0], base);
+        run(&mut md, &context, &shared, base + SWITCH_PASS);
+        let ticks = shared.market.take_generic_ticks(u64::MAX);
+        let model = ticks.iter().flat_map(|g| g.ticks.iter())
+            .find_map(|t| if let crate::control::generic_values::GenTick::Option(c) = t { (c.tick_type == market::MODEL).then_some(*c) } else { None })
+            .expect("tick 13");
+        assert_eq!(model.pv_dividend, crate::control::optcalc::NOT_COMPUTED);
+        assert_eq!(md.models[0].next_pass, Some(base + SWITCH_PASS + SWITCH_SECOND_PASS), "the complete one next");
+        assert!(!md.models[0].switch_first);
     }
 
     // A new model's snapshot: its first pass when the model greeks came,
