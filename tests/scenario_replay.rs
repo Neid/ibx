@@ -188,6 +188,19 @@ fn overnight_time_in_force() {
     assert!(o.theirs.iter().any(|(_, l)| l.starts_with("error|2|10329|")));
 }
 
+// The same orders on the reference 10.51, the official client at level 225
+// (19/10/2026, overnight session, ibx#604): the OVERNIGHT and OVERNIGHT +
+// DAY time in force texts refused with 10052 whatever the exchange; a DAY
+// order with includeOvernight placed, changed and cancelled.
+#[test]
+fn overnight_time_in_force_on_10_51() {
+    for name in ["i196_overnight_smart", "i196_overnight_exch", "i196_overnight_day"] {
+        let o = check(&format!("gw1051/20261019ov/{name}"), orders());
+        assert!(o.theirs.iter().any(|(_, l)| l.contains("|10052|")), "{name}");
+    }
+    check("gw1051/20261019ov/i196_day_include_overnight", orders());
+}
+
 // The session's order types (28/09/2026, RTH): SPY and QQQ top of book,
 // contract details, PEG BENCH with its replace and cancel, the OVERNIGHT
 // orders, up to the second SPY request (src/golden/l1.rs

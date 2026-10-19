@@ -3319,6 +3319,9 @@ fn modify_fields(
     if let Some(o) = trail_offset { f.push((6370, o)); }
     // The orderRef, restated on every replace (ibx#466).
     if !attrs.order_ref.is_empty() { f.push((6010, attrs.order_ref.clone())); }
+    // includeOvernight, restated on a replace (ibx#604; the reference 10.51,
+    // paper, 19/10/2026 overnight).
+    if attrs.include_overnight { f.push((8534, "1".to_string())); }
     f.push((6122, "c".to_string()));
     // The bracket key, restated on every replace (ibx#248), as the
     // reference.
@@ -11279,7 +11282,7 @@ mod tests {
             let replace = get(&captured, 35).as_deref() == Some("G");
             let id: OrderId = 70;
             let req = if replace {
-                match crate::client_core::ClientCore::build_modify_request(&order, id, &order) {
+                match crate::client_core::ClientCore::build_modify_request(&order, id, &order, false) {
                     Ok(crate::client_core::ModifyPlan::Send(crate::types::ControlCommand::Order(r))) => r,
                     Ok(crate::client_core::ModifyPlan::Refused { code, message }) => panic!("{src}: {frame}: {code} {message}"),
                     Ok(_) => panic!("{src}: {frame}: not a replace"),

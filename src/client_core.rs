@@ -4797,8 +4797,13 @@ impl ClientCore {
                     order.aux_price = order.starting_price;
                 }
                 let dropped = self.rth_dropped.lock().unwrap().contains(&order_id);
+                // An order with includeOvernight shows outside RTH on 10.51
+                // (ibx#604; the reference 10.51, paper, 19/10/2026 overnight:
+                // a DAY SPY order with it, every openOrder; 10.40 showed it
+                // off, captured 28/09/2026).
                 order.outside_rth = (order.outside_rth && !dropped)
-                    || info.as_ref().is_some_and(|i| i.order.outside_rth);
+                    || info.as_ref().is_some_and(|i| i.order.outside_rth)
+                    || (order.include_overnight && !shared.reference.form_10_40());
                 // The hedge as the reference shows it (ibx#614; paper,
                 // 16/10/2026): the parameter of a beta or pair hedge as a
                 // decimal number ("1.0", "0.5"), the max size of a beta
@@ -8094,10 +8099,15 @@ impl ClientCore {
     /// order held as DAY, and any other time in force on an order held as
     /// OVERNIGHT + DAY. Error 462 with the new time in force; other changes
     /// (DAY to GTC, ib-agent#192 A4a) go out. `held` is the tracked order's.
-    pub fn modify_tif_refusal(order: &ApiOrder, held: &str) -> Option<(i64, String)> {
+    pub fn modify_tif_refusal(order: &ApiOrder, held: &str, form_10_40: bool) -> Option<(i64, String)> {
         let new = if order.tif.is_empty() { "DAY" } else { order.tif.as_str() };
+        // DAY with includeOvernight restates an order held as OVERNIGHT +
+        // DAY: no change on 10.51 (ibx#604; the reference 10.51, paper,
+        // 19/10/2026 overnight: the modify sent); 10.40 refused it (captured
+        // 28/09/2026).
+        let compared = if new == "DAY" && order.include_overnight && !form_10_40 { TIF_OVERNIGHT_DAY } else { new };
         let overnight = |t: &str| t == TIF_OVERNIGHT || t == TIF_OVERNIGHT_DAY;
-        (new != held && (overnight(new) || overnight(held))).then(|| {
+        (compared != held && (overnight(new) || overnight(held))).then(|| {
             (462, format!("Order modify failed. Cannot change to the new Time in Force.{}", new))
         })
     }
@@ -8132,6 +8142,7 @@ impl ClientCore {
         order: &ApiOrder,
         order_id: OrderId,
         working: &ApiOrder,
+        form_10_40: bool,
     ) -> Result<ModifyPlan, String> {
         if let Some((code, message)) = Self::modify_change_refusal(order, working) {
             return Ok(ModifyPlan::Refused { code, message });
@@ -8145,7 +8156,7 @@ impl ClientCore {
                 ),
             });
         }
-        if let Some((code, message)) = Self::modify_tif_refusal(order, &working.tif) {
+        if let Some((code, message)) = Self::modify_tif_refusal(order, &working.tif, form_10_40) {
             return Ok(ModifyPlan::Refused { code, message });
         }
         Ok(ModifyPlan::Send(ControlCommand::Order(OrderRequest::Modify {
@@ -10331,11 +10342,11 @@ mod tests {
         let adaptive = ApiOrder { algo_strategy: "Adaptive".into(),
             algo_params: vec![crate::api::types::TagValue { tag: "adaptivePriority".into(), value: "Urgent".into() }], ..lmt(100.0) };
         let Ok(ModifyPlan::Send(ControlCommand::Order(OrderRequest::Modify { attrs, .. }))) =
-            ClientCore::build_modify_request(&adaptive, 5, &adaptive) else { panic!("not a modify") };
+            ClientCore::build_modify_request(&adaptive, 5, &adaptive, false) else { panic!("not a modify") };
         assert!(matches!(attrs.algo, Some(OrderAlgo::Adaptive(AdaptivePriority::Urgent))), "{:?}", attrs.algo);
         let rel = ApiOrder { order_type: "REL".into(), aux_price: 0.01, ..lmt(250.0) };
         let Ok(ModifyPlan::Send(ControlCommand::Order(OrderRequest::Modify { kind, .. }))) =
-            ClientCore::build_modify_request(&rel, 6, &rel) else { panic!("not a modify") };
+            ClientCore::build_modify_request(&rel, 6, &rel, false) else { panic!("not a modify") };
         assert!(matches!(kind, OrderKind::Rel { price, offset } if price == 250 * crate::types::PRICE_SCALE && offset == crate::types::PRICE_SCALE / 100), "{kind:?}");
         let Ok(ControlCommand::Order(OrderRequest::SubmitEx { kind, .. })) = ClientCore::build_order_request(&rel, 7, 0) else {
             panic!("a REL with a price cap takes the extended path");

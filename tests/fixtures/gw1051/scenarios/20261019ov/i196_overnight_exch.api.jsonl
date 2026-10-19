@@ -1,0 +1,11 @@
+{"type":"header","format":"four-leg-api/1","source":"20261019ov/i196_overnight_exch.jsonl","scenario":"i196_overnight_exch","decoder":"official client library 10.46.01","machine_zone":"Europe/Paris"}
+{"seq":1748,"leg":"api_out","msg_name":"START_API","request":{"clientId":198}}
+{"seq":1749,"leg":"api_in","msg_name":"MANAGED_ACCTS","callbacks":[["managedAccounts","DUXXXXXXX"]]}
+{"seq":1750,"leg":"api_in","msg_name":"NEXT_VALID_ID","callbacks":[["nextValidId",158421]]}
+{"seq":1751,"leg":"api_in","msg_name":"ERR_MSG","callbacks":[["error",-1,null,2104,"Market data farm connection is OK:usfarm",""]]}
+{"seq":1752,"leg":"api_in","msg_name":"ERR_MSG","callbacks":[["error",-1,null,2106,"HMDS data farm connection is OK:ushmds",""]]}
+{"seq":1753,"leg":"api_in","msg_name":"ERR_MSG","callbacks":[["error",-1,null,2158,"Sec-def data farm connection is OK:secdefil",""]]}
+{"seq":1754,"leg":"api_out","msg_name":"PLACE_ORDER","request":{"orderId":158421,"contract":{"symbol":"SPY","secType":"STK","exchange":"OVERNIGHT","currency":"USD"},"order":{"softDollarTier":{},"orderId":158421,"action":"BUY","totalQuantity":"1","orderType":"LMT","lmtPrice":713.25,"tif":"OVERNIGHT","orderRef":"fourleg"},"attachedOrders":{}}}
+{"seq":1755,"leg":"api_in","msg_name":"ERR_MSG","callbacks":[["error",158421,null,10052,"Invalid time in force:OVERNIGHT",""]]}
+{"seq":1799,"leg":"api_out","msg_name":"CANCEL_ORDER","request":{"orderId":158421,"orderCancel":{}}}
+{"seq":1800,"leg":"api_in","msg_name":"ERR_MSG","callbacks":[["error",158421,null,10147,"OrderId 158421 that needs to be cancelled is not found.",""]]}

@@ -169,7 +169,7 @@ impl EClient {
             }
         }
         let cmd = if let Some(working) = working {
-            match ClientCore::build_modify_request(&sent, oid, &working)? {
+            match ClientCore::build_modify_request(&sent, oid, &working, self.shared.reference.form_10_40())? {
                 ModifyPlan::Send(cmd) => cmd,
                 ModifyPlan::Refused { code, message } => {
                     // Refused before sending, like the reference: the caller

@@ -151,7 +151,7 @@ impl EClient {
             }
         }
         let cmd = if let Some(working) = working {
-            match ClientCore::build_modify_request(&sent, oid, &working)
+            match ClientCore::build_modify_request(&sent, oid, &working, shared.reference.form_10_40())
                 .map_err(|e| PyRuntimeError::new_err(e))?
             {
                 ModifyPlan::Send(cmd) => cmd,
