@@ -1,0 +1,31 @@
+{"type":"header","format":"four-leg-api/1","source":"20261019b1/b1_458_news_dup.jsonl","scenario":"b1_458_news_dup","decoder":"official client library 10.46.01","machine_zone":"Europe/Paris"}
+{"seq":16127,"leg":"api_out","msg_name":"START_API","request":{"clientId":198}}
+{"seq":16128,"leg":"api_in","msg_name":"MANAGED_ACCTS","callbacks":[["managedAccounts","DUXXXXXXX"]]}
+{"seq":16129,"leg":"api_in","msg_name":"NEXT_VALID_ID","callbacks":[["nextValidId",158444]]}
+{"seq":16130,"leg":"api_in","msg_name":"ERR_MSG","callbacks":[["error",-1,null,2104,"Market data farm connection is OK:usfarm",""]]}
+{"seq":16131,"leg":"api_in","msg_name":"ERR_MSG","callbacks":[["error",-1,null,2106,"HMDS data farm connection is OK:cashhmds",""]]}
+{"seq":16132,"leg":"api_out","msg_name":"REQ_MKT_DATA","request":{"reqId":9580,"contract":{"conId":0,"symbol":"AAPL","secType":"STK","exchange":"SMART","currency":"USD"},"genericTickList":"mdoff,292"}}
+{"seq":16133,"leg":"api_in","msg_name":"ERR_MSG","callbacks":[["error",-1,null,2106,"HMDS data farm connection is OK:ushmds",""]]}
+{"seq":16134,"leg":"api_in","msg_name":"ERR_MSG","callbacks":[["error",-1,null,2158,"Sec-def data farm connection is OK:secdefil",""]]}
+{"seq":16142,"leg":"api_in","msg_name":"TICK_REQ_PARAMS","callbacks":[["tickReqParams",9580,0.01,"9c0001",3]]}
+{"seq":16164,"leg":"api_in","msg_name":"MARKET_DATA_TYPE","callbacks":[["marketDataType",9580,1]]}
+{"seq":16204,"leg":"api_in","msg_name":"TICK_NEWS","callbacks":[["tickNews",9580,1792185600000,"DJ-RTG","DJ-RTG$1f94628a","Tech Stocks Zig-and Apple Zags -- WSJ","A:800015:L:en"]]}
+{"seq":16229,"leg":"api_out","msg_name":"REQ_MKT_DATA","request":{"reqId":9581,"contract":{"conId":0,"symbol":"AAPL","secType":"STK","exchange":"SMART","currency":"USD"},"genericTickList":"mdoff,292"}}
+{"seq":16237,"leg":"api_in","msg_name":"MARKET_DATA_TYPE","callbacks":[["marketDataType",9581,1]]}
+{"seq":16238,"leg":"api_in","msg_name":"TICK_REQ_PARAMS","callbacks":[["tickReqParams",9581,0.01,"9c0001",3]]}
+{"seq":16239,"leg":"api_in","msg_name":"TICK_NEWS","callbacks":[["tickNews",9581,1792185600000,"DJ-RTG","DJ-RTG$1f94628a","Tech Stocks Zig-and Apple Zags -- WSJ","A:800015:L:en"]]}
+{"seq":16240,"leg":"api_out","msg_name":"REQ_MKT_DATA","request":{"reqId":9582,"contract":{"conId":0,"symbol":"MSFT","secType":"STK","exchange":"SMART","currency":"USD"},"genericTickList":"mdoff,292:DJ-N"}}
+{"seq":16241,"leg":"api_out","msg_name":"REQ_MKT_DATA","request":{"reqId":9583,"contract":{"conId":0,"symbol":"NVDA","secType":"STK","exchange":"SMART","currency":"USD"},"genericTickList":"mdoff,292:XYZ"}}
+{"seq":16252,"leg":"api_in","msg_name":"TICK_REQ_PARAMS","callbacks":[["tickReqParams",9582,0.01,"9c0001",3]]}
+{"seq":16271,"leg":"api_in","msg_name":"ERR_MSG","callbacks":[["error",9583,null,10094,"API News error:Source code unchecked in API news Settings: XYZ",""]]}
+{"seq":16279,"leg":"api_in","msg_name":"MARKET_DATA_TYPE","callbacks":[["marketDataType",9582,1]]}
+{"seq":16325,"leg":"api_in","msg_name":"TICK_NEWS","callbacks":[["tickNews",9582,1792170240000,"DJ-N","DJ-N$1f93f3f1","Understanding the New Concerns in the AI Trade -- Barrons.com","A:800015:L:en"]]}
+{"seq":16326,"leg":"api_in","msg_name":"TICK_NEWS","callbacks":[["tickNews",9582,1792173660000,"DJ-N","DJ-N$1f93fbdf","Dow Down 266 Points On Losses For Shares Of Salesforce, Microsoft","A:800015:L:en"]]}
+{"seq":16327,"leg":"api_in","msg_name":"TICK_NEWS","callbacks":[["tickNews",9582,1792182840000,"DJ-N","DJ-N$1f9434bd","Hewlett Packard Enterprise Co. Stock Slips 6.0%, Underperforms Peers","A:800015:L:en"]]}
+{"seq":16328,"leg":"api_in","msg_name":"TICK_NEWS","callbacks":[["tickNews",9582,1792182900000,"DJ-N","DJ-N$1f9436b9","Oracle Corp. Stock Sheds 4.6%, Underperforms Peers","A:800015:L:en"]]}
+{"seq":16329,"leg":"api_in","msg_name":"TICK_NEWS","callbacks":[["tickNews",9582,1792315800000,"DJ-N","DJ-N$1f957796","The AI Stock Market Wobble Is a Reminder: This Time Isn't Different -- WSJ","A:800015:L:en"]]}
+{"seq":16439,"leg":"api_out","msg_name":"CANCEL_MKT_DATA","request":{"reqId":9580}}
+{"seq":16440,"leg":"api_out","msg_name":"CANCEL_MKT_DATA","request":{"reqId":9581}}
+{"seq":16441,"leg":"api_out","msg_name":"CANCEL_MKT_DATA","request":{"reqId":9582}}
+{"seq":16442,"leg":"api_out","msg_name":"CANCEL_MKT_DATA","request":{"reqId":9583}}
+{"seq":16471,"leg":"api_in","msg_name":"ERR_MSG","callbacks":[["error",9583,null,300,"Can't find EId with tickerId:9583",""]]}

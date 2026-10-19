@@ -229,6 +229,10 @@ class Driver:
         elif name == "REQ_TICK_BY_TICK_DATA":
             c.req_tick_by_tick_data(rid, make_contract(q["contract"]), q.get("tickType", ""), q.get("numberOfTicks", 0),
                                     q.get("ignoreSize", False))
+        elif name == "REQ_HISTORICAL_TICKS":
+            c.req_historical_ticks(rid, make_contract(q["contract"]), q.get("startDateTime", ""), q.get("endDateTime", ""),
+                                   q.get("numberOfTicks", 0), q.get("whatToShow", ""), int(q.get("useRTH", False)),
+                                   q.get("ignoreSize", False), [])
         elif name == "CANCEL_TICK_BY_TICK_DATA":
             c.cancel_tick_by_tick_data(rid)
         elif name == "REQ_REAL_TIME_BARS":
@@ -481,6 +485,38 @@ def test_directed_combo_without_definition_then_cancel():
 def test_historical_keep_up_to_date_then_cancel(name):
     out = replay(name)
     assert len(assert_same(out)) == 32
+
+
+# The pre-market order types on 10.51 at level 225 (19/10/2026, ibx#604): GTX
+# and NMIN refused at once with 10052, the other orders and their reports as
+# the reference. The market data requests between the orders are left out.
+def test_premarket_order_types_on_10_51():
+    import pathlib
+    name = "gw1051/20261019pre/premarket_order_types"
+    path = pathlib.Path(__file__).resolve().parents[1] / "fixtures/gw1051/scenarios/20261019pre/premarket_order_types"
+    md = [r["seq"] for r in map(json.loads, open(f"{path}.api.jsonl", encoding="utf-8"))
+          if r.get("msg_name") in ("REQ_MKT_DATA", "CANCEL_MKT_DATA", "REQ_MARKET_DATA_TYPE")]
+    keep = lambda l: not l.startswith("marketDataType") and not l.startswith("tick") and not l.startswith("error|9003|")
+    theirs = assert_same(replay(name, compare=["order"], skip_seqs=md), keep=keep)
+    assert any("|10052|Invalid time in force:GTX" in l for l in theirs)
+    assert any("|10052|Invalid time in force:NMIN" in l for l in theirs)
+
+
+# Historical ticks of AAPL (02/10/2026 on 10.40, 19/10/2026 on 10.51 at
+# level 225, pre-market, ibx#432, ibx#604): on 10.51 the trades the server
+# flags fractional are given in their fractional step (0.01734). The EUR.USD
+# requests go to the cash farm, which the replay does not run: left out.
+@pytest.mark.parametrize("name", ["gw1051/20261019b1/b1_432_hist_ticks", "20261002/b1_432_hist_ticks"])
+def test_historical_ticks(name):
+    import pathlib
+    root = pathlib.Path(__file__).resolve().parents[1] / "fixtures"
+    path = root / ("gw1051/scenarios/" + name[len("gw1051/"):] if name.startswith("gw1051/") else "gw1040/scenarios/" + name)
+    eur = [r["seq"] for r in map(json.loads, open(f"{path}.api.jsonl", encoding="utf-8"))
+           if r.get("msg_name") == "REQ_HISTORICAL_TICKS" and r["request"]["contract"]["symbol"] == "EUR"]
+    theirs = assert_same(replay(name, skip_seqs=eur))
+    assert any(l.startswith("historicalTicksLast|") for l in theirs)
+    if name.startswith("gw1051/"):
+        assert any("'size': '0.01734'" in l or '"size": "0.01734"' in l or "0.01734" in l for l in theirs)
 
 
 # The callback objects answer to the official client library's attribute

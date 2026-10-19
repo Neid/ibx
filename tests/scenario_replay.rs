@@ -153,17 +153,27 @@ fn oca_group_and_the_refused_second_cancel() {
 // each order event, the execution and commission of the fill, 104 for the
 // modify of the filled order. The market data requests between the orders
 // are left out (see `top_of_book_after_orders_on_the_contract`).
+// Recorded again on 10.51 at level 225 (19/10/2026, pre-market, ibx#604).
 #[test]
 fn premarket_order_types_and_order_events() {
-    let sc = load_scenario("20260928/premarket_order_types");
-    let md: Vec<u64> = sc.recs.iter()
-        .filter(|r| matches!(r.msg.as_str(), "REQ_MKT_DATA" | "CANCEL_MKT_DATA" | "REQ_MARKET_DATA_TYPE"))
-        .map(|r| r.seq).collect();
-    let o = check("20260928/premarket_order_types", orders().skip_seqs(&md)
-        .keep(|l| !l.starts_with("marketDataType") && !l.starts_with("tick") && !l.starts_with("error|9003|")));
-    assert!(o.frames_compared >= 25, "{}", o.frames_compared);
-    assert!(o.theirs.iter().any(|(_, l)| l.contains("|104|Cannot modify a filled order")));
-    assert!(o.theirs.iter().any(|(_, l)| l.starts_with("execDetails|")));
+    for name in ["gw1051/20261019pre/premarket_order_types", "20260928/premarket_order_types"] {
+        let sc = load_scenario(name);
+        let md: Vec<u64> = sc.recs.iter()
+            .filter(|r| matches!(r.msg.as_str(), "REQ_MKT_DATA" | "CANCEL_MKT_DATA" | "REQ_MARKET_DATA_TYPE"))
+            .map(|r| r.seq).collect();
+        let o = check(name, orders().skip_seqs(&md)
+            .keep(|l| !l.starts_with("marketDataType") && !l.starts_with("tick") && !l.starts_with("error|9003|")));
+        // 10.51 refuses GTX and NMIN at once with 10052 (two orders fewer).
+        assert!(o.frames_compared >= 23, "{name}: {}", o.frames_compared);
+        if name.starts_with("gw1051/") {
+            assert!(o.theirs.iter().any(|(_, l)| l.contains("|10052|Invalid time in force:GTX")), "{name}");
+        } else {
+            // The 10.51 run's marketable buy was not filled (04:49 New
+            // York): its fill and modify are `premarket_fill_then_modify_on_10_51`.
+            assert!(o.theirs.iter().any(|(_, l)| l.contains("|104|Cannot modify a filled order")), "{name}");
+            assert!(o.theirs.iter().any(|(_, l)| l.starts_with("execDetails|")), "{name}");
+        }
+    }
 }
 
 // The market data part of the same scenario: AAPL top of book after the
@@ -173,9 +183,11 @@ fn premarket_order_types_and_order_events() {
 // before (ibx#487: they went to the orders' slot).
 #[test]
 fn top_of_book_after_orders_on_the_contract() {
-    check("20260928/premarket_order_types", Options::default().mask(known)
-        .skip_seqs(&[21961, 21962, 22575, 22576]).until(22599)
-        .keep(|l| !["9002", "9003"].contains(&l.split('|').nth(1).unwrap_or(""))));
+    for (name, skip, until) in [("gw1051/20261019pre/premarket_order_types", [2167, 2168, 2706, 2707], 2773),
+        ("20260928/premarket_order_types", [21961, 21962, 22575, 22576], 22599)] {
+        check(name, Options::default().mask(known).skip_seqs(&skip).until(until)
+            .keep(|l| !["9002", "9003"].contains(&l.split('|').nth(1).unwrap_or(""))));
+    }
 }
 
 // OVERNIGHT time in force (28/09/2026): the orders and the refused change
@@ -415,8 +427,10 @@ fn historical_keep_up_to_date_then_cancel() {
 // `keep_up_to_date_update_order`).
 #[test]
 fn keep_up_to_date_bars_and_first_updates() {
-    let o = check("20261002/b1_429_keep_up_to_date", Options::default().until(3650));
-    assert!(o.theirs.iter().any(|(_, l)| l.starts_with("historicalDataUpdate|9533|")));
+    for (name, until) in [("gw1051/20261019b1/b1_429_keep_up_to_date", 3770), ("20261002/b1_429_keep_up_to_date", 3650)] {
+        let o = check(name, Options::default().until(until));
+        assert!(o.theirs.iter().any(|(_, l)| l.starts_with("historicalDataUpdate|9533|")), "{name}");
+    }
 }
 
 // The later rounds of updates, the cancels and the refusals: the
@@ -431,17 +445,21 @@ fn keep_up_to_date_bars_and_first_updates() {
 // both sides.
 #[test]
 fn keep_up_to_date_update_order() {
-    let o = check("20261002/b1_429_keep_up_to_date", Options::default().lookups_at_their_point()
-        .keep(|l| !l.starts_with("error|9536|366|")));
-    assert!(o.theirs.iter().any(|(_, l)| l.starts_with("error|9535|366|")));
+    for name in ["gw1051/20261019b1/b1_429_keep_up_to_date", "20261002/b1_429_keep_up_to_date"] {
+        let o = check(name, Options::default().lookups_at_their_point()
+            .keep(|l| !l.starts_with("error|9536|366|")));
+        assert!(o.theirs.iter().any(|(_, l)| l.starts_with("error|9535|366|")), "{name}");
+    }
 }
 
 // Bars with formatDate 1 and 2, head timestamps (02/10/2026, ibx#431); the
 // second head timestamp answered from the store, with no query (ibx#486).
 #[test]
 fn historical_formats_and_head_timestamps() {
-    let o = check("20261002/b1_431_hist_format", Options::default());
-    assert!(o.theirs.iter().any(|(_, l)| l.starts_with("headTimestamp|9545|")));
+    for name in ["gw1051/20261019b1/b1_431_hist_format", "20261002/b1_431_hist_format"] {
+        let o = check(name, Options::default());
+        assert!(o.theirs.iter().any(|(_, l)| l.starts_with("headTimestamp|9545|")), "{name}");
+    }
 }
 
 // Historical ticks of AAPL: start, end, both, refusals, AGGTRADES
@@ -449,10 +467,12 @@ fn historical_formats_and_head_timestamps() {
 // the replay does not run: left out.
 #[test]
 fn historical_ticks() {
-    let sc = load_scenario("20261002/b1_432_hist_ticks");
-    let eur: Vec<u64> = sc.recs.iter().filter(|r| r.msg == "REQ_HISTORICAL_TICKS" && r.request["contract"]["symbol"] == "EUR")
-        .map(|r| r.seq).collect();
-    check("20261002/b1_432_hist_ticks", Options::default().skip_seqs(&eur));
+    for name in ["gw1051/20261019b1/b1_432_hist_ticks", "20261002/b1_432_hist_ticks"] {
+        let sc = load_scenario(name);
+        let eur: Vec<u64> = sc.recs.iter().filter(|r| r.msg == "REQ_HISTORICAL_TICKS" && r.request["contract"]["symbol"] == "EUR")
+            .map(|r| r.seq).collect();
+        check(name, Options::default().skip_seqs(&eur));
+    }
 }
 
 // Two scanner subscriptions, then their cancels (26/09/2026, ibx#457):
@@ -490,10 +510,12 @@ fn two_scanner_subscriptions_on_10_51() {
 // asked before is ibx#535: left out.
 #[test]
 fn news_ticks_twice() {
-    let o = check("20261002/b1_458_news_dup", Options::default().compare(&[MARKET_DATA, HISTORICAL])
-        .skip_frame(exchange_map).until(15737)
-        .keep(|l| !l.starts_with("marketDataType|") && !l.starts_with("tickReqParams|")));
-    assert_eq!(o.frames_compared, 4);
+    for (name, until) in [("gw1051/20261019b1/b1_458_news_dup", 16439), ("20261002/b1_458_news_dup", 15737)] {
+        let o = check(name, Options::default().compare(&[MARKET_DATA, HISTORICAL])
+            .skip_frame(exchange_map).until(until)
+            .keep(|l| !l.starts_with("marketDataType|") && !l.starts_with("tickReqParams|")));
+        assert_eq!(o.frames_compared, 4, "{name}");
+    }
 }
 
 fn dump(name: &str, o: &Outcome) {
@@ -579,18 +601,11 @@ fn tick_by_tick_types() {
 
 // Real-time bars of AAPL TRADES asked twice, MIDPOINT, AXTI TRADES (with
 // empty bars), then the cancel of the first (ibx#454). The average price
-// is compared to 12 decimals: one AXTI bar's differs by one unit in the
-// last place (84.90555555555557 for 84.90555555555555), an order of the
-// reference's arithmetic not read yet.
+// to its last digit: the reference computes it in 16-digit decimals
+// (84.90555555555557, ibx#604).
 #[test]
 fn real_time_bars_shared() {
-    check("20261005/b2_rtbars", Options::default().mask(|l| {
-        let mut f: Vec<String> = l.split('|').map(str::to_string).collect();
-        if f[0] == "realtimeBar" && f.len() == 10 && let Ok(w) = f[8].parse::<f64>() {
-            f[8] = format!("{w:.12}");
-        }
-        f.join("|")
-    }));
+    check("20261005/b2_rtbars", Options::default());
 }
 
 // Plain TRAIL orders, by amount and by percent: openOrder shows the stop
@@ -634,7 +649,7 @@ fn session_start_with_completed_orders() {
 }
 
 fn session_start(completed: bool) {
-    let core = |f: &Fields| f.iter().any(|(t, v)| *t == 6700 && v == "Core");
+    let core: fn(&Fields) -> bool = |f| f.iter().any(|(t, v)| *t == 6700 && v == "Core");
     fn left_out(l: &str) -> bool {
         l.starts_with("error|-1|2172|") || l.starts_with("pnl|") || l.starts_with("pnlSingle|") || l.starts_with("error|9831|2150|")
     }
@@ -643,12 +658,20 @@ fn session_start(completed: bool) {
     } else {
         |l| !left_out(l) && !l.starts_with("completedOrder|")
     };
-    let o = replay(&load_scenario("20261007/session_start"),
+    // Recorded again on 10.51 at level 225 (19/10/2026, pre-market, after
+    // a restart of the gateway, ibx#604).
+    for name in ["gw1051/20261019b4s/session_start", "20261007/session_start"] {
+        session_start_of(name, core, keep);
+    }
+}
+
+fn session_start_of(name: &str, core: fn(&Fields) -> bool, keep: fn(&str) -> bool) {
+    let o = replay(&load_scenario(name),
         &Options::default().compare(&[ORDER, SUBSCRIPTION]).skip_frame(core).keep(keep));
     if std::env::var_os("IBX_SCENARIO_DUMP").is_some() {
-        dump("20261007/session_start", &o);
+        dump(name, &o);
     }
-    assert_eq!(o.frame_error, None);
+    assert_eq!(o.frame_error, None, "{name}");
     let sorted = |lines: Vec<String>| {
         let mut lines = lines;
         if let (Some(a), Some(b)) = (lines.iter().position(|l| l.starts_with("position|")), lines.iter().position(|l| l == "positionEnd")) {
@@ -683,11 +706,19 @@ fn generic_ticks_one_by_one() {
         }
     }
     // The option chain request of the recording is not made by the replay.
-    let o = replay(&load_scenario("20261007/b4_generic_rest"), &Options::default().keep(generic));
-    assert_eq!((o.frame_error.as_deref(), o.frames_compared), (None, 36));
-    let theirs: Vec<String> = o.theirs.iter().map(|(_, l)| l.clone()).collect();
-    ibx::test_support::scenario::assert_same_callbacks(&o.ours, &theirs);
-    assert_eq!(o.ours.len(), 190);
+    // Recorded again on 10.51 at level 225 (19/10/2026, pre-market, ibx#604).
+    for name in ["gw1051/20261019b4/b4_generic_rest", "20261007/b4_generic_rest"] {
+        let o = replay(&load_scenario(name), &Options::default().keep(generic));
+        if std::env::var_os("IBX_SCENARIO_DUMP").is_some() {
+            dump(name, &o);
+        }
+        assert_eq!(o.frame_error.as_deref(), None, "{name}");
+        let theirs: Vec<String> = o.theirs.iter().map(|(_, l)| l.clone()).collect();
+        ibx::test_support::scenario::assert_same_callbacks(&o.ours, &theirs);
+        if name.starts_with("2026") {
+            assert_eq!((o.frames_compared, o.ours.len()), (36, 190));
+        }
+    }
 }
 
 // The same ticks in one list on AAPL (07/10/2026): the mark price and the
@@ -723,15 +754,23 @@ fn generic_ticks_in_one_list() {
             }
         }
     }
-    let o = replay(&load_scenario("20261007/b4_generic_rest2"),
-        &Options::default().until(9363).keep(generic).frame_mask(kept_before));
-    if std::env::var_os("IBX_SCENARIO_DUMP").is_some() {
-        dump("20261007/b4_generic_rest2", &o);
+    // Up to the SPY request. Recorded again on 10.51 at level 225
+    // (19/10/2026, pre-market, ibx#604): 10.51 refuses the list at once
+    // with 10358 (no fundamentals on the paper account), nothing sent.
+    for (name, until) in [("gw1051/20261019b4/b4_generic_rest2", 8213), ("20261007/b4_generic_rest2", 9363)] {
+        let o = replay(&load_scenario(name), &Options::default().until(until).keep(generic).frame_mask(kept_before));
+        if std::env::var_os("IBX_SCENARIO_DUMP").is_some() {
+            dump(name, &o);
+        }
+        assert_eq!(o.frame_error, None, "{name}");
+        let theirs: Vec<String> = o.theirs.iter().map(|(_, l)| l.clone()).collect();
+        ibx::test_support::scenario::assert_same_callbacks(&o.ours, &theirs);
+        if name.starts_with("gw1051/") {
+            assert!(o.ours.iter().any(|l| l.starts_with("error|9740|10358|")), "{name}: {:?}", o.ours);
+        } else {
+            assert!(o.ours.len() >= 5, "{name}: {:?}", o.ours);
+        }
     }
-    assert_eq!(o.frame_error, None);
-    let theirs: Vec<String> = o.theirs.iter().map(|(_, l)| l.clone()).collect();
-    ibx::test_support::scenario::assert_same_callbacks(&o.ours, &theirs);
-    assert!(o.ours.len() >= 5, "{:?}", o.ours);
 }
 
 // A market-to-limit BUY 1 SPY filled before its cancel, then a market SELL

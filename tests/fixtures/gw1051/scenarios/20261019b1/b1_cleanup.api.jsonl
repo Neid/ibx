@@ -1,0 +1,17 @@
+{"type":"header","format":"four-leg-api/1","source":"20261019b1/b1_cleanup.jsonl","scenario":"b1_cleanup","decoder":"official client library 10.46.01","machine_zone":"Europe/Paris"}
+{"seq":15482,"leg":"api_out","msg_name":"START_API","request":{"clientId":198}}
+{"seq":15483,"leg":"api_in","msg_name":"MANAGED_ACCTS","callbacks":[["managedAccounts","DUXXXXXXX"]]}
+{"seq":15484,"leg":"api_in","msg_name":"NEXT_VALID_ID","callbacks":[["nextValidId",158440]]}
+{"seq":15485,"leg":"api_in","msg_name":"ERR_MSG","callbacks":[["error",-1,null,2104,"Market data farm connection is OK:usfarm",""]]}
+{"seq":15486,"leg":"api_in","msg_name":"ERR_MSG","callbacks":[["error",-1,null,2106,"HMDS data farm connection is OK:cashhmds",""]]}
+{"seq":15487,"leg":"api_out","msg_name":"REQ_ALL_OPEN_ORDERS","request":{}}
+{"seq":15488,"leg":"api_in","msg_name":"ERR_MSG","callbacks":[["error",-1,null,2106,"HMDS data farm connection is OK:ushmds",""]]}
+{"seq":15489,"leg":"api_in","msg_name":"ERR_MSG","callbacks":[["error",-1,null,2158,"Sec-def data farm connection is OK:secdefil",""]]}
+{"seq":15490,"leg":"api_in","msg_name":"OPEN_ORDER_END","callbacks":[["openOrderEnd"]]}
+{"seq":15491,"leg":"api_out","msg_name":"REQ_POSITIONS","request":{}}
+{"seq":15492,"leg":"api_in","msg_name":"POSITION_DATA","callbacks":[["position","DUXXXXXXX",{"conId":4726868,"symbol":"AXTI","secType":"STK","strike":0.0,"exchange":"NASDAQ","currency":"USD","localSymbol":"AXTI","tradingClass":"NMS"},"1",44.8]]}
+{"seq":15493,"leg":"api_in","msg_name":"POSITION_DATA","callbacks":[["position","DUXXXXXXX",{"conId":272093,"symbol":"MSFT","secType":"STK","strike":0.0,"exchange":"NASDAQ","currency":"USD","localSymbol":"MSFT","tradingClass":"NMS"},"-10",482.08897]]}
+{"seq":15494,"leg":"api_in","msg_name":"POSITION_DATA","callbacks":[["position","DUXXXXXXX",{"conId":756733,"symbol":"SPY","secType":"STK","strike":0.0,"exchange":"ARCA","currency":"USD","localSymbol":"SPY","tradingClass":"SPY"},"79",775.57342025]]}
+{"seq":15495,"leg":"api_in","msg_name":"POSITION_DATA","callbacks":[["position","DUXXXXXXX",{"conId":9579970,"symbol":"IWM","secType":"STK","strike":0.0,"exchange":"ARCA","currency":"USD","localSymbol":"IWM","tradingClass":"IWM"},"-20",277.144285]]}
+{"seq":15496,"leg":"api_in","msg_name":"POSITION_END","callbacks":[["positionEnd"]]}
+{"seq":15497,"leg":"api_out","msg_name":"CANCEL_POSITIONS","request":{}}
