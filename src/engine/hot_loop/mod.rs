@@ -9143,9 +9143,19 @@ mod depth_tests {
     // reference did not send it; the engine does.
     #[test]
     fn smart_depth_status_as_the_reference() {
+        smart_depth_status_of("gw1040/scenarios/20260928/depth_smart_status.jsonl");
+    }
+
+    // The same on 10.51 at level 225 (19/10/2026, regular hours, ibx#604).
+    #[test]
+    fn smart_depth_status_on_10_51() {
+        smart_depth_status_of("gw1051/scenarios/20261019rth/depth_smart_status.jsonl");
+    }
+
+    fn smart_depth_status_of(fixture: &str) {
         use base64::Engine as _;
         let b64 = |v: &serde_json::Value| base64::engine::general_purpose::STANDARD.decode(v.as_str().unwrap()).unwrap();
-        let path = format!("{}/tests/fixtures/gw1040/scenarios/20260928/depth_smart_status.jsonl", env!("CARGO_MANIFEST_DIR"));
+        let path = format!("{}/tests/fixtures/{fixture}", env!("CARGO_MANIFEST_DIR"));
         let text = std::fs::read_to_string(path).unwrap();
         let recs: Vec<serde_json::Value> = text.lines().skip(1).map(|l| serde_json::from_str(l).unwrap()).collect();
         let shared = Arc::new(SharedState::new());

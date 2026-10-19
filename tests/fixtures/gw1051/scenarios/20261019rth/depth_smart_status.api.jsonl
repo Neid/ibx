@@ -1,0 +1,12 @@
+{"type":"header","format":"four-leg-api/1","source":"20261019rth/depth_smart_status.jsonl","scenario":"i192_e4_depth_deletes","decoder":"official client library 10.46.01","machine_zone":"Europe/Paris"}
+{"seq":2592,"leg":"api_in","msg_name":"ERR_MSG","callbacks":[["error",-1,null,2104,"Market data farm connection is OK:usfarm",""]]}
+{"seq":2593,"leg":"api_in","msg_name":"ERR_MSG","callbacks":[["error",-1,null,2106,"HMDS data farm connection is OK:ushmds",""]]}
+{"seq":2594,"leg":"api_in","msg_name":"ERR_MSG","callbacks":[["error",-1,null,2158,"Sec-def data farm connection is OK:secdefil",""]]}
+{"seq":2595,"leg":"api_out","msg_name":"REQ_MKT_DEPTH","request":{"reqId":9460,"contract":{"conId":0,"symbol":"AAPL","secType":"STK","exchange":"SMART","currency":"USD"},"numRows":50,"isSmartDepth":true}}
+{"seq":3363,"leg":"api_in","msg_name":"ERR_MSG","callbacks":[["error",-1,null,2119,"Market data farm is connecting:usfarm.nj",""]]}
+{"seq":3757,"leg":"api_in","msg_name":"ERR_MSG","callbacks":[["error",-1,null,2104,"Market data farm connection is OK:usfarm.nj",""]]}
+{"seq":3814,"leg":"api_in","msg_name":"ERR_MSG","callbacks":[["error",9460,null,2152,"Exchanges - Depth: IEX; Top: BYX; AMEX; PEARL; T24X; MEMX; EDGEA; OVERNIGHT; TXSE; CHX; NYSENAT; IBEOS; PSX; LTSE; ISE; DRCTEDGE; Need additional market data permissions - Depth: NASDAQ; BATS; ARCA; BEX; NYSE; ",""]]}
+{"seq":49116,"leg":"api_out","msg_name":"CANCEL_MKT_DEPTH","request":{"reqId":9460,"isSmartDepth":true}}
+{"seq":49227,"leg":"api_out","msg_name":"REQ_MKT_DEPTH","request":{"reqId":9461,"contract":{"conId":0,"symbol":"AXTI","secType":"STK","exchange":"SMART","currency":"USD"},"numRows":10,"isSmartDepth":true}}
+{"seq":49626,"leg":"api_in","msg_name":"ERR_MSG","callbacks":[["error",9461,null,2152,"Exchanges - Depth: IEX; Top: BYX; PEARL; AMEX; T24X; MEMX; OVERNIGHT; EDGEA; TXSE; CHX; IBEOS; NYSENAT; PSX; LTSE; ISE; DRCTEDGE; Need additional market data permissions - Depth: NASDAQ; BATS; ARCA; BEX; NYSE; ",""]]}
+{"seq":55285,"leg":"api_out","msg_name":"CANCEL_MKT_DEPTH","request":{"reqId":9461,"isSmartDepth":true}}
