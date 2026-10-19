@@ -773,6 +773,20 @@ fn generic_ticks_in_one_list() {
     }
 }
 
+// The same list without 258 on 10.51 at level 225 (19/10/2026, pre-market,
+// ibx#604; with 258 the paper account refuses the list with 10358): AAPL,
+// the first market data request of its process, up to the SPY request,
+// then SPY. Every tick and error compared.
+#[test]
+fn generic_ticks_in_one_list_on_10_51() {
+    fn generic(l: &str) -> bool {
+        let f: Vec<&str> = l.split('|').collect();
+        matches!(f[0], "error" | "tickPrice" | "tickSize" | "tickString" | "tickGeneric")
+    }
+    let o = check("gw1051/20261019b4l/b4_generic_rest3", Options::default().keep(generic));
+    assert!(o.theirs.iter().any(|(_, l)| l.starts_with("tickPrice|9790|37|")), "{:?}", o.theirs);
+}
+
 // A market-to-limit BUY 1 SPY filled before its cancel, then a market SELL
 // 1 back, with reqPositions running (15/10/2026 in RTH, the reference 10.51
 // at level 214, ibx#515, ibx#707): the cancel refused at once with 10148

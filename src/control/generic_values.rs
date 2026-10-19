@@ -64,7 +64,8 @@ pub const SLOW_MARK_PRICE: i32 = 619;
 /// each, ticks 96 and 97, asked for a stock of type ETF or ETMF once its
 /// top of book is acknowledged; -1 is no value (the reference 10.51, paper,
 /// 13/10/2026 regular hours, SPY: 577 answered 777.86932373, given as tick
-/// 96; 623 answered -1, nothing given).
+/// 96; 623 answered -1, nothing given), and so is 0 (SPY before the open,
+/// 19/10/2026: 577 answered 0, nothing given, ibx#604).
 pub const ETF_NAV_LAST: i32 = 577;
 pub const ETF_FROZEN_NAV_LAST: i32 = 623;
 /// Index Future Premium (ibx#495): one double, tick 31,
@@ -405,7 +406,7 @@ pub fn decode(code: i32, payload: &[u8], rec: &mut GenericRecord, ctx: DecodeCtx
         ETF_NAV_LAST | ETF_FROZEN_NAV_LAST => {
             let Some(d) = r.double() else { return out };
             let (field, tick) = if code == ETF_NAV_LAST { (Field::EtfNavLast, 96) } else { (Field::EtfFrozenNavLast, 97) };
-            if rec.set_double(field, d) && d != -1.0 {
+            if rec.set_double(field, d) && d != -1.0 && d != 0.0 {
                 price(&mut out, tick, d);
             }
         }
@@ -889,6 +890,7 @@ mod tests {
         assert_eq!(decode(ETF_NAV_LAST, &hex("40884ef460000000"), &mut rec, ctx), [GenTick::Price(96, 777.86932373)]);
         assert!(decode(ETF_FROZEN_NAV_LAST, &hex("bff0000000000000"), &mut rec, ctx).is_empty(), "-1 is no value");
         assert!(decode(ETF_NAV_LAST, &hex("40884ef460000000"), &mut rec, ctx).is_empty(), "unchanged");
+        assert!(decode(ETF_NAV_LAST, &hex("0000000000000000"), &mut rec, ctx).is_empty(), "0 is no value (ibx#604)");
         assert!(valid_for(ETF_NAV_LAST, "STK") && !valid_for(ETF_NAV_LAST, "OPT") && etf_only(ETF_FROZEN_NAV_LAST));
         assert!(is_etf_type("ETF") && is_etf_type("ETMF") && !is_etf_type("COMMON"));
     }
