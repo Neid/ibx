@@ -659,8 +659,13 @@ fn snapshot_pass(snap: &mut PlainSnapshot, m: &Mirror, pass: Pass, out: &mut Out
         out.time();
     }
     // An option snapshot gives no halted state (ibx#647; the reference
-    // 10.51, 12/10/2026 after hours and 13/10/2026 regular hours).
-    if trade && !delayed && !option && let Some(status) = m.halted && snap.take(TICK_HALTED) {
+    // 10.51, 12/10/2026 after hours and 13/10/2026 regular hours). A stock
+    // snapshot gives it when the trade is halted; one of 0 on 10.40 only
+    // (ibx#494; overnight trades both: the reference 10.40 gave it on SPY,
+    // captured 02/10/2026, the reference 10.51 none on AAPL, paper,
+    // 19/10/2026, a fresh process, the farm's trade status 0).
+    let form_10_40 = out.shared.reference.form_10_40();
+    if trade && !delayed && !option && let Some(status) = m.halted.filter(|s| s & 3 != 0 || form_10_40) && snap.take(TICK_HALTED) {
         out.halted(status);
     }
 }

@@ -6692,6 +6692,7 @@ fn known_parameters_go_early_without_top_of_book_only() {
 fn eur_usd_snapshot_in_the_reference_order() {
     use crate::md_events::MdStep;
     let (client, rx, shared) = test_client();
+    shared.reference.set_form_10_40(true); // a capture of the reference 10.40 (its halted state of 0, ibx#494)
     let engine = top_engine(rx);
     client.req_mkt_data(1, &eur_usd(), "", true, false).unwrap();
     captured_eur_usd(&shared, &[MdStep::Time, MdStep::Last, MdStep::Daily, MdStep::Quote], Some(0));
@@ -6707,6 +6708,23 @@ fn eur_usd_snapshot_in_the_reference_order() {
     drop(engine);
 }
 
+// ibx#494 (the reference 10.51, paper, 19/10/2026 overnight, a fresh
+// process): a snapshot whose trade status is 0 gives no halted tick; the
+// rest as on 10.40.
+#[test]
+fn a_snapshot_without_a_halt_gives_no_halted_tick() {
+    use crate::md_events::MdStep;
+    let (client, rx, shared) = test_client();
+    let engine = top_engine(rx);
+    client.req_mkt_data(1, &eur_usd(), "", true, false).unwrap();
+    captured_eur_usd(&shared, &[MdStep::Time, MdStep::Last, MdStep::Daily, MdStep::Quote], Some(0));
+    let mut w = SeqRec::default();
+    client.process_msgs(&mut w);
+    assert!(!w.events.iter().any(|e| e.starts_with("generic:1:49")), "{:?}", w.events);
+    assert!(w.events.iter().any(|e| e.starts_with("string:1:45")) && w.events.last().map(String::as_str) == Some("end:1"), "{:?}", w.events);
+    drop(engine);
+}
+
 // ibx#446, captured 02/10/2026 (SPY snapshot 9463): the trade's time,
 // its price with its size, its halted state, the close, the open (an
 // update of its own), then the bid and ask, which execute automatically
@@ -6716,6 +6734,7 @@ fn eur_usd_snapshot_in_the_reference_order() {
 fn spy_snapshot_in_the_reference_order() {
     use crate::md_events::{field, MdEvent, MdStep};
     let (client, rx, shared) = test_client();
+    shared.reference.set_form_10_40(true); // a capture of the reference 10.40 (its halted state of 0, ibx#494)
     let engine = top_engine(rx);
     client.req_mkt_data(1, &spy_stk(), "", true, false).unwrap();
     let p = |raw: i64| raw * crate::types::PRICE_SCALE / 100;
