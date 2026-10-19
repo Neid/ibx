@@ -176,6 +176,23 @@ fn premarket_order_types_and_order_events() {
     }
 }
 
+// The fill and modify of the same scenario on 10.51 at level 225, recorded
+// again at 07:48 New York (19/10/2026, ibx#604; the 04:49 run did not
+// fill): the marketable buy filled, its execution, 104 for the modify of
+// the filled order, the sell back filled. The market data request is left
+// out.
+#[test]
+fn premarket_fill_then_modify_on_10_51() {
+    let name = "gw1051/20261019preb/premarket_fill_modify";
+    let sc = load_scenario(name);
+    let md: Vec<u64> = sc.recs.iter()
+        .filter(|r| matches!(r.msg.as_str(), "REQ_MKT_DATA" | "CANCEL_MKT_DATA" | "REQ_MARKET_DATA_TYPE"))
+        .map(|r| r.seq).collect();
+    let o = check(name, orders().skip_seqs(&md).keep(|l| !l.starts_with("marketDataType") && !l.starts_with("tick")));
+    assert!(o.theirs.iter().any(|(_, l)| l.contains("|104|Cannot modify a filled order")));
+    assert_eq!(o.theirs.iter().filter(|(_, l)| l.starts_with("execDetails|")).count(), 2);
+}
+
 // The market data part of the same scenario: AAPL top of book after the
 // orders on AAPL (BMW and 7203 go to other farms: left out): the first
 // quote message gives the trade fields (lastTimestamp, last, lastSize, volume,
