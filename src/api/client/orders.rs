@@ -17,7 +17,7 @@ impl EClient {
         if !ClientCore::ids_fit("place_order", &[order_id, contract.con_id]) { return Ok(()); }
         // The reference's other names for an order type, under ibx's name
         // for every check and for the tracked order (ibx#469).
-        let order = &*ClientCore::with_canonical_order_type(order);
+        let order = &*ClientCore::with_canonical_order_type(order, self.shared.reference.form_10_40());
         // Validate order params and contract before registering instrument (fail fast).
         ClientCore::validate_order(order)?;
         // The refusals of the contract's security type (ibx#666).

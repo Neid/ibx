@@ -227,8 +227,10 @@ impl EClient {
         if let Some(name) = ClientCore::canonical_order_type(&api_order.order_type) {
             api_order.order_type = name.to_string();
         }
-        // GTX and NMIN go out as GTC, as the reference (ibx#307).
-        if let Some(name) = ClientCore::canonical_tif(&api_order.tif) {
+        // GTX and NMIN go out as GTC in the 10.40 form (ibx#307); 10.51
+        // refuses them (ibx#604).
+        let form_10_40 = self.shared.lock().unwrap().as_ref().is_some_and(|s| s.reference.form_10_40());
+        if let Some(name) = ClientCore::canonical_tif(&api_order.tif, form_10_40) {
             api_order.tif = name.to_string();
         }
         ClientCore::validate_order(&api_order)

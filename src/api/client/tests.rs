@@ -1377,11 +1377,13 @@ fn customer_account_is_sent_when_the_account_config_allows_it() {
 }
 
 // ibx#307: GTX and NMIN go out as GTC and the tracked order shows GTC, as
-// the reference (captured 28/09/2026: time in force GTC on the wire, openOrder tif GTC).
+// the reference 10.40 (captured 28/09/2026: time in force GTC on the wire,
+// openOrder tif GTC).
 #[test]
 fn gtx_and_nmin_go_out_as_gtc() {
     for tif in ["GTX", "nmin"] {
         let (client, rx, shared) = test_client();
+        shared.reference.set_form_10_40(true);
         shared.market.set_instrument_count(1);
         let order = Order { action: "BUY".into(), total_quantity: 1.0, order_type: "LMT".into(),
             lmt_price: 100.0, tif: tif.into(), ..Default::default() };
@@ -1390,6 +1392,23 @@ fn gtx_and_nmin_go_out_as_gtc() {
             ControlCommand::Order(OrderRequest::SubmitLimitEx { tif, .. }) => assert_eq!(tif, b'1'),
             other => panic!("expected SubmitLimitEx, got {:?}", other),
         }
+    }
+}
+
+// ibx#604: the reference 10.51 refuses GTX and NMIN with 10052 and the text
+// as given, nothing sent (recorded 19/10/2026 pre-market, level 225).
+#[test]
+fn gtx_and_nmin_are_refused_on_10_51() {
+    for tif in ["GTX", "NMIN"] {
+        let (client, rx, shared) = test_client();
+        shared.market.set_instrument_count(1);
+        let order = Order { action: "BUY".into(), total_quantity: 1.0, order_type: "LMT".into(),
+            lmt_price: 100.0, tif: tif.into(), ..Default::default() };
+        client.place_order(1, &spy(), &order).unwrap();
+        assert!(rx.try_recv().is_err(), "{tif}: nothing sent");
+        let mut w = RecordingWrapper::default();
+        client.process_msgs(&mut w);
+        assert!(w.events.iter().any(|e| e == &format!("error:1:10052:Invalid time in force:{tif}")), "{tif}: {:?}", w.events);
     }
 }
 

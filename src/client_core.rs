@@ -2095,7 +2095,8 @@ const ORDER_TYPES_NOT_SENT: [&str; 10] = [
 ];
 
 /// The time in force texts an order takes (GTX and NMIN are read as GTC
-/// before, see `canonical_tif`); any other is refused with 10052.
+/// before in the 10.40 form, see `canonical_tif`); any other is refused
+/// with 10052.
 const TIF_TEXTS: [&str; 12] = [
     "", "DAY", "GTC", "IOC", "FOK", "OPG", "GTD", "DTC", "AUC", "Minutes", TIF_OVERNIGHT, TIF_OVERNIGHT_DAY,
 ];
@@ -5815,9 +5816,9 @@ impl ClientCore {
 
     /// The order with its type under the name ibx uses (ibx#469). Copied
     /// only when the type is one of the other names.
-    pub fn with_canonical_order_type(order: &ApiOrder) -> std::borrow::Cow<'_, ApiOrder> {
+    pub fn with_canonical_order_type(order: &ApiOrder, form_10_40: bool) -> std::borrow::Cow<'_, ApiOrder> {
         let order_type = Self::canonical_order_type(&order.order_type);
-        let tif = Self::canonical_tif(&order.tif);
+        let tif = Self::canonical_tif(&order.tif, form_10_40);
         if order_type.is_none() && tif.is_none() {
             return std::borrow::Cow::Borrowed(order);
         }
@@ -5914,11 +5915,13 @@ impl ClientCore {
             .then(|| (10052, format!("Invalid time in force:{}", order.tif)))
     }
 
-    /// The time in force the reference sends for an API value it does not
-    /// send as such: GTX and NMIN go out as GTC and read back as GTC
-    /// (captured 28/09/2026, ibx#307).
-    pub fn canonical_tif(tif: &str) -> Option<&'static str> {
-        (tif.eq_ignore_ascii_case("GTX") || tif.eq_ignore_ascii_case("NMIN")).then_some("GTC")
+    /// The time in force the reference 10.40 sends for an API value it
+    /// does not send as such: GTX and NMIN go out as GTC and read back as
+    /// GTC (captured 28/09/2026, ibx#307). The reference 10.51 refuses
+    /// them with 10052, nothing sent (recorded 19/10/2026 pre-market, level
+    /// 225, ibx#604): no other name then.
+    pub fn canonical_tif(tif: &str, form_10_40: bool) -> Option<&'static str> {
+        (form_10_40 && (tif.eq_ignore_ascii_case("GTX") || tif.eq_ignore_ascii_case("NMIN"))).then_some("GTC")
     }
 
     /// Pre-validate order fields that don't depend on instrument ID.
