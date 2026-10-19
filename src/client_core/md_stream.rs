@@ -367,7 +367,7 @@ impl Out<'_> {
 
     /// An exchange text; an empty one is not sent: no letters before the
     /// exchange map came.
-    fn exchanges(&mut self, idx: usize) {
+    fn exchanges(&mut self, idx: usize) -> bool {
         let tick_type = match idx {
             field::BID_EXCH => TICK_BID_EXCHANGE,
             field::ASK_EXCH => TICK_ASK_EXCHANGE,
@@ -378,9 +378,11 @@ impl Out<'_> {
         } else {
             render_exchange_mask_at(self.fields[idx], self.instrument, self.shared, self.seq)
         };
-        if !value.is_empty() {
+        let sent = !value.is_empty();
+        if sent {
             self.push(MdTick::Text { tick_type, value });
         }
+        sent
     }
 
     fn halted(&mut self, status: i64) {
@@ -445,13 +447,13 @@ fn stream_pass(st: &mut StreamState, m: &Mirror, pass: Pass, out: &mut Out) {
             // also when the contract kept it from an earlier request (the
             // reference 10.51 at level 225, a second AAPL stream,
             // 19/10/2026 pre-market, ibx#604); one carried before the
-            // exchange map came is not given again.
+            // exchange map came is not given again. A join counts only the
+            // exchanges it wrote: a request that joined another's quote
+            // gets the last trade's exchange with the next trade (the
+            // reference 10.51, two AAPL requests on a kept quote,
+            // 19/10/2026 regular hours).
             field::BID_EXCH | field::ASK_EXCH | field::LAST_EXCH => {
-                // A join gives the whole quote: every exchange is carried.
-                let carried = match pass {
-                    Pass::Join => true,
-                    Pass::Step(_, set) => set & (1 << idx) != 0,
-                };
+                let carried = matches!(pass, Pass::Step(_, set) if set & (1 << idx) != 0);
                 let first = carried && st.exch_sent & exch_bit(idx) == 0;
                 if carried {
                     st.exch_sent |= exch_bit(idx);
@@ -560,7 +562,11 @@ fn stream_pass(st: &mut StreamState, m: &Mirror, pass: Pass, out: &mut Out) {
             field::TIME => out.time(),
             // The delayed sender sends no exchanges.
             field::BID_EXCH | field::ASK_EXCH | field::LAST_EXCH if delayed => {}
-            field::BID_EXCH | field::ASK_EXCH | field::LAST_EXCH => { out.exchanges(idx); }
+            field::BID_EXCH | field::ASK_EXCH | field::LAST_EXCH => {
+                if out.exchanges(idx) && pass == Pass::Join {
+                    st.exch_sent |= exch_bit(idx);
+                }
+            }
             _ => {}
         }
     }

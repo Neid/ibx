@@ -7095,6 +7095,39 @@ fn stock_stream_joining_a_quote_in_the_reference_order() {
     }
 }
 
+// ibx#604, reference 10.51 (paper 19/10/2026, regular hours, two AAPL
+// requests on a kept quote): a request that joined a quote without writing
+// the last trade's exchange (no letter for it yet) gets it with the next
+// trade, also on the same exchange.
+#[test]
+fn a_joined_request_gets_the_last_trade_exchange_with_the_next_trade() {
+    use crate::md_events::{MdStep, TestMessage};
+    let (client, rx, shared) = test_client();
+    let engine = top_engine(rx);
+    let aapl = Contract { con_id: 265598, symbol: "AAPL".into(), sec_type: "STK".into(), exchange: "SMART".into(),
+        ..Default::default() };
+    client.req_mkt_data(1, &aapl, "", false, false).unwrap();
+    let (mut q, _) = aapl_join_messages();
+    q.last_exch_mask = 1;
+    let whole = TestMessage { steps: Some(&[MdStep::CatchUp]), halted: Some(0), sizes_seen: true, ..Default::default() };
+    shared.market.push_test_message(5, &q, &whole);
+    client.core.join_stream(1, shared.market.md_events.head());
+    let mut w = SeqRec::default();
+    client.process_msgs(&mut w);
+    assert!(!w.events.iter().any(|e| e.starts_with("string:1:84:")), "no map yet: {:?}", w.events);
+    set_exchange_map(&shared, 5, ["K", "P", "Q", "V"].iter().enumerate().map(|(bit, letter)| {
+        crate::types::SmartComponent { bit_number: bit as i32, exchange: letter.to_string(), exchange_letter: letter.to_string() }
+    }).collect());
+    let trade = [MdStep::Time, MdStep::Exchange, MdStep::Last];
+    q.last = q.last + crate::types::PRICE_SCALE / 100;
+    q.timestamp_ns += 1_000_000_000;
+    shared.market.push_test_message(5, &q, &TestMessage { steps: Some(&trade), sizes_seen: true, ..Default::default() });
+    let mut w = SeqRec::default();
+    client.process_msgs(&mut w);
+    assert!(w.events.iter().any(|e| e == "string:1:84:P"), "{:?}", w.events);
+    drop(engine);
+}
+
 // ibx#638, reference 10.51 (paper 12/10/2026, regular hours): the last
 // trade's exchange (84) is in the picture a joining request gets, after the
 // quote's exchanges and before the time; in a trade, after its time and
