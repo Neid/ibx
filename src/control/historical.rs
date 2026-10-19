@@ -1568,14 +1568,15 @@ fn fractional_size(raw: u64, step: f64) -> f64 {
 }
 
 /// A trade's size as a client at session level `level` gets it: with its
-/// fraction from level 222; below it a whole number, a fraction counted as
-/// the next whole share (the reference 10.51 at level 214 gives 1 for a
-/// trade of 0.002 or 0.13 shares, ibx#604; ibx#613).
+/// fraction from level 222; below it its whole part, at least 1 (the
+/// reference 10.51 at level 214 gives 1 for trades of 0.002 to 1.302122
+/// shares, historical and live, 105 trades, 14 to 19/10/2026, ibx#604;
+/// ibx#613).
 pub(crate) fn whole_below_fractional_level(level: i32, size: f64) -> f64 {
     if level >= crate::client_core::LEVEL_FRACTIONAL_LAST_SIZE || (size - size.round()).abs() < 1e-9 {
         size
     } else {
-        size.ceil()
+        size.floor().max(1.0)
     }
 }
 
@@ -2802,16 +2803,17 @@ mod tests {
         assert!(xml.contains("<exchange>FXSUBPIP</exchange><secType>CASH</secType>"), "{}", xml);
     }
 
-    // ibx#613: below session level 222 a trade's fractional size is given
-    // as a whole number (the rule of level 222, not observed yet: no
-    // fractional trade on the paper account).
+    // ibx#613, ibx#604: below session level 222 a trade's fractional size
+    // is given as its whole part, at least 1 (observed on stock trades of
+    // 0.002 to 1.302122 shares at level 214, 19/10/2026; this crypto
+    // step not observed).
     #[test]
     fn a_fractional_trade_size_is_whole_below_level_222() {
         crate::client_core::set_session_level_for_test(Some(214));
         let xml = "<ResultSetTick><id>cf4;;BTC.USD@PAXOS Trades;;0;;true;;0;;U</id><eoq>true</eoq><data>AllLast</data>            <sizeMinTick>0.00000001</sizeMinTick><Events>            <Tick><time>20261016-11:00:00</time><price>67000</price><size>40000000</size></Tick>            <Tick><time>20261016-11:00:01</time><price>67000</price><size>160000000</size></Tick>            <Tick><time>20261016-11:00:02</time><price>67000</price><size>2600000</size></Tick></Events></ResultSetTick>";
         let frame = parse_tick_response(xml).unwrap();
         let Some(crate::types::HistoricalTickData::Last(ticks)) = frame.data else { panic!("{:?}", frame.data) };
-        assert_eq!(ticks.iter().map(|t| t.size).collect::<Vec<_>>(), [1.0, 2.0, 1.0]);
+        assert_eq!(ticks.iter().map(|t| t.size).collect::<Vec<_>>(), [1.0, 1.0, 1.0]);
     }
 
     // ibx#604: a trade the reply flags fractional (`F`) is counted in the
@@ -2821,7 +2823,7 @@ mod tests {
     #[test]
     fn a_trade_flagged_fractional_takes_the_fractional_step() {
         let xml = "<ResultSetTick><id>cf20;;AAPL@SMART Trades;;0;;true;;0;;U</id><eoq>true</eoq><data>AllLast</data>            <minTick>0.00001</minTick><sizeMinTick>1</sizeMinTick><fracSizeMinTick>0.000001</fracSizeMinTick><Events>            <Tick><time>20261001-19:00:00</time><price>329.809</price><size>17340</size><exch>FINRA</exch><cond>   I</cond><flags>U;F</flags></Tick>            <Tick><time>20261001-19:00:00</time><price>329.82</price><size>23</size><exch>FINRA</exch><cond>   I</cond><flags>U</flags></Tick>            <Tick><time>20261001-19:00:03</time><price>329.825</price><size>1136966</size><exch>FINRA</exch><cond>   I</cond><flags>U;F</flags></Tick>            </Events></ResultSetTick>";
-        for (level, sizes) in [(225, [0.01734, 23.0, 1.136966]), (214, [1.0, 23.0, 2.0])] {
+        for (level, sizes) in [(225, [0.01734, 23.0, 1.136966]), (214, [1.0, 23.0, 1.0])] {
             crate::client_core::set_session_level_for_test(Some(level));
             let frame = parse_tick_response(xml).unwrap();
             let Some(crate::types::HistoricalTickData::Last(ticks)) = frame.data else { panic!("{:?}", frame.data) };

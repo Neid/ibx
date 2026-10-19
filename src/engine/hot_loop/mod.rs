@@ -7814,9 +7814,10 @@ mod tbt_tests {
     }
 
     // ibx#613 (the 10.51 rules, not observed yet: no fractional trade on the
-    // paper account): a trade of 0.4 and of 1.6 in steps of 0.0001 is given
-    // as a whole number at level 214, below 222; from 222 its
-    // fraction is kept (`hmds::trade_size_at`).
+    // paper account; ibx#604: stock trades observed 19/10/2026): a trade of
+    // 0.4 and of 1.6 in steps of 0.0001 is given as its whole part, at
+    // least 1, at level 214, below 222; from 222 its fraction is kept
+    // (`hmds::trade_size_at`).
     #[test]
     fn a_fractional_trade_is_whole_at_the_session_level() {
         crate::client_core::set_session_level_for_test(Some(214));
@@ -7832,9 +7833,33 @@ mod tbt_tests {
         let e = [trade_entry(1, 1_790_000_000, 100_000, 0, 4_000, "CME"), trade_entry(1, 1_790_000_001, 0, 0, 16_000, "CME")].concat();
         engine.inject_hmds_message(&tbt_frame(&e));
         let sizes: Vec<f64> = shared.market.drain_tbt_trades().iter().map(|t| t.size).collect();
-        assert_eq!(sizes, [0.0, 2.0]);
+        assert_eq!(sizes, [1.0, 1.0]);
         assert_eq!(hmds::trade_size_at(222, 4_000, Some(0.0001), crate::md_events::Increment::from_step(0.0001)), 0.4);
         assert_eq!(hmds::trade_size_at(222, 16_000, Some(0.0001), crate::md_events::Increment::from_step(0.0001)), 1.6);
+    }
+
+    // ibx#604 (the reference 10.51 at level 225, AAPL AllLast, 19/10/2026
+    // pre-market): the acknowledgement gives a fractional step; a trade
+    // whose attributes carry 0x20 is counted in it (987479 steps of
+    // 0.000001: 0.987479), the others in the size step.
+    #[test]
+    fn a_trade_marked_fractional_takes_the_fractional_step() {
+        crate::client_core::set_session_level_for_test(Some(225));
+        let shared = Arc::new(SharedState::new());
+        let mut engine = HotLoop::new(shared.clone(), None, None);
+        let (conn, _side) = loopback();
+        engine.hmds_conn = Some(conn);
+        let (tx, rx) = crossbeam_channel::bounded(8);
+        let tx = crate::engine::park::ControlSender::from(tx);
+        engine.set_control_rx(rx);
+        subscribe(&mut engine, &tx, 265598, "AAPL", "SMART", "STK", crate::types::TbtType::AllLast);
+        let xml = "<ResultSetTickerId><id>rtTicker1;;AAPL@SMARTLast;;1;;true;;0;;U</id><rtTickerId>1</rtTickerId>            <minTick>0.01</minTick><sizeMinTick>1</sizeMinTick><fracSizeMinTick>0.000001</fracSizeMinTick><eoq>false</eoq></ResultSetTickerId>";
+        engine.inject_hmds_message(&fix::fix_build(&[(35, "W"), (6118, xml)], 1));
+        let e = [trade_entry(1, 1_792_400_148, 34_336, 0xe, 11, "NASDAQ"), trade_entry(1, 1_792_400_148, 0, 0x2e, 987_479, "FINRA")].concat();
+        engine.inject_hmds_message(&tbt_frame(&e));
+        let sizes: Vec<f64> = shared.market.drain_tbt_trades().iter().map(|t| t.size).collect();
+        assert_eq!(sizes, [11.0, 0.987479]);
+        crate::client_core::set_session_level_for_test(None);
     }
 
     // ibx#404 (captured 18/06/2026, seq 11453, ALAB AllLast, minTick 0.01,

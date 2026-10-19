@@ -190,6 +190,8 @@ pub(crate) struct TbtSub {
     /// The size step as an exact decimal, for the fractional trade sizes
     /// of session level 222 (ibx#613).
     pub(crate) size_increment: Option<crate::md_events::Increment>,
+    /// The step of a trade the server marks fractional (ibx#604).
+    pub(crate) frac_size_min_tick: Option<f64>,
     pub(crate) last: i64,
     pub(crate) bid: i64,
     pub(crate) ask: i64,
@@ -257,17 +259,30 @@ impl TbtSub {
     fn trade_size(&self, raw: u64) -> f64 {
         trade_size_at(crate::client_core::session_level(), raw, self.size_min_tick, self.size_increment)
     }
+
+    /// A trade's size the server marks fractional (attribute bit 0x20): in
+    /// the acknowledgement's fractional step (the reference 10.51 at level
+    /// 225, AAPL, 19/10/2026 pre-market: 987479 steps of 0.000001 give
+    /// 0.987479, ibx#604).
+    fn fractional_trade_size(&self, raw: u64) -> f64 {
+        match self.frac_size_min_tick {
+            Some(step) => trade_size_at(crate::client_core::session_level(), raw, Some(step),
+                crate::md_events::Increment::from_step(step)),
+            None => self.trade_size(raw),
+        }
+    }
 }
 
-/// A tick-by-tick trade's size at session level `level` (ibx#613; the
-/// 10.51 rules, not observed yet: no fractional trade on the paper
-/// account): the size increments times the increment, a whole number below
-/// level 222, with its fractional part from 222, as the historical trade
+/// A tick-by-tick trade's size at session level `level` (ibx#613,
+/// ibx#604; the reference 10.51, AAPL, 19/10/2026 pre-market): the size
+/// increments times the increment, below level 222 its whole part, at
+/// least 1, with its fractional part from 222, as the historical trade
 /// ticks. From 222 the size is the decimal the step gives (0.026, not the
 /// binary product 0.026000000000000002) when the step is a decimal.
 pub(crate) fn trade_size_at(level: i32, raw: u64, size_min_tick: Option<f64>, increment: Option<crate::md_events::Increment>) -> f64 {
     if level < crate::client_core::LEVEL_FRACTIONAL_LAST_SIZE {
-        return size_min_tick.map_or(raw as f64, |step| raw as f64 * step).round();
+        let size = size_min_tick.map_or(raw as f64, |step| raw as f64 * step);
+        return crate::control::historical::whole_below_fractional_level(level, size);
     }
     match (increment, size_min_tick) {
         (Some(inc), _) => inc.times(raw),
@@ -275,6 +290,10 @@ pub(crate) fn trade_size_at(level: i32, raw: u64, size_min_tick: Option<f64>, in
         (None, None) => raw as f64,
     }
 }
+
+/// The attribute bit of a tick-by-tick trade whose size is in the
+/// fractional step (ibx#604).
+const TBT_FRACTIONAL_SIZE: u64 = 0x20;
 
 /// How long a tick-by-tick stream with no client left waits before its
 /// cancel, as in the reference (ibx#404).
@@ -1167,6 +1186,7 @@ impl HmdsState {
         sub.min_tick = extract_xml_tag(xml, "minTick").and_then(|v| v.trim().parse().ok()).unwrap_or(0.01);
         sub.size_min_tick = extract_xml_tag(xml, "sizeMinTick").and_then(|v| v.trim().parse().ok());
         sub.size_increment = sub.size_min_tick.and_then(crate::md_events::Increment::from_step);
+        sub.frac_size_min_tick = extract_xml_tag(xml, "fracSizeMinTick").and_then(|v| v.trim().parse().ok());
         (sub.last, sub.bid, sub.ask, sub.mid) = (0, 0, 0, 0);
         (sub.last_size, sub.bid_size, sub.ask_size) = (0, 0, 0);
         sub.holding = sub.history_wanted;
@@ -1262,8 +1282,9 @@ impl HmdsState {
                         continue;
                     };
                     (sub.last, sub.last_size) = (last, size);
+                    let size = if attribs & TBT_FRACTIONAL_SIZE != 0 { sub.fractional_trade_size(size) } else { sub.trade_size(size) };
                     TbtTick::Trade {
-                        price: sub.price(last), size: sub.trade_size(size), time: entry.time, exchange, conditions,
+                        price: sub.price(last), size, time: entry.time, exchange, conditions,
                         past_limit: attribs & 1 != 0, unreported: attribs & 2 != 0,
                     }
                 }
@@ -1568,7 +1589,7 @@ impl HmdsState {
         self.tbt_subscriptions.push(TbtSub {
             instrument, con_id, window_id, query_id, tbt_type, ignore_size, farm, rt_ticker_id: None,
             query_pending: true, owner: Some(req_id), clients,
-            min_tick: 0.01, size_min_tick: None, size_increment: None, last: 0, bid: 0, ask: 0, mid: 0,
+            min_tick: 0.01, size_min_tick: None, size_increment: None, frac_size_min_tick: None, last: 0, bid: 0, ask: 0, mid: 0,
             last_size: 0, bid_size: 0, ask_size: 0,
             history_wanted: number_of_ticks > 0, holding: false, held: Vec::new(), cancel_at: None,
         });
@@ -2830,15 +2851,16 @@ fn head_ts_key(con_id: i64, sec_type: &str, exchange: &str, what_to_show: &str, 
 pub(crate) mod tests {
     use super::*;
 
-    // ibx#613 (the 10.51 rules, not observed yet: no fractional trade on the
-    // paper account): a tick-by-tick trade's fractional size is a whole
-    // number below session level 222 and kept from 222.
+    // ibx#613, ibx#604 (the reference 10.51, stock trades of 0.002 to
+    // 1.302122 shares, 19/10/2026): a tick-by-tick trade's fractional size
+    // is its whole part, at least 1, below session level 222 and kept from
+    // 222.
     #[test]
     fn a_fractional_tick_by_tick_size_is_whole_below_level_222_and_kept_from_it() {
         let step = Some(0.00000001);
         let inc = step.and_then(crate::md_events::Increment::from_step);
-        assert_eq!(trade_size_at(214, 40_000_000, step, inc), 0.0);
-        assert_eq!(trade_size_at(214, 160_000_000, step, inc), 2.0);
+        assert_eq!(trade_size_at(214, 40_000_000, step, inc), 1.0);
+        assert_eq!(trade_size_at(214, 160_000_000, step, inc), 1.0);
         assert_eq!(trade_size_at(222, 40_000_000, step, inc), 0.4);
         assert_eq!(trade_size_at(222, 160_000_000, step, inc), 1.6);
         // The decimal the step gives, not the binary product of the two.
