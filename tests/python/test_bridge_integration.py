@@ -682,7 +682,7 @@ class TestOpenOrderValues:
     def _last_open_order(self, w):
         return [e for e in w.events if e[0] == "open_order"][-1]
 
-    def test_a_filled_order_shows_what_was_filled_and_no_completed_fields(self):
+    def test_a_filled_order_shows_what_was_filled_and_its_filled_size(self):
         w, c = self._placed()
         c._test_set_instrument_count(1)
         c._test_push_fill(0, order_id=42, side="BUY", price=10.0, qty=40, remaining=60)
@@ -696,7 +696,8 @@ class TestOpenOrderValues:
         c._test_dispatch_once()
         _, _, contract, order, state = self._last_open_order(w)
         assert state["status"] == "Filled" and float(order.filled_quantity) == 100.0
-        assert (state["completed_status"], state["completed_time"]) == ("", ""), "those are for completedOrder"
+        # On 10.51 a filled order's openOrder carries its filled size (ibx#605).
+        assert state["completed_status"] == "Filled Size: 100"
         assert order.cash_qty == sys.float_info.max
 
     def test_no_commission_is_unset_in_open_order(self):

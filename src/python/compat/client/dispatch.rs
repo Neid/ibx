@@ -936,6 +936,9 @@ impl EClient {
                             crate::client_core::preview_view(&mut contract, &mut order, &placed_exchange, shared);
                             crate::client_core::reported_unset_values(&mut order);
                             crate::client_core::ClientCore::apply_combo_view(wi.order_id, &mut contract, &mut order, shared);
+                            // The price management flag the reply echoes (ibx#605).
+                            order.use_price_mgmt_algo = i32::from(wi.state.price_mgmt);
+                            crate::client_core::preview_compete_values(&contract, &mut order);
                             let c = Contract::from_api(py, &contract)?;
                             let mut o = Order::from_api(py, &order)?;
                             // The account and the client id, as the reference's (ibx#486).

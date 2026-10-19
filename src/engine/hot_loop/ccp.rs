@@ -1845,6 +1845,7 @@ impl CcpState {
             // (ibx#486, b1_462_whatif of 02/10/2026).
             perm_id: perm_id_of(parsed),
             con_id: parsed.get(&6008).and_then(|s| s.parse().ok()).unwrap_or(0),
+            price_mgmt: parsed.get(&8339).is_some_and(|v| *v == "1"),
         };
         let response = crate::types::WhatIfResponse {
             order_id,
@@ -2668,14 +2669,28 @@ impl CcpState {
             let algo_strategy = parsed.get(&847).map(|s| s.to_string()).unwrap_or_default();
             // The price management flag the server echoes, 0 without it
             // (ibx#492); a report that leaves it out (a fill) keeps the
-            // order's, as the reference shows the order it holds (ibx#546).
+            // order's, as the reference shows the order it holds (ibx#546);
+            // before any report, the order as sent (a refusal, ibx#605).
             let use_price_mgmt_algo: i32 = match parsed.get(&8339) {
                 Some(v) => i32::from(*v == "1"),
-                None => shared.orders.get_order_info(clord_id).map_or(0, |i| i.order.use_price_mgmt_algo),
+                None => shared.orders.get_order_info(clord_id).map_or(
+                    i32::from(context.price_mgmt_sent.contains(&clord_id)), |i| i.order.use_price_mgmt_algo),
             };
             let trail_stop_price: f64 = parsed.get(&6117)
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(f64::MAX);
+            // The compete values the reference shows: 100 and 0.02 until a
+            // report gives the order as held, unset from then on (the
+            // reference 10.51, paper, regular hours, 19/10/2026: 26 orders,
+            // every pending-new report is such a report; ibx#605).
+            if parsed.get(&6205).copied() == Some("1") {
+                context.compete_cleared.insert(clord_id);
+            }
+            let (min_compete_size, compete_against_best_offset) = if context.compete_cleared.contains(&clord_id) {
+                (i32::MAX, f64::MAX)
+            } else {
+                (100, 0.02)
+            };
 
             // A scale order's auto-reset, as its reports gave it so far: the
             // first report of an order that has it may leave it out
@@ -2720,6 +2735,8 @@ impl CcpState {
                 oca_type,
                 use_price_mgmt_algo,
                 trail_stop_price,
+                min_compete_size,
+                compete_against_best_offset,
                 algo_strategy,
                 // The orderRef the server echoes (ibx#466).
                 order_ref: parsed.get(&6010).map(|s| s.to_string()).unwrap_or_default(),
@@ -2750,7 +2767,13 @@ impl CcpState {
                 crate::types::OrderStatus::Cancelled |
                 crate::types::OrderStatus::Rejected
             ) {
-                parsed.get(&52).map(|s| s.to_string()).unwrap_or_default()
+                // In the form of an execution's time: the openOrder of a
+                // filled order shows it (the reference 10.51, ibx#605).
+                parsed.get(&60).or_else(|| parsed.get(&52))
+                    .and_then(|t| jiff::civil::DateTime::strptime("%Y%m%d-%H:%M:%S", t).ok())
+                    .and_then(|dt| dt.to_zoned(jiff::tz::TimeZone::UTC).ok())
+                    .map(|z| crate::client_core::format_exec_time(z.timestamp().as_second()))
+                    .unwrap_or_default()
             } else {
                 String::new()
             };
@@ -8695,6 +8718,36 @@ mod tests {
         let entry = recovery_frame(900_011, 1_005);
         ccp.handle_exec_report(&fix::field_view(&entry), &mut context, &shared, &None, "");
         assert_eq!(shared.orders.get_order_info(900_011).expect("order info").order.use_price_mgmt_algo, 0);
+
+        // ibx#605: a first report without the flag (a refusal) shows the
+        // order as sent with it.
+        context.price_mgmt_sent.insert(900_012);
+        let entry = recovery_frame(900_012, 1_005);
+        ccp.handle_exec_report(&fix::field_view(&entry), &mut context, &shared, &None, "");
+        assert_eq!(shared.orders.get_order_info(900_012).expect("order info").order.use_price_mgmt_algo, 1);
+    }
+
+    // ibx#605 (the reference 10.51, paper, regular hours, 19/10/2026):
+    // the compete values show 100 and 0.02 until a report gives the order
+    // as held, then unset, also on its later reports.
+    #[test]
+    fn compete_values_show_until_a_report_holds_the_order() {
+        let mut ccp = CcpState::new();
+        let mut context = Context::new();
+        let shared = SharedState::new();
+        let compete = |shared: &SharedState| {
+            let o = shared.orders.get_order_info(900_020).expect("order info").order;
+            (o.min_compete_size, o.compete_against_best_offset)
+        };
+        let entry = recovery_frame(900_020, 1_005);
+        ccp.handle_exec_report(&fix::field_view(&entry), &mut context, &shared, &None, "");
+        assert_eq!(compete(&shared), (100, 0.02));
+        let mut held = recovery_frame(900_020, 1_005);
+        held.insert(6205, "1".into());
+        ccp.handle_exec_report(&fix::field_view(&held), &mut context, &shared, &None, "");
+        assert_eq!(compete(&shared), (i32::MAX, f64::MAX));
+        ccp.handle_exec_report(&fix::field_view(&entry), &mut context, &shared, &None, "");
+        assert_eq!(compete(&shared), (i32::MAX, f64::MAX));
     }
 
     // ibx#466: an order of an earlier session is looked up by the server's

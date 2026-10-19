@@ -254,6 +254,13 @@ pub struct Context {
     pub(crate) trail_limit_reported: HashMap<OrderId, TrailLimitReported>,
     /// The scale orders whose auto-reset a report gave (ibx#751).
     pub(crate) scale_reset_reported: std::collections::HashSet<OrderId>,
+    /// Orders sent with the price management flag: a report that leaves
+    /// it out before any other (a refusal) shows the order as sent
+    /// (ibx#605).
+    pub(crate) price_mgmt_sent: std::collections::HashSet<OrderId>,
+    /// Orders a report gave as held: their compete values show
+    /// unset from then on (ibx#605).
+    pub(crate) compete_cleared: std::collections::HashSet<OrderId>,
     /// The last stop price the server reported for an order, the
     /// reference's last known value a trailing replace compares with
     /// (ibx#263). A replace does not change it.
@@ -585,6 +592,8 @@ impl Context {
             status_queries: std::collections::HashSet::new(),
             trail_limit_reported: HashMap::new(),
             scale_reset_reported: std::collections::HashSet::new(),
+            price_mgmt_sent: std::collections::HashSet::new(),
+            compete_cleared: std::collections::HashSet::new(),
             reported_stop: HashMap::new(),
             rth_types: HashMap::new(),
             min_sizes: HashMap::new(),

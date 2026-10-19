@@ -444,6 +444,8 @@ impl EClient {
             if order.account.is_empty() { order.account = self.account_id.clone(); }
             order.client_id = self.core.client_id.load(std::sync::atomic::Ordering::Relaxed) as i32;
             order.perm_id = wi.state.perm_id;
+            order.use_price_mgmt_algo = i32::from(wi.state.price_mgmt);
+            crate::client_core::preview_compete_values(&contract, &mut order);
             wrapper.open_order(wi.order_id, &contract, &order, &state);
             if !wi.state.reject_reason.is_empty() {
                 wrapper.error(wi.order_id, 201, &format!("Order rejected - reason:{}", wi.state.reject_reason), "");

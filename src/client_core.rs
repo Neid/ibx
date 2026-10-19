@@ -1302,6 +1302,22 @@ pub struct OrderReport {
 /// The openOrder of a report shows the report's permId, as its
 /// orderStatus: an order given once more under a new permId after a reject
 /// read as a missing permission shows it in both (ibx#666).
+/// The completed status of a filled order's openOrder on 10.51 (ibx#605).
+fn filled_size_text(filled: f64) -> String {
+    format!("Filled Size: {filled}")
+}
+
+/// No auxPrice for an order that trails by a percentage: the reference
+/// shows it unset, where the server's reports give 0 (ibx#543).
+fn percent_trail_aux(order: &mut ApiOrder) {
+    if order.order_type.to_ascii_uppercase().starts_with("TRAIL")
+        && order.trailing_percent != f64::MAX && order.trailing_percent != 0.0
+        && order.aux_price == 0.0
+    {
+        order.aux_price = f64::MAX;
+    }
+}
+
 pub fn with_report_perm_id(mut view: OrderView, perm_id: i64) -> OrderView {
     if perm_id != 0 {
         view.order.perm_id = perm_id;
@@ -1760,6 +1776,10 @@ pub struct ClientCore {
     pub deferred_refusals: Mutex<HashMap<OrderId, Vec<i64>>>,
     // Ids of tracked orders that were filled or cancelled: never sent again (ibx#463).
     pub finished_orders: Mutex<HashSet<OrderId>>,
+    /// The smart combo routing parameters of a combo filled in full: its
+    /// later openOrders (leg fills, commissions) still show them, as the
+    /// reference (paper, regular hours, 19/10/2026, ibx#605).
+    finished_combo_params: Mutex<HashMap<OrderId, Vec<crate::api::types::TagValue>>>,
     /// Hedges refused because their held parent was not known yet, with
     /// when: a placeOrder reads its order twice (the orders to transmit,
     /// then the order's checks), and the second reading keeps the first's
@@ -2288,6 +2308,35 @@ fn reported_scale_reset(order: &mut ApiOrder, reported: Option<&ApiOrder>) {
 /// usePriceMgmtAlgo as openOrder reports it (ibx#492): 0 or 1, never
 /// unset, as the reference; the value the server's report gives, else the
 /// caller's, unset read as 0.
+/// The compete values as the server's reports give them (100 and 0.02
+/// until the order is held, then unset), else as the order goes out: a
+/// pegged-to-best order's 100 and 0.02 whatever was set (ibx#469); and
+/// postToAts, which is never sent, unset (the reference 10.51, paper,
+/// regular hours, 19/10/2026, ibx#605).
+fn sent_compete_values(order: &mut ApiOrder, reported: Option<&ApiOrder>) {
+    if let Some(r) = reported {
+        order.min_compete_size = r.min_compete_size;
+        order.compete_against_best_offset = r.compete_against_best_offset;
+    } else if order.order_type.eq_ignore_ascii_case("PEG BEST") {
+        order.min_compete_size = 100;
+        order.compete_against_best_offset = 0.02;
+    }
+    order.post_to_ats = i32::MAX;
+}
+
+/// The compete values of a what-if preview's openOrder: 100 and 0.02, a
+/// combo's unset (the reference 10.51, paper, regular hours, 19/10/2026,
+/// b1_462_whatif: four stock previews and one combo, ibx#605).
+pub fn preview_compete_values(contract: &ApiContract, order: &mut ApiOrder) {
+    if contract.sec_type.eq_ignore_ascii_case("BAG") {
+        order.min_compete_size = i32::MAX;
+        order.compete_against_best_offset = f64::MAX;
+    } else {
+        order.min_compete_size = 100;
+        order.compete_against_best_offset = 0.02;
+    }
+}
+
 fn reported_price_mgmt(order: &mut ApiOrder, reported: Option<&ApiOrder>) {
     order.use_price_mgmt_algo = match reported {
         Some(r) => r.use_price_mgmt_algo,
@@ -2479,6 +2528,7 @@ impl ClientCore {
             what_if_orders: Mutex::new(HashMap::new()),
             deferred_refusals: Mutex::new(HashMap::new()),
             finished_orders: Mutex::new(HashSet::new()),
+            finished_combo_params: Mutex::new(HashMap::new()),
             unknown_parent_refused: Mutex::new(HashMap::new()),
             modified_orders: Mutex::new(HashSet::new()),
             modify_undo: Mutex::new(HashMap::new()),
@@ -4768,6 +4818,9 @@ impl ClientCore {
     pub fn report_filled(view: &mut Option<OrderView>, filled: f64) {
         if let Some(v) = view.as_mut() {
             v.order.filled_quantity = filled;
+            if !v.state.completed_status.is_empty() {
+                v.state.completed_status = filled_size_text(filled);
+            }
         }
     }
 
@@ -4796,6 +4849,7 @@ impl ClientCore {
                     reported_trail_limit(&mut order, &i.order);
                 }
                 reported_price_mgmt(&mut order, info.as_ref().map(|i| &i.order));
+                sent_compete_values(&mut order, info.as_ref().map(|i| &i.order));
                 reported_scale_reset(&mut order, info.as_ref().map(|i| &i.order));
                 reported_auto_cancel_date(&mut order, info.as_ref().map(|i| &i.order));
                 // The order of this client carries its client id, as the
@@ -4869,6 +4923,11 @@ impl ClientCore {
                 if self.finished_orders.lock().unwrap().contains(&order_id) {
                     let modified = self.modified_orders.lock().unwrap().contains(&order_id);
                     session_order_fields(&mut order, &shared.reference.user_name(), modified);
+                    if order.smart_combo_routing_params.is_empty()
+                        && let Some(p) = self.finished_combo_params.lock().unwrap().get(&order_id)
+                    {
+                        order.smart_combo_routing_params = p.clone();
+                    }
                 }
                 (i.contract, order, 0.0, client_id)
             }
@@ -4896,23 +4955,24 @@ impl ClientCore {
         // What the reference's openOrder shows, read on both sides in the
         // order scenarios of 09/10/2026 (ibx#543):
         // - the quantity filled so far, on a working and on a filled order;
-        // - no completed status or time: those belong to completedOrder;
+        // - no completed status or time on 10.40; on 10.51 a filled order
+        //   shows "Filled Size: <filled>" and the last fill's time (every
+        //   filled openOrder of the 10.51 recordings, ibx#605);
         // - no commission while none is known (unset, not 0);
         // - no auxPrice for an order that trails by a percentage.
         if let Some(t) = &tracked_fill {
             order.filled_quantity = order.filled_quantity.max(*t);
         }
-        state.completed_status.clear();
-        state.completed_time.clear();
+        if state.status == "Filled" && !shared.reference.form_10_40() {
+            state.completed_status = filled_size_text(order.filled_quantity);
+        } else {
+            state.completed_status.clear();
+            state.completed_time.clear();
+        }
         if state.commission_and_fees == 0.0 {
             state.commission_and_fees = f64::MAX;
         }
-        if order.order_type.to_ascii_uppercase().starts_with("TRAIL")
-            && order.trailing_percent != f64::MAX && order.trailing_percent != 0.0
-            && order.aux_price == 0.0
-        {
-            order.aux_price = f64::MAX;
-        }
+        percent_trail_aux(&mut order);
         Self::apply_combo_view(order_id, &mut contract, &mut order, shared);
         // The API order id the reference shows (0 for an order of another
         // session whose report gave none).
@@ -5113,8 +5173,11 @@ impl ClientCore {
     pub fn update_order_fill(&self, order_id: OrderId, status: &str, filled: f64, remaining: f64) {
         let mut orders = self.open_orders.lock().unwrap();
         if remaining == 0.0 {
-            if orders.remove(&order_id).is_some() {
+            if let Some(o) = orders.remove(&order_id) {
                 self.finished_orders.lock().unwrap().insert(order_id);
+                if !o.order.smart_combo_routing_params.is_empty() {
+                    self.finished_combo_params.lock().unwrap().insert(order_id, o.order.smart_combo_routing_params);
+                }
             }
         } else if let Some(o) = orders.get_mut(&order_id) {
             o.status = status.into();
@@ -5426,6 +5489,10 @@ impl ClientCore {
             let shown = shared.orders.api_order_id(oid);
             t.order.order_id = shown;
             t.order.client_id = client_id as i32;
+            // The open-orders answer shows it as openOrder does: no
+            // auxPrice for a percent trail (the reference 10.51, paper,
+            // 19/10/2026, b2_trail of ibx#605).
+            percent_trail_aux(&mut t.order);
             out.push((shown, t, client_id, place));
         }
         out.sort_by_key(|(.., place)| *place);

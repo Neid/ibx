@@ -386,6 +386,10 @@ pub struct WhatIfState {
     /// The conId of the reply (its contract id), for a preview placed without one: the
     /// reference shows the contract it looked up (ibx#486).
     pub con_id: i64,
+    /// The price management flag the reply echoes: the preview's
+    /// openOrder shows it, 1 or 0 (the reference 10.51, paper, 19/10/2026,
+    /// ibx#605).
+    pub price_mgmt: bool,
 }
 
 /// Adjusted order type for adjustable stops (the adjusted order type field).

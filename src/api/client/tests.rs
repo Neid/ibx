@@ -3598,6 +3598,28 @@ fn process_msgs_dispatches_what_if() {
     assert!(!w.events.iter().any(|e| e.starts_with("order_status:42")));
 }
 
+// ibx#605 (the reference 10.51, paper, regular hours, 19/10/2026,
+// b1_462_whatif): the preview's openOrder shows the price management flag
+// the reply echoes, 1 or 0, and the compete values 100 and 0.02.
+#[test]
+fn a_what_if_shows_the_price_management_flag_of_its_reply() {
+    struct Flags(Vec<i32>);
+    impl Wrapper for Flags {
+        fn open_order(&mut self, _id: i64, _c: &Contract, order: &Order, _s: &crate::api::types::OrderState) {
+            self.0.push(order.use_price_mgmt_algo);
+            assert_eq!((order.min_compete_size, order.compete_against_best_offset), (100, 0.02));
+        }
+    }
+    let (client, _rx, shared) = test_client();
+    let mut with_flag = what_if_reply(42, [0.0; 3], [1.0; 3], 1.0);
+    with_flag.state.price_mgmt = true;
+    shared.orders.push_what_if(with_flag);
+    shared.orders.push_what_if(what_if_reply(43, [0.0; 3], [1.0; 3], 1.0));
+    let mut w = Flags(Vec::new());
+    client.process_msgs(&mut w);
+    assert_eq!(w.0, [1, 0]);
+}
+
 /// Regression: what-if dispatch must populate all 8 OrderState fields in
 /// open_order, with no order_status (the reference sends none, ibx#462).
 #[test]
@@ -8269,6 +8291,74 @@ fn an_order_with_unset_fields_goes_out_and_shows_as_the_reference() {
     assert_eq!((o.lmt_price, o.aux_price, o.tif.as_str()), (0.0, 0.0, "DAY"));
     assert_eq!((o.volatility_type, o.reference_price_type, o.dont_use_auto_price_for_hedge), (0, 0, true));
     assert_eq!((o.min_qty, o.trailing_percent, o.cash_qty, o.filled_quantity), (i32::MAX, f64::MAX, f64::MAX, 0.0));
+}
+
+// ibx#605 (the reference 10.51, paper, regular hours, 19/10/2026): the
+// openOrder of a filled order shows "Filled Size: <filled>"; a working one
+// shows no completed status, nor does any openOrder on 10.40.
+#[test]
+fn a_filled_order_shows_its_filled_size_on_10_51_only() {
+    let (client, _rx, shared) = test_client();
+    shared.market.set_instrument_count(1);
+    let order = Order { action: "BUY".into(), total_quantity: 3.0, tif: "DAY".into(), order_type: "MKT".into(), ..Default::default() };
+    client.place_order(5, &spy(), &order).unwrap();
+    let state = |status: &str| client.core.order_view(5, &client.shared, status).expect("tracked").state.completed_status;
+    assert_eq!(state("Submitted"), "");
+    let mut view = client.core.order_view(5, &client.shared, "Filled");
+    crate::client_core::ClientCore::report_filled(&mut view, 3.0);
+    assert_eq!(view.unwrap().state.completed_status, "Filled Size: 3");
+    shared.reference.set_form_10_40(true);
+    assert_eq!(state("Filled"), "");
+    shared.reference.set_form_10_40(false);
+}
+
+// ibx#605 (the reference 10.51, paper, regular hours, 19/10/2026,
+// i197_peg_best_ats): openOrder shows a pegged-to-best order as it goes
+// out, with the compete values 100 and 0.02 and without postToAts, which
+// is not sent.
+#[test]
+fn a_peg_best_order_shows_the_values_it_goes_out_with() {
+    let (client, _rx, shared) = test_client();
+    shared.market.set_instrument_count(1);
+    let order = Order { action: "BUY".into(), total_quantity: 1.0, tif: "DAY".into(), order_type: "PEG BEST".into(),
+        lmt_price: 700.0, post_to_ats: 1, ..Default::default() };
+    client.place_order(5, &spy(), &order).unwrap();
+    let o = client.core.order_view(5, &client.shared, "PreSubmitted").expect("tracked").order;
+    assert_eq!((o.min_compete_size, o.compete_against_best_offset, o.post_to_ats), (100, 0.02, i32::MAX));
+}
+
+// ibx#605 (the reference 10.51, paper, regular hours, 19/10/2026,
+// i105_combo_fill): a combo filled in full keeps its smart combo routing
+// parameters on its later openOrders (leg fills, commissions), which ibx
+// builds from the server's copy of the order.
+#[test]
+fn a_filled_combo_keeps_its_routing_parameters() {
+    let (client, _rx, shared) = test_client();
+    let params = vec![TagValue { tag: "NonGuaranteed".into(), value: "1".into() }];
+    let order = Order { action: "BUY".into(), total_quantity: 1.0, order_type: "LMT".into(), lmt_price: 1.0,
+        smart_combo_routing_params: params.clone(), ..Default::default() };
+    client.core.track_order(9, spy(), order, 1);
+    let reported = Order { action: "BUY".into(), total_quantity: 1.0, order_type: "LMT".into(), ..Default::default() };
+    shared.orders.push_order_info(9, crate::bridge::RichOrderInfo { contract: spy(), order: reported,
+        order_state: Default::default(), last_exec: Default::default() });
+    client.core.update_order_fill(9, "Filled", 1.0, 0.0);
+    let view = client.core.order_view(9, &client.shared, "Filled").expect("reported");
+    assert_eq!(view.order.smart_combo_routing_params, params);
+}
+
+// ibx#605 (the reference 10.51, paper, regular hours, 19/10/2026, b2_trail):
+// the open-orders answer shows a percent trail without auxPrice, as its
+// other openOrders, where the server's reports give 0.
+#[test]
+fn the_open_orders_answer_shows_a_percent_trail_without_aux_price() {
+    let (client, _rx, shared) = test_client();
+    shared.market.set_instrument_count(1);
+    let order = Order { action: "BUY".into(), total_quantity: 1.0, tif: "DAY".into(), order_type: "TRAIL".into(),
+        trailing_percent: 0.2, aux_price: 0.0, ..Default::default() };
+    client.core.track_order(5, spy(), order, 1);
+    let listed = client.core.open_orders_listing(&client.shared, crate::client_core::OpenOrdersRequest::All);
+    let (_, t, _) = listed.iter().find(|(id, ..)| *id == 5).expect("listed");
+    assert_eq!(t.order.aux_price, f64::MAX);
 }
 
 // ibx#622 (the reference 10.51, paper, pre-market 12/10 and 13/10/2026):

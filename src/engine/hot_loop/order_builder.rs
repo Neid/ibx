@@ -2525,6 +2525,14 @@ fn send_new_order(
     {
         context.set_order_qty(parent, s.total_qty - i64::from(position) * crate::types::QTY_SCALE);
     }
+    // The price management flag goes out below on the same condition:
+    // remembered for the order's reports that leave it out (ibx#605).
+    if context.price_mgmt_send && !crate::engine::price_mgmt::excluded_frame(fields)
+        && let Some(oid) = field(fields, 11).and_then(|v| v.split('.').next()).and_then(|i| i.parse::<crate::types::OrderId>().ok())
+    {
+        let key = context.key_of(oid);
+        context.price_mgmt_sent.insert(key);
+    }
     let context: &Context = context;
     let short_sale: Fields = match &context.short_sale_send {
         Some(s) if fields.iter().any(|&(t, v)| t == 54 && v == "5") => short_sale_fields(s),
@@ -2608,7 +2616,9 @@ fn send_new_order(
     out.push((6122, "c"));
     // The price management flag, decided for the request before encoding;
     // never on the order types it does not go with (ibx#492).
-    if context.price_mgmt_send && !crate::engine::price_mgmt::excluded_frame(&out) { out.push((8339, "1")); }
+    if context.price_mgmt_send && !crate::engine::price_mgmt::excluded_frame(&out) {
+        out.push((8339, "1"));
+    }
     if let Some(id) = &order_id { out.push((6121, id)); }
     out.push((6119, &client_id));
     // A stock's multiplier, as the reference writes it; an option's terms.
