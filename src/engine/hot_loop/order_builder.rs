@@ -1939,6 +1939,12 @@ fn send_orders(
                     let at = fields.iter().position(|(t, _)| *t == 6122).unwrap_or(fields.len());
                     fields.splice(at..at, tags);
                 }
+                // The FA allocation, restated on every modification
+                // (ibx#507; not observed yet).
+                if context.fa_session {
+                    let at = fields.iter().position(|(t, _)| *t == 6122).unwrap_or(fields.len());
+                    fields.splice(at..at, fa_tags(&attrs.fa));
+                }
                 // The order's soft dollar tier, restated (ibx#506; not
                 // observed yet).
                 if let Some(tags) = context.soft_dollar_orders.get(&order_id) {
@@ -4369,6 +4375,31 @@ fn soft_dollar_check(
     None
 }
 
+/// The FA allocation of an order (ibx#507), as the reference 10.51 writes
+/// it on an FA session (not observed yet: no FA account): the group, the
+/// method as given, the percentage for the two percentage methods, and the
+/// model code unless it is `Core`. A group with no method takes
+/// AvailableEquity, the reference's method of a group without its own
+/// (the stored groups' methods are not read yet).
+fn fa_tags(fa: &[String; 4]) -> Vec<(u32, String)> {
+    let [group, method, pct, model] = fa;
+    let mut tags = Vec::new();
+    if !group.is_empty() {
+        tags.push((6160, group.clone()));
+    }
+    let method = if method.is_empty() && !group.is_empty() { "AvailableEquity" } else { method.as_str() };
+    if !method.is_empty() {
+        tags.push((6159, method.to_string()));
+    }
+    if !model.is_empty() && model != "Core" {
+        tags.push((6700, model.clone()));
+    }
+    if matches!(method, "PctChange" | "PctRoll") && !pct.is_empty() {
+        tags.push((6164, pct.clone()));
+    }
+    tags
+}
+
 /// The MiFID tags of an order: the Decision Maker when covered, the other
 /// three when set (ibx#500).
 fn mifid_tags(values: &[String; 4], covered: bool) -> Vec<(u32, String)> {
@@ -5923,6 +5954,10 @@ fn push_extended_attrs(
     // (ibx#500, ibx#506).
     fields.extend(context.mifid_send.iter().cloned());
     fields.extend(context.soft_dollar_send.iter().cloned());
+    // The FA allocation on an FA session (ibx#507).
+    if context.fa_session {
+        fields.extend(fa_tags(&attrs.fa));
+    }
     // The smartComboRoutingParams of a combo, as order attributes (ibx#470).
     if let Some(combo) = &attrs.combo {
         fields.extend(combo.routing_attrs.iter().cloned());
@@ -12933,6 +12968,29 @@ mod tests {
         assert!(context.unsent.contains_key(&2), "refused, not sent");
         let (frames, _) = session_frames(session("EUSTK"), vec![tier_order(4, "9", "ZZZ")], 1);
         assert!(tier(&frames[0]).is_empty(), "no tiers for that market: dropped");
+    }
+
+    // ibx#507 (the reference 10.51's rules, not observed yet): on an FA
+    // session an order carries its group, method (AvailableEquity for a
+    // group without one), model code and, for a percentage method, its
+    // percentage, restated on a modification; elsewhere nothing.
+    #[test]
+    fn fa_allocations_go_out_on_an_fa_session_only() {
+        let fa = |f: &Vec<(u32, String)>| f.iter().filter(|(t, _)| matches!(*t, 6160 | 6159 | 6164 | 6700)).cloned().collect::<Vec<_>>();
+        let pair = |t: u32, v: &str| (t, v.to_string());
+        let order = |id: OrderId, values: [&str; 4]| limit_ex(id, Side::Buy, 100 * P,
+            crate::types::OrderAttrs { fa: values.map(String::from), ..Default::default() });
+        let (frames, _) = session_frames(|c| c.fa_session = true, vec![
+            order(1, ["Grp", "PctChange", "50", "M1"]),
+            order(2, ["Grp", "", "", "Core"]),
+            modify_limit(1, 101 * P, crate::types::OrderAttrs { fa: ["Grp", "PctChange", "50", "M1"].map(String::from), ..Default::default() }),
+        ], 3);
+        assert_eq!(fa(&frames[0]), [pair(6160, "Grp"), pair(6159, "PctChange"), pair(6700, "M1"), pair(6164, "50")]);
+        assert_eq!(fa(&frames[1]), [pair(6160, "Grp"), pair(6159, "AvailableEquity")], "the default method; Core is no model");
+        assert_eq!(tag(&frames[2], 35), Some("G"));
+        assert_eq!(fa(&frames[2]), [pair(6160, "Grp"), pair(6159, "PctChange"), pair(6700, "M1"), pair(6164, "50")]);
+        let (frames, _) = session_frames(|_| {}, vec![order(3, ["Grp", "NetLiq", "", "M1"])], 1);
+        assert!(fa(&frames[0]).is_empty(), "not an FA session: dropped");
     }
 
     /// A session that allows price management, with the paper exclusion

@@ -6715,9 +6715,17 @@ impl ClientCore {
     pub fn refusal_before_sending_with(order: &ApiOrder, exchange: &str, contract_month: &str, account_pending: bool,
         form_10_40: bool, open_close_required: bool) -> Option<(i64, String)>
     {
+        Self::refusal_before_sending_fa(order, exchange, contract_month, account_pending, form_10_40, open_close_required, false)
+    }
+
+    /// `refusal_before_sending_with` on a session that may be an FA one
+    /// (ibx#507).
+    pub fn refusal_before_sending_fa(order: &ApiOrder, exchange: &str, contract_month: &str, account_pending: bool,
+        form_10_40: bool, open_close_required: bool, fa: bool) -> Option<(i64, String)>
+    {
         Self::read_refusal(order)
             .or_else(|| Self::exchange_refusal(exchange))
-            .or_else(|| Self::order_rule_refusal(order, exchange, contract_month, account_pending, form_10_40, open_close_required))
+            .or_else(|| Self::order_rule_refusal(order, exchange, contract_month, account_pending, form_10_40, open_close_required, fa))
             .or_else(|| Self::fractional_quantity_refusal(order))
             .or_else(|| Self::good_till_date_unreadable(order, form_10_40))
             .or_else(|| Self::good_after_time_unreadable(order, form_10_40))
@@ -6753,8 +6761,10 @@ impl ClientCore {
     /// account, which the reference puts on the orders of a one-account
     /// session.
     pub fn order_account_pending(order: &ApiOrder, reference: &crate::bridge::ReferenceState, logon_account: &str) -> bool {
+        // On an FA session, the one account an order is allocated to
+        // (ibx#507, rule 10136-2; not observed yet).
         if reference.fa_session() {
-            return false;
+            return order.fa_group.is_empty() && !order.account.is_empty() && reference.account_pending(&order.account);
         }
         reference.account_pending(Self::request_account(&order.account, reference, logon_account))
     }
@@ -7356,7 +7366,7 @@ impl ClientCore {
     /// institutional or omnibus logon and some other account kinds, ibx
     /// from the first two (ibx#688).
     fn order_rule_refusal(order: &ApiOrder, exchange: &str, contract_month: &str, account_pending: bool, form_10_40: bool,
-        open_close_required: bool) -> Option<(i64, String)>
+        open_close_required: bool, fa: bool) -> Option<(i64, String)>
     {
         let refuse = |cause: &str| Some((321, format!("Error validating request.-'PlaceOrder(3)' : cause - {}", cause)));
         let order_type = order.order_type.to_uppercase();
@@ -7416,9 +7426,11 @@ impl ClientCore {
         // A size of 0 (ibx#688; the reference 10.51, paper, 17/10/2026,
         // market closed: an AAPL limit order, refused at once, nothing
         // sent, its cancel 10147), except for a cash quantity, a hedge
-        // order (sized by the gateway), an advisor's allocation and the
-        // average cost destination (those not observed yet).
-        let fa_sized = !order.fa_group.is_empty() || !order.fa_method.is_empty() || !order.fa_percentage.is_empty();
+        // order (sized by the gateway), an advisor's allocation by a
+        // percentage (PctChange or PctRoll with a percentage, on an FA
+        // session: ibx#507) and the average cost destination (those not
+        // observed yet). Elsewhere the reference ignores the FA fields.
+        let fa_sized = fa && matches!(order.fa_method.as_str(), "PctChange" | "PctRoll") && !order.fa_percentage.is_empty();
         if order.total_quantity == 0.0 && !is_given(order.cash_qty) && order.hedge_type.is_empty() && !fa_sized
             && !exchange.eq_ignore_ascii_case("AVGCOST")
         {
@@ -7793,9 +7805,10 @@ impl ClientCore {
             .or_else(|| Self::sell_long_refusal(order))
             .or_else(|| {
                 let (super_user, omnibus) = shared.reference.short_sale_flags();
-                Self::refusal_before_sending_with(order, exchange, contract_month, account_pending,
-                    shared.reference.form_10_40(), super_user || omnibus)
+                Self::refusal_before_sending_fa(order, exchange, contract_month, account_pending,
+                    shared.reference.form_10_40(), super_user || omnibus, shared.reference.fa_session())
             })
+            .or_else(|| Self::fa_method_refusal(order, &shared.reference))
             .or_else(|| self.quote_limit_refusal(order_id, order))
             .or_else(|| Self::combo_discretionary_refusal(sec_type, order))
             .or_else(|| self.parent_refusal(order, shared))
@@ -7806,6 +7819,20 @@ impl ClientCore {
             .or_else(|| Self::order_id_refusal(order_id))
             .or_else(|| self.refusal_for_order_id(order_id, order, shared))
             .or_else(|| self.attached_orders_id_refusal(order_id, order, shared))
+    }
+
+    /// The FA method of an order on an FA session (ibx#507), as the
+    /// reference 10.51 checks it (not observed yet): one of PctChange,
+    /// PctRoll, AvailableEquity, NetLiq and EqualQuantity (Equal instead
+    /// with the logon feature EQUALPOS), case-sensitive; else 321 "Invalid
+    /// FA method specified", nothing sent. Elsewhere the method is ignored.
+    fn fa_method_refusal(order: &ApiOrder, reference: &crate::bridge::ReferenceState) -> Option<(i64, String)> {
+        if !reference.fa_session() || order.fa_method.is_empty() {
+            return None;
+        }
+        let equal = if reference.logon_features().split(',').any(|f| f == "EQUALPOS") { "Equal" } else { "EqualQuantity" };
+        (!["PctChange", "PctRoll", "AvailableEquity", "NetLiq", equal].contains(&order.fa_method.as_str()))
+            .then(|| (321, "Error validating request.-'PlaceOrder(3)' : cause - Invalid FA method specified".to_string()))
     }
 
     /// The broker's own ATS destination with no security type and no conId:

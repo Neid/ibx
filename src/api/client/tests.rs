@@ -1132,6 +1132,35 @@ fn fa_requests_on_a_non_fa_session_are_refused() {
     assert!(!w.events.iter().any(|e| e.contains(":321:")), "{:?}", w.events);
 }
 
+// ibx#507 (the reference 10.51's rules, not observed yet): on an FA
+// session an FA method outside the list is refused (321, nothing sent);
+// an FA order sized by a percentage passes with size 0. Elsewhere the FA
+// fields are ignored: a size of 0 is refused as for any order.
+#[test]
+fn fa_method_and_percentage_sizing() {
+    let (client, rx, shared) = test_client();
+    shared.market.set_instrument_count(1);
+    let lmt = Order { action: "BUY".into(), total_quantity: 1.0, order_type: "LMT".into(), lmt_price: 1.0, tif: "DAY".into(),
+        fa_group: "Grp".into(), ..Default::default() };
+    let sized = Order { total_quantity: 0.0, fa_method: "PctChange".into(), fa_percentage: "50".into(), ..lmt.clone() };
+    client.place_order(1, &spy(), &sized).unwrap();
+    let mut w = RecordingWrapper::default();
+    client.process_msgs(&mut w);
+    assert!(w.events.iter().any(|e| e.starts_with("error:1:321:") && e.contains("The size value cannot be zero")), "{:?}", w.events);
+    let _ = rx.try_iter().count();
+
+    shared.reference.set_fa_session(true);
+    client.place_order(2, &spy(), &Order { fa_method: "Percent".into(), ..lmt.clone() }).unwrap();
+    client.place_order(3, &spy(), &sized).unwrap();
+    let mut w = RecordingWrapper::default();
+    client.process_msgs(&mut w);
+    assert!(w.events.iter().any(|e| e == "error:2:321:Error validating request.-'PlaceOrder(3)' : cause - Invalid FA method specified"), "{:?}", w.events);
+    assert!(!w.events.iter().any(|e| e.starts_with("error:3:")), "{:?}", w.events);
+    let sent: Vec<ControlCommand> = rx.try_iter().collect();
+    assert!(sent.iter().any(|c| matches!(c, ControlCommand::Order(r) if r.order_id() == 3)), "the sized order goes");
+    assert!(!sent.iter().any(|c| matches!(c, ControlCommand::Order(r) if r.order_id() == 2)), "nothing sent for 2");
+}
+
 // ibx#443: the WSH requests get the reference's permission error from the
 // logon's news sources: 10276 without the source, 10277 when it is listed
 // without a subscription. With the permission, the errors of a request

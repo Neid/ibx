@@ -503,6 +503,9 @@ pub struct OrderAttrs {
     /// The order's soft dollar tier (name, value); empty when not set
     /// (ibx#506).
     pub soft_dollar_tier: (String, String),
+    /// The order's FA allocation: group, method, percentage, model code;
+    /// sent only on an FA session (ibx#507).
+    pub fa: [String; 4],
     /// Allow trading outside regular hours (the outside-RTH flag).
     pub outside_rth: bool,
     /// Delay order activation until this time (the effective time). 0 = not set. Unix seconds.

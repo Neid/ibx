@@ -359,6 +359,8 @@ pub struct Context {
     pub(crate) mifid_manager: bool,
     pub(crate) mifid_config_id: String,
     pub(crate) mifid_groups: Vec<String>,
+    /// An FA session (ibx#507): orders carry their allocation.
+    pub(crate) fa_session: bool,
     /// The logon's soft dollar tiers (name, value) by key, the contract's
     /// market type (ibx#506).
     pub(crate) soft_dollar_tiers: std::collections::HashMap<String, Vec<(String, String)>>,
@@ -652,6 +654,7 @@ impl Context {
             mifid_config_id: String::new(),
             mifid_groups: Vec::new(),
             mifid_send: Vec::new(),
+            fa_session: false,
             soft_dollar_tiers: std::collections::HashMap::new(),
             soft_dollar_send: Vec::new(),
             soft_dollar_orders: std::collections::HashMap::new(),

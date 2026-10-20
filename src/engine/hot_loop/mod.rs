@@ -290,6 +290,11 @@ impl HotLoop {
         self.context.order_presets.entry(sec_type.to_string()).or_insert(None);
     }
 
+    /// An FA session (ibx#507): orders carry their allocation.
+    pub fn set_fa_session(&mut self, fa: bool) {
+        self.context.fa_session = fa;
+    }
+
     /// The logon's soft dollar tiers by key, the contract's market type
     /// (ibx#506).
     pub fn set_soft_dollar_tiers(&mut self, groups: Vec<(String, Vec<(String, String)>)>) {

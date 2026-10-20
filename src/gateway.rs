@@ -2760,6 +2760,7 @@ impl Gateway {
         hot_loop.set_price_mgmt(self.price_mgmt, self.price_mgmt_exclusions.as_deref());
         // MiFID on the session (ibx#500): MIFID2 on a session that is not a
         // super user's.
+        hot_loop.set_fa_session(self.fa_session);
         // The soft dollar tiers by key, for the order check (ibx#506).
         hot_loop.set_soft_dollar_tiers(soft_dollar_groups(&self.raw_soft_dollar_tiers).into_iter()
             .map(|(key, tiers)| (key, tiers.into_iter().map(|t| (t.name, t.val)).collect())).collect());
