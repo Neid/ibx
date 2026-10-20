@@ -418,6 +418,12 @@ fn last_valid(fields: &[i64; field::COUNT]) -> bool {
 
 /// A stream's step: the fields that changed, in the sender's order, then
 /// the halted state while it is pending.
+/// Saturday or Sunday in New York, now (ibx#494).
+fn new_york_weekend() -> bool {
+    let Ok(tz) = jiff::tz::TimeZone::get("America/New_York") else { return false };
+    matches!(jiff::Timestamp::now().to_zoned(tz).weekday(), jiff::civil::Weekday::Saturday | jiff::civil::Weekday::Sunday)
+}
+
 fn stream_pass(st: &mut StreamState, m: &Mirror, pass: Pass, out: &mut Out) {
     let fields = &m.fields;
     // The trade of the option's frozen view: its size, then its time,
@@ -436,10 +442,13 @@ fn stream_pass(st: &mut StreamState, m: &Mirror, pass: Pass, out: &mut Out) {
     for (idx, pending) in todo.iter_mut().enumerate() {
         *pending = match idx {
             field::LAST_SIZE if st.frozen && fields[idx] == 0 => false,
-            // A last time of 0 s is not given on real-time data (ibx#494; the
-            // reference 10.51 on a closed option, paper: never in its real-
-            // time passes, six runs of 15/10, 19/10 and 20/10/2026).
-            field::TIME if !st.frozen && !st.delayed && fields[idx] / 1_000_000_000 == 0 => false,
+            // A last time of 0 s is not given, but an option's time of 0 at
+            // the weekend (ibx#494; the reference 10.51 on a closed AAPL
+            // option, paper: given once in the three runs made on a Sunday
+            // in New York, 18/10 and 19/10/2026 (ibx#756), real-time or
+            // frozen; never in the twelve weekday runs, 12/10 to
+            // 20/10/2026, real-time, frozen view or snapshot).
+            field::TIME if fields[idx] / 1_000_000_000 == 0 && !(fields[idx] == 0 && st.option && new_york_weekend()) => false,
             field::BID_SIZE | field::ASK_SIZE | field::LAST_SIZE | field::VOLUME => {
                 let kind = size_kind(idx).unwrap_or(SizeKind::Volume);
                 (m.seen(kind) || fields[idx] != 0)
@@ -697,7 +706,9 @@ fn snapshot_pass(snap: &mut PlainSnapshot, m: &Mirror, pass: Pass, out: &mut Out
             }
         }
     }
-    if has(field::TIME) && snap.take(out.api(TICK_LAST_TIMESTAMP)) {
+    // No last time of 0 s (ibx#494; the reference 10.51, paper, a frozen
+    // option's snapshot on a weekday: never, 15/10 and twice on 20/10/2026).
+    if has(field::TIME) && f[field::TIME] / 1_000_000_000 != 0 && snap.take(out.api(TICK_LAST_TIMESTAMP)) {
         out.time();
     }
     // An option snapshot gives no halted state (ibx#647; the reference
@@ -1565,6 +1576,23 @@ mod tests {
         let real = Quote { timestamp_ns: 1_791_921_218_000_000_000, ..Default::default() };
         shared.market.push_test_message(5, &real, &TestMessage { steps: Some(&[MdStep::Time]), ..Default::default() });
         assert_eq!(poll(&core, &shared), ["mdt:1:1", "string:1:45:1791921218"]);
+        // A snapshot neither (a frozen option's, 15/10 and 20/10/2026).
+        assert!(core.attach_md_request(&shared, 2, 6, true, "OPT", "SMART", None, false, false));
+        let q = Quote { bid: 245 * PRICE_SCALE, ask: 246 * PRICE_SCALE, bid_size: QTY_SCALE, ask_size: QTY_SCALE, timestamp_ns: 1, ..Default::default() };
+        shared.market.push_test_message(6, &q, &TestMessage { steps: Some(&[MdStep::Quote, MdStep::Time]), sizes_seen: true, ..Default::default() });
+        assert!(!poll(&core, &shared).iter().any(|l| l.starts_with("string:2:45:")));
+    }
+
+    // ibx#494, ibx#756: an option's time of 0 is given once at the weekend
+    // in New York only.
+    #[test]
+    fn an_options_time_of_0_only_at_the_weekend() {
+        let (core, shared) = (ClientCore::new(), SharedState::new());
+        assert!(core.attach_md_request(&shared, 1, 5, false, "OPT", "SMART", None, false, false));
+        let q = Quote { timestamp_ns: 0, ..Default::default() };
+        shared.market.push_test_message(5, &q, &TestMessage { steps: Some(&[MdStep::Time]), ..Default::default() });
+        let given = poll(&core, &shared).iter().any(|l| l == "string:1:45:0");
+        assert_eq!(given, new_york_weekend());
     }
 
     // ibx#681, ibx#647 (the reference 10.51, 13/10/2026, an option with
