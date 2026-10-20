@@ -978,6 +978,10 @@ pub struct Gateway {
     pub tick_by_tick_off: bool,
     /// The logon feature list allows the price management flag (ibx#492).
     pub price_mgmt: bool,
+    /// The logon feature list has MIFID2 (ibx#500).
+    pub mifid2: bool,
+    /// The account config's MiFID covered groups, `+` separated (ibx#500).
+    pub mifid_groups: String,
     /// The logon's price management exclusion list, None when absent
     /// (ibx#492).
     pub price_mgmt_exclusions: Option<String>,
@@ -1998,6 +2002,7 @@ impl Gateway {
         let mut depth_limit_fields: [Option<String>; 5] = Default::default();
         let mut tick_by_tick_off = false;
         let mut price_mgmt = false;
+        let mut mifid2 = false;
         let mut price_mgmt_exclusions: Option<String> = None;
         // Logon values of the real-time bar limit (ibx#454).
         let mut ticker_limit_tags: std::collections::HashMap<u32, i64> = std::collections::HashMap::new();
@@ -2168,6 +2173,7 @@ impl Gateway {
                 scale_us_lots |= features_scale_us_lots(v);
                 tick_by_tick_off |= features_have(v, "NOTICKBYTICK");
                 price_mgmt |= features_have(v, "PRICEMGMT");
+                mifid2 |= features_have(v, "MIFID2");
                 deny_news |= features_have(v, "DENYNEWS");
             }
             if price_mgmt_exclusions.is_none() {
@@ -2303,6 +2309,7 @@ impl Gateway {
         // Scan init response for account ID and gateway-local init tags
         let init_str = String::from_utf8_lossy(&scan_data);
         let account_config = parse_account_config(&init_str);
+        let mifid_groups = parse_mifid_groups(&init_str);
         let algo_definitions = parse_algo_definitions(&init_str);
         log::info!("Algo definitions in the login burst: {}", algo_definitions.len());
         match &account_config {
@@ -2577,6 +2584,8 @@ impl Gateway {
             user_book,
             tick_by_tick_off,
             price_mgmt,
+            mifid2,
+            mifid_groups,
             price_mgmt_exclusions,
             max_real_time_requests,
             misc_urls: parse_misc_urls(&raw_misc_urls),
@@ -2749,6 +2758,10 @@ impl Gateway {
         hot_loop.set_scale_us_lots(self.scale_us_lots);
         hot_loop.set_algo_providers(crate::bridge::algo_provider_names(&self.raw_algo_providers));
         hot_loop.set_price_mgmt(self.price_mgmt, self.price_mgmt_exclusions.as_deref());
+        // MiFID on the session (ibx#500): MIFID2 on a session that is not a
+        // super user's.
+        hot_loop.set_mifid(self.mifid2 && !self.super_user,
+            self.account_config.as_ref().map_or("", |(_, id)| id.as_str()), &self.mifid_groups);
         hot_loop.set_max_real_time_requests(self.max_real_time_requests);
         hot_loop.set_depth_limit(self.depth_limit);
         hot_loop.set_user_book(self.user_book);
@@ -2913,6 +2926,14 @@ fn parse_account_config(init: &str) -> Option<(Vec<String>, String)> {
         let features = field("6542=").split(',').filter(|f| !f.is_empty()).map(String::from).collect();
         (features, field("8234=").to_string())
     })
+}
+
+/// The MiFID covered groups of the account config answer (ibx#500), empty
+/// when it has none.
+fn parse_mifid_groups(init: &str) -> String {
+    init.split("8=FIX").find(|frame| frame.contains("\x016040=210\x01"))
+        .and_then(|frame| frame.split('\x01').find_map(|p| p.strip_prefix("8244=")))
+        .unwrap_or("").to_string()
 }
 
 /// Most real-time bar requests at once, from the logon values, in the
@@ -4166,5 +4187,14 @@ mod account_config_tests {
         assert_eq!(features, ["OLP", "EUCOSTCALC", "EUILLS"]);
         assert_eq!(mifid, "");
         assert!(parse_account_config("8=FIX.4.1\x0135=U\x016040=75\x01").is_none());
+    }
+
+    // ibx#500: the MiFID covered groups of the account config answer.
+    #[test]
+    fn mifid_groups_from_the_login_burst() {
+        let frame = |tags: &[(u32, &str)]| tags.iter().map(|(t, v)| format!("{t}={v}\u{1}")).collect::<String>();
+        let burst = frame(&[(8, "FIX.4.1"), (35, "U"), (6040, "210"), (8234, "CFG1"), (8244, "EQ+BOND")]);
+        assert_eq!(super::parse_mifid_groups(&burst), "EQ+BOND");
+        assert_eq!(super::parse_mifid_groups(&frame(&[(8, "FIX.4.1"), (35, "U"), (6040, "210")])), "");
     }
 }

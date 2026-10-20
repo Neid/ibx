@@ -496,6 +496,10 @@ pub struct OrderAttrs {
     /// sent only on an account whose config allows them (ibx#425).
     pub customer_account: String,
     pub professional_customer: bool,
+    /// The MiFID values of the order: Decision Maker, Decision Algo,
+    /// Execution Trader, Execution Algo; sent only on a session with MiFID
+    /// (ibx#500).
+    pub mifid: [String; 4],
     /// Allow trading outside regular hours (the outside-RTH flag).
     pub outside_rth: bool,
     /// Delay order activation until this time (the effective time). 0 = not set. Unix seconds.

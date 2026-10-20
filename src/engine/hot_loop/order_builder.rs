@@ -537,6 +537,13 @@ fn send_orders(
             Some(on) => context.price_mgmt_send = on,
             None => { context.rth_parked.push(rewrap(order_req)); continue; }
         }
+        // MiFID on a session with it (ibx#500): the order's values, and
+        // the refusal of a covered order without a Decision Maker or Algo.
+        match mifid_check(&order_req, context, conn, hb, shared) {
+            Some(false) => { context.rth_parked.push(rewrap(order_req)); continue; }
+            Some(true) => continue,
+            None => {}
+        }
         // A stock order directed away from SMART: discarded by the
         // reference's redirect precaution unless it is bypassed (ibx#486).
         if !what_if {
@@ -1914,6 +1921,17 @@ fn send_orders(
                     &clord_str, &orig_clord, account_id, qty, side_str, &symbol,
                     &sec_type_str, &con_id_str, kind, tif, &attrs, trail_limit_offset,
                     reported_stop, bracket_key.as_deref(), context.price_mgmt_send);
+                // A modification restates the order's MiFID values; only a
+                // new, non-empty Decision Maker replaces the old one
+                // (ibx#500, as the reference 10.51; not observed yet).
+                if context.mifid_manager && let Some((values, covered)) = context.mifid_orders.get_mut(&order_id) {
+                    if !attrs.mifid[0].is_empty() {
+                        values[0] = attrs.mifid[0].clone();
+                    }
+                    let tags = mifid_tags(values, *covered);
+                    let at = fields.iter().position(|(t, _)| *t == 6122).unwrap_or(fields.len());
+                    fields.splice(at..at, tags);
+                }
                 if let Some(combo) = context.combos.orders.get(&order_id) {
                     // The per-leg prices of the modify, as 10.51 sends them;
                     // the 10.40 form restates the placed ones (ibx#604).
@@ -4230,6 +4248,80 @@ pub(crate) const NO_TRADING_PERMISSIONS: &str = "No trading permissions.";
 /// Text of error 10297 (ibx#690, paper 14/10/2026).
 const NOT_HELD_INVALID: &str = "Not Held attribute is invalid for this order.";
 
+/// The text of 10234 as the reference's message catalog has it; the link
+/// it names is not known (not observed yet, ibx#500).
+const MIFID_NO_DECISION_MAKER: &str = "<html>The Decision Maker field is required and not set for this order. You can set default value for the Decision Maker in MiFIR settings of desktop TWS 969.1 or newer.<br><br> <a href=\"\" target=\"_blank\">Learn more about MiFIR</a></html>";
+
+/// MiFID on a new order (ibx#500), on a session with the logon's MIFID2
+/// feature that is not a super user's, as the reference 10.51 applies it
+/// (not observed yet: the paper account has no MiFID):
+/// - an order is covered when the account has a MiFID config id, its
+///   destination is not AVGCOST, and the contract's MiFID group is in the
+///   account's covered groups (or they hold `*`);
+/// - a covered order with neither a Decision Maker nor a Decision Algo is
+///   refused with 10234 and not sent (`Some(true)`);
+/// - otherwise it goes on with its Decision Maker when covered, and its
+///   Decision Algo, Execution Trader and Execution Algo when set.
+/// `Some(false)`: the definition it needs is asked; the order waits.
+/// Without the feature the values are dropped, as the reference (paper,
+/// 11/10/2026).
+fn mifid_check(
+    req: &OrderRequest,
+    context: &mut Context,
+    conn: &mut Connection,
+    hb: &mut HeartbeatState,
+    shared: &Arc<SharedState>,
+) -> Option<bool> {
+    context.mifid_send.clear();
+    if !context.mifid_manager {
+        return None;
+    }
+    let (_, attrs) = req.new_order_side()?;
+    let values = attrs.map(|a| a.mifid.clone()).unwrap_or_default();
+    let parent = attrs.map_or(0, |a| a.parent_id);
+    let instrument = req.instrument()?;
+    let oid = req.order_id();
+    let covered = if context.mifid_config_id.is_empty()
+        || context.market.order_routing(instrument).1.eq_ignore_ascii_case("AVGCOST")
+    {
+        false
+    } else {
+        let group = match definition(context, conn, hb, instrument) {
+            Definition::NoContract => None,
+            Definition::Waiting => return Some(false),
+            Definition::Known(types, _) => Some(types.mifid_group.clone()),
+        };
+        group.is_some_and(|g| context.mifid_groups.iter().any(|c| c == "*" || (!g.is_empty() && *c == g)))
+    };
+    if covered && values[0].is_empty() && values[1].is_empty() {
+        log::warn!("Order {} refused: MiFID covered with no Decision Maker or Decision Algo", oid);
+        shared.orders.push_order_error(oid, 10234, MIFID_NO_DECISION_MAKER.to_string());
+        context.keep_unsent(oid, (instrument, req.new_order_qty().unwrap_or(0), parent));
+        return Some(true);
+    }
+    context.mifid_send = mifid_tags(&values, covered);
+    if !matches!(req, OrderRequest::SubmitWhatIf { .. }) {
+        let key = context.key_of(oid);
+        context.mifid_orders.insert(key, (values, covered));
+    }
+    None
+}
+
+/// The MiFID tags of an order: the Decision Maker when covered, the other
+/// three when set (ibx#500).
+fn mifid_tags(values: &[String; 4], covered: bool) -> Vec<(u32, String)> {
+    let mut tags = Vec::new();
+    if covered && !values[0].is_empty() {
+        tags.push((8237, values[0].clone()));
+    }
+    for (tag, v) in [(8243, &values[1]), (8254, &values[2]), (8255, &values[3])] {
+        if !v.is_empty() {
+            tags.push((tag, v.clone()));
+        }
+    }
+    tags
+}
+
 /// Whether the orders of a request carry the price management flag
 /// (ibx#492), None while the contract definition it needs is asked for.
 /// Cheap checks first: the value, the session feature, combos, the
@@ -4352,6 +4444,7 @@ fn store_rth_types(context: &mut Context, key: (i64, String), msg: &[u8]) {
     note_min_size(context, key.0, &tags);
     types.under_sec_type = tags.get(&310).cloned().unwrap_or_default();
     types.permission_key = tags.get(&6411).cloned().unwrap_or_default();
+    types.mifid_group = tags.get(&8242).cloned().unwrap_or_default();
     if let Some(d) = def.as_ref() {
         // A contract given by its conId alone takes its symbol, security
         // type and currency from its definition, as the reference resolves
@@ -5764,6 +5857,8 @@ fn push_extended_attrs(
     if !attrs.order_ref.is_empty() {
         fields.push((6010, attrs.order_ref.clone()));
     }
+    // The MiFID values decided for the request (ibx#500).
+    fields.extend(context.mifid_send.iter().cloned());
     // The smartComboRoutingParams of a combo, as order attributes (ibx#470).
     if let Some(combo) = &attrs.combo {
         fields.extend(combo.routing_attrs.iter().cloned());
@@ -12682,6 +12777,60 @@ mod tests {
         assert!(drain_frames(&mut context, &shared, &mut conn, &mut server).is_empty());
         assert_eq!(shared.orders.drain_order_errors(), [(93, 460, "No trading permissions.".to_string())]);
         assert!(context.cfd_checked.is_empty());
+    }
+
+    /// A session with MiFID (ibx#500): the account's config id and its
+    /// covered groups, and a stock definition of the group `EQ`.
+    fn mifid_session(context: &mut Context, manager: bool, groups: &str) {
+        context.order_records_any.insert(265598);
+        context.mifid_manager = manager;
+        context.mifid_config_id = "CFG1".into();
+        context.mifid_groups = groups.split('+').map(String::from).collect();
+        context.rth_types.insert((265598, "BEST".to_string()), crate::engine::outside_rth::RthTypes {
+            sec_type: "STK".into(), types_known: true, mifid_group: "EQ".into(), ..Default::default()
+        });
+    }
+
+    fn mifid_order(order_id: OrderId, values: [&str; 4]) -> OrderRequest {
+        OrderRequest::SubmitLimitEx {
+            order_id, instrument: 0, side: Side::Buy, qty: 1, price: 100 * crate::types::PRICE_SCALE, tif: b'0',
+            attrs: crate::types::OrderAttrs { mifid: values.map(String::from), ..Default::default() },
+        }
+    }
+
+    // ibx#500 (the reference 10.51's rules, not observed yet): on a session
+    // with MiFID, a covered order carries its Decision Maker and the three
+    // other values; one with a Decision Algo but no Decision Maker goes;
+    // one with neither is refused (10234) and not sent; an order of a
+    // group not covered carries the three other values only; without the
+    // feature nothing is sent.
+    #[test]
+    fn mifid_values_and_the_decision_maker_rule() {
+        let mifid = |f: &Vec<(u32, String)>| f.iter().filter(|(t, _)| matches!(*t, 8237 | 8243 | 8254 | 8255)).cloned().collect::<Vec<_>>();
+        let pair = |t: u32, v: &str| (t, v.to_string());
+        let (frames, context) = session_frames(|c| mifid_session(c, true, "EQ+BOND"), vec![
+            mifid_order(1, ["DM1", "DA1", "ET1", "EA1"]),
+            mifid_order(2, ["", "", "", ""]),
+            mifid_order(3, ["", "DA3", "", ""]),
+        ], 2);
+        assert_eq!(mifid(&frames[0]), [pair(8237, "DM1"), pair(8243, "DA1"), pair(8254, "ET1"), pair(8255, "EA1")]);
+        assert_eq!(mifid(&frames[1]), [pair(8243, "DA3")]);
+        assert!(context.unsent.contains_key(&2), "refused, not sent");
+        let (frames, _) = session_frames(|c| mifid_session(c, true, "BOND"), vec![mifid_order(4, ["DM4", "", "ET4", ""])], 1);
+        assert_eq!(mifid(&frames[0]), [pair(8254, "ET4")], "not covered: no Decision Maker");
+        let (frames, _) = session_frames(|c| mifid_session(c, true, "*"), vec![mifid_order(5, ["DM5", "", "", ""])], 1);
+        assert_eq!(mifid(&frames[0]), [pair(8237, "DM5")], "all groups covered");
+        let (frames, _) = session_frames(|c| mifid_session(c, false, "*"), vec![mifid_order(6, ["DM6", "DA6", "ET6", "EA6"])], 1);
+        assert!(mifid(&frames[0]).is_empty(), "no MiFID on the session: dropped");
+        // A modification restates the values; only a new Decision Maker
+        // replaces the old one.
+        let new_values = crate::types::OrderAttrs { mifid: ["DM2", "DA2", "ET2", "EA2"].map(String::from), ..Default::default() };
+        let (frames, _) = session_frames(|c| mifid_session(c, true, "EQ"), vec![
+            mifid_order(7, ["DM1", "DA1", "ET1", ""]),
+            modify_limit(7, 101 * P, new_values),
+        ], 2);
+        assert_eq!(tag(&frames[1], 35), Some("G"));
+        assert_eq!(mifid(&frames[1]), [pair(8237, "DM2"), pair(8243, "DA1"), pair(8254, "ET1")]);
     }
 
     /// A session that allows price management, with the paper exclusion

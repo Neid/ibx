@@ -290,6 +290,15 @@ impl HotLoop {
         self.context.order_presets.entry(sec_type.to_string()).or_insert(None);
     }
 
+    /// MiFID on the session (ibx#500): the logon's MIFID2 feature on a
+    /// session that is not a super user's, the account's MiFID config id
+    /// and its covered groups (`+` separated, `*` for all).
+    pub fn set_mifid(&mut self, manager: bool, config_id: &str, groups: &str) {
+        self.context.mifid_manager = manager;
+        self.context.mifid_config_id = config_id.to_string();
+        self.context.mifid_groups = groups.split('+').map(str::trim).filter(|g| !g.is_empty()).map(String::from).collect();
+    }
+
     /// The logon's price management feature and exclusion list (ibx#492).
     pub fn set_price_mgmt(&mut self, on: bool, exclusions: Option<&str>) {
         self.context.price_mgmt_feature = on;

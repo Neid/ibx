@@ -98,6 +98,9 @@ pub(crate) struct RthTypes {
     /// The key of the contract's trading permission class (an option's
     /// "2/OPT/R"), empty for a stock (ibx#666).
     pub permission_key: String,
+    /// The contract's MiFID group (ibx#500): an order is MiFID covered when
+    /// the account's covered groups hold it or `*`.
+    pub mifid_group: String,
     /// How the reference names a structured product or a treasury bill in
     /// the text of an order message (399), after the side and, for a
     /// structured product, the quantity; empty for the other contracts,

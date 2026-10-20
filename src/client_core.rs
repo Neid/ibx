@@ -2390,6 +2390,11 @@ fn reported_price_mgmt(order: &mut ApiOrder, reported: Option<&ApiOrder>) {
 /// the shareholder text, and `None` for an adjusted or delta neutral order
 /// type that is not set.
 pub fn reported_unset_values(order: &mut ApiOrder) {
+    // The MiFID values are not reported back (ibx#500).
+    order.mifid2_decision_maker.clear();
+    order.mifid2_decision_algo.clear();
+    order.mifid2_execution_trader.clear();
+    order.mifid2_execution_algo.clear();
     if !(1..=4).contains(&order.oca_type) { order.oca_type = 3; }
     if order.clearing_intent.is_empty() { order.clearing_intent = "IB".into(); }
     if order.shareholder.is_empty() { order.shareholder = NOT_A_SHAREHOLDER.into(); }
