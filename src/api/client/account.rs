@@ -19,6 +19,7 @@ impl EClient {
     pub fn req_positions(&self, _wrapper: &mut impl Wrapper) {
         // One API request for the pacing, whatever it sends (ibx#565).
         let _request = crate::engine::park::one_request();
+        if self.core.requests_ignored() { return; }
         // Answered here: after the requests made before it (ibx#561).
         self.shared.command_clock().take_turn();
         // Accounts whose application is not approved (ibx#421).
@@ -98,6 +99,7 @@ impl EClient {
     pub fn req_pnl(&self, req_id: i64, account: &str, _model_code: &str) {
         // One API request for the pacing, whatever it sends (ibx#565).
         let _request = crate::engine::park::one_request();
+        if self.core.requests_ignored() { return; }
         if !crate::client_core::ClientCore::ids_fit("req_pnl", &[req_id]) { return; }
         if let Err((code, message)) = self.core.request_pnl(req_id, account, &self.account_id) {
             self.shared.orders.push_order_error(req_id, code, message);
@@ -109,6 +111,7 @@ impl EClient {
     pub fn cancel_pnl(&self, req_id: i64) {
         // One API request for the pacing, whatever it sends (ibx#565).
         let _request = crate::engine::park::one_request();
+        if self.core.requests_ignored() { return; }
         if !crate::client_core::ClientCore::ids_fit("cancel_pnl", &[req_id]) { return; }
         if let Some((code, message)) = self.core.cancel_pnl_request(req_id) {
             self.shared.orders.push_order_error(req_id, code, message);
@@ -120,6 +123,7 @@ impl EClient {
     pub fn req_pnl_single(&self, req_id: i64, account: &str, _model_code: &str, con_id: i64) {
         // One API request for the pacing, whatever it sends (ibx#565).
         let _request = crate::engine::park::one_request();
+        if self.core.requests_ignored() { return; }
         if !crate::client_core::ClientCore::ids_fit("req_pnl_single", &[req_id, con_id]) { return; }
         if let Err((code, message)) = self.core.request_pnl_single(req_id, account, &self.account_id, con_id) {
             self.shared.orders.push_order_error(req_id, code, message);
@@ -131,6 +135,7 @@ impl EClient {
     pub fn cancel_pnl_single(&self, req_id: i64) {
         // One API request for the pacing, whatever it sends (ibx#565).
         let _request = crate::engine::park::one_request();
+        if self.core.requests_ignored() { return; }
         if !crate::client_core::ClientCore::ids_fit("cancel_pnl_single", &[req_id]) { return; }
         if let Some((code, message)) = self.core.cancel_pnl_single_request(req_id) {
             self.shared.orders.push_order_error(req_id, code, message);
@@ -163,6 +168,7 @@ impl EClient {
     pub fn cancel_account_summary(&self, req_id: i64) {
         // One API request for the pacing, whatever it sends (ibx#565).
         let _request = crate::engine::park::one_request();
+        if self.core.requests_ignored() { return; }
         if !crate::client_core::ClientCore::ids_fit("cancel_account_summary", &[req_id]) { return; }
         if let Some(sr_id) = self.core.unsubscribe_account_summary(req_id) {
             let _ = self.control_tx.send(ControlCommand::CancelAccountSummary { sr_id });
@@ -175,6 +181,7 @@ impl EClient {
     pub fn req_account_updates(&self, subscribe: bool, acct_code: &str) {
         // One API request for the pacing, whatever it sends (ibx#565).
         let _request = crate::engine::park::one_request();
+        if self.core.requests_ignored() { return; }
         // An account whose application is not approved: a warning, the
         // request goes on (ibx#421).
         if let Some((code, message)) = crate::client_core::ClientCore::account_updates_pending_warning(
@@ -192,6 +199,7 @@ impl EClient {
     pub fn cancel_positions(&self) {
         // One API request for the pacing, whatever it sends (ibx#565).
         let _request = crate::engine::park::one_request();
+        if self.core.requests_ignored() { return; }
         self.core.unsubscribe_positions();
     }
 
@@ -202,6 +210,7 @@ impl EClient {
     pub fn req_managed_accts(&self, _wrapper: &mut impl Wrapper) {
         // One API request for the pacing, whatever it sends (ibx#565).
         let _request = crate::engine::park::one_request();
+        if self.core.requests_ignored() { return; }
         // Answered here: after the requests made before it (ibx#561).
         self.shared.command_clock().take_turn();
         // Given by `process_msgs` at its place among the answers (ibx#532).
@@ -222,6 +231,7 @@ impl EClient {
     ) {
         // One API request for the pacing, whatever it sends (ibx#565).
         let _request = crate::engine::park::one_request();
+        if self.core.requests_ignored() { return; }
         if !crate::client_core::ClientCore::ids_fit("req_account_updates_multi", &[req_id]) { return; }
         // Given by `process_msgs` at its place among the answers (ibx#532).
         if let Err((code, message)) = self.core.subscribe_account_multi(req_id, account, model_code, ledger_and_nlv) {
@@ -235,6 +245,7 @@ impl EClient {
     pub fn cancel_account_updates_multi(&self, req_id: i64) {
         // One API request for the pacing, whatever it sends (ibx#565).
         let _request = crate::engine::park::one_request();
+        if self.core.requests_ignored() { return; }
         if !crate::client_core::ClientCore::ids_fit("cancel_account_updates_multi", &[req_id]) { return; }
         self.core.unsubscribe_account_multi(req_id);
     }
@@ -251,6 +262,7 @@ impl EClient {
     ) {
         // One API request for the pacing, whatever it sends (ibx#565).
         let _request = crate::engine::park::one_request();
+        if self.core.requests_ignored() { return; }
         if !crate::client_core::ClientCore::ids_fit("req_positions_multi", &[req_id]) { return; }
         // An account whose application is not approved (ibx#421).
         if let Some((code, message)) = crate::client_core::ClientCore::positions_multi_pending_refusal(
@@ -268,6 +280,7 @@ impl EClient {
     pub fn cancel_positions_multi(&self, req_id: i64) {
         // One API request for the pacing, whatever it sends (ibx#565).
         let _request = crate::engine::park::one_request();
+        if self.core.requests_ignored() { return; }
         if !crate::client_core::ClientCore::ids_fit("cancel_positions_multi", &[req_id]) { return; }
         self.core.unsubscribe_positions_multi(req_id);
     }

@@ -44,6 +44,7 @@ impl EClient {
     ) -> Result<(), String> {
         // One API request for the pacing, whatever it sends (ibx#565).
         let _request = crate::engine::park::one_request();
+        if self.core.requests_ignored() { return Ok(()); }
         self.req_mkt_data_ex(req_id, contract, generic_tick_list, snapshot, regulatory_snapshot, 0)
     }
 
@@ -69,6 +70,7 @@ impl EClient {
     ) -> Result<(), String> {
         // One API request for the pacing, whatever it sends (ibx#565).
         let _request = crate::engine::park::one_request();
+        if self.core.requests_ignored() { return Ok(()); }
         if !crate::client_core::ClientCore::ids_fit("req_mkt_data_ex", &[req_id, contract.con_id]) { return Ok(()); }
         // A contract with no exchange: 321, the reference's first check.
         // An invalid generic tick list of a request that is no snapshot:
@@ -143,6 +145,7 @@ impl EClient {
     ) -> Result<(), String> {
         // One API request for the pacing, whatever it sends (ibx#565).
         let _request = crate::engine::park::one_request();
+        if self.core.requests_ignored() { return Ok(()); }
         self.calculate_option(req_id, contract, crate::control::optcalc::CalcKind::ImpliedVol { option_price }, under_price)
     }
 
@@ -156,6 +159,7 @@ impl EClient {
     ) -> Result<(), String> {
         // One API request for the pacing, whatever it sends (ibx#565).
         let _request = crate::engine::park::one_request();
+        if self.core.requests_ignored() { return Ok(()); }
         self.calculate_option(req_id, contract, crate::control::optcalc::CalcKind::Price { volatility }, under_price)
     }
 
@@ -218,6 +222,7 @@ impl EClient {
     ) -> Result<(), String> {
         // One API request for the pacing, whatever it sends (ibx#565).
         let _request = crate::engine::park::one_request();
+        if self.core.requests_ignored() { return Ok(()); }
         if !crate::client_core::ClientCore::ids_fit("req_tick_by_tick_data", &[req_id, contract.con_id]) { return Ok(()); }
         let local_symbol = if contract.local_symbol.is_empty() { &contract.symbol } else { &contract.local_symbol };
         let tbt_type = match self.core.tbt_refusal(&self.shared, &contract.sec_type, tick_type, local_symbol) {
@@ -242,6 +247,7 @@ impl EClient {
     pub fn cancel_tick_by_tick_data(&self, req_id: i64) -> Result<(), String> {
         // One API request for the pacing, whatever it sends (ibx#565).
         let _request = crate::engine::park::one_request();
+        if self.core.requests_ignored() { return Ok(()); }
         if !crate::client_core::ClientCore::ids_fit("cancel_tick_by_tick_data", &[req_id]) { return Ok(()); }
         if self.core.unregister_tbt(req_id).is_some() {
             self.send(ControlCommand::UnsubscribeTbt { req_id })?;
@@ -263,6 +269,7 @@ impl EClient {
     ) -> Result<(), String> {
         // One API request for the pacing, whatever it sends (ibx#565).
         let _request = crate::engine::park::one_request();
+        if self.core.requests_ignored() { return Ok(()); }
         if !crate::client_core::ClientCore::ids_fit("req_mkt_depth", &[req_id, contract.con_id]) { return Ok(()); }
         // An empty exchange is refused by the engine, as the reference
         // refuses it (#452).
@@ -286,6 +293,7 @@ impl EClient {
     pub fn cancel_mkt_depth(&self, req_id: i64) -> Result<(), String> {
         // One API request for the pacing, whatever it sends (ibx#565).
         let _request = crate::engine::park::one_request();
+        if self.core.requests_ignored() { return Ok(()); }
         if !crate::client_core::ClientCore::ids_fit("cancel_mkt_depth", &[req_id]) { return Ok(()); }
         self.send(ControlCommand::UnsubscribeDepth { req_id })
     }
@@ -299,6 +307,7 @@ impl EClient {
     ) -> Result<(), String> {
         // One API request for the pacing, whatever it sends (ibx#565).
         let _request = crate::engine::park::one_request();
+        if self.core.requests_ignored() { return Ok(()); }
         if !crate::client_core::ClientCore::ids_fit("req_real_time_bars", &[req_id, contract.con_id]) { return Ok(()); }
         // A contract without a conId is looked up first, as the reference
         // does (captured 05/10/2026).
@@ -317,6 +326,7 @@ impl EClient {
     pub fn cancel_real_time_bars(&self, req_id: i64) -> Result<(), String> {
         // One API request for the pacing, whatever it sends (ibx#565).
         let _request = crate::engine::park::one_request();
+        if self.core.requests_ignored() { return Ok(()); }
         if !crate::client_core::ClientCore::ids_fit("cancel_real_time_bars", &[req_id]) { return Ok(()); }
         self.send(ControlCommand::CancelRealTimeBar { req_id })
     }
@@ -330,6 +340,7 @@ impl EClient {
     pub fn req_ping(&self) -> Result<(), String> {
         // One API request for the pacing, whatever it sends (ibx#565).
         let _request = crate::engine::park::one_request();
+        if self.core.requests_ignored() { return Ok(()); }
         self.send(ControlCommand::Ping)
     }
 
@@ -355,6 +366,7 @@ impl EClient {
     pub fn req_market_data_type(&self, market_data_type: i32) {
         // One API request for the pacing, whatever it sends (ibx#565).
         let _request = crate::engine::park::one_request();
+        if self.core.requests_ignored() { return; }
         if let Some((code, text)) = self.core.set_market_data_type(&self.control_tx, market_data_type) {
             self.shared.orders.push_order_error(-1, code, text);
         }

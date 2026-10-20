@@ -2163,6 +2163,7 @@ eclient,req_current_time,,src/api/client/tests.rs::req_current_time_adds_the_log
 eclient,req_current_time_in_millis,,src/api/client/tests.rs::req_current_time_in_millis_adds_the_logon_clock_offset
 eclient,cancel_contract_data,,src/api/client/tests.rs::requests_the_reference_session_does_not_have ; src/client_core.rs::the_lookup_cancels_are_refused_below_level_215_and_answer_nothing_from_it
 eclient,cancel_historical_ticks,,src/api/client/tests.rs::requests_the_reference_session_does_not_have ; src/client_core.rs::the_lookup_cancels_are_refused_below_level_215_and_answer_nothing_from_it
+eclient,set_extra_auth,,src/api/client/tests.rs::a_verify_message_leaves_the_session_unanswered
 eclient,verify_request,,src/api/client/tests.rs::requests_the_reference_session_does_not_have
 eclient,verify_message,,src/api/client/tests.rs::requests_the_reference_session_does_not_have
 eclient,verify_and_auth_request,,src/api/client/tests.rs::requests_the_reference_session_does_not_have

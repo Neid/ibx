@@ -20,6 +20,7 @@ impl EClient {
     fn hold_order(&self, py: Python<'_>, oid: i64, contract: &ApiContract, order: &ApiOrder) -> PyResult<()> {
         // One API request for the pacing, whatever it sends (ibx#565).
         let _request = crate::engine::park::one_request();
+        if self.core.requests_ignored() { return Ok(()); }
         let tx = self.tx()?;
         let shared = self.shared_state()?;
         if self.core.working_order(&shared, oid).is_some() {
@@ -215,6 +216,7 @@ impl EClient {
     fn place_order(&self, py: Python<'_>, order_id: i64, contract: &Contract, order: &Order) -> PyResult<()> {
         // One API request for the pacing, whatever it sends (ibx#565).
         let _request = crate::engine::park::one_request();
+        if self.core.requests_ignored() { return Ok(()); }
         // Convert and validate order params first (fail fast, no connection needed)
         let mut api_order = order.to_api();
         // A condition that is not understood ends the request here (ibx#541).

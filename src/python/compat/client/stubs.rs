@@ -75,6 +75,7 @@ impl EClient {
     ) -> PyResult<()> {
         // One API request for the pacing, whatever it sends (ibx#565).
         let _request = crate::engine::park::one_request();
+        if self.core.requests_ignored() { return Ok(()); }
         let _ = implied_vol_options;
         self.calculate_option(py, req_id, contract, crate::control::optcalc::CalcKind::ImpliedVol { option_price }, under_price)
     }
@@ -88,6 +89,7 @@ impl EClient {
     ) -> PyResult<()> {
         // One API request for the pacing, whatever it sends (ibx#565).
         let _request = crate::engine::park::one_request();
+        if self.core.requests_ignored() { return Ok(()); }
         let _ = opt_prc_options;
         self.calculate_option(py, req_id, contract, crate::control::optcalc::CalcKind::Price { volatility }, under_price)
     }
@@ -115,6 +117,7 @@ impl EClient {
     ) -> PyResult<()> {
         // One API request for the pacing, whatever it sends (ibx#565).
         let _request = crate::engine::park::one_request();
+        if self.core.requests_ignored() { return Ok(()); }
         let _ = (req_id, contract, exercise_action, exercise_quantity, account, _override);
         log::warn!("exercise_options: not yet implemented in engine");
         Ok(())
@@ -206,6 +209,12 @@ impl EClient {
         let _request = crate::engine::park::one_request();
         let _ = (api_name, api_version);
         if let Some(r) = self.not_connected(-1) { return r; }
+        // With the intent to verify: sent, and the session answers no more
+        // request, as the reference 10.51 (ibx#556).
+        if self.core.extra_auth() {
+            self.core.verify_sent();
+            return Ok(());
+        }
         let (name, version) = (api_name.to_string(), api_version.to_string());
         if self.later(move |this, py| this.verify_request(py, &name, &version)) { return Ok(()); }
         let (id, code, text) = crate::client_core::VERIFY_REQUEST_NO_INTENT;
@@ -227,7 +236,11 @@ impl EClient {
         if self.shared_state()?.reference.form_10_40() {
             let (id, code, text) = crate::client_core::VERIFY_MESSAGE_OUT_OF_SEQUENCE;
             self.wrapper.call_method1(py, "error", (id, code, text, ""))?;
+            return Ok(());
         }
+        // No answer, and the session answers no more request, as the
+        // reference 10.51 (ibx#556).
+        self.core.verify_sent();
         Ok(())
     }
 
@@ -238,6 +251,10 @@ impl EClient {
         let _request = crate::engine::park::one_request();
         let _ = (api_name, api_version, opaque_isv_key);
         if let Some(r) = self.not_connected(-1) { return r; }
+        if self.core.extra_auth() {
+            self.core.verify_sent();
+            return Ok(());
+        }
         let (name, version, key) = (api_name.to_string(), api_version.to_string(), opaque_isv_key.to_string());
         if self.later(move |this, py| this.verify_and_auth_request(py, &name, &version, &key)) { return Ok(()); }
         let (id, code, text) = crate::client_core::VERIFY_AND_AUTH_REQUEST_NO_INTENT;
@@ -252,6 +269,11 @@ impl EClient {
         let _request = crate::engine::park::one_request();
         let _ = (api_data, xyz_response);
         if let Some(r) = self.not_connected(-1) { return r; }
+        // The session answers no more request, as the reference 10.51
+        // (ibx#556).
+        if !self.shared_state()?.reference.form_10_40() {
+            self.core.verify_sent();
+        }
         Ok(())
     }
 

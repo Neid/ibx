@@ -14,6 +14,7 @@ impl EClient {
     pub fn place_order(&self, order_id: i64, contract: &Contract, order: &Order) -> Result<(), String> {
         // One API request for the pacing, whatever it sends (ibx#565).
         let _request = crate::engine::park::one_request();
+        if self.core.requests_ignored() { return Ok(()); }
         if !ClientCore::ids_fit("place_order", &[order_id, contract.con_id]) { return Ok(()); }
         // The reference's other names for an order type, under ibx's name
         // for every check and for the tracked order (ibx#469).
@@ -208,6 +209,7 @@ impl EClient {
     pub fn cancel_order(&self, order_id: i64, _manual_order_cancel_time: &str) -> Result<(), String> {
         // One API request for the pacing, whatever it sends (ibx#565).
         let _request = crate::engine::park::one_request();
+        if self.core.requests_ignored() { return Ok(()); }
         if !ClientCore::ids_fit("cancel_order", &[order_id]) { return Ok(()); }
         self.core.drop_held_order(order_id);
         self.send(ControlCommand::Order(OrderRequest::Cancel {
@@ -228,6 +230,7 @@ impl EClient {
     pub fn cancel_order_by_perm_id(&self, perm_id: i64) -> Result<(), String> {
         // One API request for the pacing, whatever it sends (ibx#565).
         let _request = crate::engine::park::one_request();
+        if self.core.requests_ignored() { return Ok(()); }
         if perm_id == 0 {
             return Err("cancel_order_by_perm_id: perm_id must be non-zero".into());
         }
@@ -245,6 +248,7 @@ impl EClient {
     pub fn req_global_cancel(&self) -> Result<(), String> {
         // One API request for the pacing, whatever it sends (ibx#565).
         let _request = crate::engine::park::one_request();
+        if self.core.requests_ignored() { return Ok(()); }
         self.core.drop_held_orders();
         self.send(ControlCommand::Order(OrderRequest::GlobalCancel))
     }
@@ -258,6 +262,7 @@ impl EClient {
     pub fn req_ids(&self, _wrapper: &mut impl Wrapper) {
         // One API request for the pacing, whatever it sends (ibx#565).
         let _request = crate::engine::park::one_request();
+        if self.core.requests_ignored() { return; }
         // Answered here: after the requests made before it (ibx#561).
         self.shared.command_clock().take_turn();
         ClientCore::wait_order_replay(&self.shared);
@@ -284,6 +289,7 @@ impl EClient {
     pub fn req_open_orders(&self, _wrapper: &mut impl Wrapper) {
         // One API request for the pacing, whatever it sends (ibx#565).
         let _request = crate::engine::park::one_request();
+        if self.core.requests_ignored() { return; }
         // Answered here: after the requests made before it (ibx#561).
         self.shared.command_clock().take_turn();
         if self.core.hold_open_orders(crate::client_core::OpenOrdersRequest::Open, &self.shared) {
@@ -300,6 +306,7 @@ impl EClient {
     pub fn req_all_open_orders(&self, _wrapper: &mut impl Wrapper) {
         // One API request for the pacing, whatever it sends (ibx#565).
         let _request = crate::engine::park::one_request();
+        if self.core.requests_ignored() { return; }
         // Answered here: after the requests made before it (ibx#561).
         self.shared.command_clock().take_turn();
         if self.core.hold_open_orders(crate::client_core::OpenOrdersRequest::All, &self.shared) {
@@ -346,6 +353,7 @@ impl EClient {
     pub fn req_completed_orders_only(&self, api_only: bool) {
         // One API request for the pacing, whatever it sends (ibx#565).
         let _request = crate::engine::park::one_request();
+        if self.core.requests_ignored() { return; }
         let _ = self.send(ControlCommand::CompletedOrders { api_only });
     }
 
@@ -355,6 +363,7 @@ impl EClient {
     pub fn req_auto_open_orders(&self, _b_auto_bind: bool) {
         // One API request for the pacing, whatever it sends (ibx#565).
         let _request = crate::engine::park::one_request();
+        if self.core.requests_ignored() { return; }
         // No-op: single-client engine, all orders are auto-bound.
     }
 
@@ -364,6 +373,7 @@ impl EClient {
     pub fn req_executions(&self, req_id: i64, filter: &ExecutionFilter, _wrapper: &mut impl Wrapper) {
         // One API request for the pacing, whatever it sends (ibx#565).
         let _request = crate::engine::park::one_request();
+        if self.core.requests_ignored() { return; }
         // Answered here: after the requests made before it (ibx#561).
         self.shared.command_clock().take_turn();
         if !crate::client_core::ClientCore::ids_fit("req_executions", &[req_id]) { return; }

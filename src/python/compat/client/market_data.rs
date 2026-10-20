@@ -208,6 +208,7 @@ impl EClient {
     fn req_ping(&self, py: Python<'_>) -> PyResult<()> {
         // One API request for the pacing, whatever it sends (ibx#565).
         let _request = crate::engine::park::one_request();
+        if self.core.requests_ignored() { return Ok(()); }
         let tx = self.tx()?;
         send_cmd(py, &tx, ControlCommand::Ping)?;
         Ok(())

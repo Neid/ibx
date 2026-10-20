@@ -7720,6 +7720,49 @@ fn requests_the_reference_session_does_not_have() {
     ]);
 }
 
+// ibx#556 (the reference 10.51, paper, pre-market 20/10/2026, an official
+// client at level 225): a plain verifyMessage, or a verifyRequest or
+// verifyAndAuthRequest with the intent to verify, leaves the session
+// answering no more request; without the intent, 544 and 551 and the
+// session goes on.
+#[test]
+fn a_verify_message_leaves_the_session_unanswered() {
+    let errors = |client: &EClient| {
+        let mut w = RecordingWrapper::default();
+        client.process_msgs(&mut w);
+        w.events.iter().filter_map(|e| e.strip_prefix("error:-1:")).map(|e| e[..3].parse::<i64>().unwrap()).collect::<Vec<_>>()
+    };
+    let order = Order { action: "BUY".into(), total_quantity: 1.0, order_type: "LMT".into(), lmt_price: 1.0,
+        tif: "DAY".into(), ..Default::default() };
+    // Without the intent: refused, the session goes on.
+    let (client, rx, shared) = test_client();
+    shared.market.set_instrument_count(1);
+    client.verify_request("app", "1.0");
+    client.verify_and_auth_request("app", "1.0", "key");
+    assert_eq!(errors(&client), [544, 551]);
+    client.place_order(5, &spy(), &order).unwrap();
+    assert!(rx.try_iter().any(|c| matches!(c, ControlCommand::Order(_))), "the order goes");
+
+    for start in 0..4 {
+        let (client, rx, shared) = test_client();
+        shared.market.set_instrument_count(1);
+        match start {
+            0 => client.verify_message("data"),
+            1 => client.verify_and_auth_message("data", "response"),
+            _ => {
+                client.set_extra_auth(true);
+                if start == 2 { client.verify_request("app", "1.0") } else { client.verify_and_auth_request("app", "1.0", "key") }
+            }
+        }
+        let _ = client.place_order(5, &spy(), &order);
+        client.verify_request("app", "1.0");
+        let mut w = RecordingWrapper::default();
+        client.req_current_time(&mut w);
+        assert!(errors(&client).is_empty(), "case {start}: no answer");
+        assert!(rx.try_recv().is_err(), "case {start}: nothing sent");
+    }
+}
+
 // ibx#612: at session level 214 an update of the configuration is refused
 // with 503 for its id, or -1 without one, and nothing goes to the engine,
 // as the official client library at level 214 (reference 10.51, paper,

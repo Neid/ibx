@@ -23,6 +23,7 @@ impl EClient {
     pub fn req_smart_components(&self, req_id: i64, bbo_exchange: &str, _wrapper: &mut impl Wrapper) {
         // One API request for the pacing, whatever it sends (ibx#565).
         let _request = crate::engine::park::one_request();
+        if self.core.requests_ignored() { return; }
         // Answered here: after the requests made before it (ibx#561).
         self.shared.command_clock().take_turn();
         if !crate::client_core::ClientCore::ids_fit("req_smart_components", &[req_id]) { return; }
@@ -41,6 +42,7 @@ impl EClient {
     pub fn req_news_providers(&self, _wrapper: &mut impl Wrapper) {
         // One API request for the pacing, whatever it sends (ibx#565).
         let _request = crate::engine::park::one_request();
+        if self.core.requests_ignored() { return; }
         // Answered here: after the requests made before it (ibx#561).
         self.shared.command_clock().take_turn();
         // Given by `process_msgs` at its place among the answers (ibx#532).
@@ -55,6 +57,7 @@ impl EClient {
     pub fn req_current_time(&self, _wrapper: &mut impl Wrapper) {
         // One API request for the pacing, whatever it sends (ibx#565).
         let _request = crate::engine::park::one_request();
+        if self.core.requests_ignored() { return; }
         // Paced like every request: on the reference a current time
         // request made in a burst was answered at its turn (run of
         // 10/10/2026, ibx#561).
@@ -69,6 +72,7 @@ impl EClient {
     pub fn req_current_time_in_millis(&self, _wrapper: &mut impl Wrapper) {
         // One API request for the pacing, whatever it sends (ibx#565).
         let _request = crate::engine::park::one_request();
+        if self.core.requests_ignored() { return; }
         // As `req_current_time` (ibx#561).
         self.shared.command_clock().take_turn();
         // Given by `process_msgs` at its place among the answers (ibx#532).
@@ -83,6 +87,7 @@ impl EClient {
     pub fn cancel_contract_data(&self, req_id: i64) {
         // One API request for the pacing, whatever it sends (ibx#565).
         let _request = crate::engine::park::one_request();
+        if self.core.requests_ignored() { return; }
         if let Some((code, text)) = crate::client_core::lookup_cancel_refusal(crate::client_core::session_level(), false) {
             self.shared.orders.push_order_error(req_id, code, text.to_string());
         }
@@ -94,44 +99,69 @@ impl EClient {
     pub fn cancel_historical_ticks(&self, req_id: i64) {
         // One API request for the pacing, whatever it sends (ibx#565).
         let _request = crate::engine::park::one_request();
+        if self.core.requests_ignored() { return; }
         if let Some((code, text)) = crate::client_core::lookup_cancel_refusal(crate::client_core::session_level(), true) {
             self.shared.orders.push_order_error(req_id, code, text.to_string());
         }
     }
 
+    /// The intent to verify, as the official client's `extraAuth`: set
+    /// before the connect, the verify requests are sent (ibx#556).
+    pub fn set_extra_auth(&self, on: bool) {
+        self.core.set_extra_auth(on);
+    }
+
     /// Matches `verifyRequest` in C++. A session opened without the intent
-    /// to verify: error 544, nothing sent.
+    /// to verify: error 544, nothing sent. With it, sent: the session then
+    /// answers no more request, as the reference 10.51 (ibx#556).
     pub fn verify_request(&self, _api_name: &str, _api_version: &str) {
         // One API request for the pacing, whatever it sends (ibx#565).
         let _request = crate::engine::park::one_request();
+        if self.core.requests_ignored() { return; }
+        if self.core.extra_auth() {
+            self.core.verify_sent();
+            return;
+        }
         let (id, code, text) = crate::client_core::VERIFY_REQUEST_NO_INTENT;
         self.shared.orders.push_order_error(id, code, text.to_string());
     }
 
-    /// Matches `verifyMessage` in C++. No verification is in progress: no
-    /// answer, as the reference 10.51 (ibx#556; paper, 17/10/2026, a client
-    /// at level 214); error 10095 as the reference 10.40 in its replays.
+    /// Matches `verifyMessage` in C++. No answer, and the session answers
+    /// no more request, as the reference 10.51 (ibx#556); error 10095 as
+    /// the reference 10.40 in its replays.
     pub fn verify_message(&self, _api_data: &str) {
         // One API request for the pacing, whatever it sends (ibx#565).
         let _request = crate::engine::park::one_request();
+        if self.core.requests_ignored() { return; }
         if self.shared.reference.form_10_40() {
             let (id, code, text) = crate::client_core::VERIFY_MESSAGE_OUT_OF_SEQUENCE;
             self.shared.orders.push_order_error(id, code, text.to_string());
+            return;
         }
+        self.core.verify_sent();
     }
 
     /// Matches `verifyAndAuthRequest` in C++. A session opened without the
-    /// intent to verify: error 551, nothing sent.
+    /// intent to verify: error 551, nothing sent. With it, sent: the session
+    /// then answers no more request, as the reference 10.51 (ibx#556).
     pub fn verify_and_auth_request(&self, _api_name: &str, _api_version: &str, _opaque_isv_key: &str) {
         // One API request for the pacing, whatever it sends (ibx#565).
         let _request = crate::engine::park::one_request();
+        if self.core.requests_ignored() { return; }
+        if self.core.extra_auth() {
+            self.core.verify_sent();
+            return;
+        }
         let (id, code, text) = crate::client_core::VERIFY_AND_AUTH_REQUEST_NO_INTENT;
         self.shared.orders.push_order_error(id, code, text.to_string());
     }
 
-    /// Matches `verifyAndAuthMessage` in C++. The reference gives no
-    /// answer: nothing happens.
-    pub fn verify_and_auth_message(&self, _api_data: &str, _xyz_response: &str) {}
+    /// Matches `verifyAndAuthMessage` in C++. No answer, and the session
+    /// answers no more request, as the reference 10.51 (ibx#556).
+    pub fn verify_and_auth_message(&self, _api_data: &str, _xyz_response: &str) {
+        if self.core.requests_ignored() || self.shared.reference.form_10_40() { return; }
+        self.core.verify_sent();
+    }
 
     // ── Configuration ──
 
@@ -144,6 +174,7 @@ impl EClient {
     pub fn req_config(&self, request: &crate::api::config::ConfigRequest) {
         // One API request for the pacing, whatever it sends (ibx#565).
         let _request = crate::engine::park::one_request();
+        if self.core.requests_ignored() { return; }
         self.req_config_at(crate::client_core::session_level(), request);
     }
 
@@ -166,6 +197,7 @@ impl EClient {
     pub fn update_config(&self, request: &crate::api::config::UpdateConfigRequest) {
         // One API request for the pacing, whatever it sends (ibx#565).
         let _request = crate::engine::park::one_request();
+        if self.core.requests_ignored() { return; }
         self.update_config_at(crate::client_core::session_level(), request);
     }
 
@@ -185,6 +217,7 @@ impl EClient {
     pub fn request_fa(&self, fa_data_type: i32) {
         // One API request for the pacing, whatever it sends (ibx#565).
         let _request = crate::engine::park::one_request();
+        if self.core.requests_ignored() { return; }
         if !self.shared.reference.fa_session() {
             let (id, code, text) = crate::client_core::REQUEST_FA_NOT_FA;
             self.shared.orders.push_order_error(id, code, text.to_string());
@@ -206,6 +239,7 @@ impl EClient {
     pub fn replace_fa(&self, req_id: i64, fa_data_type: i32, cxml: &str) {
         // One API request for the pacing, whatever it sends (ibx#565).
         let _request = crate::engine::park::one_request();
+        if self.core.requests_ignored() { return; }
         if !crate::client_core::ClientCore::ids_fit("replace_fa", &[req_id]) { return; }
         if !self.shared.reference.fa_session() {
             let (code, text) = crate::client_core::REPLACE_FA_NOT_FA;
@@ -226,6 +260,7 @@ impl EClient {
     pub fn query_display_groups(&self, req_id: i64, _wrapper: &mut impl Wrapper) {
         // One API request for the pacing, whatever it sends (ibx#565).
         let _request = crate::engine::park::one_request();
+        if self.core.requests_ignored() { return; }
         // Answered here: after the requests made before it (ibx#561).
         self.shared.command_clock().take_turn();
         if !crate::client_core::ClientCore::ids_fit("query_display_groups", &[req_id]) { return; }
@@ -244,6 +279,7 @@ impl EClient {
     pub fn subscribe_to_group_events(&self, req_id: i64, group_id: i32, _wrapper: &mut impl Wrapper) {
         // One API request for the pacing, whatever it sends (ibx#565).
         let _request = crate::engine::park::one_request();
+        if self.core.requests_ignored() { return; }
         // Answered here: after the requests made before it (ibx#561).
         self.shared.command_clock().take_turn();
         if !crate::client_core::ClientCore::ids_fit("subscribe_to_group_events", &[req_id]) { return; }
@@ -261,6 +297,7 @@ impl EClient {
     pub fn unsubscribe_from_group_events(&self, req_id: i64) {
         // One API request for the pacing, whatever it sends (ibx#565).
         let _request = crate::engine::park::one_request();
+        if self.core.requests_ignored() { return; }
         if !crate::client_core::ClientCore::ids_fit("unsubscribe_from_group_events", &[req_id]) { return; }
         if let Some(text) = self.core.unsubscribe_from_group_events(req_id) {
             let (id, code) = crate::client_core::DISPLAY_GROUP_REFUSAL;
@@ -275,6 +312,7 @@ impl EClient {
     pub fn update_display_group(&self, req_id: i64, contract_info: &str) {
         // One API request for the pacing, whatever it sends (ibx#565).
         let _request = crate::engine::park::one_request();
+        if self.core.requests_ignored() { return; }
         use crate::client_core::DisplayGroupUpdate;
         if !crate::client_core::ClientCore::ids_fit("update_display_group", &[req_id]) { return; }
         let known = |con_id| self.shared.reference.get_contract(con_id).is_some();
@@ -298,6 +336,7 @@ impl EClient {
     pub fn req_soft_dollar_tiers(&self, req_id: i64, _wrapper: &mut impl Wrapper) {
         // One API request for the pacing, whatever it sends (ibx#565).
         let _request = crate::engine::park::one_request();
+        if self.core.requests_ignored() { return; }
         // Answered here: after the requests made before it (ibx#561).
         self.shared.command_clock().take_turn();
         if !crate::client_core::ClientCore::ids_fit("req_soft_dollar_tiers", &[req_id]) { return; }
@@ -312,6 +351,7 @@ impl EClient {
     pub fn req_family_codes(&self, _wrapper: &mut impl Wrapper) {
         // One API request for the pacing, whatever it sends (ibx#565).
         let _request = crate::engine::park::one_request();
+        if self.core.requests_ignored() { return; }
         // Answered here: after the requests made before it (ibx#561).
         self.shared.command_clock().take_turn();
         // Given by `process_msgs` at its place among the answers (ibx#532).
@@ -324,6 +364,7 @@ impl EClient {
     pub fn set_server_log_level(&self, log_level: i32) {
         // One API request for the pacing, whatever it sends (ibx#565).
         let _request = crate::engine::park::one_request();
+        if self.core.requests_ignored() { return; }
         let level = match log_level {
             1 => "error",
             2 => "warn",
@@ -342,6 +383,7 @@ impl EClient {
     pub fn req_user_info(&self, req_id: i64, _wrapper: &mut impl Wrapper) {
         // One API request for the pacing, whatever it sends (ibx#565).
         let _request = crate::engine::park::one_request();
+        if self.core.requests_ignored() { return; }
         // Answered here: after the requests made before it (ibx#561).
         self.shared.command_clock().take_turn();
         if !crate::client_core::ClientCore::ids_fit("req_user_info", &[req_id]) { return; }
@@ -359,6 +401,7 @@ impl EClient {
     pub fn req_wsh_meta_data(&self, req_id: i64) {
         // One API request for the pacing, whatever it sends (ibx#565).
         let _request = crate::engine::park::one_request();
+        if self.core.requests_ignored() { return; }
         if !crate::client_core::ClientCore::ids_fit("req_wsh_meta_data", &[req_id]) { return; }
         let (code, text) = crate::client_core::wsh_meta_data_error(&self.shared.reference);
         self.shared.orders.push_order_error(req_id, code, text.to_string());
@@ -376,6 +419,7 @@ impl EClient {
     pub fn req_wsh_event_data(&self, req_id: i64, _wsh_event_data: &crate::api::types::WshEventData) {
         // One API request for the pacing, whatever it sends (ibx#565).
         let _request = crate::engine::park::one_request();
+        if self.core.requests_ignored() { return; }
         if !crate::client_core::ClientCore::ids_fit("req_wsh_event_data", &[req_id]) { return; }
         let (code, text) = crate::client_core::wsh_event_data_error(&self.shared.reference);
         self.shared.orders.push_order_error(req_id, code, text.to_string());

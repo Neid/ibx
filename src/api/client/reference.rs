@@ -19,6 +19,7 @@ impl EClient {
     ) -> Result<(), String> {
         // One API request for the pacing, whatever it sends (ibx#565).
         let _request = crate::engine::park::one_request();
+        if self.core.requests_ignored() { return Ok(()); }
         if !crate::client_core::ClientCore::ids_fit("req_historical_data", &[req_id, contract.con_id]) { return Ok(()); }
         if let Some((code, text)) = ClientCore::historical_refusal(end_date_time, duration, bar_size, what_to_show,
             format_date, keep_up_to_date, &contract.sec_type, &contract.exchange, self.shared.reference.backfill_years_limit(),
@@ -58,6 +59,7 @@ impl EClient {
     pub fn cancel_historical_data(&self, req_id: i64) -> Result<(), String> {
         // One API request for the pacing, whatever it sends (ibx#565).
         let _request = crate::engine::park::one_request();
+        if self.core.requests_ignored() { return Ok(()); }
         if !crate::client_core::ClientCore::ids_fit("cancel_historical_data", &[req_id]) { return Ok(()); }
         self.send(ControlCommand::CancelHistorical { req_id })
     }
@@ -68,6 +70,7 @@ impl EClient {
     ) -> Result<(), String> {
         // One API request for the pacing, whatever it sends (ibx#565).
         let _request = crate::engine::park::one_request();
+        if self.core.requests_ignored() { return Ok(()); }
         if !crate::client_core::ClientCore::ids_fit("req_head_time_stamp", &[req_id, contract.con_id]) { return Ok(()); }
         if let Some((code, text)) = ClientCore::head_timestamp_refusal(&contract.exchange) {
             self.shared.reference.push_historical_error(req_id, code, text);
@@ -90,6 +93,7 @@ impl EClient {
     pub fn req_contract_details(&self, req_id: i64, contract: &Contract) -> Result<(), String> {
         // One API request for the pacing, whatever it sends (ibx#565).
         let _request = crate::engine::park::one_request();
+        if self.core.requests_ignored() { return Ok(()); }
         if !crate::client_core::ClientCore::ids_fit("req_contract_details", &[req_id, contract.con_id]) { return Ok(()); }
         if let Some((code, text)) = ClientCore::contract_details_refusal(contract) {
             self.shared.reference.push_historical_error(req_id, code as i32, text);
@@ -122,6 +126,7 @@ impl EClient {
     pub fn req_mkt_depth_exchanges(&self) -> Result<(), String> {
         // One API request for the pacing, whatever it sends (ibx#565).
         let _request = crate::engine::park::one_request();
+        if self.core.requests_ignored() { return Ok(()); }
         self.send(ControlCommand::FetchMktDepthExchanges)
     }
 
@@ -131,6 +136,7 @@ impl EClient {
     pub fn req_matching_symbols(&self, req_id: i64, pattern: &str) -> Result<(), String> {
         // One API request for the pacing, whatever it sends (ibx#565).
         let _request = crate::engine::park::one_request();
+        if self.core.requests_ignored() { return Ok(()); }
         if !crate::client_core::ClientCore::ids_fit("req_matching_symbols", &[req_id]) { return Ok(()); }
         let pattern = match crate::client_core::matching_symbols_pattern(pattern, self.shared.reference.matching_symbols_allowed()) {
             Ok(pattern) => pattern,
@@ -155,6 +161,7 @@ impl EClient {
     ) -> Result<(), String> {
         // One API request for the pacing, whatever it sends (ibx#565).
         let _request = crate::engine::park::one_request();
+        if self.core.requests_ignored() { return Ok(()); }
         if !crate::client_core::ClientCore::ids_fit("req_sec_def_opt_params", &[req_id, underlying_con_id]) { return Ok(()); }
         if let Some((code, text)) = crate::control::optparams::refusal(underlying_sec_type, fut_fop_exchange, underlying_con_id) {
             self.shared.orders.push_order_error(req_id, code, text);
@@ -173,6 +180,7 @@ impl EClient {
     pub fn cancel_head_time_stamp(&self, req_id: i64) -> Result<(), String> {
         // One API request for the pacing, whatever it sends (ibx#565).
         let _request = crate::engine::park::one_request();
+        if self.core.requests_ignored() { return Ok(()); }
         if !crate::client_core::ClientCore::ids_fit("cancel_head_time_stamp", &[req_id]) { return Ok(()); }
         self.send(ControlCommand::CancelHeadTimestamp { req_id })
     }
@@ -184,6 +192,7 @@ impl EClient {
     pub fn req_market_rule(&self, market_rule_id: i32, _wrapper: &mut impl crate::api::wrapper::Wrapper) {
         // One API request for the pacing, whatever it sends (ibx#565).
         let _request = crate::engine::park::one_request();
+        if self.core.requests_ignored() { return; }
         let answer = crate::client_core::market_rule_answer(self.shared.reference.market_rule(market_rule_id), market_rule_id);
         // Given by `process_msgs` at its place among the answers (ibx#532).
         self.later(move |this, wrapper| match answer {
@@ -201,6 +210,7 @@ impl EClient {
     pub fn req_news_bulletins(&self, all_msgs: bool) {
         // One API request for the pacing, whatever it sends (ibx#565).
         let _request = crate::engine::park::one_request();
+        if self.core.requests_ignored() { return; }
         self.core.subscribe_bulletins(all_msgs);
     }
 
@@ -208,6 +218,7 @@ impl EClient {
     pub fn cancel_news_bulletins(&self) {
         // One API request for the pacing, whatever it sends (ibx#565).
         let _request = crate::engine::park::one_request();
+        if self.core.requests_ignored() { return; }
         self.core.unsubscribe_bulletins();
     }
 
@@ -217,6 +228,7 @@ impl EClient {
     pub fn req_scanner_parameters(&self) -> Result<(), String> {
         // One API request for the pacing, whatever it sends (ibx#565).
         let _request = crate::engine::park::one_request();
+        if self.core.requests_ignored() { return Ok(()); }
         self.send(ControlCommand::FetchScannerParams)
     }
 
@@ -230,6 +242,7 @@ impl EClient {
     ) -> Result<(), String> {
         // One API request for the pacing, whatever it sends (ibx#565).
         let _request = crate::engine::park::one_request();
+        if self.core.requests_ignored() { return Ok(()); }
         if !crate::client_core::ClientCore::ids_fit("req_scanner_subscription", &[req_id]) { return Ok(()); }
         match ClientCore::scanner_request(subscription, scanner_subscription_options, scanner_subscription_filter_options) {
             Ok(subscription) => self.send(ControlCommand::SubscribeScanner {
@@ -248,6 +261,7 @@ impl EClient {
     pub fn cancel_scanner_subscription(&self, req_id: i64) -> Result<(), String> {
         // One API request for the pacing, whatever it sends (ibx#565).
         let _request = crate::engine::park::one_request();
+        if self.core.requests_ignored() { return Ok(()); }
         if !crate::client_core::ClientCore::ids_fit("cancel_scanner_subscription", &[req_id]) { return Ok(()); }
         self.send(ControlCommand::CancelScanner { req_id })
     }
@@ -263,6 +277,7 @@ impl EClient {
     ) -> Result<(), String> {
         // One API request for the pacing, whatever it sends (ibx#565).
         let _request = crate::engine::park::one_request();
+        if self.core.requests_ignored() { return Ok(()); }
         if !crate::client_core::ClientCore::ids_fit("req_historical_news", &[req_id, con_id]) { return Ok(()); }
         let sources = self.shared.reference.news_sources();
         if let Some((code, text)) = ClientCore::historical_news_refusal(provider_codes, max_results as i64, &sources) {
@@ -284,6 +299,7 @@ impl EClient {
     pub fn req_news_article(&self, req_id: i64, provider_code: &str, article_id: &str) -> Result<(), String> {
         // One API request for the pacing, whatever it sends (ibx#565).
         let _request = crate::engine::park::one_request();
+        if self.core.requests_ignored() { return Ok(()); }
         if !crate::client_core::ClientCore::ids_fit("req_news_article", &[req_id]) { return Ok(()); }
         let sources = self.shared.reference.news_sources();
         if let Some((code, text)) = ClientCore::news_article_refusal(provider_code, article_id, &sources) {
@@ -303,6 +319,7 @@ impl EClient {
     pub fn req_fundamental_data(&self, req_id: i64, contract: &Contract, report_type: &str) -> Result<(), String> {
         // One API request for the pacing, whatever it sends (ibx#565).
         let _request = crate::engine::park::one_request();
+        if self.core.requests_ignored() { return Ok(()); }
         if !crate::client_core::ClientCore::ids_fit("req_fundamental_data", &[req_id, contract.con_id]) { return Ok(()); }
         if let Some((code, text)) = ClientCore::fundamental_refusal(&contract.sec_type, self.shared.reference.fundamentals_allowed()) {
             self.shared.reference.push_historical_error(req_id, code, text);
@@ -319,6 +336,7 @@ impl EClient {
     pub fn cancel_fundamental_data(&self, req_id: i64) -> Result<(), String> {
         // One API request for the pacing, whatever it sends (ibx#565).
         let _request = crate::engine::park::one_request();
+        if self.core.requests_ignored() { return Ok(()); }
         if !crate::client_core::ClientCore::ids_fit("cancel_fundamental_data", &[req_id]) { return Ok(()); }
         self.send(ControlCommand::CancelFundamentalData { req_id })
     }
@@ -329,6 +347,7 @@ impl EClient {
     pub fn req_histogram_data(&self, req_id: i64, contract: &Contract, use_rth: bool, period: &str) -> Result<(), String> {
         // One API request for the pacing, whatever it sends (ibx#565).
         let _request = crate::engine::park::one_request();
+        if self.core.requests_ignored() { return Ok(()); }
         if !crate::client_core::ClientCore::ids_fit("req_histogram_data", &[req_id, contract.con_id]) { return Ok(()); }
         self.send(ClientCore::resolve_first(req_id, contract, ControlCommand::FetchHistogramData {
             req_id,
@@ -344,6 +363,7 @@ impl EClient {
     pub fn cancel_histogram_data(&self, req_id: i64) -> Result<(), String> {
         // One API request for the pacing, whatever it sends (ibx#565).
         let _request = crate::engine::park::one_request();
+        if self.core.requests_ignored() { return Ok(()); }
         if !crate::client_core::ClientCore::ids_fit("cancel_histogram_data", &[req_id]) { return Ok(()); }
         self.send(ControlCommand::CancelHistogramData { req_id })
     }
@@ -362,6 +382,7 @@ impl EClient {
     ) -> Result<(), String> {
         // One API request for the pacing, whatever it sends (ibx#565).
         let _request = crate::engine::park::one_request();
+        if self.core.requests_ignored() { return Ok(()); }
         if !crate::client_core::ClientCore::ids_fit("req_historical_ticks", &[req_id, contract.con_id]) { return Ok(()); }
         let (answers, go_on) = ClientCore::historical_ticks_checks(start_date_time, end_date_time, number_of_ticks,
             what_to_show, ignore_size, &contract.sec_type, &contract.exchange);
@@ -396,6 +417,7 @@ impl EClient {
     ) -> Result<(), String> {
         // One API request for the pacing, whatever it sends (ibx#565).
         let _request = crate::engine::park::one_request();
+        if self.core.requests_ignored() { return Ok(()); }
         if !crate::client_core::ClientCore::ids_fit("req_historical_schedule", &[req_id, contract.con_id]) { return Ok(()); }
         self.send(ClientCore::resolve_first(req_id, contract, ControlCommand::FetchHistoricalSchedule {
             req_id,

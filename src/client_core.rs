@@ -1861,6 +1861,12 @@ pub struct ClientCore {
     start_time_zone_warned: AtomicBool,
     /// Warning 2184 was given for an order on an FA group (ibx#507).
     fa_group_warned: AtomicBool,
+    /// The intent to verify, set before the connect (the official client's
+    /// `extraAuth`, ibx#556).
+    extra_auth: AtomicBool,
+    /// A verify request or message reached the session: the reference
+    /// 10.51 answers nothing more on it (ibx#556).
+    requests_ignored: AtomicBool,
     /// Tick-by-tick requests: reqId -> (instrument, conId, type). Kept apart
     /// from the market data maps, so both can run on one contract (ibx#455).
     pub tbt_reqs: Mutex<HashMap<i64, (InstrumentId, i64, TbtType)>>,
@@ -2062,6 +2068,42 @@ impl ClientCore {
             return Err(refusal);
         }
         Ok(self.config.lock().unwrap().update(request))
+    }
+}
+
+impl ClientCore {
+    /// The intent to verify (the official client's `extraAuth`): the verify
+    /// requests are sent instead of refused with 544 and 551 (ibx#556).
+    pub fn set_extra_auth(&self, on: bool) {
+        self.extra_auth.store(on, Ordering::Relaxed);
+    }
+
+    pub fn extra_auth(&self) -> bool {
+        self.extra_auth.load(Ordering::Relaxed)
+    }
+
+    /// The session takes no more requests (ibx#556): checked at the top of
+    /// every request of both clients.
+    #[inline]
+    pub fn requests_ignored(&self) -> bool {
+        self.requests_ignored.load(Ordering::Relaxed)
+    }
+
+    /// A verify request or message sent on the session, as the official
+    /// client sends it. The reference 10.51 has no verification flow left:
+    /// at the session levels from 215 it answers nothing more on that
+    /// session, the requests made after it are left unanswered and the
+    /// connection stays open (ibx#556; paper, pre-market 20/10/2026, an
+    /// official client at level 225: verifyRequest and verifyAndAuthRequest
+    /// with the intent, and a plain verifyMessage, each followed by
+    /// reqCurrentTime unanswered for 86 s). At level 214 a plain
+    /// verifyMessage was dropped and the session went on (17/10/2026).
+    pub fn verify_sent(&self) {
+        if session_level() < 215 {
+            return;
+        }
+        log::warn!("A verify message was sent: the session answers no more request, as the reference 10.51");
+        self.requests_ignored.store(true, Ordering::Relaxed);
     }
 }
 
@@ -2644,6 +2686,8 @@ impl ClientCore {
             md_params_early: Mutex::new(HashSet::new()),
             start_time_zone_warned: AtomicBool::new(false),
             fa_group_warned: AtomicBool::new(false),
+            extra_auth: AtomicBool::new(false),
+            requests_ignored: AtomicBool::new(false),
             tbt_reqs: Mutex::new(HashMap::new()),
             contract_cache: Mutex::new(HashMap::new()),
         }
@@ -2653,6 +2697,7 @@ impl ClientCore {
     pub fn reset(&self) {
         self.start_time_zone_warned.store(false, Ordering::Relaxed);
         self.fa_group_warned.store(false, Ordering::Relaxed);
+        self.requests_ignored.store(false, Ordering::Relaxed);
         self.req_to_instrument.lock().unwrap().clear();
         self.instrument_to_req.lock().unwrap().clear();
         self.con_id_to_instrument.lock().unwrap().clear();

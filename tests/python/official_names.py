@@ -245,6 +245,15 @@ class EClient:
             self.ibx.disconnect()
             raise
 
+    @property
+    def extraAuth(self):
+        """The intent to verify, as the official client's attribute (ibx#556)."""
+        return self.ibx.extraAuth
+
+    @extraAuth.setter
+    def extraAuth(self, on):
+        self.ibx.extraAuth = on
+
     def cancelOrder(self, orderId, orderCancel=None):
         return self.ibx.cancel_order(orderId, getattr(orderCancel, "manualOrderCancelTime", ""))
 

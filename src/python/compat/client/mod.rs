@@ -113,6 +113,18 @@ impl Drop for EClient {
 
 #[pymethods]
 impl EClient {
+    /// The intent to verify, as the official client's `extraAuth`: set
+    /// before the connect, the verify requests are sent (ibx#556).
+    #[getter(extraAuth)]
+    fn get_extra_auth(&self) -> bool {
+        self.core.extra_auth()
+    }
+
+    #[setter(extraAuth)]
+    fn set_extra_auth(&self, on: bool) {
+        self.core.set_extra_auth(on);
+    }
+
     #[new]
     #[pyo3(signature = (wrapper))]
     fn new(wrapper: Py<PyAny>) -> Self {
@@ -357,7 +369,8 @@ impl EClient {
     /// KeyboardInterrupt or SystemExit is raised (ibx#270).
     pub(crate) fn not_connected(&self, id: i64) -> Option<PyResult<()>> {
         if self.control_tx.lock().unwrap().is_some() {
-            return None;
+            // A session that takes no more requests (ibx#556).
+            return self.core.requests_ignored().then_some(Ok(()));
         }
         Some(Python::attach(|py| {
             match self.wrapper.call_method1(py, "error", (id, 504i64, "Not connected", "")) {
