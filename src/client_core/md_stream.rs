@@ -436,6 +436,10 @@ fn stream_pass(st: &mut StreamState, m: &Mirror, pass: Pass, out: &mut Out) {
     for (idx, pending) in todo.iter_mut().enumerate() {
         *pending = match idx {
             field::LAST_SIZE if st.frozen && fields[idx] == 0 => false,
+            // A last time of 0 s is not given on real-time data (ibx#494; the
+            // reference 10.51 on a closed option, paper: never in its real-
+            // time passes, six runs of 15/10, 19/10 and 20/10/2026).
+            field::TIME if !st.frozen && !st.delayed && fields[idx] / 1_000_000_000 == 0 => false,
             field::BID_SIZE | field::ASK_SIZE | field::LAST_SIZE | field::VOLUME => {
                 let kind = size_kind(idx).unwrap_or(SizeKind::Volume);
                 (m.seen(kind) || fields[idx] != 0)
@@ -1546,6 +1550,21 @@ mod tests {
         assert!(first.contains(&"size:1:5:1".to_string()) && first.contains(&"size:2:5:1".to_string()), "{first:?}");
         shared.market.push_test_message(5, &q, &TestMessage { steps: Some(&[MdStep::Again]), sizes_seen: true, ..Default::default() });
         assert_eq!(poll(&core, &shared), ["size:1:5:1", "string:1:45:1791921218"]);
+    }
+
+    // ibx#494 (the reference 10.51, paper, a closed option, six runs of
+    // 15/10, 19/10 and 20/10/2026): a last time that reads 0 s is not given
+    // on real-time data; a real one is.
+    #[test]
+    fn a_stream_gives_no_last_time_of_0() {
+        let (core, shared) = (ClientCore::new(), SharedState::new());
+        stream(&core, &shared, 1, 5);
+        let zero = Quote { timestamp_ns: 1, ..Default::default() };
+        shared.market.push_test_message(5, &zero, &TestMessage { steps: Some(&[MdStep::Time]), ..Default::default() });
+        assert!(!poll(&core, &shared).iter().any(|l| l.starts_with("string:1:45:")));
+        let real = Quote { timestamp_ns: 1_791_921_218_000_000_000, ..Default::default() };
+        shared.market.push_test_message(5, &real, &TestMessage { steps: Some(&[MdStep::Time]), ..Default::default() });
+        assert_eq!(poll(&core, &shared), ["mdt:1:1", "string:1:45:1791921218"]);
     }
 
     // ibx#681, ibx#647 (the reference 10.51, 13/10/2026, an option with
