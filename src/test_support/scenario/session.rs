@@ -438,6 +438,15 @@ impl Wrapper for Recorder {
     fn tick_string(&mut self, req_id: i64, tick_type: i32, value: &str) {
         self.lines.push(format!("tickString|{req_id}|{tick_type}|{value}"));
     }
+    fn tick_option_computation(
+        &mut self, req_id: i64, tick_type: i32, tick_attrib: i32, implied_vol: f64, delta: f64, opt_price: f64,
+        pv_dividend: f64, gamma: f64, vega: f64, theta: f64, und_price: f64,
+    ) {
+        // A value not computed is "-", as the official client's None (ibx#646).
+        let v = |x: f64| if x == f64::MAX || !x.is_finite() { "-".to_string() } else { n(x) };
+        self.lines.push(format!("tickOptionComputation|{req_id}|{tick_type}|{tick_attrib}|{}|{}|{}|{}|{}|{}|{}|{}",
+            v(implied_vol), v(delta), v(opt_price), v(pv_dividend), v(gamma), v(vega), v(theta), v(und_price)));
+    }
     fn tick_generic(&mut self, req_id: i64, tick_type: i32, value: f64) {
         self.lines.push(format!("tickGeneric|{req_id}|{tick_type}|{}", n(value)));
     }

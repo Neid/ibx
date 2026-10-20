@@ -177,18 +177,23 @@ impl ModelState {
 }
 
 /// The underlying price of ticks 10 to 12 from the underlying's quote: the
-/// middle of the bid and the ask, or the side nearer to the last trade when
-/// that is outside them (the reference 10.51, 12/10/2026: 339.57 with bid
-/// 339.55, ask 339.57 and last 339.58, regular hours; 340.58 with bid
-/// 340.58, ask 340.68 and last 340.5652, after hours); the last without a
-/// bid and an ask. `mid` is the middle on the quote's tick grid.
+/// last trade, kept within the bid and the ask (the side when it is outside
+/// them); the middle of the bid and the ask before any trade; the last
+/// without a bid and an ask. The reference 10.51: 339.57 with bid 339.55,
+/// ask 339.57 and last 339.58 (12/10/2026, regular hours); 340.58 with bid
+/// 340.58, ask 340.68 and last 340.5652 (12/10/2026, after hours); and the
+/// last itself inside the quote in all 12 computations of an AAPL call on
+/// 13/10/2026 (regular hours, 344.865 with bid 344.84 and ask 344.89), with
+/// sub-penny trades such as 344.2599 on 14/10/2026 (ibx#646). `mid` is the
+/// middle on the quote's tick grid.
 pub fn under_price(bid: Option<f64>, ask: Option<f64>, last: Option<f64>, mid: impl Fn(f64, f64) -> f64) -> Option<f64> {
     let last = last.filter(|l| *l > 0.0);
     match (bid, ask) {
         (Some(b), Some(a)) if b > 0.0 && a > 0.0 => Some(match last {
             Some(l) if l < b => b,
             Some(l) if l > a => a,
-            _ => mid(b, a),
+            Some(l) => l,
+            None => mid(b, a),
         }),
         _ => last,
     }
@@ -361,7 +366,11 @@ mod tests {
         let mid = |b: f64, a: f64| ((b * 100.0).round() + (a * 100.0).round()) / 200.0;
         assert_eq!(under_price(Some(339.55), Some(339.57), Some(339.58), mid), Some(339.57));
         assert_eq!(under_price(Some(340.58), Some(340.68), Some(340.5652), mid), Some(340.58));
-        assert_eq!(under_price(Some(339.56), Some(339.62), Some(339.58), mid), Some(339.59));
+        // The last inside the quote, itself (13/10/2026, regular hours); no
+        // trade yet, the middle on the grid.
+        assert_eq!(under_price(Some(344.84), Some(344.89), Some(344.865), mid), Some(344.865));
+        assert_eq!(under_price(Some(339.56), Some(339.62), Some(339.58), mid), Some(339.58));
+        assert_eq!(under_price(Some(339.56), Some(339.61), None, mid), Some(339.585));
         assert_eq!(under_price(None, Some(339.62), Some(339.58), mid), Some(339.58));
         assert_eq!(under_price(None, None, None, mid), None);
     }

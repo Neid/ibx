@@ -174,6 +174,12 @@ pub fn canonical(cb: &Value) -> Option<String> {
         "marketDataType" => format!("marketDataType|{}|{}", i(1), i(2)),
         "tickReqParams" => format!("tickReqParams|{}|{}|{}|{}", i(1), n(num(&a[2])), s(3), i(4)),
         "tickSnapshotEnd" => format!("tickSnapshotEnd|{}", i(1)),
+        // Option computations (ibx#646): each value, "-" when not computed.
+        "tickOptionComputation" => {
+            let v = |k: usize| if a[k].is_null() { "-".to_string() } else { n(num(&a[k])) };
+            format!("tickOptionComputation|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
+                i(1), i(2), i(3), v(4), v(5), v(6), v(7), v(8), v(9), v(10), v(11))
+        }
         // The recordings are of the reference 10.40; 10.51, which ibx
         // copies, adds the order id to 103 (ibx#625): read in that form
         // until they are made again on 10.51 (ibx#604).

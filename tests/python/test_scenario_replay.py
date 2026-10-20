@@ -196,7 +196,7 @@ def make_contract(q):
         elif k == "primaryExch":
             c.primaryExchange = v
         elif k == "multiplier" and not isinstance(v, str):
-            continue  # read as text only, as the Rust driver
+            c.multiplier = f"{v:g}"  # a number at session level 225, as the Rust driver (ibx#646)
         else:
             setattr(c, k, v)
     return c
