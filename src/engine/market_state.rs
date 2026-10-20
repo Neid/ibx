@@ -73,7 +73,7 @@ fn scale_size(size_min_tick: Option<f64>) -> i64 {
 
 /// A last size of the farm as kept (ibx#613): from session level 222 with
 /// the decimals the farm gave it (the 10.51 form's extended entries), down
-/// to the quantity's steps of 0.0001; below 222 in whole units, `whole`
+/// to the quantity's steps of 0.00000001 (ibx#655); below 222 in whole units, `whole`
 /// (the value without its decimals) times `sizes`, as before. The 10.51
 /// rule, not observed yet: no fractional trade on the paper account.
 #[inline(always)]
@@ -1658,6 +1658,19 @@ mod tests {
         assert_eq!(ms.quote(id).bid_size, 5 * QTY_SCALE);
     }
 
+    // ibx#655: a size increment finer than 0.0001 (a crypto pair, 1e-8) is
+    // kept, no longer read as an invalid one (1).
+    #[test]
+    fn a_fine_size_increment_is_kept() {
+        assert_eq!(scale_size(Some(1e-8)), 1);
+        assert_eq!(scale_size(Some(1e-5)), 1_000);
+        assert_eq!(scale_size(Some(0.0)), QTY_SCALE);
+        let mut ms = MarketState::new();
+        let id = ms.register(1);
+        ms.set_size_min_tick(id, 1e-8);
+        assert_eq!(ms.size_min_tick_scaled[id as usize], 1);
+    }
+
     #[test]
     fn last_size_decimals_from_level_222() {
         // ibx#613: a last size of 0.4 shares, one decimal, on an increment of
@@ -1665,9 +1678,9 @@ mod tests {
         let tick = RawTick { server_tag: 1, tick_type: td::O_LAST_SIZE, magnitude: 4, stats_block: false, first: true, scale: 1 };
         assert_eq!(last_size_value(214, &tick, 0, QTY_SCALE), Some(0));
         assert_eq!(last_size_value(222, &tick, 0, QTY_SCALE), Some(QTY_SCALE * 4 / 10));
-        // Finer than the quantity's steps: kept to 0.0001.
+        // To the quantity's steps of 0.00000001 (ibx#655): 0.00123456.
         let fine = RawTick { magnitude: 123_456, scale: 8, ..tick };
-        assert_eq!(last_size_value(222, &fine, 0, QTY_SCALE), Some(12));
+        assert_eq!(last_size_value(222, &fine, 0, QTY_SCALE), Some(123_456));
         // A whole value: as before.
         let whole = RawTick { magnitude: 80, scale: 0, ..tick };
         assert_eq!(last_size_value(222, &whole, 80, QTY_SCALE), Some(80 * QTY_SCALE));

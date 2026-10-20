@@ -22,7 +22,7 @@ use crate::config::chrono_free_timestamp;
 use crate::gateway::{ccp_reconnect_host, reconnect_ccp_via, CcpReconnect, ReconnectAuth};
 use crate::protocol::connection::Connection;
 use crate::protocol::fix;
-use crate::types::{ControlCommand, InstrumentId, ReqId, Price, Qty, PRICE_SCALE, QTY_SCALE};
+use crate::types::{ControlCommand, InstrumentId, ReqId, Price, Qty, PRICE_SCALE, QTY_DIGITS, QTY_SCALE};
 #[cfg(any(test, feature = "test-support"))]
 use crate::types::{Fill, TbtQuote, TbtTrade};
 use crossbeam_channel::{bounded, Receiver, Sender};
@@ -4525,13 +4525,14 @@ pub(crate) fn format_qty(qty: Qty) -> StackStr {
     if frac != 0 {
         s.push(b'.');
         let frac_start = s.len as usize;
-        let digits = [
-            b'0' + (frac / 1_000 % 10) as u8,
-            b'0' + (frac / 100 % 10) as u8,
-            b'0' + (frac / 10 % 10) as u8,
-            b'0' + (frac % 10) as u8,
-        ];
-        let mut end = 4;
+        // QTY_DIGITS digits, zero-padded, the trailing zeros left out.
+        let mut digits = [b'0'; QTY_DIGITS];
+        let mut rest = frac;
+        for d in digits.iter_mut().rev() {
+            *d = b'0' + (rest % 10) as u8;
+            rest /= 10;
+        }
+        let mut end = QTY_DIGITS;
         while end > 0 && digits[end - 1] == b'0' { end -= 1; }
         for i in 0..end {
             s.buf[frac_start + i] = digits[i];

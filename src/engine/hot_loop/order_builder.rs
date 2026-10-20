@@ -1966,6 +1966,13 @@ fn send_orders(
                     let at = fields.iter().position(|(t, _)| *t == 6122).unwrap_or(fields.len());
                     fields.splice(at..at, tags);
                 }
+                // A quantity the fixed point cannot hold, as the caller
+                // wrote it (ibx#655).
+                if !attrs.qty_text.is_empty()
+                    && let Some(field) = fields.iter_mut().find(|(t, _)| *t == 38)
+                {
+                    field.1 = attrs.qty_text.clone();
+                }
                 // The FA allocation, restated on every modification
                 // (ibx#507; not observed yet).
                 if context.fa_session {
@@ -6094,6 +6101,13 @@ fn push_extended_attrs(
 ) {
     if !attrs.order_ref.is_empty() {
         fields.push((6010, attrs.order_ref.clone()));
+    }
+    // A quantity the fixed point cannot hold, as the caller wrote it
+    // (ibx#655).
+    if !attrs.qty_text.is_empty()
+        && let Some(field) = fields.iter_mut().find(|(t, _)| *t == 38)
+    {
+        field.1 = attrs.qty_text.clone();
     }
     // The MiFID values and the soft dollar tier decided for the request
     // (ibx#500, ibx#506).
@@ -13145,6 +13159,21 @@ mod tests {
         let (frames, _) = session_frames(|_| {}, vec![order(3, ["Grp", "NetLiq", "", "M1", "U7"])], 1);
         assert_eq!(tag(&frames[0], 1), Some("DU1"), "not an FA session: the logon's account");
         assert!(fa(&frames[0]).is_empty(), "not an FA session: dropped");
+    }
+
+    // ibx#655: a quantity the fixed point cannot hold goes out as the
+    // caller wrote it, on the order and on its modification.
+    #[test]
+    fn a_quantity_text_goes_out_as_given() {
+        let attrs = || crate::types::OrderAttrs { qty_text: "0.123456789".into(), ..Default::default() };
+        let (frames, _) = session_frames(|_| {}, vec![
+            limit_ex(1, Side::Buy, 100 * P, attrs()),
+            modify_limit(1, 101 * P, attrs()),
+        ], 2);
+        assert_eq!(tag(&frames[0], 38), Some("0.123456789"));
+        assert_eq!(tag(&frames[1], 38), Some("0.123456789"));
+        let (frames, _) = session_frames(|_| {}, vec![limit_ex(2, Side::Buy, 100 * P, Default::default())], 1);
+        assert_eq!(tag(&frames[0], 38), Some("1"), "the fixed point otherwise");
     }
 
     // ibx#507 (the reference 10.51's rules, not observed yet): with the

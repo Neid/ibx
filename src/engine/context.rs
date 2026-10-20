@@ -2772,7 +2772,7 @@ mod tests {
                 assert_eq!(*order_id, id);
                 assert_eq!(*instrument, 0);
                 assert_eq!(*side, Side::Buy);
-                assert_eq!(*qty, 5000);
+                assert_eq!(*qty, crate::types::QTY_SCALE / 2);
                 assert_eq!(*price, 150 * PRICE_SCALE);
             }
             _ => panic!("expected SubmitLimitFractional"),

@@ -341,7 +341,7 @@ fn cost_basis(qty_fixed: i64, avg_cost: f64) -> f64 {
 }
 
 /// The decimals of a fixed-point quantity (`QTY_SCALE` is ten to this).
-const QTY_DECIMALS: usize = 4;
+const QTY_DECIMALS: usize = crate::types::QTY_DIGITS;
 
 /// Net cash traded today on a position, for the daily P&L.
 /// moneyTradedSinceMidnight (its wire field) is signed net cash: SELL positive,
@@ -11245,8 +11245,9 @@ mod cost_basis_tests {
         assert_eq!(cost_basis(q(1), 44.8), 44.8);
         assert_eq!(cost_basis(0, 44.8), 0.0);
         assert_eq!(cost_basis(q(5), 0.0), 0.0);
-        // A fractional quantity (four decimals) and a negative cost.
-        assert_eq!(cost_basis(15_000, 0.1), 0.15);
+        // A fractional quantity (eight decimals, ibx#655) and a negative cost.
+        assert_eq!(cost_basis(crate::types::QTY_SCALE * 15 / 10, 0.1), 0.15);
+        assert_eq!(cost_basis(12_345_678, 2.0), 0.24691356);
         assert_eq!(cost_basis(q(3), -2.5), -7.5);
     }
 }

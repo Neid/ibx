@@ -1653,8 +1653,8 @@ mod tests {
         let shared = SharedState::new();
         let mut fields = [0i64; field::COUNT];
         fields[field::LAST] = 113 * PRICE_SCALE / 100;
-        fields[field::LAST_SIZE] = 4_567;
-        fields[field::BID_SIZE] = 4_567;
+        fields[field::LAST_SIZE] = QTY_SCALE * 4_567 / 10_000;
+        fields[field::BID_SIZE] = QTY_SCALE * 4_567 / 10_000;
         let pack = |step: f64| Increment::from_step(step).map_or(0, Increment::pack);
         let mut out = Vec::new();
         let mut o = Out {
@@ -1705,7 +1705,7 @@ mod tests {
         let (core, shared) = (ClientCore::new(), SharedState::new());
         shared.market.set_last_increments(5, Increment::from_step(0.01).unwrap().pack(), Increment::from_step(0.05).unwrap().pack());
         stream(&core, &shared, 1, 5);
-        let q = Quote { last: 113 * PRICE_SCALE / 100, last_size: 4_567, ..Default::default() };
+        let q = Quote { last: 113 * PRICE_SCALE / 100, last_size: QTY_SCALE * 4_567 / 10_000, ..Default::default() };
         shared.market.push_test_message(5, &q, &TestMessage { steps: Some(&[MdStep::Last]), sizes_seen: true, ..Default::default() });
         assert_eq!(poll(&core, &shared), ["mdt:1:1", "price:1:4:1.13", "size:1:5:0.4567", "size:1:5:0.4567"]);
     }

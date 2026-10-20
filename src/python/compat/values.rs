@@ -25,8 +25,8 @@ pub fn decimal_to_py(py: Python<'_>, v: f64) -> PyResult<Py<PyAny>> {
     Ok(decimal_class(py)?.call1((text,))?.unbind())
 }
 
-/// A quantity kept in units of 1/10,000 (`QTY_SCALE`) as a
-/// `decimal.Decimal`, exactly: "100", "0.5", "-2.0001".
+/// A quantity kept in fixed point (`QTY_SCALE`) as a `decimal.Decimal`,
+/// exactly: "100", "0.5", "-2.0001", "0.00000001".
 pub fn decimal_fixed_to_py(py: Python<'_>, v: i64) -> PyResult<Py<PyAny>> {
     let scale = crate::types::QTY_SCALE as i64;
     let (whole, part) = (v / scale, (v % scale).unsigned_abs());
@@ -34,7 +34,7 @@ pub fn decimal_fixed_to_py(py: Python<'_>, v: i64) -> PyResult<Py<PyAny>> {
     let text = if part == 0 {
         format!("{whole}")
     } else {
-        let digits = format!("{part:04}");
+        let digits = format!("{part:0width$}", width = crate::types::QTY_DIGITS);
         format!("{sign}{whole}.{}", digits.trim_end_matches('0'))
     };
     Ok(decimal_class(py)?.call1((text,))?.unbind())
@@ -49,6 +49,28 @@ pub fn decimal_from_py(v: &Bound<'_, PyAny>) -> PyResult<f64> {
         Err(_) => v.extract()?,
     };
     Ok(if f == UNSET_DECIMAL_F64 { f64::MAX } else { f })
+}
+
+/// A quantity from Python and its text as given: the text of a Decimal or
+/// a str (every digit, trailing zeros included), or of an int; empty for a
+/// float and for the API's unset Decimal (ibx#655).
+pub fn decimal_and_text_from_py(v: &Bound<'_, PyAny>) -> PyResult<(f64, String)> {
+    let value = decimal_from_py(v)?;
+    if value == f64::MAX || v.extract::<f64>().is_ok() && !v.is_instance_of::<pyo3::types::PyInt>() && v.cast::<PyString>().is_err()
+        && v.get_type().name()? != "Decimal"
+    {
+        return Ok((value, String::new()));
+    }
+    Ok((value, v.str()?.to_string().trim().to_string()))
+}
+
+/// A quantity as the caller gave it: its text when it has one (a Decimal
+/// built from it, every digit and trailing zero kept), else the value.
+pub fn decimal_or_text_to_py(py: Python<'_>, v: f64, text: &str) -> PyResult<Py<PyAny>> {
+    if text.is_empty() || v == f64::MAX {
+        return decimal_to_py(py, v);
+    }
+    Ok(decimal_class(py)?.call1((text,))?.unbind())
 }
 
 /// A quantity carried as text as a `decimal.Decimal`: empty is the API's

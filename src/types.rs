@@ -15,12 +15,15 @@ pub type ReqId = i64;
 /// Example: $150.25 = 15_025_000_000
 pub type Price = i64;
 
-/// Fixed-point quantity: value * 10^4. Matches the broker's 0.0001 minimum increment.
-/// Example: 100 shares = 1_000_000
+/// Fixed-point quantity: value * 10^8, so that the sizes of contracts traded
+/// in steps of 0.00000001 (crypto pairs) are kept exactly (ibx#655).
+/// Example: 100 shares = 10_000_000_000
 pub type Qty = i64;
 
 pub const PRICE_SCALE: i64 = 100_000_000; // 10^8
-pub const QTY_SCALE: i64 = 10_000; // 10^4
+pub const QTY_SCALE: i64 = 100_000_000; // 10^8
+/// The decimals of [`QTY_SCALE`].
+pub const QTY_DIGITS: usize = 8;
 
 /// Whether a price the reference checks is off the contract's price grid
 /// (ibx#263, reversing the snapping of ibx#216): negative where the rule
@@ -474,6 +477,10 @@ pub struct OrderAttrs {
     /// The caller's orderRef, sent in the order reference field on the order and every
     /// replace (ibx#466).
     pub order_ref: String,
+    /// The order quantity as the caller wrote it, when the fixed-point
+    /// quantity cannot hold it (more decimals or digits): sent as given
+    /// (ibx#655). Empty otherwise.
+    pub qty_text: String,
     /// Show on book as this many shares (display size). 0 = not set (show full qty).
     pub display_size: u32,
     /// Minimum fill quantity. 0 = not set.
@@ -2664,14 +2671,14 @@ mod tests {
     #[test]
     fn qty_100_shares() {
         let q: Qty = 100 * QTY_SCALE;
-        assert_eq!(q, 1_000_000);
+        assert_eq!(q, 10_000_000_000);
     }
 
     #[test]
     fn qty_fractional() {
         // 0.5 shares (fractional shares)
         let q: Qty = QTY_SCALE / 2;
-        assert_eq!(q, 5_000);
+        assert_eq!(q, 50_000_000);
     }
 
     // --- OrderBuffer ---
@@ -2842,14 +2849,16 @@ mod tests {
     #[test]
     fn qty_negative() {
         let q: Qty = -100 * QTY_SCALE;
-        assert_eq!(q, -1_000_000);
+        assert_eq!(q, -10_000_000_000);
     }
 
     #[test]
     fn qty_one_ten_thousandth() {
-        let q: Qty = 1; // smallest representable: 0.0001 shares
+        // 0.0001 shares, and the smallest step: 0.00000001 (ibx#655).
+        let q: Qty = QTY_SCALE / 10_000;
         let f = q as f64 / QTY_SCALE as f64;
-        assert!((f - 0.0001).abs() < 1e-10);
+        assert!((f - 0.0001).abs() < 1e-12);
+        assert!((1 as f64 / QTY_SCALE as f64 - 1e-8).abs() < 1e-20);
     }
 
     // --- OrderBuffer edge cases ---

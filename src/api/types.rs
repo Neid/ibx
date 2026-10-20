@@ -95,6 +95,10 @@ pub struct Order {
     pub order_id: i64,
     pub action: String,
     pub total_quantity: f64,
+    /// The quantity as the caller wrote it (a Python `Decimal`'s text),
+    /// empty when given as a number: sent as given when the fixed-point
+    /// quantity cannot hold it (ibx#655).
+    pub total_quantity_text: String,
     pub order_type: String,
     pub lmt_price: f64,
     pub aux_price: f64,
@@ -260,6 +264,7 @@ impl Default for Order {
             order_id: 0,
             action: String::new(),
             total_quantity: f64::MAX,
+            total_quantity_text: String::new(),
             order_type: String::new(),
             lmt_price: f64::MAX,
             aux_price: f64::MAX,
@@ -499,6 +504,7 @@ impl Order {
             };
         OrderAttrs {
             order_ref: self.order_ref.clone(),
+            qty_text: self.quantity_text_to_send(),
             display_size: self.display_size.max(0) as u32,
             // Unset (`i32::MAX`) is no minimum quantity.
             min_qty: if self.min_qty == i32::MAX { 0 } else { self.min_qty.max(0) as u32 },
@@ -627,9 +633,36 @@ impl Order {
     }
 
     /// Check if the order has any extended attributes set.
+    /// The caller's quantity text when the fixed-point quantity cannot hold
+    /// it exactly, as the official library sends every digit given
+    /// (ibx#655); empty otherwise, and for a text in exponent form.
+    pub fn quantity_text_to_send(&self) -> String {
+        let text = self.total_quantity_text.trim();
+        if text.is_empty() || text.contains(['e', 'E']) || !self.total_quantity.is_finite() || self.total_quantity == f64::MAX {
+            return String::new();
+        }
+        let normal = |t: &str| -> String {
+            let (sign, digits) = match t.strip_prefix('-') { Some(d) => ("-", d), None => ("", t.trim_start_matches('+')) };
+            let (whole, frac) = digits.split_once('.').unwrap_or((digits, ""));
+            let whole = whole.trim_start_matches('0');
+            let frac = frac.trim_end_matches('0');
+            let whole = if whole.is_empty() { "0" } else { whole };
+            let body = if frac.is_empty() { whole.to_string() } else { format!("{whole}.{frac}") };
+            if body == "0" { body } else { format!("{sign}{body}") }
+        };
+        let fixed = (self.total_quantity * crate::types::QTY_SCALE as f64).round() as i64;
+        let scale = crate::types::QTY_SCALE;
+        let held = format!("{}{}.{:0width$}", if fixed < 0 { "-" } else { "" }, (fixed / scale).abs(), (fixed % scale).abs(),
+            width = crate::types::QTY_DIGITS);
+        if normal(text) == normal(&held) { String::new() } else { text.to_string() }
+    }
+
+    /// Check if the order has any extended attributes set.
     pub fn has_extended_attrs(&self) -> bool {
         // An orderRef rides the extended encoders, which send it (ibx#466).
         !self.order_ref.is_empty()
+            // A quantity the fixed point cannot hold, sent as given (ibx#655).
+            || !self.quantity_text_to_send().is_empty()
             // A scale order (ibx#751).
             || self.scale_init_level_size != i32::MAX
             || self.display_size > 0
@@ -1520,6 +1553,23 @@ mod tests {
             assert!(o.has_extended_attrs());
             assert_eq!(o.attrs().use_price_mgmt_algo, want);
         }
+    }
+
+    // ibx#655: the caller's quantity text rides with the order only when the
+    // fixed point cannot hold it; trailing zeros alone do not need it.
+    #[test]
+    fn a_quantity_text_is_sent_only_when_the_fixed_point_cannot_hold_it() {
+        let o = |q: f64, t: &str| Order { total_quantity: q, total_quantity_text: t.into(), ..Default::default() };
+        assert_eq!(o(100.0, "100").quantity_text_to_send(), "");
+        assert_eq!(o(100.0, "100.00").quantity_text_to_send(), "");
+        assert_eq!(o(0.00000001, "0.00000001").quantity_text_to_send(), "");
+        assert_eq!(o(12.345678901234567, "12.345678901234567890").quantity_text_to_send(), "12.345678901234567890");
+        assert_eq!(o(0.000000001, "0.000000001").quantity_text_to_send(), "0.000000001");
+        assert_eq!(o(100.0, "1E+2").quantity_text_to_send(), "");
+        assert_eq!(o(100.0, "").quantity_text_to_send(), "");
+        assert!(o(12.345678901234567, "12.345678901234567890").has_extended_attrs());
+        assert!(!o(100.0, "100.0").has_extended_attrs());
+        assert_eq!(o(12.345678901234567, "12.345678901234567890").attrs().qty_text, "12.345678901234567890");
     }
 
     #[test]

@@ -5,7 +5,7 @@ use pyo3::exceptions::PyRuntimeError;
 
 use crate::types::*;
 use super::super::types::PRICE_SCALE_F;
-use super::values::{
+use super::values::{decimal_and_text_from_py, decimal_or_text_to_py, 
     attr, decimal_from_py, decimal_max_string, decimal_text_from_py, decimal_text_to_py, decimal_to_py, empty_list,
     float_max_string, int_max_string, items, list_or_none, long_max_string, official_names,
 };
@@ -258,6 +258,9 @@ pub struct Order {
     /// The official API's Decimal: `decimal.Decimal` in Python, unset
     /// `f64::MAX` here.
     pub total_quantity: f64,
+    /// The quantity as the caller gave it (every digit, trailing zeros
+    /// included), empty for a float (ibx#655).
+    pub total_quantity_text: String,
     #[pyo3(get, set)]
     pub order_type: String,
     #[pyo3(get, set)]
@@ -580,6 +583,7 @@ impl Clone for Order {
             order_id: self.order_id,
             action: self.action.clone(),
             total_quantity: self.total_quantity,
+            total_quantity_text: self.total_quantity_text.clone(),
             order_type: self.order_type.clone(),
             lmt_price: self.lmt_price,
             aux_price: self.aux_price,
@@ -748,6 +752,7 @@ impl Default for Order {
             order_id: 0,
             action: String::new(),
             total_quantity: f64::MAX,
+            total_quantity_text: String::new(),
             order_type: String::new(),
             lmt_price: f64::MAX,
             aux_price: f64::MAX,
@@ -942,6 +947,7 @@ impl Order {
             order_id,
             action,
             total_quantity: total_quantity.map(decimal_from_py).transpose()?.unwrap_or(f64::MAX),
+            total_quantity_text: total_quantity.map(|v| decimal_and_text_from_py(v).map(|(_, t)| t)).transpose()?.unwrap_or_default(),
             order_type,
             lmt_price,
             aux_price,
@@ -1006,13 +1012,23 @@ impl Order {
     // The official API's Decimals (ibapi 10.46): a `decimal.Decimal`,
     // unset `UNSET_DECIMAL`; set from a Decimal, an int, a float or a text.
     #[getter(totalQuantity)]
-    fn get_total_quantity_alias(&self, py: Python<'_>) -> PyResult<Py<PyAny>> { decimal_to_py(py, self.total_quantity) }
+    fn get_total_quantity_alias(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        decimal_or_text_to_py(py, self.total_quantity, &self.total_quantity_text)
+    }
     #[setter(totalQuantity)]
-    fn set_total_quantity_alias(&mut self, v: &Bound<'_, PyAny>) -> PyResult<()> { self.total_quantity = decimal_from_py(v)?; Ok(()) }
+    fn set_total_quantity_alias(&mut self, v: &Bound<'_, PyAny>) -> PyResult<()> {
+        (self.total_quantity, self.total_quantity_text) = decimal_and_text_from_py(v)?;
+        Ok(())
+    }
     #[getter(total_quantity)]
-    fn get_total_quantity(&self, py: Python<'_>) -> PyResult<Py<PyAny>> { decimal_to_py(py, self.total_quantity) }
+    fn get_total_quantity(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        decimal_or_text_to_py(py, self.total_quantity, &self.total_quantity_text)
+    }
     #[setter(total_quantity)]
-    fn set_total_quantity(&mut self, v: &Bound<'_, PyAny>) -> PyResult<()> { self.total_quantity = decimal_from_py(v)?; Ok(()) }
+    fn set_total_quantity(&mut self, v: &Bound<'_, PyAny>) -> PyResult<()> {
+        (self.total_quantity, self.total_quantity_text) = decimal_and_text_from_py(v)?;
+        Ok(())
+    }
     #[getter(filledQuantity)]
     fn get_filled_quantity_alias(&self, py: Python<'_>) -> PyResult<Py<PyAny>> { decimal_to_py(py, self.filled_quantity) }
     #[setter(filledQuantity)]
@@ -1768,6 +1784,7 @@ impl Order {
             order_id: self.order_id,
             action: self.action.clone(),
             total_quantity: self.total_quantity,
+            total_quantity_text: self.total_quantity_text.clone(),
             order_type: self.order_type.clone(),
             lmt_price: self.lmt_price,
             aux_price: self.aux_price,
@@ -1940,6 +1957,7 @@ impl Order {
             order_id: o.order_id,
             action: o.action.clone(),
             total_quantity: o.total_quantity,
+            total_quantity_text: o.total_quantity_text.clone(),
             order_type: o.order_type.clone(),
             lmt_price: o.lmt_price,
             aux_price: o.aux_price,
@@ -3270,6 +3288,10 @@ macro_rules! contract_details_class {
             pub min_algo_size: f64,
             pub last_price_precision: f64,
             pub last_size_precision: f64,
+            /// The text of each Decimal size field as the program set it (every
+            /// digit and trailing zero kept for `str()` and the getters), empty
+            /// otherwise (ibx#655, ibx#750).
+            pub decimal_texts: [String; 6],
             /// The official name is the field's: its getter gives 0 as an
             /// integer (ibx#602).
             pub coupon: f64,
@@ -3293,6 +3315,7 @@ macro_rules! contract_details_class {
                     min_algo_size: self.min_algo_size,
                     last_price_precision: self.last_price_precision,
                     last_size_precision: self.last_size_precision,
+                    decimal_texts: self.decimal_texts.clone(),
                     coupon: self.coupon,
                     $($field: self.$field.clone(),)*
                 })
@@ -3313,6 +3336,7 @@ macro_rules! contract_details_class {
                     min_algo_size: f64::MAX,
                     last_price_precision: f64::MAX,
                     last_size_precision: f64::MAX,
+                    decimal_texts: Default::default(),
                     coupon: 0.0,
                     $($field: $default,)*
                 }
@@ -3439,12 +3463,12 @@ impl ContractDetails {
             self.next_option_type.clone(),
             py_bool_text(self.next_option_partial).to_string(),
             self.notes.clone(),
-            decimal_max_string(self.min_size),
-            decimal_max_string(self.size_increment),
-            decimal_max_string(self.suggested_size_increment),
-            decimal_max_string(self.min_algo_size),
-            decimal_max_string(self.last_price_precision),
-            decimal_max_string(self.last_size_precision),
+            if self.decimal_texts[0].is_empty() { decimal_max_string(self.min_size) } else { self.decimal_texts[0].clone() },
+            if self.decimal_texts[1].is_empty() { decimal_max_string(self.size_increment) } else { self.decimal_texts[1].clone() },
+            if self.decimal_texts[2].is_empty() { decimal_max_string(self.suggested_size_increment) } else { self.decimal_texts[2].clone() },
+            if self.decimal_texts[3].is_empty() { decimal_max_string(self.min_algo_size) } else { self.decimal_texts[3].clone() },
+            if self.decimal_texts[4].is_empty() { decimal_max_string(self.last_price_precision) } else { self.decimal_texts[4].clone() },
+            if self.decimal_texts[5].is_empty() { decimal_max_string(self.last_size_precision) } else { self.decimal_texts[5].clone() },
             text(&self.ineligibility_reason_list)?,
             self.event_contract1.clone(),
             self.event_contract_description1.clone(),
@@ -3454,29 +3478,29 @@ impl ContractDetails {
     }
 
     #[getter(min_size)]
-    fn get_min_size(&self, py: Python<'_>) -> PyResult<Py<PyAny>> { decimal_to_py(py, self.min_size) }
+    fn get_min_size(&self, py: Python<'_>) -> PyResult<Py<PyAny>> { decimal_or_text_to_py(py, self.min_size, &self.decimal_texts[0]) }
     #[setter(min_size)]
-    fn set_min_size(&mut self, v: &Bound<'_, PyAny>) -> PyResult<()> { self.min_size = decimal_from_py(v)?; Ok(()) }
+    fn set_min_size(&mut self, v: &Bound<'_, PyAny>) -> PyResult<()> { (self.min_size, self.decimal_texts[0]) = decimal_and_text_from_py(v)?; Ok(()) }
     #[getter(size_increment)]
-    fn get_size_increment(&self, py: Python<'_>) -> PyResult<Py<PyAny>> { decimal_to_py(py, self.size_increment) }
+    fn get_size_increment(&self, py: Python<'_>) -> PyResult<Py<PyAny>> { decimal_or_text_to_py(py, self.size_increment, &self.decimal_texts[1]) }
     #[setter(size_increment)]
-    fn set_size_increment(&mut self, v: &Bound<'_, PyAny>) -> PyResult<()> { self.size_increment = decimal_from_py(v)?; Ok(()) }
+    fn set_size_increment(&mut self, v: &Bound<'_, PyAny>) -> PyResult<()> { (self.size_increment, self.decimal_texts[1]) = decimal_and_text_from_py(v)?; Ok(()) }
     #[getter(suggested_size_increment)]
-    fn get_suggested_size_increment(&self, py: Python<'_>) -> PyResult<Py<PyAny>> { decimal_to_py(py, self.suggested_size_increment) }
+    fn get_suggested_size_increment(&self, py: Python<'_>) -> PyResult<Py<PyAny>> { decimal_or_text_to_py(py, self.suggested_size_increment, &self.decimal_texts[2]) }
     #[setter(suggested_size_increment)]
-    fn set_suggested_size_increment(&mut self, v: &Bound<'_, PyAny>) -> PyResult<()> { self.suggested_size_increment = decimal_from_py(v)?; Ok(()) }
+    fn set_suggested_size_increment(&mut self, v: &Bound<'_, PyAny>) -> PyResult<()> { (self.suggested_size_increment, self.decimal_texts[2]) = decimal_and_text_from_py(v)?; Ok(()) }
     #[getter(min_algo_size)]
-    fn get_min_algo_size(&self, py: Python<'_>) -> PyResult<Py<PyAny>> { decimal_to_py(py, self.min_algo_size) }
+    fn get_min_algo_size(&self, py: Python<'_>) -> PyResult<Py<PyAny>> { decimal_or_text_to_py(py, self.min_algo_size, &self.decimal_texts[3]) }
     #[setter(min_algo_size)]
-    fn set_min_algo_size(&mut self, v: &Bound<'_, PyAny>) -> PyResult<()> { self.min_algo_size = decimal_from_py(v)?; Ok(()) }
+    fn set_min_algo_size(&mut self, v: &Bound<'_, PyAny>) -> PyResult<()> { (self.min_algo_size, self.decimal_texts[3]) = decimal_and_text_from_py(v)?; Ok(()) }
     #[getter(last_price_precision)]
-    fn get_last_price_precision(&self, py: Python<'_>) -> PyResult<Py<PyAny>> { decimal_to_py(py, self.last_price_precision) }
+    fn get_last_price_precision(&self, py: Python<'_>) -> PyResult<Py<PyAny>> { decimal_or_text_to_py(py, self.last_price_precision, &self.decimal_texts[4]) }
     #[setter(last_price_precision)]
-    fn set_last_price_precision(&mut self, v: &Bound<'_, PyAny>) -> PyResult<()> { self.last_price_precision = decimal_from_py(v)?; Ok(()) }
+    fn set_last_price_precision(&mut self, v: &Bound<'_, PyAny>) -> PyResult<()> { (self.last_price_precision, self.decimal_texts[4]) = decimal_and_text_from_py(v)?; Ok(()) }
     #[getter(last_size_precision)]
-    fn get_last_size_precision(&self, py: Python<'_>) -> PyResult<Py<PyAny>> { decimal_to_py(py, self.last_size_precision) }
+    fn get_last_size_precision(&self, py: Python<'_>) -> PyResult<Py<PyAny>> { decimal_or_text_to_py(py, self.last_size_precision, &self.decimal_texts[5]) }
     #[setter(last_size_precision)]
-    fn set_last_size_precision(&mut self, v: &Bound<'_, PyAny>) -> PyResult<()> { self.last_size_precision = decimal_from_py(v)?; Ok(()) }
+    fn set_last_size_precision(&mut self, v: &Bound<'_, PyAny>) -> PyResult<()> { (self.last_size_precision, self.decimal_texts[5]) = decimal_and_text_from_py(v)?; Ok(()) }
 
     /// The official `FundAssetType` member of the row, `NoneItem` when the
     /// row has none, as the official library at session level 225 decodes
@@ -3654,6 +3678,7 @@ impl ContractDetails {
             min_algo_size: d.min_algo_size,
             last_price_precision: d.last_price_precision,
             last_size_precision: d.last_size_precision,
+            decimal_texts: Default::default(),
             cusip: d.cusip,
             ratings: d.ratings,
             desc_append: d.desc_append,
