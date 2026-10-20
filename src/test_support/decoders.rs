@@ -54,6 +54,15 @@ pub fn xyz(b: &[u8]) {
     if let Some((_, _, _, fields)) = xyz::xyz_parse_response(b) {
         let _ = xyz::parse_swcr_token_challenge(&fields);
     }
+    // The items of a typed-code second factor (ibx#350), every way they
+    // are read.
+    if let Some(mut items) = xyz::XyzItems::new(b) {
+        let _ = items.version();
+        let _ = items.bytes();
+        let _ = items.string();
+        let _ = items.int();
+        let _ = items.string();
+    }
 }
 
 /// Wire-format text frames: field parsing, signature check, checksum framing.

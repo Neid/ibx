@@ -1821,11 +1821,33 @@ impl Gateway {
         let second_factor = if config.paper {
             None
         } else {
-            let token = auth_start.mobile_key_token(&config.ib_key_token_sub_type)?;
-            if token.is_none() {
+            let step = auth_start.second_factor_step(&config.ib_key_token_sub_type)?;
+            if step.is_none() {
                 log::info!("Auth start lists no second factor: none required");
             }
-            token
+            step
+        };
+        // A factor whose code the user types: a security code card, an
+        // authenticator app or passcode, a temporary code (ibx#350). The
+        // code comes from the code provider; without one the login cannot
+        // go on, and ends at once.
+        let second_factor = match second_factor {
+            Some(session::SecondFactorStep::TypedCode(factor)) => {
+                let provider = config.code_provider.as_ref().ok_or_else(|| io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("the second factor of this account ({}) is a typed code: give a code_provider",
+                        factor.text()),
+                ))?;
+                log::info!("Live login for {}: second factor {} via code_provider", config.username, factor.text());
+                tls.tcp().set_read_timeout(Some(Duration::from_millis(FARM_LOGON_POLL_MS)))?;
+                session::do_typed_code_2fa(
+                    &mut tls, &factor, auth_start.version, auth_start.otp_way,
+                    session::ib_key_deadline(config.ib_key_timeout_secs), provider,
+                )?;
+                None
+            }
+            Some(session::SecondFactorStep::MobileKey(token)) => Some(token),
+            None => None,
         };
         if let Some(token_sub_type) = second_factor {
             // No client deadline unless one is set, as in the reference: the

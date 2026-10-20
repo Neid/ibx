@@ -70,7 +70,7 @@ fn code_provider_of_the_config_reaches_the_login() {
     };
     let gw = gateway_config(&config);
     let given = gw.code_provider.expect("provider forwarded");
-    let challenge = crate::auth::session::IbKeyChallenge { display_id: "123 456".into(), avth_url: String::new() };
+    let challenge = crate::auth::session::IbKeyChallenge { display_id: "123 456".into(), ..Default::default() };
     assert_eq!(given(challenge).unwrap(), "code-123 456");
     assert!(!gw.paper);
 

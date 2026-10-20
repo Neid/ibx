@@ -123,7 +123,10 @@ pub struct EClientConfig {
     /// once, on its own thread, when the server sends the challenge, while
     /// the login keeps answering the server's keepalives; an error it
     /// returns ends the login. `None` (default): wait for the mobile push
-    /// approval (ibx#350).
+    /// approval (ibx#350). An account whose second factor is a security
+    /// code card, an authenticator app, a passcode or a temporary code needs
+    /// one: [`IbKeyChallenge::kind`](crate::auth::session::IbKeyChallenge)
+    /// names the factor, with the card's image or the passcode's delivery.
     pub code_provider: Option<crate::auth::session::CodeProvider>,
 }
 

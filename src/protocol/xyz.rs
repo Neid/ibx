@@ -16,6 +16,17 @@ pub const XYZ_MSG_SOFT_TOKEN: u32 = 772;
 /// Sent by the client immediately after SRP completes; server reply at state=2
 /// carries the per-session approval URL the user's mobile device taps to approve.
 pub const XYZ_MSG_SWCR_TOKEN: u32 = 775;
+/// The second factor of a security code card: the server's challenge is an
+/// image of two card indexes, the user types the two values (ibx#350).
+pub const XYZ_MSG_CARD_CODE: u32 = 773;
+/// The second factor of an authenticator app, a code sent by email, or a
+/// one-time passcode sent by SMS or voice (ibx#350).
+pub const XYZ_MSG_TYPED_CODE: u32 = 774;
+/// The second factor of a temporary security code: the answer is a digest
+/// of the server's challenge and the code (ibx#350).
+pub const XYZ_MSG_TEMPORARY_CODE: u32 = 776;
+/// The delivery of a one-time passcode by SMS (ibx#350).
+pub const XYZ_DELIVERY_SMS: u32 = 1;
 
 /// Build an XYZ binary message.
 pub fn xyz_build(msg_id: u32, state: u32, username: &str, fields: &[&str]) -> Vec<u8> {
@@ -181,6 +192,108 @@ pub fn xyz_build_swcr_token_code_submission(code: &str) -> Vec<u8> {
     buf
 }
 
+/// The 5-slot header of a second-factor message: version 20, the message,
+/// the literal 1, the state and an empty string slot (ibx#350, as the
+/// mobile-key messages).
+fn second_factor_header(msg_id: u32, state: u32) -> Vec<u8> {
+    let mut buf = Vec::new();
+    buf.extend_from_slice(&20u32.to_be_bytes());
+    buf.extend_from_slice(&msg_id.to_be_bytes());
+    buf.extend_from_slice(&1u32.to_be_bytes());
+    buf.extend_from_slice(&state.to_be_bytes());
+    buf.extend_from_slice(&0u32.to_be_bytes());
+    buf
+}
+
+/// A security code card message (773): the challenge image slot (empty
+/// from the client), the code, the result slot. State 1 starts, state 3
+/// carries the code (ibx#350).
+pub fn xyz_build_card_code(state: u32, code: &str) -> Vec<u8> {
+    let mut buf = second_factor_header(XYZ_MSG_CARD_CODE, state);
+    xyz_write_string(&mut buf, "");
+    xyz_write_string(&mut buf, code);
+    xyz_write_string(&mut buf, "");
+    buf
+}
+
+/// A temporary security code message (776): the challenge slot (empty
+/// from the client), the answer, the result slot. State 1 starts, state 3
+/// carries the answer (ibx#350).
+pub fn xyz_build_temporary_code(state: u32, answer: &str) -> Vec<u8> {
+    let mut buf = second_factor_header(XYZ_MSG_TEMPORARY_CODE, state);
+    xyz_write_string(&mut buf, "");
+    xyz_write_string(&mut buf, answer);
+    xyz_write_string(&mut buf, "");
+    buf
+}
+
+/// An authenticator message (774): the code, the factor's sub-type, the
+/// delivery asked (state 4 only, 0 for none), the result slot. State 4
+/// asks for a passcode to be sent, state 1 carries the code (ibx#350).
+pub fn xyz_build_typed_code(state: u32, code: &str, sub_type: &str, delivery: u32) -> Vec<u8> {
+    let mut buf = second_factor_header(XYZ_MSG_TYPED_CODE, state);
+    xyz_write_string(&mut buf, code);
+    xyz_write_string(&mut buf, sub_type);
+    if state == 4 {
+        buf.extend_from_slice(&delivery.to_be_bytes());
+    }
+    xyz_write_string(&mut buf, "");
+    buf
+}
+
+/// Reads the items of a server XYZ message after its header and its
+/// string slot: strings, raw bytes and integers in the message's order
+/// (ibx#350: the card's image and the delivery integers are not strings).
+pub struct XyzItems<'a> {
+    payload: &'a [u8],
+    pos: usize,
+}
+
+impl<'a> XyzItems<'a> {
+    /// The items of `payload`, or `None` when it is shorter than a header.
+    pub fn new(payload: &'a [u8]) -> Option<Self> {
+        if payload.len() < 16 {
+            return None;
+        }
+        let mut items = Self { payload, pos: 16 };
+        items.bytes();
+        Some(items)
+    }
+
+    /// The version of the message.
+    pub fn version(&self) -> u32 {
+        u32::from_be_bytes([self.payload[0], self.payload[1], self.payload[2], self.payload[3]])
+    }
+
+    /// A 4-byte integer, 0 past the end.
+    pub fn int(&mut self) -> u32 {
+        match self.payload.get(self.pos..self.pos + 4) {
+            Some(b) => {
+                self.pos += 4;
+                u32::from_be_bytes([b[0], b[1], b[2], b[3]])
+            }
+            None => {
+                self.pos = self.payload.len();
+                0
+            }
+        }
+    }
+
+    /// Length-prefixed bytes, padded to 4; empty past the end.
+    pub fn bytes(&mut self) -> &'a [u8] {
+        let len = self.int() as usize;
+        let start = self.pos.min(self.payload.len());
+        let end = start.saturating_add(len).min(self.payload.len());
+        self.pos = start.saturating_add(len.div_ceil(4) * 4).min(self.payload.len());
+        &self.payload[start..end]
+    }
+
+    /// A length-prefixed string.
+    pub fn string(&mut self) -> String {
+        String::from_utf8_lossy(self.bytes()).into_owned()
+    }
+}
+
 /// Parsed payload from an `XYZ_MSG_SWCR_TOKEN` state=2 reply.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SwcrTokenChallenge {
@@ -235,6 +348,53 @@ pub fn xyz_write_string(buf: &mut Vec<u8>, s: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ibx#350: the three typed-code messages, as the reference writes them.
+    #[test]
+    fn typed_code_messages() {
+        let header = |id: u32, state: u32| -> Vec<u8> {
+            [20u32, id, 1, state, 0].iter().flat_map(|v| v.to_be_bytes()).collect()
+        };
+        let mut card = header(773, 3);
+        card.extend_from_slice(&[0, 0, 0, 0]);
+        card.extend_from_slice(&[0, 0, 0, 5]);
+        card.extend_from_slice(b"12345\0\0\0");
+        card.extend_from_slice(&[0, 0, 0, 0]);
+        assert_eq!(xyz_build_card_code(3, "12345"), card);
+        let mut start = header(776, 1);
+        start.extend_from_slice(&[0; 12]);
+        assert_eq!(xyz_build_temporary_code(1, ""), start);
+        let mut deliver = header(774, 4);
+        deliver.extend_from_slice(&[0, 0, 0, 0]);
+        deliver.extend_from_slice(&[0, 0, 0, 1]);
+        deliver.extend_from_slice(b"2\0\0\0");
+        deliver.extend_from_slice(&[0, 0, 0, 1]);
+        deliver.extend_from_slice(&[0, 0, 0, 0]);
+        assert_eq!(xyz_build_typed_code(4, "", "2", XYZ_DELIVERY_SMS), deliver);
+        let mut submit = header(774, 1);
+        submit.extend_from_slice(&[0, 0, 0, 6]);
+        submit.extend_from_slice(b"123456\0\0");
+        submit.extend_from_slice(&[0, 0, 0, 1]);
+        submit.extend_from_slice(b"0\0\0\0");
+        submit.extend_from_slice(&[0, 0, 0, 0]);
+        assert_eq!(xyz_build_typed_code(1, "123456", "0", 0), submit);
+    }
+
+    #[test]
+    fn items_read_strings_bytes_and_integers() {
+        let mut msg: Vec<u8> = [20u32, 774, 1, 5].iter().flat_map(|v| v.to_be_bytes()).collect();
+        xyz_write_string(&mut msg, "");
+        xyz_write_string(&mut msg, "sent");
+        xyz_write_string(&mut msg, "2");
+        xyz_write_string(&mut msg, "SMS");
+        msg.extend_from_slice(&3u32.to_be_bytes());
+        xyz_write_string(&mut msg, "");
+        let mut items = XyzItems::new(&msg).unwrap();
+        assert_eq!(items.version(), 20);
+        assert_eq!((items.string(), items.string(), items.string(), items.int(), items.string()),
+            ("sent".to_string(), "2".to_string(), "SMS".to_string(), 3, String::new()));
+        assert_eq!(items.int(), 0, "past the end");
+    }
 
     // ── Existing tests ──────────────────────────────────────────────
 

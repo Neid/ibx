@@ -159,10 +159,14 @@ impl EClient {
     /// ``code_provider``: a callable used for the typed-code variant of the
     /// second factor. When the server sends the challenge it is called once,
     /// during ``connect()``, with a dict ``{"display_id": str, "avth_url":
-    /// str}``, and must return the code as a ``str``; an exception it raises
-    /// ends the login. It runs on its own thread while the login keeps
-    /// answering the keepalives. ``None`` (default): wait for the mobile push
-    /// approval.
+    /// str, "kind": str, "message": str, "image": bytes, "delivery": str}``,
+    /// and must return the code as a ``str``; an exception it raises ends
+    /// the login. It runs on its own thread while the login keeps answering
+    /// the keepalives. ``None`` (default): wait for the mobile push approval.
+    /// An account whose second factor is a security code card (``kind``
+    /// "3", ``image`` the card indexes to look up), an authenticator app or
+    /// a passcode ("4", "4.1", "4.2", ``delivery`` how it was sent) or a
+    /// temporary code ("6") needs one (ibx#350).
     ///
     /// Multiple ``EClient`` instances can run concurrently in one process; each
     /// owns its own state, sockets, and engine thread, and ``connect()`` does
@@ -480,6 +484,11 @@ fn python_code_provider(callable: Py<PyAny>) -> crate::auth::session::CodeProvid
             let info = pyo3::types::PyDict::new(py);
             info.set_item("display_id", challenge.display_id.as_str())?;
             info.set_item("avth_url", challenge.avth_url.as_str())?;
+            // The factor and its challenge (ibx#350).
+            info.set_item("kind", challenge.kind.as_str())?;
+            info.set_item("message", challenge.message.as_str())?;
+            info.set_item("image", pyo3::types::PyBytes::new(py, &challenge.image))?;
+            info.set_item("delivery", challenge.delivery.as_str())?;
             callable.call1(py, (info,))?.extract::<String>(py)
         })
         .map_err(|e: PyErr| std::io::Error::other(format!("code_provider raised: {}", e)))

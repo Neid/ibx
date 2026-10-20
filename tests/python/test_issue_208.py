@@ -17,7 +17,8 @@ def test_code_provider_gets_the_challenge_and_returns_the_code():
 
     c = EClient(EWrapper())
     assert c._test_code_provider(provider, "580 820", "https://example.com/s") == "12345678"
-    assert seen == [{"display_id": "580 820", "avth_url": "https://example.com/s"}]
+    assert seen == [{"display_id": "580 820", "avth_url": "https://example.com/s", "kind": "", "message": "",
+                     "image": b"", "delivery": ""}]
 
 
 def test_an_exception_of_the_code_provider_ends_the_login():

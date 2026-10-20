@@ -148,10 +148,14 @@ impl EClient {
     /// Run the second-factor code provider built from `callable` the way the
     /// login runs it: on its own thread, with the interpreter lock released
     /// by the caller (ibx#208).
+    /// The factor's details too (ibx#350).
     #[doc(hidden)]
-    fn _test_code_provider(&self, py: Python<'_>, callable: Py<PyAny>, display_id: String, avth_url: String) -> PyResult<String> {
+    #[pyo3(signature = (callable, display_id, avth_url, kind=String::new(), message=String::new(), image=Vec::new(), delivery=String::new()))]
+    #[allow(clippy::too_many_arguments)]
+    fn _test_code_provider(&self, py: Python<'_>, callable: Py<PyAny>, display_id: String, avth_url: String,
+        kind: String, message: String, image: Vec<u8>, delivery: String) -> PyResult<String> {
         let provider = super::python_code_provider(callable);
-        let challenge = crate::auth::session::IbKeyChallenge { display_id, avth_url };
+        let challenge = crate::auth::session::IbKeyChallenge { display_id, avth_url, kind, message, image, delivery };
         py.detach(|| std::thread::spawn(move || provider(challenge)).join())
             .map_err(|_| PyRuntimeError::new_err("code provider thread panicked"))?
             .map_err(|e| PyRuntimeError::new_err(e.to_string()))

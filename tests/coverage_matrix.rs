@@ -244,6 +244,7 @@ const NOT_DECODERS: &[&str] = &[
     "tick_decoder::new", "tick_decoder::remaining", "tick_decoder::tbt_field_count",
     "xyz::xyz_build", "xyz::xyz_wrap", "xyz::xyz_build_srp_v20", "xyz::xyz_build_soft_token",
     "xyz::xyz_build_swcr_token_init", "xyz::xyz_build_swcr_token_code_submission", "xyz::xyz_write_string",
+    "xyz::xyz_build_card_code", "xyz::xyz_build_temporary_code", "xyz::xyz_build_typed_code",
 ];
 
 /// Every public function of src/protocol is a decoder with its row (and so

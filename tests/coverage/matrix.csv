@@ -2190,6 +2190,11 @@ decoder,protocol::ns::parse_test_request_timestamp,NS test request,src/robustnes
 decoder,protocol::ns::is_ns_text,NS text or XYZ binary,src/robustness/decoders.rs::ns_frames ; src/robustness/mutation.rs::recorded_frames_mutated_through_the_decoders
 decoder,protocol::xyz::xyz_parse_response,XYZ login message,src/robustness/decoders.rs::xyz_messages ; src/robustness/mutation.rs::recorded_frames_mutated_through_the_decoders
 decoder,protocol::xyz::parse_swcr_token_challenge,XYZ second factor challenge,src/robustness/decoders.rs::xyz_messages ; src/robustness/mutation.rs::recorded_frames_mutated_through_the_decoders
+decoder,protocol::xyz::XyzItems::new,XYZ typed-code second factor items (the start),src/robustness/decoders.rs::xyz_messages ; src/robustness/mutation.rs::recorded_frames_mutated_through_the_decoders
+decoder,protocol::xyz::XyzItems::version,XYZ typed-code second factor items (the version),src/robustness/decoders.rs::xyz_messages ; src/robustness/mutation.rs::recorded_frames_mutated_through_the_decoders
+decoder,protocol::xyz::XyzItems::int,XYZ typed-code second factor items (an integer),src/robustness/decoders.rs::xyz_messages ; src/robustness/mutation.rs::recorded_frames_mutated_through_the_decoders
+decoder,protocol::xyz::XyzItems::bytes,XYZ typed-code second factor items (raw bytes),src/robustness/decoders.rs::xyz_messages ; src/robustness/mutation.rs::recorded_frames_mutated_through_the_decoders
+decoder,protocol::xyz::XyzItems::string,XYZ typed-code second factor items (a string),src/robustness/decoders.rs::xyz_messages ; src/robustness/mutation.rs::recorded_frames_mutated_through_the_decoders
 decoder,protocol::fix::fix_parse,FIX tags,src/robustness/decoders.rs::fix_frames ; src/robustness/mutation.rs::recorded_frames_mutated_through_the_decoders
 decoder,protocol::fix::fix_parse_borrowed,fields borrowed from the message (ibx#701),src/robustness/decoders.rs::fix_frames ; src/robustness/mutation.rs::recorded_frames_mutated_through_the_decoders
 decoder,protocol::fix::fix_fields,fields borrowed or copied when not UTF-8 (ibx#701),src/robustness/decoders.rs::fix_frames ; src/robustness/mutation.rs::recorded_frames_mutated_through_the_decoders
