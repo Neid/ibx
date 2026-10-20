@@ -274,28 +274,6 @@ fn send_orders(
         let mut combo_track: Option<(crate::engine::combo::ComboOrder, crate::bridge::ComboView)> = None;
         if let Some(spec) = order_req.combo().cloned() {
             use crate::engine::combo::{self, Ready};
-            // A SMART combo with no NonGuaranteed value, on a
-            // session whose server routes no SMART combo as
-            // guaranteed (REJGNONAT): 10043 with two legs, 10045
-            // with another number; the order stays in the API
-            // pending map, its cancel ApiCancelled (ibx#677;
-            // observed 13/10/2026, paper, a two-leg stock
-            // combo).
-            if spec.smart_con_id > 0 && !spec.routing_attrs.iter().any(|(tag, _)| *tag == 6248)
-                && crate::control::logon::has_feature(&shared.reference.logon_features(), "REJGNONAT")
-            {
-                let (code, message) = if spec.legs.len() == 2 {
-                    (10043, "Missing or invalid NonGuaranteed value. REL+MKT, LMT+MKT, and REL+LMT order of two legs can only be set as non-guaranteed.")
-                } else {
-                    (10045, "This combo order is not supported.")
-                };
-                log::warn!("Combo order {} refused: {} {}", oid, code, message);
-                shared.orders.push_order_error(oid, code, message.to_string());
-                if !what_if {
-                    context.api_pending.insert(oid, order_req);
-                }
-                continue;
-            }
             match context.combos.ready(oid, &spec, &chrono_free_timestamp()) {
                 Ready::Waiting(frames) => {
                     send_frames(conn, hb, &frames);
@@ -325,6 +303,48 @@ fn send_orders(
                     // 28/09/2026, rth_order_types).
                     if !preset_tif(context, conn, hb, shared, &mut order_req, "COMB") {
                         context.rth_parked.push(rewrap(order_req));
+                        continue;
+                    }
+                    // The trading permission of the legs' option classes,
+                    // once the combo is built and its preset asked: 460,
+                    // nothing sent, the order kept for its cancel
+                    // (ibx#510; the reference 10.51, paper, regular hours
+                    // 19/10/2026: an SPY call vertical, the set-up, the
+                    // preset, then 460; its cancel Cancelled, 202, 161).
+                    match combo_permission(&built, context, conn, hb) {
+                        Some(false) => { context.rth_parked.push(rewrap(order_req)); continue; }
+                        Some(true) => {
+                            log::warn!("Combo order {} refused: no trading permission for a leg (460)", oid);
+                            shared.orders.push_order_error(oid, 460, NO_TRADING_PERMISSIONS.to_string());
+                            if let Some(instrument) = order_req.instrument().filter(|_| !what_if) {
+                                let parent = order_req.new_order_side().and_then(|(_, a)| a).map_or(0, |a| a.parent_id);
+                                context.keep_unsent(oid, (instrument, order_req.new_order_qty().unwrap_or(0), parent));
+                            }
+                            continue;
+                        }
+                        None => {}
+                    }
+                    // A SMART combo with no NonGuaranteed value, on a
+                    // session whose server routes no SMART combo as
+                    // guaranteed (REJGNONAT): 10043 with two legs, 10045
+                    // with another number; the order stays in the API
+                    // pending map, its cancel ApiCancelled (ibx#677;
+                    // observed 13/10/2026, paper, a two-leg stock
+                    // combo). After the legs' permission: an option
+                    // vertical without it gets 460, not this (ibx#510).
+                    if spec.smart_con_id > 0 && !spec.routing_attrs.iter().any(|(tag, _)| *tag == 6248)
+                        && crate::control::logon::has_feature(&shared.reference.logon_features(), "REJGNONAT")
+                    {
+                        let (code, message) = if spec.legs.len() == 2 {
+                            (10043, "Missing or invalid NonGuaranteed value. REL+MKT, LMT+MKT, and REL+LMT order of two legs can only be set as non-guaranteed.")
+                        } else {
+                            (10045, "This combo order is not supported.")
+                        };
+                        log::warn!("Combo order {} refused: {} {}", oid, code, message);
+                        shared.orders.push_order_error(oid, code, message.to_string());
+                        if !what_if {
+                            context.api_pending.insert(oid, order_req);
+                        }
                         continue;
                     }
                     combo_track = Some(combo_order_setup(context, shared, &mut order_req, built, spec));
@@ -4266,6 +4286,43 @@ pub(crate) fn cfd_check_reply(context: &mut Context, conn: Option<&mut Connectio
     log::info!("CFD {} definition asked ({})", con_id, name);
     context.cfd_requests.push(name);
     true
+}
+
+/// The trading permission of a combo's option legs (ibx#510): each
+/// class their definitions name is asked once per session, as for an
+/// option order. `Some(true)` when a class has no permission,
+/// `Some(false)` while an answer is on its way, `None` when every class is
+/// allowed (or no leg names one).
+///
+/// Past the check, refused or not, each option leg starts its option
+/// model, as an option order does (ibx#693; the reference 10.51, paper,
+/// pre-market 20/10/2026: an SPY call vertical, the underlying's and both
+/// legs' data asked right before 460, the option farm's notices after it).
+fn combo_permission(built: &crate::engine::combo::Combo, context: &mut Context, conn: &mut Connection, hb: &mut HeartbeatState) -> Option<bool> {
+    let options = || built.legs.iter().filter(|l| matches!(l.sec_type.as_str(), "OPT" | "FOP"));
+    let mut waiting = false;
+    let mut refused = false;
+    for leg in options().filter(|l| !l.permission_key.is_empty()) {
+        match context.trading_permissions.get(&leg.permission_key) {
+            Some(false) => refused = true,
+            Some(true) => {}
+            None => {
+                ask_permission(context, conn, hb, &leg.permission_key);
+                waiting = true;
+            }
+        }
+    }
+    if waiting && !refused {
+        return Some(false);
+    }
+    for leg in options() {
+        let Some(instrument) = context.market.try_register(leg.con_id) else { continue };
+        if context.market.order_routing(instrument).0 != leg.sec_type {
+            context.market.set_routing(instrument, &leg.sec_type, "SMART");
+        }
+        note_order_model(context, instrument, &leg.sec_type);
+    }
+    refused.then_some(true)
 }
 
 /// Text of error 460 (paper 14/10/2026).

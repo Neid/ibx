@@ -456,9 +456,25 @@ fn directed_combo_without_definition_is_the_captured_one() {
     assert_eq!(s.callbacks.0, ["error 32 200 No security definition has been found for the request"]);
 }
 
+/// A combo of the session built before, with its preset known: the next
+/// order on it goes through no set-up.
+fn seed_combo(s: &mut Session, legs: &[(i64, bool, &str, &str)]) {
+    use crate::engine::combo::{Combo, Leg};
+    s.engine.context.order_presets.insert("COMB".into(), None);
+    s.engine.context.combos.seed_built_for_test(Combo {
+        bag_con_id: SMART_COMBO, exchange: "SMART".into(), routed: "BEST".into(), currency: "USD".into(),
+        trading_class: "COMB".into(), multiplier: 1.0,
+        legs: legs.iter().map(|&(con_id, buy, sec_type, key)| Leg {
+            con_id, ratio: 1, buy, exchange: "SMART".into(), sec_type: sec_type.into(),
+            symbol: match con_id { QQQ => "QQQ", 4_242 => "DIA", _ => "SPY" }.into(),
+            currency: "USD".into(), multiplier: 1.0, permission_key: key.into(),
+        }).collect(),
+    });
+}
+
 // ibx#677 (the reference 10.51, paper 13/10/2026, whose logon lists
 // REJGNONAT): a SMART combo without any NonGuaranteed value gets 10043 with
-// two legs, 10045 with three.
+// two legs, 10045 with three; nothing is sent.
 #[test]
 fn combos_without_a_non_guaranteed_value() {
     crate::client_core::set_session_level_for_test(Some(214)); // a capture at level 214 (ibx#602)
@@ -470,16 +486,77 @@ fn combos_without_a_non_guaranteed_value() {
     };
     let bare = ApiOrder { smart_combo_routing_params: Vec::new(), ..combo_lmt("BUY", 1.0) };
     s.engine.shared.reference.set_logon_features("REJGNONAT,PRICECHK");
+    seed_combo(&mut s, &[(SPY, true, "STK", ""), (QQQ, false, "STK", "")]);
     assert_eq!(place(&mut s, &spy_qqq("QQQ,SPY"), &bare),
         ["error 7 10043 Missing or invalid NonGuaranteed value. REL+MKT, LMT+MKT, and REL+LMT order of two legs can only be set as non-guaranteed."]);
     s.assert_nothing_sent();
     // A new session: the refused order stays pending under its id.
     let mut s = Session::new();
     s.engine.shared.reference.set_logon_features("REJGNONAT,PRICECHK");
-    let mut three = spy_qqq("QQQ,SPY,DIA");
+    seed_combo(&mut s, &[(SPY, true, "STK", ""), (QQQ, false, "STK", ""), (4_242, true, "STK", "")]);
+    let mut three = spy_qqq("DIA,QQQ,SPY");
     three.combo_legs.push(leg(4_242, "BUY"));
     assert_eq!(place(&mut s, &three, &bare), ["error 7 10045 This combo order is not supported."]);
     s.assert_nothing_sent();
+}
+
+// ibx#510 (the reference 10.51, paper, regular hours 19/10/2026: an SPY
+// call vertical, the set-up and the preset, then 460 "No trading
+// permissions.", nothing sent; not 10043 though the logon lists
+// REJGNONAT): an option combo is checked against the trading permission
+// of its legs' class, asked once; with it, the NonGuaranteed check comes
+// next.
+#[test]
+fn option_combo_needs_the_permission_of_its_legs() {
+    crate::client_core::set_session_level_for_test(Some(214)); // a capture at level 214 (ibx#602)
+    let vertical = ApiContract {
+        symbol: "SPY".into(), sec_type: "BAG".into(), exchange: "SMART".into(), currency: "USD".into(),
+        combo_legs: vec![leg(927880711, "BUY"), leg(927880746, "SELL")],
+        ..Default::default()
+    };
+    let order = ApiOrder { action: "BUY".into(), total_quantity: 1.0, order_type: "LMT".into(), lmt_price: 0.05, ..Default::default() };
+    let answer = |s: &mut Session, allowed: &str| {
+        let msg = crate::protocol::fix::fix_build(&[(35, "U"), (6040, "66"), (6410, "0"), (6411, "2/OPT/R"), (6412, "1"),
+            (6413, ACCOUNT), (6414, allowed)], 1);
+        s.engine.inject_ccp_message(&msg);
+        s.run();
+        s.run();
+    };
+    for (allowed, want) in [
+        ("0", "error 9 460 No trading permissions."),
+        ("1", "error 9 10043 Missing or invalid NonGuaranteed value. REL+MKT, LMT+MKT, and REL+LMT order of two legs can only be set as non-guaranteed."),
+    ] {
+        let mut s = Session::new();
+        s.engine.shared.reference.set_logon_features("REJGNONAT,PRICECHK");
+        seed_combo(&mut s, &[(927880711, true, "OPT", "2/OPT/R"), (927880746, false, "OPT", "2/OPT/R")]);
+        s.client.place_order(9, &vertical, &order).unwrap();
+        s.run();
+        let asked = s.next_sent();
+        assert_eq!((tag(&asked, 6040), tag(&asked, 6411)), (Some("65"), Some("2/OPT/R")), "the class asked once");
+        s.assert_nothing_sent();
+        assert!(s.callbacks.0.is_empty(), "{:?}", s.callbacks.0);
+        answer(&mut s, allowed);
+        assert_eq!(s.callbacks.0, [want]);
+        // Past the check, both legs' option models are started.
+        let started: Vec<i64> = s.engine.context.order_models.iter().map(|(_, c, _)| *c).collect();
+        assert_eq!(started, [927880711, 927880746]);
+        s.engine.context.order_models.clear();
+        s.assert_nothing_sent();
+        // Its cancel, nothing sent.
+        s.callbacks.0.clear();
+        s.client.cancel_order(9, "").unwrap();
+        s.run();
+        s.run();
+        let got: Vec<&str> = s.callbacks.0.iter().map(|c| c.split(" 0 1 ").next().unwrap_or(c)).map(|c| c.split(" Order permId").next().unwrap_or(c)).collect();
+        let want_cancel: &[&str] = if allowed == "0" {
+            &["orderStatus 9 Cancelled", "error 9 202 Order Canceled - reason:Order was discarded.",
+              "error 9 161 Cancel attempted when order is not in a cancellable state. "]
+        } else {
+            &["orderStatus 9 ApiCancelled"]
+        };
+        assert_eq!(got, want_cancel);
+        s.assert_nothing_sent();
+    }
 }
 
 // ibx#470: the reference's refusals while it reads and checks a combo
@@ -524,7 +601,7 @@ fn combo_refusals_before_sending() {
     for l in two_two.combo_legs.iter_mut() { l.ratio = 2; }
     assert_eq!(place(&mut s, &two_two, &lmt), ["error 7 321 Error validating request.-'PlaceOrder(3)' : cause - Invalid leg ratio."]);
     // ibx#660, the reference 10.51 (13/10/2026): three legs.
-    let mut three = spy_qqq("QQQ,SPY,DIA");
+    let mut three = spy_qqq("DIA,QQQ,SPY");
     three.combo_legs.push(leg(4_242, "BUY"));
     assert_eq!(place(&mut s, &three, &lmt),
         ["error 7 321 Error validating request.-'PlaceOrder(3)' : cause - Non-guaranteed combo order is only supported for 2-leg SMART combos."]);

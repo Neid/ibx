@@ -43,6 +43,8 @@ pub(crate) struct Leg {
     pub currency: String,
     /// The leg's multiplier, 1 when its definition has none.
     pub multiplier: f64,
+    /// The trading permission class its definition names (ibx#510).
+    pub permission_key: String,
 }
 
 /// A combo built by the set-up requests.
@@ -565,6 +567,7 @@ impl ComboBook {
                                 sec_type,
                                 currency: def.currency.clone(),
                                 multiplier: if def.multiplier > 0.0 { def.multiplier } else { 1.0 },
+                                permission_key: first_tag(msg, 6411).unwrap_or("").to_string(),
                             });
                             Ok(self.leg_request(&mut setup, i + 1, ts))
                         }
@@ -638,6 +641,15 @@ impl ComboBook {
     #[cfg(test)]
     pub(crate) fn built_for_test(&self) -> Option<Combo> {
         self.built.values().next().cloned()
+    }
+
+    /// A combo built before, for a test.
+    #[cfg(test)]
+    pub(crate) fn seed_built_for_test(&mut self, combo: Combo) {
+        let mut legs: Vec<(i64, i32, bool)> = combo.legs.iter().map(|l| (l.con_id, l.ratio, l.buy)).collect();
+        legs.sort_unstable();
+        let key = ComboKey { exchange: combo.exchange.to_uppercase(), currency: combo.currency.clone(), legs };
+        self.built.insert(key, combo);
     }
 
     /// The BAG definition of a built combo, for the outside-RTH rule.
@@ -762,9 +774,9 @@ mod tests {
             trading_class: "COMB".into(), multiplier: 1.0,
             legs: vec![
                 Leg { con_id: 756733, ratio: 1, buy: true, exchange: "SMART".into(), symbol: "SPY".into(),
-                    sec_type: "STK".into(), currency: "USD".into(), multiplier: 1.0 },
+                    sec_type: "STK".into(), currency: "USD".into(), multiplier: 1.0, permission_key: String::new() },
                 Leg { con_id: 320227571, ratio: 1, buy: false, exchange: "SMART".into(), symbol: "QQQ".into(),
-                    sec_type: "STK".into(), currency: "USD".into(), multiplier: 1.0 },
+                    sec_type: "STK".into(), currency: "USD".into(), multiplier: 1.0, permission_key: String::new() },
             ],
         };
         let px = |v: f64| (v * PRICE_SCALE as f64).round() as Price;
@@ -864,7 +876,8 @@ mod tests {
     #[test]
     fn non_guaranteed_needs_two_legs_and_one_currency() {
         let leg = |con_id: i64, currency: &str| Leg { con_id, ratio: 1, buy: true, exchange: "SMART".into(),
-            symbol: format!("S{con_id}"), sec_type: "STK".into(), currency: currency.into(), multiplier: 1.0 };
+            symbol: format!("S{con_id}"), sec_type: "STK".into(), currency: currency.into(), multiplier: 1.0,
+            permission_key: String::new() };
         let combo = |legs: Vec<Leg>| Combo { bag_con_id: 1, exchange: "SMART".into(), routed: "BEST".into(),
             currency: "USD".into(), trading_class: "COMB".into(), legs, multiplier: 1.0 };
         let spec = spy_qqq("");

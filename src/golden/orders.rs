@@ -493,12 +493,13 @@ fn overnight_directed_order() {
 }
 
 // SPY option combos (a call spread, SMART and CBOE): the reference
-// refuses both with 460 "No trading permissions" before sending; ibx
-// gives no callback. The reference's checks that raise it
-// read positions, clearing and logon flags; no field of the logon or of
-// the contract replies of the recording names the option permission.
+// refuses both with 460 "No trading permissions" before sending, from the
+// permission of the legs' class, which it had asked before this recording.
+// ibx asks it (ibx#510): the recording has no answer to replay, so ibx's
+// order waits here. The rule is tested in
+// `combo_tests::option_combo_needs_the_permission_of_its_legs`.
 #[test]
-#[ignore = "ibx#510: the data behind 460 is not in the logon or the contract replies"]
+#[ignore = "ibx#510: the recording holds no answer to the permission question ibx asks"]
 fn option_combo_without_permission() {
     replay_and_compare("orders_rth_order_types", all, KNOWN, &[15, 16, 17, 18, 19, 20, 21]);
 }
