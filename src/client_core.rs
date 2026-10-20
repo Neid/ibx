@@ -1668,6 +1668,8 @@ pub struct ClientCore {
     pub md_out: Mutex<Vec<MdOut>>,
     /// Where the market data steps stand among the answers (ibx#662).
     md_order: Mutex<MdOrder>,
+    /// The end of the steps handed over at the start of the pass.
+    md_pass_head: std::sync::atomic::AtomicU64,
     /// The answers taken from the session's queues and not given yet,
     /// given in the order they were written (ibx#532).
     pub(crate) inbox: Mutex<inbox::Inbox>,
@@ -2633,6 +2635,7 @@ impl ClientCore {
             md_joins_waiting: std::sync::atomic::AtomicUsize::new(0),
             md_out: Mutex::new(Vec::with_capacity(64)),
             md_order: Mutex::new(MdOrder::default()),
+            md_pass_head: std::sync::atomic::AtomicU64::new(0),
             inbox: Mutex::new(inbox::Inbox::default()),
             md_news: Mutex::new(HashMap::new()),
             md_top_off: Mutex::new(HashSet::new()),
@@ -3563,9 +3566,14 @@ impl ClientCore {
     /// runs.
     pub(crate) fn state_pass(&self, shared: &SharedState) {
         let queue = &shared.market.md_events;
+        let head = queue.head();
+        self.md_pass_head.store(head, Ordering::Relaxed);
+        // No step to read: no lock.
+        if head == queue.tail() {
+            return;
+        }
         let mut order = self.md_order.lock().unwrap();
-        order.head = queue.head();
-        let head = order.head;
+        order.head = head;
         queue.take_marks(head, &mut order.marks);
     }
 
@@ -3574,6 +3582,9 @@ impl ClientCore {
     /// first change of the other state since it was read.
     pub(crate) fn state_first(&self, shared: &SharedState) -> Option<u64> {
         let tail = shared.market.md_events.tail();
+        if tail >= self.md_pass_head.load(Ordering::Relaxed) {
+            return shared.state_mark().first();
+        }
         let mut order = self.md_order.lock().unwrap();
         while order.marks.front().is_some_and(|&(at, _)| at <= tail) {
             order.count = order.marks.pop_front().unwrap().1;
@@ -3590,6 +3601,9 @@ impl ClientCore {
     pub(crate) fn state_read(&self, shared: &SharedState, until: u64) -> u64 {
         shared.state_mark().read_below(until);
         let tail = shared.market.md_events.tail();
+        if tail >= self.md_pass_head.load(Ordering::Relaxed) {
+            return tail;
+        }
         let mut order = self.md_order.lock().unwrap();
         while order.marks.front().is_some_and(|&(at, _)| at <= tail) {
             order.count = order.marks.pop_front().unwrap().1;
