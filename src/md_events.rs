@@ -277,11 +277,13 @@ struct Writer {
     next: AtomicU64,
     tail_seen: AtomicU64,
     starting: AtomicBool,
+    /// The answer clock as the last message found it (ibx#662).
+    clock_seen: AtomicU64,
 }
 
 impl Default for Writer {
     fn default() -> Self {
-        Self { next: AtomicU64::new(0), tail_seen: AtomicU64::new(0), starting: AtomicBool::new(true) }
+        Self { next: AtomicU64::new(0), tail_seen: AtomicU64::new(0), starting: AtomicBool::new(true), clock_seen: AtomicU64::new(1) }
     }
 }
 
@@ -300,6 +302,11 @@ pub struct MdQueue {
     /// request asked for the whole quote.
     resync: [AtomicU64; WORDS],
     resync_any: AtomicBool,
+    /// The session's answer clock (ibx#662): a message handed over after
+    /// other answers were written starts a run counted after them.
+    clock: Option<std::sync::Arc<AtomicU64>>,
+    /// Those starts: the position of the message and its count.
+    marks: std::sync::Mutex<std::collections::VecDeque<(u64, u64)>>,
 }
 
 impl Default for MdQueue {
@@ -323,7 +330,15 @@ impl MdQueue {
             listened: std::array::from_fn(|_| AtomicU64::new(0)),
             resync: std::array::from_fn(|_| AtomicU64::new(0)),
             resync_any: AtomicBool::new(false),
+            clock: None,
+            marks: std::sync::Mutex::new(std::collections::VecDeque::new()),
         }
+    }
+
+    /// A queue whose messages take their place among the answers counted
+    /// by `clock` (ibx#662).
+    pub fn with_clock(clock: std::sync::Arc<AtomicU64>) -> Self {
+        Self { clock: Some(clock), ..Self::new() }
     }
 
     // ── Engine side (one thread) ──
@@ -425,7 +440,22 @@ impl MdQueue {
     #[inline]
     pub fn publish(&self) {
         let next = self.writer.next.load(Ordering::Relaxed);
-        if self.head.0.load(Ordering::Relaxed) != next {
+        let head = self.head.0.load(Ordering::Relaxed);
+        if head != next {
+            // Other answers were written since the last message: this one
+            // comes after them (ibx#662). One load otherwise.
+            if let Some(clock) = &self.clock
+                && clock.load(Ordering::Relaxed) != self.writer.clock_seen.load(Ordering::Relaxed)
+            {
+                let at = clock.fetch_add(1, Ordering::Relaxed);
+                self.writer.clock_seen.store(at + 1, Ordering::Relaxed);
+                let mut marks = self.marks.lock().unwrap();
+                // A client that does not read: the oldest go, as their steps.
+                if marks.len() >= MD_QUEUE_CAPACITY as usize {
+                    marks.pop_front();
+                }
+                marks.push_back((head, at));
+            }
             self.head.0.store(next, Ordering::Release);
             self.writer.starting.store(true, Ordering::Relaxed);
         }
@@ -487,6 +517,15 @@ impl MdQueue {
     #[inline(always)]
     pub fn head(&self) -> u64 {
         self.head.0.load(Ordering::Acquire)
+    }
+
+    /// The starts of runs of messages before `head` (a position read
+    /// before), with their counts, moved to `into` (ibx#662).
+    pub fn take_marks(&self, head: u64, into: &mut std::collections::VecDeque<(u64, u64)>) {
+        let mut marks = self.marks.lock().unwrap();
+        while marks.front().is_some_and(|&(at, _)| at < head) {
+            into.push_back(marks.pop_front().unwrap());
+        }
     }
 
     /// The position of the first step the reader has not read.

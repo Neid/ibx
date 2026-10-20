@@ -123,9 +123,15 @@ impl EClient {
         }
         // A subscription, as the reference (ibx#477): the snapshot and
         // position_end once the data is in, then a row on each change.
-        self.core.subscribe_positions();
+        // Made at its turn among the requests, as the Rust client: the
+        // session's state answers it only then (ibx#662).
         // From the event loop, at its place among the answers (ibx#532).
-        if self.later(|this, py| { let shared = this.shared_state()?; this.dispatch_positions(py, &shared) }) { return Ok(()); }
+        if self.later(|this, py| {
+            this.core.subscribe_positions();
+            let shared = this.shared_state()?;
+            this.dispatch_positions(py, &shared)
+        }) { return Ok(()); }
+        self.core.subscribe_positions();
         self.dispatch_positions(py, &shared)
     }
 
@@ -134,6 +140,8 @@ impl EClient {
         // One API request for the pacing, whatever it sends (ibx#565).
         let _request = crate::engine::park::one_request();
         if let Some(r) = self.not_connected(-1) { return r; }
+        // After the request it follows, made at its turn (ibx#662).
+        if self.later(|this, _py| { this.core.unsubscribe_positions(); Ok(()) }) { return Ok(()); }
         self.core.unsubscribe_positions();
         Ok(())
     }

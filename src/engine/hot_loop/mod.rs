@@ -88,6 +88,9 @@ pub struct HotLoop {
     /// The pacing of API requests, as the reference's; `None` takes every
     /// command at once (engines built by hand, tests).
     pacer: Option<crate::engine::pacer::Pacer>,
+    /// Since when the requests wait for the contract lookup of an earlier
+    /// request (ibx#662).
+    lookup_hold_since: Option<Instant>,
     /// Connection states last reported to the clients; `None` until the
     /// first observation (ibx#399).
     links: Option<Links>,
@@ -192,6 +195,7 @@ impl HotLoop {
             pace_clock: None,
             md_slots_told: Vec::new(),
             pacer: None,
+            lookup_hold_since: None,
             farm: {
                 let mut farm = FarmState::new();
                 farm.set_entry_marks(entry_marks);
@@ -2475,6 +2479,8 @@ impl HotLoop {
             buf.push(q.cmd);
         };
         let shutdown = self.cmd_queue.iter().any(|q| matches!(q.cmd, ControlCommand::Shutdown));
+        let pace_now = self.pace_clock.unwrap_or_else(Instant::now);
+        let mut lookup_hold = self.pacer.is_some() && self.lookup_holds(pace_now);
         match self.pacer.as_mut().filter(|_| !shutdown) {
             None => {
                 for q in self.cmd_queue.drain(..) {
@@ -2482,14 +2488,25 @@ impl HotLoop {
                 }
             }
             Some(pacer) => {
-                let now = self.pace_clock.unwrap_or_else(Instant::now);
+                let now = pace_now;
                 let mut waiting = self.cmd_queue.iter().filter(|q| crate::engine::pacer::is_request(&q.cmd)).count();
                 while let Some(q) = self.cmd_queue.front() {
                     if crate::engine::pacer::is_request(&q.cmd) {
+                        // One request at a time, as the reference: a request
+                        // waits while an earlier one waits for its contract
+                        // lookup (ibx#662).
+                        if lookup_hold && !crate::engine::pacer::passes_lookup_hold(&q.cmd) {
+                            break;
+                        }
                         if !pacer.admit(now, waiting) {
                             break;
                         }
                         waiting -= 1;
+                        if crate::engine::pacer::may_look_up(&q.cmd) {
+                            lookup_hold = true;
+                            // The wait counts from the request.
+                            self.lookup_hold_since = Some(now);
+                        }
                     }
                     if let Some(q) = self.cmd_queue.pop_front() {
                         take(&mut self.cmd_buf, q);
@@ -2715,6 +2732,14 @@ impl HotLoop {
                     }
                 }
                 ControlCommand::Unsubscribe { instrument } => {
+                    // Its lookup on its way: the request ends when the
+                    // lookup answers, with 354, as the reference reads the
+                    // cancel after the request it follows (ibx#662; the
+                    // reference 10.51, paper, regular hours 14/10/2026).
+                    if self.context.md_lookups.iter().any(|(_, s, _)| s.instrument == instrument) {
+                        self.context.md_lookup_cancelled.insert(instrument);
+                        continue;
+                    }
                     // Not sent yet: nothing to cancel on the farm.
                     self.context.lot_parked.retain(|s| s.instrument != instrument);
                     self.context.lot_ready.retain(|s| s.instrument != instrument);
@@ -4006,6 +4031,24 @@ impl HotLoop {
                 req_id, result, &mut self.ccp_conn, &self.shared, &mut self.hb,
             );
         }
+    }
+
+    /// Longest wait of the requests behind a contract lookup: past it they
+    /// go on (a lookup with no answer ends its own request later).
+    const LOOKUP_HOLD_LIMIT: std::time::Duration = std::time::Duration::from_secs(10);
+
+    /// Whether a request's contract lookup has not answered yet, so the
+    /// requests after it wait (ibx#662). A display group's lookup is not a
+    /// request's.
+    fn lookup_holds(&mut self, now: Instant) -> bool {
+        let pending = !self.context.md_lookups.is_empty()
+            || self.ccp.pending_resolves.iter().any(|r| !matches!(r.request, ControlCommand::DisplayGroupLookup { .. }));
+        if !pending {
+            self.lookup_hold_since = None;
+            return false;
+        }
+        let since = *self.lookup_hold_since.get_or_insert(now);
+        now.saturating_duration_since(since) < Self::LOOKUP_HOLD_LIMIT
     }
 
     /// Pace the API requests as the reference does (ibx#555). On for a
@@ -6663,6 +6706,111 @@ mod tests {
         engine.poll_once();
         assert_eq!(engine.context.market.con_id(mnq), None);
         assert_eq!(engine.context.market.con_id(qqq), Some(320227571));
+    }
+
+    // ibx#662: a cancel of a market data request whose lookup is on its
+    // way keeps the lookup; when it answers, the request ends with 354 and
+    // nothing is subscribed.
+    #[test]
+    fn a_cancel_during_the_lookup_subscribes_nothing() {
+        use crate::control::contracts::tests::pipe_msg;
+        let shared = Arc::new(SharedState::new());
+        let mut engine = HotLoop::new(shared.clone(), None, None);
+        let (c1, mut farm_side) = socket_pair();
+        let (c2, mut ccp_side) = socket_pair();
+        engine.farm_conn = Some(Connection::new_mem(c1));
+        engine.ccp_conn = Some(Connection::new_mem(c2));
+        let (tx, rx) = crossbeam_channel::bounded(8);
+        engine.set_control_rx(rx);
+        let (r, a) = crossbeam_channel::bounded(1);
+        tx.send(ControlCommand::SubscribeBySymbol {
+            symbol: "F".into(), sec_type: "STK".into(), exchange: "SMART".into(), currency: "USD".into(),
+            filters: Default::default(), mode_9887: 0, snapshot: false, over_limit: false, reply_tx: Some(r),
+        }).unwrap();
+        engine.poll_once();
+        let instrument = a.recv().unwrap().unwrap();
+        tx.send(ControlCommand::Unsubscribe { instrument }).unwrap();
+        engine.poll_once();
+        assert_eq!(engine.context.md_lookups.len(), 1, "the lookup is kept");
+        let asked = plain_messages_sent(&mut ccp_side);
+        let lookup = asked.iter().find(|m| m.contains("|35=c|")).expect("the lookup");
+        let id = engine.ccp_conn.as_ref().unwrap().internal_name(lookup.split('|').find_map(|p| p.strip_prefix("320=")).unwrap());
+        let mut context = std::mem::replace(&mut engine.context, Context::new());
+        assert!(farm::md_contract_reply(&mut context, &shared, &id,
+            &pipe_msg(&format!("35=d|43=N|320={id}|322=*|323=4|55=F|167=STK|207=BEST|6008=9599491|15=USD|"))));
+        engine.context = context;
+        engine.send_md_resolved();
+        assert_eq!(shared.market.drain_md_rejects(), [crate::bridge::MdReject::CancelledDuringLookup { instrument }]);
+        assert!(engine.context.md_lookups.is_empty() && engine.context.md_lookup_cancelled.is_empty());
+        // The client lets the slot go: nothing is cancelled on the farm.
+        tx.send(ControlCommand::Unsubscribe { instrument }).unwrap();
+        engine.poll_once();
+        assert!(farm_messages_sent(&mut farm_side).is_empty(), "nothing subscribed, nothing cancelled");
+        assert_eq!(engine.context.market.con_id(instrument), None);
+    }
+
+    // ibx#662 (the reference 10.51, paper, regular hours 13/10 and
+    // 14/10/2026): with the pacing on, the requests after one that waits
+    // for its contract lookup wait for its answer; a cancel of market data
+    // passes; past the limit they go on.
+    #[test]
+    fn requests_wait_for_the_lookup_of_the_request_before() {
+        use crate::control::contracts::tests::pipe_msg;
+        let shared = Arc::new(SharedState::new());
+        let mut engine = HotLoop::new(shared.clone(), None, None);
+        let (c1, _farm_side) = socket_pair();
+        let (c2, mut ccp_side) = socket_pair();
+        engine.farm_conn = Some(Connection::new_mem(c1));
+        engine.ccp_conn = Some(Connection::new_mem(c2));
+        let (tx, rx) = crossbeam_channel::bounded(8);
+        engine.set_control_rx(rx);
+        engine.pace_requests();
+        let start = Instant::now();
+        let s = std::time::Duration::from_secs;
+        engine.set_pace_clock(start);
+        tx.send(ControlCommand::SubscribeBySymbol {
+            symbol: "F".into(), sec_type: "STK".into(), exchange: "SMART".into(), currency: "USD".into(),
+            filters: Default::default(), mode_9887: 0, snapshot: false, over_limit: false, reply_tx: None,
+        }).unwrap();
+        tx.send(ControlCommand::Unsubscribe { instrument: 0 }).unwrap();
+        tx.send(ControlCommand::ResolveContract {
+            req_id: 3,
+            lookup: crate::types::ContractLookup { symbol: "AAPL".into(), sec_type: "STK".into(), exchange: "SMART".into(), currency: "USD".into(), ..Default::default() },
+            request: Box::new(ControlCommand::FetchHeadTimestamp {
+                req_id: 3, con_id: 0, sec_type: "STK".into(), exchange: "SMART".into(),
+                what_to_show: "TRADES".into(), use_rth: true, format_date: 1,
+            }),
+        }).unwrap();
+        let (turn_tx, turn_rx) = crossbeam_channel::bounded(1);
+        tx.send(ControlCommand::Turn { reply_tx: turn_tx }).unwrap();
+        engine.poll_once();
+        assert_eq!(engine.context.md_lookups.len(), 1);
+        let instrument = engine.context.md_lookups[0].1.instrument;
+        assert_eq!(instrument, 0);
+
+        engine.set_pace_clock(start + s(2));
+        engine.poll_once();
+        assert!(engine.context.md_lookup_cancelled.contains(&instrument), "the cancel passes");
+        assert!(engine.ccp.pending_resolves.is_empty(), "the next request waits for the lookup");
+        assert_eq!(engine.cmd_queue.len(), 2);
+
+        let asked = plain_messages_sent(&mut ccp_side);
+        let lookup = asked.iter().find(|m| m.contains("|35=c|")).expect("the lookup");
+        let id = engine.ccp_conn.as_ref().unwrap().internal_name(lookup.split('|').find_map(|p| p.strip_prefix("320=")).unwrap());
+        let mut context = std::mem::replace(&mut engine.context, Context::new());
+        assert!(farm::md_contract_reply(&mut context, &shared, &id,
+            &pipe_msg(&format!("35=d|43=N|320={id}|322=*|323=4|55=F|167=STK|207=BEST|6008=9599491|15=USD|"))));
+        engine.context = context;
+        engine.set_pace_clock(start + s(3));
+        engine.poll_once();
+        assert_eq!(engine.ccp.pending_resolves.len(), 1, "taken once the lookup answered");
+        assert_eq!(engine.cmd_queue.len(), 1, "the turn waits for this one's lookup");
+        assert!(turn_rx.try_recv().is_err());
+
+        engine.set_pace_clock(start + s(14));
+        engine.poll_once();
+        assert!(engine.cmd_queue.is_empty(), "past the limit");
+        assert!(turn_rx.try_recv().is_ok());
     }
 
     // ibx#501 (observed 12/10/2026): a stream without a conId asked with

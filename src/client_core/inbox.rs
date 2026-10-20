@@ -139,38 +139,53 @@ impl Inbox {
     pub(crate) fn next_run(&self, written: u64) -> Option<(Kind, u64)> {
         match self.next(written, None)? {
             Run::Queue(kind, until) => Some((kind, until)),
-            Run::Client(_) => None,
+            Run::Client(_) | Run::State(_) => None,
         }
     }
 
     /// [`next_run`](Self::next_run) with the client's own answers, whose
     /// first count is `client`.
     pub(crate) fn next(&self, written: u64, client: Option<u64>) -> Option<Run> {
+        self.next_with_state(written, client, None)
+    }
+
+    /// [`next`](Self::next) with the answers read from the session's
+    /// state, whose first count is `state` (ibx#662): a run of them when
+    /// they come before a queued answer or one of the client's own. When
+    /// nothing else waits they are left to the end of the pass.
+    pub(crate) fn next_with_state(&self, written: u64, client: Option<u64>, state: Option<u64>) -> Option<Run> {
         let (queue, others) = self.first_two();
-        let first = match (queue, client) {
-            (Some((_, q)), Some(c)) => q.min(c),
-            (Some((_, q)), None) => q,
+        let q = queue.map(|(_, at)| at);
+        let first = match (q, client) {
+            (Some(q), Some(c)) => q.min(c),
+            (Some(q), None) => q,
             (None, Some(c)) => c,
             (None, None) => return None,
         };
         if first >= written {
             return None;
         }
+        let state = state.unwrap_or(u64::MAX);
+        if state < first {
+            return Some(Run::State(first));
+        }
         match queue {
             Some((kind, at)) if at == first => {
                 let other = client.map_or(others, |c| c.min(others));
-                Some(Run::Queue(kind, other.min(written)))
+                Some(Run::Queue(kind, other.min(state).min(written)))
             }
-            _ => Some(Run::Client(queue.map_or(u64::MAX, |(_, at)| at).min(written))),
+            _ => Some(Run::Client(q.unwrap_or(u64::MAX).min(state).min(written))),
         }
     }
 }
 
-/// What to give next: a run of a queue, or of the client's own answers,
-/// up to the count it stops before.
+/// What to give next: a run of a queue, of the client's own answers, or of
+/// the answers read from the session's state, up to the count it stops
+/// before.
 pub(crate) enum Run {
     Queue(Kind, u64),
     Client(u64),
+    State(u64),
 }
 
 fn merge_queue<T>(into: &mut VecDeque<(u64, T)>, from: VecDeque<(u64, T)>) {
@@ -229,6 +244,7 @@ mod tests {
         let mut client_left = Some(client);
         while let Some(next) = inbox.next(written, client_left) {
             match next {
+                Run::State(_) => unreachable!(),
                 Run::Client(until) => {
                     assert!(client < until);
                     got.push("client".to_string());
@@ -243,6 +259,34 @@ mod tests {
         assert_eq!(got, ["end 1", "error 2", "client", "forgotten 3", "end 4", "error 5"]);
         assert_eq!(inbox.take(&shared), written, "nothing written since");
         assert!(inbox.next(written, None).is_none());
+    }
+
+    // ibx#662: the answers read from the state take their place at their
+    // count, between the queued answers; alone, they wait for the end of
+    // the pass.
+    #[test]
+    fn the_state_comes_at_its_count() {
+        let shared = SharedState::new();
+        shared.reference.push_contract_details_end(1);
+        shared.market.push_md_resolved(0, 1);
+        shared.reference.push_contract_details_end(2);
+        let state = shared.state_mark().first();
+        let mut inbox = Inbox::default();
+        let written = inbox.take(&shared);
+        let mut got = Vec::new();
+        let mut state_left = state;
+        while let Some(next) = inbox.next_with_state(written, None, state_left) {
+            match next {
+                Run::State(until) => {
+                    got.push(format!("state until {}", until - state.unwrap()));
+                    state_left = None;
+                }
+                Run::Queue(Kind::contract_details_end, until) => got.extend(run(&mut inbox.contract_details_end, until).map(|r| format!("end {r}"))),
+                _ => unreachable!(),
+            }
+        }
+        assert_eq!(got, ["end 1", "state until 1", "end 2"]);
+        assert!(inbox.next_with_state(written, None, state).is_none(), "alone: at the end of the pass");
     }
 
     #[test]

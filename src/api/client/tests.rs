@@ -3492,6 +3492,34 @@ fn process_msgs_dispatches_quotes_on_change() {
     assert!(w.events.iter().any(|e| e.starts_with("tick_price:1:1:149")));
 }
 
+// ibx#662: what is read from the state comes at its place among the
+// queued answers, as the reference gives the messages of its connection
+// in the order they came: a tick message written between two answers
+// comes between them, also when the client reads them in one pass.
+#[test]
+fn state_answers_come_at_their_place_among_the_queued_answers() {
+    let (client, _rx, shared) = test_client();
+    client.core.req_to_instrument.lock().unwrap().insert(1, 0);
+    client.core.instrument_to_req.lock().unwrap().insert(0, vec![1]);
+    let mut q = Quote::default();
+    shared.reference.push_contract_details_end(7);
+    shared.market.push_tick_req_params(crate::bridge::TickReqParams {
+        instrument: 0, min_tick: 0.01, bbo_exchange: "9c0001".into(), snapshot_permissions: 3,
+    });
+    shared.reference.push_contract_details_end(8);
+    q.bid = 150 * PRICE_SCALE;
+    shared.market.push_test_message(0, &q, &Default::default());
+    shared.reference.push_contract_details_end(9);
+    q.bid = 149 * PRICE_SCALE;
+    shared.market.push_test_message(0, &q, &Default::default());
+    let mut w = RecordingWrapper::default();
+    client.process_msgs(&mut w);
+    let at = |prefix: &str| w.events.iter().position(|e| e.starts_with(prefix)).unwrap_or_else(|| panic!("{prefix}: {:?}", w.events));
+    let order = [at("contract_details_end:7"), at("tick_req_params:1"), at("contract_details_end:8"),
+        at("tick_price:1:1:150"), at("contract_details_end:9"), at("tick_price:1:1:149")];
+    assert!(order.windows(2).all(|p| p[0] < p[1]), "{:?}", w.events);
+}
+
 #[test]
 fn process_msgs_dispatches_all_quote_fields() {
     let (client, _rx, shared) = test_client();
@@ -7601,6 +7629,57 @@ fn news_tick_refusals_of_a_known_contract() {
         "error:9583:10094:API News error:Source code unchecked in API news Settings: XYZ",
     ], "{:?}", w.events);
     assert!(client.core.req_to_instrument.lock().unwrap().is_empty(), "the ids are free");
+}
+
+// ibx#662 (the reference 10.51, paper, regular hours 14/10/2026): a
+// request given without a conId, cancelled while its lookup is on its way,
+// gets nothing more; when the lookup answers: 354 for the request, then
+// 300 for the cancel, and the slot is let go. A lookup answered before the
+// engine read the cancel ends it silently.
+#[test]
+fn a_cancel_during_the_lookup_gives_354_then_300() {
+    let (client, rx, shared) = test_client();
+    let engine = std::thread::spawn(move || {
+        let mut got = Vec::new();
+        while let Ok(cmd) = rx.recv_timeout(std::time::Duration::from_millis(300)) {
+            if let ControlCommand::SubscribeBySymbol { reply_tx: Some(r), .. } = &cmd { let _ = r.send(Ok(6)); }
+            got.push(cmd);
+        }
+        got
+    });
+    let f = Contract { symbol: "F".into(), sec_type: "STK".into(), exchange: "SMART".into(), currency: "USD".into(), ..Default::default() };
+    client.req_mkt_data(700, &f, "", false, false).unwrap();
+    client.cancel_mkt_data(700).unwrap();
+    assert!(client.core.req_to_instrument.lock().unwrap().is_empty(), "the id is free at once");
+    let mut w = RecordingWrapper::default();
+    client.process_msgs(&mut w);
+    assert!(!w.events.iter().any(|e| e.starts_with("error:700:")), "nothing before the lookup answers: {:?}", w.events);
+    shared.market.push_md_reject(crate::bridge::MdReject::CancelledDuringLookup { instrument: 6 });
+    let mut w = RecordingWrapper::default();
+    client.process_msgs(&mut w);
+    let got = engine.join().unwrap();
+    let cancels = got.iter().filter(|c| matches!(c, ControlCommand::Unsubscribe { instrument: 6 })).count();
+    assert_eq!(cancels, 2, "the cancel goes to the engine, then the slot is let go");
+    assert_eq!(w.events, [
+        format!("error:700:354:{}", crate::client_core::MD_NOT_SUBSCRIBED),
+        "error:700:300:Can't find EId with tickerId:700".to_string(),
+    ]);
+
+    // Answered before the engine read the cancel: nothing more.
+    let (client, rx, shared) = test_client();
+    let engine = std::thread::spawn(move || {
+        while let Ok(cmd) = rx.recv_timeout(std::time::Duration::from_millis(300)) {
+            if let ControlCommand::SubscribeBySymbol { reply_tx: Some(r), .. } = &cmd { let _ = r.send(Ok(6)); }
+        }
+    });
+    client.req_mkt_data(701, &f, "", false, false).unwrap();
+    client.cancel_mkt_data(701).unwrap();
+    shared.market.push_md_resolved(6, 9599491);
+    let mut w = RecordingWrapper::default();
+    client.process_msgs(&mut w);
+    assert!(!w.events.iter().any(|e| e.starts_with("error:701:")), "{:?}", w.events);
+    engine.join().unwrap();
+    assert!(client.core.md_cancelled_in_lookup.lock().unwrap().is_empty());
 }
 
 // ibx#458: an accepted news tick follows the request's subscription with

@@ -560,6 +560,9 @@ pub struct Context {
     /// lookup that resolves it: (request number, subscription, deadline)
     /// (ibx#278).
     pub(crate) md_lookups: Vec<(u32, crate::engine::hot_loop::farm::MdSubscribe, std::time::Instant)>,
+    /// The instruments of `md_lookups` whose request was cancelled while
+    /// the lookup was on its way (ibx#662).
+    pub(crate) md_lookup_cancelled: std::collections::HashSet<crate::types::InstrumentId>,
     /// Subscriptions whose conId was resolved, to be sent.
     pub(crate) md_resolved: Vec<crate::engine::hot_loop::farm::MdSubscribe>,
     /// Slots of those subscriptions asked with every API line taken
@@ -725,6 +728,7 @@ impl Context {
             lot_ready: Vec::new(),
             next_lot_lookup: 0,
             md_lookups: Vec::new(),
+            md_lookup_cancelled: std::collections::HashSet::new(),
             md_resolved: Vec::new(),
             md_over_limit: Vec::new(),
             next_md_lookup: 0,

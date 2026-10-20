@@ -241,8 +241,9 @@ impl EClient {
         let released = self.core.released_open_orders(shared);
 
         // The answers of the queues and the requests the client answers
-        // itself, in the order they were written (ibx#532).
-        self.dispatch_answers(py, shared)?;
+        // itself, in the order they were written (ibx#532), with what is
+        // read from the state at its place (ibx#662).
+        let written = self.dispatch_answers(py, shared)?;
 
         // A server reject of a cancel or modify gives no callback, as the
         // reference: no error, no status; the order status that answers the
@@ -267,6 +268,16 @@ impl EClient {
             }
         }
 
+        // What is read from the session's state, after the answers of the
+        // pass (ibx#662).
+        self.dispatch_state(py, shared, written)
+    }
+
+    /// What is read from the session's state, for the answers counted
+    /// below `until` (ibx#662): the market data steps written before them,
+    /// and the rest as it is now.
+    fn dispatch_state(&self, py: Python<'_>, shared: &Arc<SharedState>, until: u64) -> PyResult<()> {
+        let limit = self.core.state_read(shared, until);
         // Requests that joined a subscription, and subscriptions the
         // server rejected (ibx#444, ibx#447).
         let (notices, commands) = self.core.take_md_rejects(shared);
@@ -327,7 +338,7 @@ impl EClient {
         // The market data steps queued by the engine -> tick callbacks, in
         // their order (via ClientCore, as the Rust dispatch; ibx#446).
         let mut out = std::mem::take(&mut *self.core.md_out.lock().unwrap());
-        self.core.poll_market_data(shared, None, &mut out);
+        self.core.poll_market_data_until(shared, None, limit, &mut out);
         let mut snapshot_done: Vec<i64> = Vec::new();
         let mut text = [0u8; 24];
         for item in out.drain(..) {
@@ -501,15 +512,16 @@ impl EClient {
     /// itself, run by run in the order they were written (ibx#532). The
     /// answers are out of their locks while the callbacks run: a callback
     /// may call the client again.
-    fn dispatch_answers(&self, py: Python<'_>, shared: &Arc<SharedState>) -> PyResult<()> {
+    fn dispatch_answers(&self, py: Python<'_>, shared: &Arc<SharedState>) -> PyResult<u64> {
         let mut local = self.ready_local_calls(shared);
         let mut inbox = std::mem::take(&mut *self.core.inbox.lock().unwrap());
         let written = inbox.take(shared);
+        self.core.state_pass(shared);
         let result = self.dispatch_runs(py, shared, &mut inbox, &mut local, written);
         // What waits for the next pass, and what an interrupt left.
         self.core.inbox.lock().unwrap().merge(inbox);
         self.put_back_local_calls(local);
-        result
+        result.map(|()| written)
     }
 
     fn dispatch_runs(
@@ -519,8 +531,9 @@ impl EClient {
         // The last status of each order given in this pass: a reject that
         // follows it gives it again (ibx#486).
         let mut reported: std::collections::HashMap<OrderId, OrderUpdate> = std::collections::HashMap::new();
-        while let Some(next) = inbox.next(written, local.front().map(|(at, _)| *at)) {
+        while let Some(next) = inbox.next_with_state(written, local.front().map(|(at, _)| *at), self.core.state_first(shared)) {
             match next {
+                Run::State(until) => self.dispatch_state(py, shared, until)?,
                 Run::Client(until) => {
                     while local.front().is_some_and(|(at, _)| *at < until) {
                         // A callback disconnected: the requests still

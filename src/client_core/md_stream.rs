@@ -828,6 +828,13 @@ impl ClientCore {
     /// `mdoff` gets no top of book tick; its snapshot still ends as the
     /// quote completes (ibx#444).
     pub fn poll_market_data(&self, shared: &SharedState, now: Option<std::time::Instant>, out: &mut Vec<MdOut>) {
+        self.poll_market_data_until(shared, now, u64::MAX, out)
+    }
+
+    /// [`poll_market_data`](Self::poll_market_data) up to the step at
+    /// `limit`: the steps after it come after an answer of another kind
+    /// (ibx#662).
+    pub fn poll_market_data_until(&self, shared: &SharedState, now: Option<std::time::Instant>, limit: u64, out: &mut Vec<MdOut>) {
         // A snapshot's time limit counts from its top of book's
         // acknowledgement (ibx#494).
         for (instrument, at) in shared.market.drain_top_acks() {
@@ -850,8 +857,8 @@ impl ClientCore {
             }
         }
         let queue = &shared.market.md_events;
-        let head = queue.head();
         let tail = queue.tail();
+        let head = queue.head().min(limit).max(tail);
         let snapshots = self.snapshot_count.load(Ordering::Acquire) > 0;
         // The generic tick blocks read before the queue's end (ibx#450).
         let mut generic = shared.market.take_generic_ticks(head);
@@ -953,7 +960,8 @@ impl ClientCore {
             step(head, Some(&g));
         }
         queue.release(head);
-        retired.clear();
+        // A cancelled request whose steps go on past the limit keeps them.
+        retired.retain(|r| r.end > head);
         // New subscriptions with no step yet, and the requests that joined
         // after the last step.
         if *resets > 0 {

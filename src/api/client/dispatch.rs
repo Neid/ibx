@@ -27,14 +27,15 @@ impl EClient {
     ///
     /// The answers of the queues come in the order they were written, as
     /// the reference gives the messages of its one connection (ibx#532);
-    /// then what is read from the session's state (quotes, P&L, account,
-    /// positions); then the end of the session.
+    /// what is read from the session's state (quotes, P&L, account,
+    /// positions) at its place among them (ibx#662), and what changed last
+    /// after them; then the end of the session.
     pub fn process_msgs(&self, wrapper: &mut impl Wrapper) {
         // Open-order requests held while the auth link was lost: taken
         // before the order answers and answered after them, so the answer
         // has the replayed statuses (ibx#251).
         let released = self.core.released_open_orders(&self.shared);
-        self.dispatch_answers(wrapper);
+        let written = self.dispatch_answers(wrapper);
         // The working orders of this client the logon replay listed are
         // followed by the end of the list, as the reference's connect
         // burst; no end when it listed none (ibx#487).
@@ -50,24 +51,39 @@ impl EClient {
         for request in released {
             self.answer_open_orders(wrapper, request);
         }
-        self.dispatch_quotes(wrapper);
-        self.dispatch_data(wrapper);
+        self.dispatch_state(wrapper, written);
         self.dispatch_connection(wrapper);
     }
 
+    /// What is read from the session's state, for the answers counted
+    /// below `until` (ibx#662): the market data steps written before them,
+    /// and the rest as it is now.
+    fn dispatch_state(&self, wrapper: &mut impl Wrapper, until: u64) {
+        let limit = self.core.state_read(&self.shared, until);
+        self.dispatch_quotes(wrapper, limit);
+        self.dispatch_data(wrapper);
+    }
+
     /// The answers of the queues and the answers the client made itself,
-    /// run by run in the order they were written (ibx#532).
-    fn dispatch_answers(&self, wrapper: &mut impl Wrapper) {
+    /// run by run in the order they were written (ibx#532), with what is
+    /// read from the state at its place (ibx#662). Returns the count below
+    /// which every answer was in the pass.
+    fn dispatch_answers(&self, wrapper: &mut impl Wrapper) -> u64 {
         // Out of their locks while the callbacks run: a callback may call
         // the client again.
         let mut local = std::mem::take(&mut *self.local.lock().unwrap());
         let mut inbox = std::mem::take(&mut *self.core.inbox.lock().unwrap());
         let written = inbox.take(&self.shared);
+        self.core.state_pass(&self.shared);
         // The last status of each order given in this pass: a reject that
         // follows it gives it again (ibx#486).
         let mut reported: HashMap<OrderId, OrderUpdate> = HashMap::new();
-        while let Some(next) = inbox.next(written, local.front().map(|(at, _)| *at)) {
+        while let Some(next) = inbox.next_with_state(written, local.front().map(|(at, _)| *at), self.core.state_first(&self.shared)) {
             let (kind, until) = match next {
+                Run::State(until) => {
+                    self.dispatch_state(wrapper, until);
+                    continue;
+                }
                 Run::Client(until) => {
                     while local.front().is_some_and(|(at, _)| *at < until) {
                         let (_, answer) = local.pop_front().unwrap();
@@ -213,6 +229,7 @@ impl EClient {
         for answer in local.into_iter().rev() {
             waiting.push_front(answer);
         }
+        written
     }
 
     // ── Connection Dispatch ──
@@ -493,7 +510,7 @@ impl EClient {
 
     // ── Quote Dispatch ──
 
-    fn dispatch_quotes(&self, wrapper: &mut impl Wrapper) {
+    fn dispatch_quotes(&self, wrapper: &mut impl Wrapper, limit: u64) {
         // Requests that joined a subscription, and subscriptions the
         // server rejected (ibx#444, ibx#447).
         let (notices, commands) = self.core.take_md_rejects(&self.shared);
@@ -546,7 +563,7 @@ impl EClient {
         // The market data steps queued by the engine → tick callbacks, in
         // their order (ibx#446).
         let mut out = std::mem::take(&mut *self.core.md_out.lock().unwrap());
-        self.core.poll_market_data(&self.shared, None, &mut out);
+        self.core.poll_market_data_until(&self.shared, None, limit, &mut out);
         let mut snapshot_done: Vec<i64> = Vec::new();
         let mut text = [0u8; 24];
         for item in out.drain(..) {

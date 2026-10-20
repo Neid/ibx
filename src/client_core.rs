@@ -1629,6 +1629,17 @@ pub enum MdNotice {
 ///
 /// Both Rust and Python EClient own a `ClientCore` and delegate state tracking
 /// and data preparation to it. Only the final callback invocation is language-specific.
+/// The market data steps the client has not read, by run: the position
+/// where each run starts and its count among the answers (ibx#662).
+#[derive(Default)]
+struct MdOrder {
+    marks: std::collections::VecDeque<(u64, u64)>,
+    /// The count of the run the client reads.
+    count: u64,
+    /// The end of the steps handed over at the start of the pass.
+    head: u64,
+}
+
 pub struct ClientCore {
     // reqId <-> InstrumentId mapping. Several requests may share one
     // instrument, in the order they came, as the reference's API
@@ -1655,6 +1666,8 @@ pub struct ClientCore {
     md_joins_waiting: std::sync::atomic::AtomicUsize,
     /// The dispatch's list of market data callbacks, kept between calls.
     pub md_out: Mutex<Vec<MdOut>>,
+    /// Where the market data steps stand among the answers (ibx#662).
+    md_order: Mutex<MdOrder>,
     /// The answers taken from the session's queues and not given yet,
     /// given in the order they were written (ibx#532).
     pub(crate) inbox: Mutex<inbox::Inbox>,
@@ -1699,6 +1712,12 @@ pub struct ClientCore {
     /// The conId the engine found for the slots of requests sent without
     /// one (ibx#444).
     md_slot_con_ids: Mutex<HashMap<InstrumentId, i64>>,
+    /// The slots of requests given without a conId whose lookup this
+    /// client has not seen answered, and the requests cancelled meanwhile,
+    /// by slot: if the engine read the cancel before the lookup answered,
+    /// the request gets 354 then 300 at the answer (ibx#662).
+    md_lookup_pending: Mutex<HashSet<InstrumentId>>,
+    pub(crate) md_cancelled_in_lookup: Mutex<HashMap<InstrumentId, i64>>,
     md_no_data_count: std::sync::atomic::AtomicUsize,
     /// Streaming requests whose news tick is refused once the engine finds
     /// their contract: when they were asked, the start of their 10197 wait
@@ -2613,6 +2632,7 @@ impl ClientCore {
             md_reader: Mutex::new(md_stream::MdReader::new()),
             md_joins_waiting: std::sync::atomic::AtomicUsize::new(0),
             md_out: Mutex::new(Vec::with_capacity(64)),
+            md_order: Mutex::new(MdOrder::default()),
             inbox: Mutex::new(inbox::Inbox::default()),
             md_news: Mutex::new(HashMap::new()),
             md_top_off: Mutex::new(HashSet::new()),
@@ -2626,6 +2646,8 @@ impl ClientCore {
             md_joins: Mutex::new(Vec::new()),
             md_no_data: Mutex::new(Vec::new()),
             md_slot_con_ids: Mutex::new(HashMap::new()),
+            md_lookup_pending: Mutex::new(HashSet::new()),
+            md_cancelled_in_lookup: Mutex::new(HashMap::new()),
             md_no_data_count: std::sync::atomic::AtomicUsize::new(0),
             md_news_asked: Mutex::new(HashMap::new()),
             md_modes: Mutex::new(Default::default()),
@@ -2711,6 +2733,8 @@ impl ClientCore {
         self.md_joins.lock().unwrap().clear();
         self.md_no_data.lock().unwrap().clear();
         self.md_slot_con_ids.lock().unwrap().clear();
+        self.md_lookup_pending.lock().unwrap().clear();
+        self.md_cancelled_in_lookup.lock().unwrap().clear();
         self.md_no_data_count.store(0, Ordering::Release);
         self.md_news_asked.lock().unwrap().clear();
         *self.md_modes.lock().unwrap() = Default::default();
@@ -3018,6 +3042,8 @@ impl ClientCore {
             if control_tx.paced() {
                 control_tx.send(by_symbol(None)).map_err(|e| format!("Engine stopped: {}", e))?;
             }
+            // Its lookup on its way (ibx#662).
+            self.md_lookup_pending.lock().unwrap().insert(instrument_id);
             return attach(instrument_id, false);
         }
 
@@ -3451,6 +3477,16 @@ impl ClientCore {
     /// request; before that, only the request's share of the news entry
     /// goes.
     pub fn unregister_mkt_data(&self, shared: &SharedState, req_id: i64) -> Option<MdCancel> {
+        // A request given without a conId whose lookup has not answered:
+        // when the engine reads the cancel first, the lookup's answer gives
+        // 354 for the request, then 300 for the cancel, as the reference
+        // (ibx#662; paper, regular hours 14/10/2026).
+        let instrument = self.req_to_instrument.lock().unwrap().get(&req_id).copied();
+        if let Some(instrument) = instrument
+            && self.md_lookup_pending.lock().unwrap().remove(&instrument)
+        {
+            self.md_cancelled_in_lookup.lock().unwrap().insert(instrument, req_id);
+        }
         self.drop_mkt_data(shared, req_id, true)
     }
 
@@ -3522,16 +3558,66 @@ impl ClientCore {
     /// freed. Then the rejects: on delayed data, marketDataType 3 and
     /// 10167; a request with the news tick keeps it, with 2117; the others
     /// end with their error.
+    /// The start of a pass (ibx#662), after its queued answers were taken:
+    /// the market data steps handed over so far, with the counts of their
+    /// runs.
+    pub(crate) fn state_pass(&self, shared: &SharedState) {
+        let queue = &shared.market.md_events;
+        let mut order = self.md_order.lock().unwrap();
+        order.head = queue.head();
+        let head = order.head;
+        queue.take_marks(head, &mut order.marks);
+    }
+
+    /// The count of the first answer read from the session's state that
+    /// waits (ibx#662): the market data step the client reads next, or the
+    /// first change of the other state since it was read.
+    pub(crate) fn state_first(&self, shared: &SharedState) -> Option<u64> {
+        let tail = shared.market.md_events.tail();
+        let mut order = self.md_order.lock().unwrap();
+        while order.marks.front().is_some_and(|&(at, _)| at <= tail) {
+            order.count = order.marks.pop_front().unwrap().1;
+        }
+        let md = (tail < order.head).then_some(order.count);
+        match (md, shared.state_mark().first()) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        }
+    }
+
+    /// The state is read now, for the answers counted below `until`: the
+    /// position of the market data steps it reads up to (ibx#662).
+    pub(crate) fn state_read(&self, shared: &SharedState, until: u64) -> u64 {
+        shared.state_mark().read_below(until);
+        let tail = shared.market.md_events.tail();
+        let mut order = self.md_order.lock().unwrap();
+        while order.marks.front().is_some_and(|&(at, _)| at <= tail) {
+            order.count = order.marks.pop_front().unwrap().1;
+        }
+        if order.count >= until {
+            return tail;
+        }
+        order.marks.iter().find(|&&(_, at)| at >= until).map_or(order.head, |&(pos, _)| pos)
+    }
+
     pub fn take_md_rejects(&self, shared: &SharedState) -> (Vec<MdNotice>, Vec<ControlCommand>) {
         let mut notices = Vec::new();
         let mut commands = Vec::new();
         self.md_limit_due(&mut notices);
         let resolved = shared.market.drain_md_resolved();
         if !resolved.is_empty() {
+            // Answered before the engine read a cancel: that cancel was a
+            // plain one (ibx#662).
+            for (instrument, _) in &resolved {
+                self.md_lookup_pending.lock().unwrap().remove(instrument);
+                self.md_cancelled_in_lookup.lock().unwrap().remove(instrument);
+            }
             self.md_slot_con_ids.lock().unwrap().extend(resolved);
         }
         for (from, into, at) in shared.market.drain_md_merges() {
             self.md_slot_con_ids.lock().unwrap().remove(&from);
+            self.md_lookup_pending.lock().unwrap().remove(&from);
+            self.md_cancelled_in_lookup.lock().unwrap().remove(&from);
             // None left: they were cancelled, which freed the slot.
             let Some(reqs) = self.instrument_to_req.lock().unwrap().remove(&from) else { continue };
             for req_id in reqs {
@@ -3548,7 +3634,23 @@ impl ClientCore {
             commands.push(ControlCommand::Unsubscribe { instrument: from });
         }
         for reject in shared.market.drain_md_rejects() {
+            self.md_lookup_pending.lock().unwrap().remove(&reject.instrument());
+            let cancelled = self.md_cancelled_in_lookup.lock().unwrap().remove(&reject.instrument());
             match reject {
+                // The engine read the cancel while the lookup was on its
+                // way: the request ends at the answer with 354, and the
+                // cancel, read after it, finds no request (ibx#662; the
+                // reference 10.51, paper, regular hours 14/10/2026: both in
+                // the same millisecond). The slot is let go.
+                crate::bridge::MdReject::CancelledDuringLookup { instrument } => {
+                    if let Some(req_id) = cancelled {
+                        let (code, text, _) = Self::md_reject_error(&reject);
+                        notices.push(MdNotice::Error { req_id, code, text });
+                        notices.push(MdNotice::Error { req_id, code: 300, text: format!("Can't find EId with tickerId:{req_id}") });
+                    }
+                    commands.push(ControlCommand::Unsubscribe { instrument });
+                    continue;
+                }
                 crate::bridge::MdReject::Frozen { instrument, frozen } => {
                     self.md_freeze(shared, instrument, frozen, false, &mut notices);
                     continue;
@@ -4450,6 +4552,16 @@ impl ClientCore {
         if params.is_empty() && early.is_empty() {
             return Vec::new();
         }
+        // Its parameters come once it is subscribed: its lookup answered
+        // (ibx#662).
+        {
+            let mut pending = self.md_lookup_pending.lock().unwrap();
+            if !pending.is_empty() {
+                for p in early.iter().map(|(p, _)| p).chain(params.iter()) {
+                    pending.remove(&p.instrument);
+                }
+            }
+        }
         let mut out = Vec::new();
         for (p, option) in early {
             let permissions = p.snapshot_permissions as i64;
@@ -4600,6 +4712,9 @@ impl ClientCore {
             }
             MdReject::NoSecurityDefinition { .. } =>
                 (200, crate::engine::hot_loop::ccp::NO_SECURITY_DEFINITION.into(), true),
+            // The request found itself cancelled when its lookup answered
+            // (ibx#662; the reference 10.51, paper, 14/10/2026).
+            MdReject::CancelledDuringLookup { .. } => (354, MD_NOT_SUBSCRIBED.into(), true),
             MdReject::MaxTickers { .. } => (MD_MAX_TICKERS.0, MD_MAX_TICKERS.1.into(), true),
             MdReject::NewsRefused { text, .. } => (10094, text.clone(), true),
             // Not errors: `take_md_rejects` moves the requests (ibx#447,

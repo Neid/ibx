@@ -441,6 +441,13 @@ pub(crate) fn md_contract_reply(context: &mut Context, shared: &SharedState, req
     let Some(number) = crate::control::contracts::secdef_request_number(req_id) else { return false };
     let Some(idx) = context.md_lookups.iter().position(|(id, _, _)| ReqId::from(*id) == number) else { return false };
     let (_, mut sub, _) = context.md_lookups.remove(idx);
+    // Cancelled while the lookup was on its way: 354, nothing subscribed
+    // (ibx#662).
+    if context.md_lookup_cancelled.remove(&sub.instrument) {
+        log::info!("Market data for {} {}: cancelled during its lookup ({}): error 354", sub.symbol, sub.sec_type, req_id);
+        shared.market.push_md_reject(crate::bridge::MdReject::CancelledDuringLookup { instrument: sub.instrument });
+        return true;
+    }
     // A reply can list one contract once per exchange.
     let mut con_ids: Vec<i64> = crate::control::contracts::parse_secdef_records(msg).unwrap_or_default()
         .iter().map(|d| d.con_id).filter(|c| *c != 0).collect();
@@ -473,6 +480,7 @@ pub(crate) fn sweep_md_lookups(context: &mut Context, shared: &SharedState) {
         if *deadline > now { return true; }
         log::warn!("Market data for {} {}: no lookup reply within {:?} ({}): error 200",
             sub.symbol, sub.sec_type, MD_LOOKUP_TIMEOUT, id);
+        context.md_lookup_cancelled.remove(&sub.instrument);
         shared.market.push_md_reject(crate::bridge::MdReject::NoSecurityDefinition { instrument: sub.instrument });
         false
     });

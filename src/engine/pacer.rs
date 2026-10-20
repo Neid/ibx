@@ -36,6 +36,29 @@ pub(crate) fn is_request(cmd: &ControlCommand) -> bool {
     !matches!(cmd, ControlCommand::Unpaced(_)) && !is_aside(cmd)
 }
 
+/// A request that may start a contract lookup: market data or a request
+/// resolved first, given without a conId (ibx#662).
+pub(crate) fn may_look_up(cmd: &ControlCommand) -> bool {
+    matches!(cmd,
+        ControlCommand::SubscribeBySymbol { .. }
+        | ControlCommand::ResolveContract { .. }
+        | ControlCommand::Subscribe { con_id: 0, .. })
+}
+
+/// A request taken while an earlier request waits for its contract
+/// lookup: orders and market data cancels (ibx#662; the reference 10.51,
+/// paper, regular hours 13/10/2026: an order's lookup went out before the
+/// answer of the market data lookup before it, a historical request's
+/// after it; 14/10/2026: a cancel ended its request at the lookup's
+/// answer).
+pub(crate) fn passes_lookup_hold(cmd: &ControlCommand) -> bool {
+    matches!(cmd,
+        ControlCommand::Order(_)
+        | ControlCommand::OrderGroup(_)
+        | ControlCommand::HoldOrder { .. }
+        | ControlCommand::Unsubscribe { .. })
+}
+
 /// A command that belongs to no request's answer: the registration of a
 /// contract ahead of its request (the caller waits for its reply), and
 /// housekeeping. It is taken at once, also past requests that wait, so

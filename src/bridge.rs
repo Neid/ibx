@@ -172,6 +172,49 @@ pub fn answer_clock() -> Arc<AtomicU64> {
     Arc::new(AtomicU64::new(1))
 }
 
+/// Where the answers read from the session's state stand among the answers
+/// written (ibx#662): the count taken at the first change of that state
+/// since a client last read it. The reference gives every answer in the
+/// order its connection received it; a client reads the state at that
+/// count, not after the other answers of its pass.
+pub struct StateMark {
+    clock: Arc<AtomicU64>,
+    /// The count plus one; 0: no change since the last read.
+    at: AtomicU64,
+}
+
+impl StateMark {
+    fn new(clock: &Arc<AtomicU64>) -> Self {
+        Self { clock: clock.clone(), at: AtomicU64::new(0) }
+    }
+
+    /// The state changed (called after the change). One load when a change
+    /// is already marked.
+    #[inline]
+    pub fn note(&self) {
+        if self.at.load(Ordering::Relaxed) == 0 {
+            let at = self.clock.fetch_add(1, Ordering::Relaxed);
+            let _ = self.at.compare_exchange(0, at + 1, Ordering::Relaxed, Ordering::Relaxed);
+        }
+    }
+
+    /// The count of the first change not read yet.
+    #[inline]
+    pub fn first(&self) -> Option<u64> {
+        self.at.load(Ordering::Relaxed).checked_sub(1)
+    }
+
+    /// The state is read now: a change counted below `below` is read; one
+    /// counted after stays marked, for its place in the next pass.
+    #[inline]
+    pub fn read_below(&self, below: u64) {
+        let at = self.at.load(Ordering::Relaxed);
+        if at != 0 && at - 1 < below {
+            let _ = self.at.compare_exchange(at, 0, Ordering::Relaxed, Ordering::Relaxed);
+        }
+    }
+}
+
 /// The event channel as the queues of errors and answers see it (ibx#498):
 /// unset, and free, until a channel is attached.
 #[derive(Default)]
@@ -746,6 +789,8 @@ pub struct MarketDataState {
     /// The steps of each farm message for the API client's market data
     /// requests, in their order (ibx#446).
     pub md_events: crate::md_events::MdQueue,
+    /// The state the client reads changed (ibx#662).
+    pub(crate) state: Arc<StateMark>,
     /// InstrumentId counter — set by hot loop on RegisterInstrument.
     instrument_count: AtomicU64,
     pub(crate) tbt_trades: SeqQueue<TbtTrade>,
@@ -838,6 +883,10 @@ pub enum MdReject {
     /// A subscription given without a conId whose lookup found no single
     /// contract: error 200, the subscription is gone (ibx#278).
     NoSecurityDefinition { instrument: InstrumentId },
+    /// A subscription given without a conId, cancelled while its lookup
+    /// was on its way: when the lookup answers, error 354 for the request
+    /// and nothing subscribed; its cancel then gets 300 (ibx#662).
+    CancelledDuringLookup { instrument: InstrumentId },
     /// A stream given without a conId whose contract, once found, needs a
     /// line while every API line was taken when it was asked: error 101,
     /// nothing was sent (ibx#501).
@@ -868,6 +917,7 @@ impl MdReject {
             | MdReject::DelayedFallback { instrument, .. }
             | MdReject::DelayedAtOnce { instrument }
             | MdReject::NoSecurityDefinition { instrument }
+            | MdReject::CancelledDuringLookup { instrument }
             | MdReject::MaxTickers { instrument }
             | MdReject::NewsRefused { instrument, .. }
             | MdReject::Frozen { instrument, .. }
@@ -878,10 +928,11 @@ impl MdReject {
 }
 
 impl MarketDataState {
-    fn new(stamp: &Arc<AtomicU64>) -> Self {
+    fn new(stamp: &Arc<AtomicU64>, state: &Arc<StateMark>) -> Self {
         Self {
             quotes: Box::new(std::array::from_fn(|_| SeqQuote::new())),
-            md_events: crate::md_events::MdQueue::new(),
+            md_events: crate::md_events::MdQueue::with_clock(stamp.clone()),
+            state: state.clone(),
             instrument_count: AtomicU64::new(0),
             tbt_trades: SeqQueue::new(&stamp),
             tbt_quotes: SeqQueue::new(&stamp),
@@ -920,6 +971,7 @@ impl MarketDataState {
         let instrument = params.instrument;
         self.tick_req_params.lock().unwrap().push(params);
         self.error_tap.notify(|| Event::MarketDataParams(instrument));
+        self.state.note();
     }
 
     pub fn drain_tick_req_params(&self) -> Vec<TickReqParams> {
@@ -931,6 +983,7 @@ impl MarketDataState {
     /// data type waits for the acknowledgement (ibx#535).
     #[doc(hidden)] pub fn push_early_tick_req_params(&self, params: TickReqParams, option: bool) {
         self.early_tick_req_params.lock().unwrap().push((params, option));
+        self.state.note();
     }
 
     pub fn drain_early_tick_req_params(&self) -> Vec<(TickReqParams, bool)> {
@@ -957,6 +1010,7 @@ impl MarketDataState {
         });
         self.md_rejects.lock().unwrap().push(reject);
         self.error_tap.emit(event);
+        self.state.note();
     }
 
     pub fn drain_md_rejects(&self) -> Vec<MdReject> {
@@ -968,11 +1022,13 @@ impl MarketDataState {
     #[doc(hidden)] pub fn push_md_merge(&self, from: InstrumentId, into: InstrumentId) {
         let at = self.md_events.position();
         self.md_merges.lock().unwrap().push((from, into, at));
+        self.state.note();
     }
 
     /// The lookup of a request without a conId found its contract (ibx#444).
     #[doc(hidden)] pub fn push_md_resolved(&self, instrument: InstrumentId, con_id: i64) {
         self.md_resolved.lock().unwrap().push((instrument, con_id));
+        self.state.note();
     }
 
     /// A snapshot's contract given by its conId alone has this type, from
@@ -1161,6 +1217,8 @@ impl MarketDataState {
         let copy = self.error_tap.copy(&bulletin);
         store.store.push(bulletin.clone());
         store.queue.push(bulletin);
+        drop(store);
+        self.state.note();
         self.error_tap.emit(copy.map(Event::NewsBulletin));
         true
     }
@@ -1648,6 +1706,8 @@ pub enum ExchangeMapState {
 
 /// Historical data, contract definitions, scanners, news archives, market rules, contract cache.
 pub struct ReferenceState {
+    /// The state the client reads changed (ibx#662).
+    pub(crate) state: Arc<StateMark>,
     pub(crate) historical_data: SeqQueue<(ReqId, HistoricalResponse)>,
     /// Bars of keepUpToDate requests, the whole current bar each time
     /// (ibx#429), for historicalDataUpdate.
@@ -1787,8 +1847,9 @@ pub struct ReferenceState {
 }
 
 impl ReferenceState {
-    fn new(stamp: &Arc<AtomicU64>) -> Self {
+    fn new(stamp: &Arc<AtomicU64>, state: &Arc<StateMark>) -> Self {
         Self {
+            state: state.clone(),
             scanner_params_rebuilt: Arc::new(Mutex::new(None)),
             historical_data: SeqQueue::new(&stamp),
             historical_updates: SeqQueue::new(&stamp),
@@ -2056,6 +2117,7 @@ impl ReferenceState {
             });
         }
         self.scanner_params.lock().unwrap().push(xml);
+        self.state.note();
     }
 
     #[doc(hidden)] pub fn push_scanner_data(&self, req_id: ReqId, result: ScannerResult) {
@@ -2151,6 +2213,7 @@ impl ReferenceState {
 
     #[doc(hidden)] pub fn notify_depth_exchanges(&self) {
         *self.depth_exchanges_pending.lock().unwrap() = true;
+        self.state.note();
     }
 
     #[doc(hidden)] pub fn cache_contract(&self, con_id: i64, contract: api::Contract) {
@@ -2275,6 +2338,7 @@ impl ReferenceState {
     pub fn push_fa_saved(&self, req_id: i64) {
         self.fa_saved.lock().unwrap().push(req_id);
         self.error_tap.emit(self.error_tap.copy(&()).map(|_| Event::ReplaceFaEnd { req_id }));
+        self.state.note();
     }
 
     /// The replaces to answer with `replace_fa_end` (ibx#507).
@@ -2364,6 +2428,9 @@ impl ReferenceState {
             Some((_, slot)) => *slot = Some(map),
             None => maps.push((key, Some(map))),
         }
+        drop(maps);
+        // A smart components request waiting for it (ibx#662).
+        self.state.note();
     }
 
     /// Forget a key whose map was asked and never came (its farm was
@@ -2715,6 +2782,8 @@ impl LedgerRow {
 }
 
 pub struct PortfolioState {
+    /// The state the client reads changed (ibx#662).
+    pub(crate) state: Arc<StateMark>,
     account: Mutex<AccountState>,
     /// Account summary rows and ends, in arrival order (ibx#479).
     account_summary_events: Mutex<Vec<AccountSummaryEvent>>,
@@ -2764,8 +2833,9 @@ pub struct PortfolioState {
 }
 
 impl PortfolioState {
-    fn new() -> Self {
+    fn new(state: &Arc<StateMark>) -> Self {
         Self {
+            state: state.clone(),
             account: Mutex::new(AccountState::default()),
             account_rows: Mutex::new(AccountRows::default()),
             account_summary_events: Mutex::new(Vec::new()),
@@ -2805,6 +2875,7 @@ impl PortfolioState {
         let copy = self.error_tap.copy(&event);
         self.account_summary_events.lock().unwrap().push(event);
         self.error_tap.emit(copy.map(Event::AccountSummary));
+        self.state.note();
     }
 
     pub fn drain_account_summary_events(&self) -> Vec<AccountSummaryEvent> {
@@ -2820,6 +2891,7 @@ impl PortfolioState {
     pub fn update_account_rows(&self, f: impl FnOnce(&mut AccountRows)) {
         f(&mut self.account_rows.lock().unwrap());
         self.error_tap.notify(|| Event::AccountUpdate);
+        self.state.note();
     }
 
     /// Get all position infos (for reqPositions).
@@ -2977,6 +3049,7 @@ impl PortfolioState {
             }
             None => { map.insert(info.con_id, info); }
         }
+        self.state.note();
     }
 
     /// Update the per-position marks (from the account-updates portfolio message).
@@ -2993,6 +3066,7 @@ impl PortfolioState {
         entry.market_value = market_value;
         entry.unrealized_pnl = unrealized_pnl;
         entry.realized_pnl = realized_pnl;
+        self.state.note();
     }
 
     #[doc(hidden)] pub fn set_position_fixed(&self, id: InstrumentId, pos: Qty) {
@@ -3099,6 +3173,8 @@ pub struct SharedState {
     /// The count of the answers written, which orders them for the
     /// clients (ibx#532).
     answer_clock: Arc<AtomicU64>,
+    /// The answers read from the session's state (ibx#662).
+    state_mark: Arc<StateMark>,
     /// The time of the client's own clocks in a replay: the recording's,
     /// set with the engine's pace clock (ibx#515).
     #[cfg(any(test, feature = "test-support"))]
@@ -3108,11 +3184,12 @@ pub struct SharedState {
 impl SharedState {
     pub fn new() -> Self {
         let stamp = answer_clock();
+        let state_mark = Arc::new(StateMark::new(&stamp));
         let shared = Self {
-            market: MarketDataState::new(&stamp),
+            market: MarketDataState::new(&stamp, &state_mark),
             orders: OrderState::new(&stamp),
-            reference: ReferenceState::new(&stamp),
-            portfolio: PortfolioState::new(),
+            reference: ReferenceState::new(&stamp, &state_mark),
+            portfolio: PortfolioState::new(&state_mark),
             ccp_rtt_ns: AtomicU64::new(0),
             connection_lost: AtomicBool::new(false),
             connection_notices: SeqQueue::new(&stamp),
@@ -3120,6 +3197,7 @@ impl SharedState {
             notifier: Arc::new(Notifier::default()),
             clock: Arc::new(CommandClock::default()),
             answer_clock: stamp,
+            state_mark,
             #[cfg(any(test, feature = "test-support"))]
             test_clock: Mutex::new(None),
         };
@@ -3159,6 +3237,13 @@ impl SharedState {
     #[doc(hidden)]
     pub fn answer_stamp(&self) -> u64 {
         self.answer_clock.fetch_add(1, Ordering::Relaxed)
+    }
+
+    /// The answers read from the session's state: where they stand among
+    /// the answers written (ibx#662).
+    #[doc(hidden)]
+    pub fn state_mark(&self) -> &StateMark {
+        &self.state_mark
     }
 
     /// The count the next answer will take: every answer written before
