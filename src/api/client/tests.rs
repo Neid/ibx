@@ -1155,10 +1155,80 @@ fn fa_method_and_percentage_sizing() {
     let mut w = RecordingWrapper::default();
     client.process_msgs(&mut w);
     assert!(w.events.iter().any(|e| e == "error:2:321:Error validating request.-'PlaceOrder(3)' : cause - Invalid FA method specified"), "{:?}", w.events);
-    assert!(!w.events.iter().any(|e| e.starts_with("error:3:")), "{:?}", w.events);
+    // The first order on a group: warning 2184 only.
+    assert!(w.events.iter().filter(|e| e.starts_with("error:3:")).all(|e| e.starts_with("error:3:2184:")), "{:?}", w.events);
     let sent: Vec<ControlCommand> = rx.try_iter().collect();
     assert!(sent.iter().any(|c| matches!(c, ControlCommand::Order(r) if r.order_id() == 3)), "the sized order goes");
     assert!(!sent.iter().any(|c| matches!(c, ControlCommand::Order(r) if r.order_id() == 2)), "nothing sent for 2");
+}
+
+// ibx#507 (the reference 10.51's rules, not observed yet: no FA account):
+// on an FA session, request_fa answers from the session's FA data and
+// replace_fa checks the document, replaces the data and sends its saves;
+// replace_fa_end when they are answered.
+#[test]
+fn fa_data_requests_on_an_fa_session() {
+    use crate::control::fa::{FaGroup, SAVED};
+    let (client, rx, shared) = test_client();
+    shared.reference.set_fa_session(true);
+    shared.reference.set_logon_features("FAONEGRP".into());
+    shared.reference.set_managed_accounts(vec!["U1".into(), "U2".into()]);
+    {
+        let mut data = shared.reference.fa_data();
+        data.groups = vec![FaGroup { name: "G".into(), accounts: vec!["U1".into()], method: Some("NetLiq".into()), ..Default::default() }];
+        data.aliases = vec![("U1".into(), "Main".into()), ("U2".into(), "U2".into())];
+    }
+    let events = |client: &EClient| {
+        let mut w = RecordingWrapper::default();
+        client.process_msgs(&mut w);
+        w.events
+    };
+    client.request_fa(1);
+    client.request_fa(2);
+    client.request_fa(3);
+    let got = events(&client);
+    assert!(got.iter().any(|e| e.starts_with("receive_fa:1:") && e.contains("<name>G</name>") && e.contains("<acct>U1</acct>")), "{got:?}");
+    assert!(got.iter().any(|e| e == "error:-1:321:Error validating request.-'ReqFA(18)' : cause - Non-existent FA data operation request."), "{got:?}");
+    assert!(got.iter().any(|e| e.starts_with("receive_fa:3:") && e.contains("<alias>Main</alias>")), "{got:?}");
+
+    client.replace_fa(5, 1, "");
+    client.replace_fa(6, 3, "<ListOfAccountAliases/>");
+    client.replace_fa(7, 1, "<ListOfGroups><Group><name>N</name><defaultMethod>NetLiq</defaultMethod>\
+        <ListOfAccts varName=\"list\"><Account><acct>U2</acct></Account></ListOfAccts></Group></ListOfGroups>");
+    client.request_fa(1);
+    let got = events(&client);
+    assert!(got.iter().any(|e| e == "error:5:321:Error validating request.-'ReplaceFA(19)' : cause - An XML string is required for this operation."), "{got:?}");
+    assert!(got.iter().any(|e| e.starts_with("error:6:10262:")), "{got:?}");
+    assert!(got.iter().any(|e| e.starts_with("error:-1:10230:You have unsaved FA changes")), "a save not answered: {got:?}");
+    let save = rx.try_iter().find_map(|c| match c { ControlCommand::FaSave { req_id, batches } => Some((req_id, batches)), _ => None });
+    let (req_id, batches) = save.expect("the saves sent");
+    assert_eq!(req_id, 7);
+    assert_eq!(batches[0].deletes, ["G"]);
+    assert_eq!(batches[0].saves.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>(), ["N"]);
+    assert_eq!(shared.reference.fa_data().groups[0].name, "N", "replaced at once");
+
+    // The saves answered: the end of the replace.
+    shared.reference.fa_data().pending_groups = 0;
+    shared.reference.push_fa_saved(7);
+    assert_eq!(events(&client), [format!("replace_fa_end:7:{SAVED}")]);
+
+    // A group whose own method is PctChange, used with no method: 321.
+    shared.reference.fa_data().groups.push(FaGroup { name: "Pct".into(), accounts: vec!["U1".into()], method: Some("PctChange".into()), ..Default::default() });
+    shared.market.set_instrument_count(1);
+    client.place_order(9, &spy(), &Order { action: "BUY".into(), total_quantity: 1.0, order_type: "LMT".into(), lmt_price: 1.0,
+        tif: "DAY".into(), fa_group: "Pct".into(), ..Default::default() }).unwrap();
+    let got = events(&client);
+    assert!(got.iter().any(|e| e == "error:9:321:Error validating request.-'PlaceOrder(3)' : cause - Group 'Pct' cannot be used \
+        without method specified. Use Advisor Setup tool to correct its definition"), "{got:?}");
+
+    // The first order on a group: 2184, once.
+    let on_group = Order { action: "BUY".into(), total_quantity: 1.0, order_type: "LMT".into(), lmt_price: 1.0,
+        tif: "DAY".into(), account: "N".into(), ..Default::default() };
+    client.place_order(10, &spy(), &on_group).unwrap();
+    client.place_order(11, &spy(), &on_group).unwrap();
+    let got = events(&client);
+    assert_eq!(got.iter().filter(|e| e.contains(":2184:")).collect::<Vec<_>>(),
+        [&format!("error:10:2184:{}", crate::control::fa::GROUP_WARNING)], "{got:?}");
 }
 
 // ibx#443: the WSH requests get the reference's permission error from the

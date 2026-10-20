@@ -1859,6 +1859,8 @@ pub struct ClientCore {
     /// Warning 2174 was given for a goodAfterTime without a zone: the
     /// reference gives it once per session (ibx#598).
     start_time_zone_warned: AtomicBool,
+    /// Warning 2184 was given for an order on an FA group (ibx#507).
+    fa_group_warned: AtomicBool,
     /// Tick-by-tick requests: reqId -> (instrument, conId, type). Kept apart
     /// from the market data maps, so both can run on one contract (ibx#455).
     pub tbt_reqs: Mutex<HashMap<i64, (InstrumentId, i64, TbtType)>>,
@@ -2082,6 +2084,65 @@ pub const REQUEST_FA_NOT_FA: (i64, i64, &str) =
 /// text; the id is the request's (ibx#481).
 pub const REPLACE_FA_NOT_FA: (i64, &str) =
     (321, "Error validating request.-'ReplaceFA(19)' : cause - FA data operations ignored for non FA customers.");
+
+/// The answer of requestFA on an FA session (ibx#507), from the session's
+/// FA data, as the reference 10.51 gives it (not observed yet: no FA
+/// account): the groups (type 1) or the aliases (type 3); 321 for another
+/// type, the profiles included at this session's level; 10230 while a
+/// save of the groups is not answered. Err is (id, code, text).
+pub(crate) fn fa_request(shared: &SharedState, fa_data_type: i32) -> Result<String, (i64, i64, String)> {
+    use crate::control::fa;
+    if let Some(cause) = fa::request_cause(fa_data_type) {
+        return Err((-1, 321, format!("Error validating request.-'ReqFA(18)' : cause - {}", cause)));
+    }
+    let data = shared.reference.fa_data();
+    if fa_data_type == 3 {
+        if data.aliases.is_empty() {
+            let accounts: Vec<(String, String)> = shared.reference.managed_accounts().into_iter().map(|a| (a.clone(), a)).collect();
+            return Ok(fa::aliases_xml(&accounts));
+        }
+        return Ok(fa::aliases_xml(&data.aliases));
+    }
+    if data.pending_groups + data.pending_profiles > 0 {
+        return Err((-1, 10230, fa::UNSAVED.to_string()));
+    }
+    let unified = shared.reference.logon_features().split(',').any(|f| f == fa::UNIFIED_FEATURE);
+    Ok(fa::groups_xml(&data, unified))
+}
+
+/// A replaceFA on an FA session (ibx#507), as the reference 10.51 takes it
+/// (not observed yet: no FA account): 321 for a type that does not exist
+/// or no document; the document read and checked; the session's data
+/// replaced and the saves to send, counted as pending. `Ok(None)`: no
+/// answer at all, as the reference for a document it cannot read in the
+/// unified mode. Err is (code, text) for the request id.
+pub(crate) fn fa_replace(shared: &SharedState, req_id: i64, fa_data_type: i32, xml: &str) -> Result<Option<ControlCommand>, (i64, String)> {
+    use crate::control::fa;
+    if let Some(cause) = fa::replace_cause(fa_data_type, xml) {
+        return Err((321, format!("Error validating request.-'ReplaceFA(19)' : cause - {}", cause)));
+    }
+    let features = shared.reference.logon_features();
+    let has = |feature: &str| features.split(',').any(|f| f == feature);
+    let accounts = shared.reference.managed_accounts();
+    let session = fa::Session {
+        unified: has(fa::UNIFIED_FEATURE), equalpos: has(fa::EQUALPOS_FEATURE), keep_empty: has(fa::KEEP_EMPTY_FEATURE),
+        accounts: &accounts,
+    };
+    let mut data = shared.reference.fa_data();
+    match fa::replace(fa_data_type, xml, &data, &session) {
+        Err(Some(refusal)) => Err(refusal),
+        Err(None) => Ok(None),
+        Ok(replace) => {
+            data.groups = replace.groups;
+            data.profiles = replace.profiles;
+            for batch in &replace.batches {
+                let saves = batch.saves.len() as u32;
+                if batch.profiles { data.pending_profiles += saves } else { data.pending_groups += saves }
+            }
+            Ok(Some(ControlCommand::FaSave { req_id, batches: replace.batches }))
+        }
+    }
+}
 
 /// The display groups, as the reference lists them with no window open
 /// (ibx#424).
@@ -2582,6 +2643,7 @@ impl ClientCore {
             tick_req_params_sent: Mutex::new(HashSet::new()),
             md_params_early: Mutex::new(HashSet::new()),
             start_time_zone_warned: AtomicBool::new(false),
+            fa_group_warned: AtomicBool::new(false),
             tbt_reqs: Mutex::new(HashMap::new()),
             contract_cache: Mutex::new(HashMap::new()),
         }
@@ -2590,6 +2652,7 @@ impl ClientCore {
     /// Clear all per-session state so the owning client can reconnect.
     pub fn reset(&self) {
         self.start_time_zone_warned.store(false, Ordering::Relaxed);
+        self.fa_group_warned.store(false, Ordering::Relaxed);
         self.req_to_instrument.lock().unwrap().clear();
         self.instrument_to_req.lock().unwrap().clear();
         self.con_id_to_instrument.lock().unwrap().clear();
@@ -7826,9 +7889,21 @@ impl ClientCore {
     /// PctRoll, AvailableEquity, NetLiq and EqualQuantity (Equal instead
     /// with the logon feature EQUALPOS), case-sensitive; else 321 "Invalid
     /// FA method specified", nothing sent. Elsewhere the method is ignored.
+    ///
+    /// A group whose own method is PctChange, used with no method: 321
+    /// "Group '{group}' cannot be used without method specified..." (the
+    /// reference's 10265, not observed yet).
     fn fa_method_refusal(order: &ApiOrder, reference: &crate::bridge::ReferenceState) -> Option<(i64, String)> {
-        if !reference.fa_session() || order.fa_method.is_empty() {
+        if !reference.fa_session() {
             return None;
+        }
+        if order.fa_method.is_empty() {
+            let data = reference.fa_data();
+            let group = data.allocation_group(&order.fa_group, &order.account);
+            let own = data.group_method(group).flatten();
+            return (!group.is_empty() && own == Some("PctChange")).then(|| (321, format!(
+                "Error validating request.-'PlaceOrder(3)' : cause - Group '{}' cannot be used without method specified. \
+                 Use Advisor Setup tool to correct its definition", group)));
         }
         let equal = if reference.logon_features().split(',').any(|f| f == "EQUALPOS") { "Equal" } else { "EqualQuantity" };
         (!["PctChange", "PctRoll", "AvailableEquity", "NetLiq", equal].contains(&order.fa_method.as_str()))
@@ -7956,6 +8031,14 @@ impl ClientCore {
         // account where the attribute is on is not observed yet.
         if order.opt_out_smart_routing {
             notices.push((2181, "Warning: The 'OptOutFromSmartRouting' order attribute is not supported.".into()));
+        }
+        // The first order on a group of an FA session: 2184, once (ibx#507;
+        // the reference 10.51's rule, not observed yet: no FA account).
+        if shared.reference.fa_session() && !order.what_if && shared.reference.white_branding_id().is_empty()
+            && !shared.reference.fa_data().allocation_group(&order.fa_group, &order.account).is_empty()
+            && !self.fa_group_warned.swap(true, Ordering::Relaxed)
+        {
+            notices.push((2184, crate::control::fa::GROUP_WARNING.into()));
         }
         let later = self.refusal_with_contract(order, exchange, shared, contract_zone.as_deref(), &mut algo_warnings);
         if later.is_some() && !order.what_if && !self.is_order_tracked(order_id) {

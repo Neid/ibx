@@ -180,8 +180,9 @@ impl EClient {
     // ── FA (Financial Advisor) ──
 
     /// Request FA data. On a session that is not FA, error 321 as the
-    /// reference (ibx#481); the FA data exchange itself is not implemented.
-    pub fn request_fa(&self, _fa_data_type: i32) {
+    /// reference (ibx#481). On an FA session, `receive_fa` from the
+    /// session's FA data, or the reference's errors (ibx#507).
+    pub fn request_fa(&self, fa_data_type: i32) {
         // One API request for the pacing, whatever it sends (ibx#565).
         let _request = crate::engine::park::one_request();
         if !self.shared.reference.fa_session() {
@@ -189,13 +190,20 @@ impl EClient {
             self.shared.orders.push_order_error(id, code, text.to_string());
             return;
         }
-        log::warn!("request_fa: not yet implemented — needs FIX capture");
+        // Answered here: after the requests made before it (ibx#561).
+        self.shared.command_clock().take_turn();
+        match crate::client_core::fa_request(&self.shared, fa_data_type) {
+            Ok(xml) => self.later(move |_, wrapper| wrapper.receive_fa(fa_data_type, &xml)),
+            Err((id, code, text)) => self.shared.orders.push_order_error(id, code, text),
+        }
     }
 
     /// Replace FA data. On a session that is not FA, error 321 for the
-    /// request as the reference (ibx#481); the FA data exchange itself is
-    /// not implemented.
-    pub fn replace_fa(&self, req_id: i64, _fa_data_type: i32, _cxml: &str) {
+    /// request as the reference (ibx#481). On an FA session, the document
+    /// is checked, the session's data replaced and saved to the server;
+    /// `replace_fa_end` when the saves are answered, or the reference's
+    /// errors (ibx#507).
+    pub fn replace_fa(&self, req_id: i64, fa_data_type: i32, cxml: &str) {
         // One API request for the pacing, whatever it sends (ibx#565).
         let _request = crate::engine::park::one_request();
         if !crate::client_core::ClientCore::ids_fit("replace_fa", &[req_id]) { return; }
@@ -204,7 +212,11 @@ impl EClient {
             self.shared.orders.push_order_error(req_id, code, text.to_string());
             return;
         }
-        log::warn!("replace_fa: not yet implemented — needs FIX capture");
+        match crate::client_core::fa_replace(&self.shared, req_id, fa_data_type, cxml) {
+            Ok(Some(save)) => { let _ = self.send(save); }
+            Ok(None) => {}
+            Err((code, text)) => self.shared.orders.push_order_error(req_id, code, text),
+        }
     }
 
     // ── Display Groups ──

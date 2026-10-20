@@ -566,6 +566,10 @@ pub enum Event {
     ScannerData { req_id: ReqId, result: ScannerResult },
     /// Fundamental data of a request.
     FundamentalData { req_id: ReqId, data: String },
+    /// A replace of FA data whose saves all succeeded (ibx#507): the
+    /// `replaceFAEnd` callback, text "FA data saved". A failed one comes as
+    /// `Error` 10229.
+    ReplaceFaEnd { req_id: i64 },
     /// Historical news headlines; `has_more` when the server has more.
     HistoricalNews { req_id: ReqId, headlines: Vec<NewsHeadline>, has_more: bool },
     /// A news article.
@@ -1713,6 +1717,11 @@ pub struct ReferenceState {
     pending_accounts: Mutex<Vec<String>>,
     /// FA session, from the FA flag of the server's logon (ibx#481).
     fa_session: std::sync::atomic::AtomicBool,
+    /// The FA data of an FA session and its saves not answered (ibx#507).
+    fa: Mutex<crate::control::fa::FaData>,
+    /// The replaces whose saves all succeeded, for `replace_fa_end`
+    /// (ibx#507).
+    fa_saved: Mutex<Vec<i64>>,
     /// A paper session, from the logon (ibx#444).
     paper_session: std::sync::atomic::AtomicBool,
     /// The logon's super user and omnibus flags (ibx#417): either one lets
@@ -1818,6 +1827,8 @@ impl ReferenceState {
             managed_accounts: Mutex::new(Vec::new()),
             pending_accounts: Mutex::new(Vec::new()),
             fa_session: std::sync::atomic::AtomicBool::new(false),
+            fa: Mutex::new(crate::control::fa::FaData::default()),
+            fa_saved: Mutex::new(Vec::new()),
             paper_session: std::sync::atomic::AtomicBool::new(false),
             super_user: AtomicBool::new(false),
             omnibus: AtomicBool::new(false),
@@ -2253,6 +2264,23 @@ impl ReferenceState {
     pub fn pending_managed_accounts(&self) -> Vec<String> {
         let pending = self.pending_accounts.lock().unwrap();
         self.managed_accounts.lock().unwrap().iter().filter(|a| pending.contains(a)).cloned().collect()
+    }
+
+    /// The FA data of the session (ibx#507).
+    pub fn fa_data(&self) -> std::sync::MutexGuard<'_, crate::control::fa::FaData> {
+        self.fa.lock().unwrap()
+    }
+
+    /// A replace whose saves all succeeded (ibx#507).
+    pub fn push_fa_saved(&self, req_id: i64) {
+        self.fa_saved.lock().unwrap().push(req_id);
+        self.error_tap.emit(self.error_tap.copy(&()).map(|_| Event::ReplaceFaEnd { req_id }));
+    }
+
+    /// The replaces to answer with `replace_fa_end` (ibx#507).
+    pub fn drain_fa_saved(&self) -> Vec<i64> {
+        let mut saved = self.fa_saved.lock().unwrap();
+        if saved.is_empty() { Vec::new() } else { saved.drain(..).collect() }
     }
 
     /// True when the logon says this is an FA session (its FA flag, ibx#481).
@@ -3346,6 +3374,7 @@ mod tests {
         shared.reference.push_histogram_data(3, vec![HistogramEntry { price: 250.0, count: 7 }]);
         shared.reference.push_scanner_params("<xml/>".into());
         shared.reference.push_fundamental_data(4, "<report/>".into());
+        shared.reference.push_fa_saved(8);
         shared.reference.push_news_article(5, 0, "text".into());
         shared.reference.push_historical_news(6, vec![], true);
         shared.market.push_real_time_bar(7, bar);
@@ -3360,6 +3389,7 @@ mod tests {
             Event::HistogramData { req_id, entries } => format!("histogram {req_id} {}", entries[0].count),
             Event::ScannerParameters(xml) => format!("scanner {xml}"),
             Event::FundamentalData { req_id, data } => format!("fundamental {req_id} {data}"),
+            Event::ReplaceFaEnd { req_id } => format!("fa saved {req_id}"),
             Event::NewsArticle { req_id, article_type, text } => format!("article {req_id} {article_type} {text}"),
             Event::HistoricalNews { req_id, headlines, has_more } => format!("news {req_id} {} {has_more}", headlines.len()),
             Event::RealTimeBar { req_id, bar } => format!("bar {req_id} {}", bar.close),
@@ -3372,7 +3402,7 @@ mod tests {
             // No scanner parameters: their event comes from a thread of
             // its own once rebuilt, and "<xml/>" is refused by the rebuild
             // (ibx#574; the client test reads a rebuilt one).
-            "chains 2 AAPL", "rules [239]", "histogram 3 7", "fundamental 4 <report/>",
+            "chains 2 AAPL", "rules [239]", "histogram 3 7", "fundamental 4 <report/>", "fa saved 8",
             "article 5 0 text", "news 6 0 true", "bar 7 1.5", "bulletin 1", "commission e1", "summary 1 true",
         ]);
         // The queues keep every entry for the wrapper.

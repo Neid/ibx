@@ -9,6 +9,7 @@ pub(crate) mod optmd;
 #[cfg(test)]
 mod optmd_tests;
 pub(crate) mod optparams;
+pub(crate) mod fa;
 
 use std::sync::Arc;
 use std::time::Instant;
@@ -1836,6 +1837,14 @@ impl HotLoop {
             &mut self.ccp_conn, &mut self.context, &self.shared,
             &self.event_tx, &mut self.hb, &self.account_id,
         );
+        // The FA download of an FA session, and its saves lost with the
+        // link (ibx#507).
+        if self.context.fa_session {
+            let connected = !self.ccp.disconnected;
+            if fa::tick(&mut self.context.fa, &mut self.ccp_conn, &mut self.hb, &self.shared, connected) {
+                order_builder::release_rth_parked(&mut self.context);
+            }
+        }
         self.ccp.sweep_pending_schedule_pairs(&self.shared, &self.event_tx);
         self.ccp.sweep_scanner_enrichments(&self.shared);
         self.ccp.sweep_contract_details_and_completed(&self.shared, &self.event_tx, &mut self.ccp_conn, &mut self.hb);
@@ -3217,6 +3226,10 @@ impl HotLoop {
                 | ControlCommand::FetchUserInfo { .. } => {
                     // Gateway-local data — handled synchronously in Python EClient.
                     // These variants exist for future CCP round-trip support.
+                }
+                ControlCommand::FaSave { req_id, batches } => {
+                    let connected = !self.ccp.disconnected;
+                    fa::save(&mut self.context.fa, req_id, batches, &mut self.ccp_conn, &mut self.hb, &self.shared, connected);
                 }
                 ControlCommand::Shutdown => {
                     // Unsubscribe all active market data before stopping

@@ -1586,6 +1586,13 @@ impl CcpState {
                         // seeds (ibx#511; observed 15/10/2026 on the reference
                         // 10.51): the daily P&L of a position held at midnight.
                         "152" => handle_midnight_prices(msg, shared),
+                        // The FA data exchange (ibx#507): a download or a
+                        // save answered.
+                        "117" => {
+                            if super::fa::answer(&mut context.fa, &parsed, shared) {
+                                super::order_builder::release_rth_parked(context);
+                            }
+                        }
                         "20" => {
                             // Reference-data answer: inputs of the option model (ibx#442).
                             if let (Some(&id), Some(&xml)) = (parsed.get(&320), parsed.get(&6118)) {
@@ -4874,6 +4881,8 @@ impl CcpState {
 
     pub(crate) fn handle_disconnect(&mut self, context: &mut Context, _event_tx: &Option<Sender<Event>>) {
         self.disconnected = true;
+        // The FA saves not answered fail (ibx#507).
+        super::fa::connection_lost(&mut context.fa);
         // The derivative answers go with the link, as in the reference
         // (ibx#440).
         self.optparams.connection_lost();

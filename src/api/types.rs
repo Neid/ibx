@@ -551,7 +551,7 @@ impl Order {
             mifid: [self.mifid2_decision_maker.clone(), self.mifid2_decision_algo.clone(),
                 self.mifid2_execution_trader.clone(), self.mifid2_execution_algo.clone()],
             soft_dollar_tier: (self.soft_dollar_tier_name.clone(), self.soft_dollar_tier_val.clone()),
-            fa: [self.fa_group.clone(), self.fa_method.clone(), self.fa_percentage.clone(), self.model_code.clone()],
+            fa: [self.fa_group.clone(), self.fa_method.clone(), self.fa_percentage.clone(), self.model_code.clone(), self.account.clone()],
             reference_exchange: self.reference_exchange_id.clone(),
             include_overnight: self.include_overnight,
             duration: (self.duration != i32::MAX).then_some(self.duration),
@@ -648,6 +648,9 @@ impl Order {
             // The FA allocation (ibx#507).
             || !self.fa_group.is_empty() || !self.fa_method.is_empty() || !self.fa_percentage.is_empty()
             || !self.model_code.is_empty()
+            // The account, which an FA session sends (the same message
+            // otherwise).
+            || !self.account.is_empty()
             || !self.oca_group.is_empty()
             || self.parent_id > 0
             || self.discretionary_amt > 0.0

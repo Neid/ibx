@@ -94,6 +94,10 @@ const KNOWN_CONTROL_COMMAND_GAPS: &[(&str, &str)] = &[
         "Gateway-local response path, no CCP round-trip in hot loop yet",
     ),
     (
+        "FaSave",
+        "Sent only by replace_fa on an FA session (ibx#507); the paper account is not FA. Exercised by unit tests",
+    ),
+    (
         "FetchMktDepthExchanges",
         "Exchange list is cached once from the 6040=102 init burst into a per-session \
          SharedState, consumed before any phase's hot loop runs — not re-requestable, \

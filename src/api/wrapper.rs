@@ -479,6 +479,12 @@ pub mod tests {
         fn soft_dollar_tiers(&mut self, req_id: i64, tiers: &[crate::types::SoftDollarTier]) {
             self.events.push(format!("soft_dollar_tiers:{req_id}:{}", tiers.len()));
         }
+        fn receive_fa(&mut self, fa_data_type: i32, xml: &str) {
+            self.events.push(format!("receive_fa:{fa_data_type}:{xml}"));
+        }
+        fn replace_fa_end(&mut self, req_id: i64, text: &str) {
+            self.events.push(format!("replace_fa_end:{req_id}:{text}"));
+        }
         fn display_group_list(&mut self, req_id: i64, groups: &str) {
             self.events.push(format!("display_group_list:{req_id}:{groups}"));
         }

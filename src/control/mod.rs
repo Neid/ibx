@@ -1,6 +1,7 @@
 pub mod account;
 pub mod algo;
 pub mod contracts;
+pub mod fa;
 pub mod fundamental;
 pub mod generic_tick;
 pub mod generic_values;

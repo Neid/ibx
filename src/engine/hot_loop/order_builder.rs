@@ -544,6 +544,13 @@ fn send_orders(
             Some(true) => continue,
             None => {}
         }
+        // An order on an FA group (ibx#507): it waits for the FA saves not
+        // answered, and the unified mode's method checks.
+        match fa_check(&order_req, context, shared) {
+            Some(false) => { context.rth_parked.push(rewrap(order_req)); continue; }
+            Some(true) => continue,
+            None => {}
+        }
         // The soft dollar tier: refused when not in the account's tiers of
         // the contract's market, else sent (ibx#506).
         match soft_dollar_check(&order_req, context, conn, hb, shared) {
@@ -1943,7 +1950,7 @@ fn send_orders(
                 // (ibx#507; not observed yet).
                 if context.fa_session {
                     let at = fields.iter().position(|(t, _)| *t == 6122).unwrap_or(fields.len());
-                    fields.splice(at..at, fa_tags(&attrs.fa));
+                    fa_fields(&mut fields, at, &attrs.fa, &context.fa);
                 }
                 // The order's soft dollar tier, restated (ibx#506; not
                 // observed yet).
@@ -4375,19 +4382,100 @@ fn soft_dollar_check(
     None
 }
 
+/// An order on an FA group, on an FA session (ibx#507), as the reference
+/// 10.51 takes it (not observed yet: no FA account). While a save of FA
+/// data is not answered it waits (`Some(false)`), and is refused with
+/// 10228 when the save failed. In the unified mode, 10226 for a method
+/// other than the group's own, a method with a profile (but a percentage
+/// change with its percentage), and no method for a group that has none.
+fn fa_check(req: &OrderRequest, context: &mut Context, shared: &Arc<SharedState>) -> Option<bool> {
+    if !context.fa_session {
+        return None;
+    }
+    let (_, attrs) = req.new_order_side()?;
+    let attrs = attrs?;
+    let group = fa_group(&attrs.fa, &context.fa);
+    let [_, method, pct, ..] = &attrs.fa;
+    if group.is_empty() {
+        return None;
+    }
+    let oid = req.order_id();
+    let parent = attrs.parent_id;
+    let refuse = |context: &mut Context, code: i64, text: &str| {
+        log::warn!("Order {} refused: {} {}", oid, code, text);
+        shared.orders.push_order_error(oid, code, text.to_string());
+        if let Some(instrument) = req.instrument() {
+            context.keep_unsent(oid, (instrument, req.new_order_qty().unwrap_or(0), parent));
+        }
+        Some(true)
+    };
+    if context.fa.pending() {
+        context.fa.wait(oid);
+        return Some(false);
+    }
+    if context.fa.take_failed(oid) {
+        return refuse(context, 10228, crate::control::fa::ORDER_SAVE_FAILED);
+    }
+    if context.fa.unified {
+        let invalid = match context.fa.groups.get(group) {
+            Some(Some(own)) => !method.is_empty() && method != own,
+            Some(None) => method.is_empty(),
+            None => context.fa.profiles.contains(group) && !method.is_empty()
+                && !(method == "PctChange" && !pct.is_empty()),
+        };
+        if invalid {
+            return refuse(context, 10226, "Invalid FA method specified");
+        }
+    }
+    None
+}
+
+/// The group of an FA order (ibx#507): its group, or its account when
+/// that names a stored group or profile, `All` or `AllNonProp`, as the
+/// reference takes it.
+fn fa_group<'a>(fa: &'a [String; 5], state: &super::fa::FaState) -> &'a str {
+    let [group, .., account] = fa;
+    if !group.is_empty() {
+        return group;
+    }
+    if crate::control::fa::is_all(account) || state.groups.contains_key(account.as_str()) || state.profiles.contains(account.as_str()) {
+        return account;
+    }
+    ""
+}
+
+/// The FA fields of an order on an FA session (ibx#507): its account in
+/// place of the logon's when it is allocated to that one account (a group
+/// goes to the logon's account), and the allocation tags at `at`.
+fn fa_fields(fields: &mut Vec<(u32, String)>, at: usize, fa: &[String; 5], state: &super::fa::FaState) {
+    let group = fa_group(fa, state);
+    let account = &fa[4];
+    if group.is_empty() && !account.is_empty()
+        && let Some(field) = fields.iter_mut().find(|(t, _)| *t == 1)
+    {
+        field.1 = account.clone();
+    }
+    let at = at.min(fields.len());
+    fields.splice(at..at, fa_tags(fa, group, state));
+}
+
 /// The FA allocation of an order (ibx#507), as the reference 10.51 writes
 /// it on an FA session (not observed yet: no FA account): the group, the
 /// method as given, the percentage for the two percentage methods, and the
-/// model code unless it is `Core`. A group with no method takes
-/// AvailableEquity, the reference's method of a group without its own
-/// (the stored groups' methods are not read yet).
-fn fa_tags(fa: &[String; 4]) -> Vec<(u32, String)> {
-    let [group, method, pct, model] = fa;
+/// model code unless it is `Core`. A group with no method takes its own
+/// stored one, else AvailableEquity; a profile takes none.
+fn fa_tags(fa: &[String; 5], group: &str, state: &super::fa::FaState) -> Vec<(u32, String)> {
+    let [_, method, pct, model, _] = fa;
     let mut tags = Vec::new();
     if !group.is_empty() {
-        tags.push((6160, group.clone()));
+        tags.push((6160, group.to_string()));
     }
-    let method = if method.is_empty() && !group.is_empty() { "AvailableEquity" } else { method.as_str() };
+    let own = || match state.groups.get(group) {
+        Some(Some(own)) => Some(own.as_str()),
+        None if state.profiles.contains(group) => None,
+        _ => Some("AvailableEquity"),
+    };
+    let method = if method.is_empty() && !group.is_empty() { own().unwrap_or("") } else { method.as_str() };
     if !method.is_empty() {
         tags.push((6159, method.to_string()));
     }
@@ -5896,7 +5984,7 @@ pub(crate) fn zones_known(context: &mut Context, still_waiting: impl Fn(i64) -> 
 }
 
 /// The waiting requests go back ahead of the queue, in their order.
-fn release_rth_parked(context: &mut Context) {
+pub(crate) fn release_rth_parked(context: &mut Context) {
     let parked = std::mem::take(&mut context.rth_parked);
     context.pending_orders.prepend(parked);
 }
@@ -5956,7 +6044,7 @@ fn push_extended_attrs(
     fields.extend(context.soft_dollar_send.iter().cloned());
     // The FA allocation on an FA session (ibx#507).
     if context.fa_session {
-        fields.extend(fa_tags(&attrs.fa));
+        fa_fields(fields, usize::MAX, &attrs.fa, &context.fa);
     }
     // The smartComboRoutingParams of a combo, as order attributes (ibx#470).
     if let Some(combo) = &attrs.combo {
@@ -12978,19 +13066,65 @@ mod tests {
     fn fa_allocations_go_out_on_an_fa_session_only() {
         let fa = |f: &Vec<(u32, String)>| f.iter().filter(|(t, _)| matches!(*t, 6160 | 6159 | 6164 | 6700)).cloned().collect::<Vec<_>>();
         let pair = |t: u32, v: &str| (t, v.to_string());
-        let order = |id: OrderId, values: [&str; 4]| limit_ex(id, Side::Buy, 100 * P,
+        let order = |id: OrderId, values: [&str; 5]| limit_ex(id, Side::Buy, 100 * P,
             crate::types::OrderAttrs { fa: values.map(String::from), ..Default::default() });
         let (frames, _) = session_frames(|c| c.fa_session = true, vec![
-            order(1, ["Grp", "PctChange", "50", "M1"]),
-            order(2, ["Grp", "", "", "Core"]),
-            modify_limit(1, 101 * P, crate::types::OrderAttrs { fa: ["Grp", "PctChange", "50", "M1"].map(String::from), ..Default::default() }),
-        ], 3);
+            order(1, ["Grp", "PctChange", "50", "M1", ""]),
+            order(2, ["Grp", "", "", "Core", ""]),
+            modify_limit(1, 101 * P, crate::types::OrderAttrs { fa: ["Grp", "PctChange", "50", "M1", ""].map(String::from), ..Default::default() }),
+            order(4, ["", "", "", "", "U7"]),
+            order(5, ["", "", "", "", "All"]),
+        ], 5);
         assert_eq!(fa(&frames[0]), [pair(6160, "Grp"), pair(6159, "PctChange"), pair(6700, "M1"), pair(6164, "50")]);
         assert_eq!(fa(&frames[1]), [pair(6160, "Grp"), pair(6159, "AvailableEquity")], "the default method; Core is no model");
         assert_eq!(tag(&frames[2], 35), Some("G"));
         assert_eq!(fa(&frames[2]), [pair(6160, "Grp"), pair(6159, "PctChange"), pair(6700, "M1"), pair(6164, "50")]);
-        let (frames, _) = session_frames(|_| {}, vec![order(3, ["Grp", "NetLiq", "", "M1"])], 1);
+        // The order's own account; a group goes to the logon's.
+        assert_eq!(tag(&frames[3], 1), Some("U7"));
+        assert!(fa(&frames[3]).is_empty());
+        assert_eq!(tag(&frames[4], 1), Some("DU1"));
+        assert_eq!(fa(&frames[4]), [pair(6160, "All"), pair(6159, "AvailableEquity")]);
+        assert_eq!(tag(&frames[0], 1), Some("DU1"));
+        let (frames, _) = session_frames(|_| {}, vec![order(3, ["Grp", "NetLiq", "", "M1", "U7"])], 1);
+        assert_eq!(tag(&frames[0], 1), Some("DU1"), "not an FA session: the logon's account");
         assert!(fa(&frames[0]).is_empty(), "not an FA session: dropped");
+    }
+
+    // ibx#507 (the reference 10.51's rules, not observed yet): with the
+    // session's groups, an order with no method takes its group's own,
+    // AvailableEquity for a group not stored, none for a profile; in the
+    // unified mode 10226 for another method than the group's, no method
+    // for a group without one, a method with a profile. While a save is
+    // not answered, an order on a group waits.
+    #[test]
+    fn fa_orders_with_the_stored_groups() {
+        let fa = |f: &Vec<(u32, String)>| f.iter().filter(|(t, _)| matches!(*t, 6160 | 6159)).cloned().collect::<Vec<_>>();
+        let pair = |t: u32, v: &str| (t, v.to_string());
+        let order = |id: OrderId, group: &str, method: &str| limit_ex(id, Side::Buy, 100 * P,
+            crate::types::OrderAttrs { fa: [group, method, "", "", ""].map(String::from), ..Default::default() });
+        let setup = |c: &mut Context| {
+            c.fa_session = true;
+            c.fa.unified = true;
+            c.fa.groups.insert("G".into(), Some("NetLiq".into()));
+            c.fa.groups.insert("E".into(), None);
+            c.fa.profiles.insert("P".into());
+        };
+        let (frames, _) = session_frames(setup, vec![
+            order(1, "G", ""),
+            order(2, "G", "PctRoll"),
+            order(3, "E", ""),
+            order(4, "P", "NetLiq"),
+            order(5, "P", ""),
+            order(6, "Other", ""),
+        ], 3);
+        assert_eq!(frames.len(), 3, "2, 3 and 4 refused");
+        assert_eq!(fa(&frames[0]), [pair(6160, "G"), pair(6159, "NetLiq")]);
+        assert_eq!(fa(&frames[1]), [pair(6160, "P")]);
+        assert_eq!(fa(&frames[2]), [pair(6160, "Other"), pair(6159, "AvailableEquity")]);
+
+        let (frames, context) = session_frames(|c| { setup(c); c.fa.pend_for_test(); }, vec![order(7, "G", ""), order(8, "", "")], 1);
+        assert_eq!(frames.len(), 1, "the order with no group goes");
+        assert_eq!(context.rth_parked.len(), 1, "the order on a group waits");
     }
 
     /// A session that allows price management, with the paper exclusion

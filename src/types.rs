@@ -503,9 +503,9 @@ pub struct OrderAttrs {
     /// The order's soft dollar tier (name, value); empty when not set
     /// (ibx#506).
     pub soft_dollar_tier: (String, String),
-    /// The order's FA allocation: group, method, percentage, model code;
-    /// sent only on an FA session (ibx#507).
-    pub fa: [String; 4],
+    /// The order's FA allocation: group, method, percentage, model code
+    /// and account; sent only on an FA session (ibx#507).
+    pub fa: [String; 5],
     /// Allow trading outside regular hours (the outside-RTH flag).
     pub outside_rth: bool,
     /// Delay order activation until this time (the effective time). 0 = not set. Unix seconds.
@@ -2501,6 +2501,10 @@ pub enum ControlCommand {
     CompletedOrders { api_only: bool },
     /// Request user info.
     FetchUserInfo { req_id: ReqId },
+    /// The saves of a replace of FA data (ibx#507): for each batch, the
+    /// deletes of the old objects, then the saves of the new ones. The
+    /// replace is answered when every save of a batch is answered.
+    FaSave { req_id: i64, batches: Vec<crate::control::fa::SaveBatch> },
     /// Graceful shutdown.
     Shutdown,
     /// The slot a market data request of this contract will use, told at

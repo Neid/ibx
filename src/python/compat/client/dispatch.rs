@@ -413,6 +413,11 @@ impl EClient {
             call_wrapper!(self.wrapper, py, "scanner_parameters", (xml.as_str(),));
         }
 
+        // The replaces of FA data whose saves succeeded (ibx#507).
+        for req_id in shared.reference.drain_fa_saved() {
+            call_wrapper!(self.wrapper, py, "replace_fa_end", (req_id, crate::control::fa::SAVED));
+        }
+
         // Positions of a running req_positions (ibx#477).
         self.dispatch_positions(py, shared)?;
         // Multi-account requests (ibx#476).

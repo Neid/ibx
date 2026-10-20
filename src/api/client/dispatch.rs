@@ -832,6 +832,11 @@ impl EClient {
             wrapper.scanner_parameters(&xml);
         }
 
+        // The replaces of FA data whose saves succeeded (ibx#507).
+        for req_id in self.shared.reference.drain_fa_saved() {
+            wrapper.replace_fa_end(req_id, crate::control::fa::SAVED);
+        }
+
         // reqMktDepthExchanges, answered from the routing table (#453).
         if let Some(descriptions) = self.shared.reference.drain_depth_exchanges() {
             wrapper.mkt_depth_exchanges(&descriptions);

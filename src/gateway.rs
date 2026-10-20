@@ -923,6 +923,9 @@ pub struct Gateway {
     /// order: the managed accounts of the API (ibx#420). Empty when the
     /// logon has no list.
     pub managed_accounts: Vec<String>,
+    /// The (account, alias) pairs of the logon's account list: the FA
+    /// aliases (ibx#507).
+    pub account_aliases: Vec<(String, String)>,
     pub session_token: BigUint,
     /// Session ID surfaced to webapp REST clients as `x-ccp-session-id`.
     /// Sourced from the post-auth logon ACK, falling back to the locally generated
@@ -1976,6 +1979,7 @@ impl Gateway {
         let ack_deadline = std::time::Instant::now() + Duration::from_secs_f64(TIMEOUT_FARM_LOGON);
         let mut account_id = String::new();
         let mut managed_accounts: Vec<String> = Vec::new();
+        let mut account_aliases: Vec<(String, String)> = Vec::new();
         // The farms that connect on TLS (ibx#276); empty when absent.
         let mut ssl_farms = String::new();
         let mut heartbeat_interval = CCP_HEARTBEAT;
@@ -2071,6 +2075,7 @@ impl Gateway {
                 // The account list of the logon, the managed accounts of
                 // the API (ibx#420).
                 managed_accounts = fields.get(&6095).map(|v| crate::control::logon::managed_accounts(v)).unwrap_or_default();
+                account_aliases = fields.get(&6095).map(|v| crate::control::fa::aliases(v)).unwrap_or_default();
                 log::info!("Logon account list: {} account(s)", managed_accounts.len());
                 ssl_farms = fields.get(&TAG_SSL_FARMS).cloned().unwrap_or_default();
             }
@@ -2558,6 +2563,7 @@ impl Gateway {
         let gw = Gateway {
             account_id: if account_id.is_empty() { config.username.clone() } else { account_id },
             managed_accounts,
+            account_aliases,
             session_token: session_key,
             server_session_id,
             settings_object_key,
@@ -2667,6 +2673,7 @@ impl Gateway {
         // The account list of the logon: the managed accounts (ibx#420).
         shared.reference.set_managed_accounts(self.managed_accounts.clone());
         shared.reference.set_fa_session(self.fa_session);
+        shared.reference.fa_data().aliases = self.account_aliases.clone();
         // The logon's environment: a paper session (ibx#444).
         shared.reference.set_paper_session(self.user_book);
         shared.reference.set_short_sale_flags(self.super_user, self.omnibus);
