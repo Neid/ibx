@@ -550,6 +550,7 @@ impl Order {
             professional_customer: self.professional_customer,
             mifid: [self.mifid2_decision_maker.clone(), self.mifid2_decision_algo.clone(),
                 self.mifid2_execution_trader.clone(), self.mifid2_execution_algo.clone()],
+            soft_dollar_tier: (self.soft_dollar_tier_name.clone(), self.soft_dollar_tier_val.clone()),
             reference_exchange: self.reference_exchange_id.clone(),
             include_overnight: self.include_overnight,
             duration: (self.duration != i32::MAX).then_some(self.duration),
@@ -641,6 +642,8 @@ impl Order {
             // The MiFID values (ibx#500).
             || !self.mifid2_decision_maker.is_empty() || !self.mifid2_decision_algo.is_empty()
             || !self.mifid2_execution_trader.is_empty() || !self.mifid2_execution_algo.is_empty()
+            // The soft dollar tier (ibx#506).
+            || !self.soft_dollar_tier_name.is_empty() || !self.soft_dollar_tier_val.is_empty()
             || !self.oca_group.is_empty()
             || self.parent_id > 0
             || self.discretionary_amt > 0.0

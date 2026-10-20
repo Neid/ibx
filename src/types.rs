@@ -500,6 +500,9 @@ pub struct OrderAttrs {
     /// Execution Trader, Execution Algo; sent only on a session with MiFID
     /// (ibx#500).
     pub mifid: [String; 4],
+    /// The order's soft dollar tier (name, value); empty when not set
+    /// (ibx#506).
+    pub soft_dollar_tier: (String, String),
     /// Allow trading outside regular hours (the outside-RTH flag).
     pub outside_rth: bool,
     /// Delay order activation until this time (the effective time). 0 = not set. Unix seconds.

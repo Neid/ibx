@@ -2760,6 +2760,9 @@ impl Gateway {
         hot_loop.set_price_mgmt(self.price_mgmt, self.price_mgmt_exclusions.as_deref());
         // MiFID on the session (ibx#500): MIFID2 on a session that is not a
         // super user's.
+        // The soft dollar tiers by key, for the order check (ibx#506).
+        hot_loop.set_soft_dollar_tiers(soft_dollar_groups(&self.raw_soft_dollar_tiers).into_iter()
+            .map(|(key, tiers)| (key, tiers.into_iter().map(|t| (t.name, t.val)).collect())).collect());
         hot_loop.set_mifid(self.mifid2 && !self.super_user,
             self.account_config.as_ref().map_or("", |(_, id)| id.as_str()), &self.mifid_groups);
         hot_loop.set_max_real_time_requests(self.max_real_time_requests);
@@ -4029,6 +4032,15 @@ mod news_provider_tests {
 /// one; every tier of every key is returned. The display name is
 /// `Tier {name} ({value})`, with name + 1 when the name is an integer.
 pub(crate) fn parse_soft_dollar_tiers(raw: &str) -> Vec<crate::types::SoftDollarTier> {
+    // The empty tier (no name, no value) is left out of the answer, as the
+    // reference removes it (ibx#506; tiers compare by name and value).
+    soft_dollar_groups(raw).into_iter().flat_map(|(_, tiers)| tiers)
+        .filter(|t| !(t.name.is_empty() && t.val.is_empty())).collect()
+}
+
+/// The soft dollar tiers by key (the contract's market type), for the
+/// order check (ibx#506).
+pub(crate) fn soft_dollar_groups(raw: &str) -> Vec<(String, Vec<crate::types::SoftDollarTier>)> {
     let mut groups: Vec<(String, Vec<crate::types::SoftDollarTier>)> = Vec::new();
     for group in raw.split(';').filter(|g| !g.is_empty()) {
         let Some((key, list)) = group.split_once(':') else {
@@ -4054,7 +4066,7 @@ pub(crate) fn parse_soft_dollar_tiers(raw: &str) -> Vec<crate::types::SoftDollar
             None => groups.push((key, tiers)),
         }
     }
-    groups.into_iter().flat_map(|(_, tiers)| tiers).collect()
+    groups
 }
 
 /// The family codes answer of the reference (ibx#441): the list of
@@ -4117,6 +4129,10 @@ mod soft_dollar_tests {
         let t = parse_soft_dollar_tiers("USSTK:Gold@Y,nope");
         assert_eq!(t.len(), 1);
         assert_eq!(t[0].display_name, "Tier Gold (Y)");
+
+        // ibx#506: the empty tier is left out of the answer.
+        let t = parse_soft_dollar_tiers("USSTK:@,0@ABC");
+        assert_eq!(t.iter().map(|t| t.name.as_str()).collect::<Vec<_>>(), ["0"]);
     }
 }
 

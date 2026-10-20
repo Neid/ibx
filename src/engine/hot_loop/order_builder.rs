@@ -544,6 +544,13 @@ fn send_orders(
             Some(true) => continue,
             None => {}
         }
+        // The soft dollar tier: refused when not in the account's tiers of
+        // the contract's market, else sent (ibx#506).
+        match soft_dollar_check(&order_req, context, conn, hb, shared) {
+            Some(false) => { context.rth_parked.push(rewrap(order_req)); continue; }
+            Some(true) => continue,
+            None => {}
+        }
         // A stock order directed away from SMART: discarded by the
         // reference's redirect precaution unless it is bypassed (ibx#486).
         if !what_if {
@@ -1931,6 +1938,12 @@ fn send_orders(
                     let tags = mifid_tags(values, *covered);
                     let at = fields.iter().position(|(t, _)| *t == 6122).unwrap_or(fields.len());
                     fields.splice(at..at, tags);
+                }
+                // The order's soft dollar tier, restated (ibx#506; not
+                // observed yet).
+                if let Some(tags) = context.soft_dollar_orders.get(&order_id) {
+                    let at = fields.iter().position(|(t, _)| *t == 6122).unwrap_or(fields.len());
+                    fields.splice(at..at, tags.iter().cloned());
                 }
                 if let Some(combo) = context.combos.orders.get(&order_id) {
                     // The per-leg prices of the modify, as 10.51 sends them;
@@ -4307,6 +4320,55 @@ fn mifid_check(
     None
 }
 
+/// The soft dollar tier of a new order (ibx#506), as the reference 10.51
+/// checks it (not observed yet: the paper account has no tiers): an order
+/// with a tier, on an account whose tiers for the contract's market type
+/// (the key of the logon's tier list) are not empty, is refused with 10155
+/// "Invalid soft dollar tier" when the tier (name and value) is not one of
+/// them, and nothing is sent (`Some(true)`); one of them goes with its name
+/// and value. With no tiers for that market, the tier is dropped, as the
+/// reference on paper (11/10/2026). `Some(false)`: the definition it needs
+/// is asked; the order waits.
+fn soft_dollar_check(
+    req: &OrderRequest,
+    context: &mut Context,
+    conn: &mut Connection,
+    hb: &mut HeartbeatState,
+    shared: &Arc<SharedState>,
+) -> Option<bool> {
+    context.soft_dollar_send.clear();
+    let (_, attrs) = req.new_order_side()?;
+    let attrs = attrs?;
+    let (name, value) = attrs.soft_dollar_tier.clone();
+    if (name.is_empty() && value.is_empty()) || context.soft_dollar_tiers.is_empty() {
+        return None;
+    }
+    let parent = attrs.parent_id;
+    let instrument = req.instrument()?;
+    let key = match definition(context, conn, hb, instrument) {
+        Definition::NoContract => return None,
+        Definition::Waiting => return Some(false),
+        Definition::Known(types, _) => types.market_type.to_uppercase(),
+    };
+    let tiers = context.soft_dollar_tiers.get(&key).cloned().unwrap_or_default();
+    if tiers.is_empty() {
+        return None;
+    }
+    let oid = req.order_id();
+    if !tiers.iter().any(|(n, v)| *n == name && *v == value) {
+        log::warn!("Order {} refused: soft dollar tier {}@{} not in the {} tiers", oid, name, value, key);
+        shared.orders.push_order_error(oid, 10155, "Invalid soft dollar tier".to_string());
+        context.keep_unsent(oid, (instrument, req.new_order_qty().unwrap_or(0), parent));
+        return Some(true);
+    }
+    context.soft_dollar_send = vec![(6519, name), (6520, value)];
+    if !matches!(req, OrderRequest::SubmitWhatIf { .. }) {
+        let key = context.key_of(oid);
+        context.soft_dollar_orders.insert(key, context.soft_dollar_send.clone());
+    }
+    None
+}
+
 /// The MiFID tags of an order: the Decision Maker when covered, the other
 /// three when set (ibx#500).
 fn mifid_tags(values: &[String; 4], covered: bool) -> Vec<(u32, String)> {
@@ -5857,8 +5919,10 @@ fn push_extended_attrs(
     if !attrs.order_ref.is_empty() {
         fields.push((6010, attrs.order_ref.clone()));
     }
-    // The MiFID values decided for the request (ibx#500).
+    // The MiFID values and the soft dollar tier decided for the request
+    // (ibx#500, ibx#506).
     fields.extend(context.mifid_send.iter().cloned());
+    fields.extend(context.soft_dollar_send.iter().cloned());
     // The smartComboRoutingParams of a combo, as order attributes (ibx#470).
     if let Some(combo) = &attrs.combo {
         fields.extend(combo.routing_attrs.iter().cloned());
@@ -12831,6 +12895,44 @@ mod tests {
         ], 2);
         assert_eq!(tag(&frames[1], 35), Some("G"));
         assert_eq!(mifid(&frames[1]), [pair(8237, "DM2"), pair(8243, "DA1"), pair(8254, "ET1")]);
+    }
+
+    fn tier_order(order_id: OrderId, name: &str, value: &str) -> OrderRequest {
+        OrderRequest::SubmitLimitEx {
+            order_id, instrument: 0, side: Side::Buy, qty: 1, price: 100 * crate::types::PRICE_SCALE, tif: b'0',
+            attrs: crate::types::OrderAttrs { soft_dollar_tier: (name.into(), value.into()), ..Default::default() },
+        }
+    }
+
+    // ibx#506 (the reference 10.51's rules, not observed yet): with tiers
+    // for the contract's market type, an order with one of them carries
+    // its name and value; one with another tier is refused (10155) and not
+    // sent; one with no tier goes as before. With no tiers for that market
+    // the tier is dropped. A modification restates the tier.
+    #[test]
+    fn soft_dollar_tiers_are_sent_or_refused() {
+        let tier = |f: &Vec<(u32, String)>| f.iter().filter(|(t, _)| matches!(*t, 6519 | 6520)).cloned().collect::<Vec<_>>();
+        let pair = |t: u32, v: &str| (t, v.to_string());
+        let session = |market: &'static str| move |c: &mut Context| {
+            c.order_records_any.insert(265598);
+            c.soft_dollar_tiers.insert("USSTK".into(), vec![("0".into(), "ABC".into()), ("1".into(), "DEF".into())]);
+            c.rth_types.insert((265598, "BEST".to_string()), crate::engine::outside_rth::RthTypes {
+                sec_type: "STK".into(), types_known: true, market_type: market.into(), ..Default::default()
+            });
+        };
+        let (frames, context) = session_frames(session("USSTK"), vec![
+            tier_order(1, "1", "DEF"),
+            tier_order(2, "2", "XYZ"),
+            tier_order(3, "", ""),
+            modify_limit(1, 101 * P, Default::default()),
+        ], 3);
+        assert_eq!(tier(&frames[0]), [pair(6519, "1"), pair(6520, "DEF")]);
+        assert!(tier(&frames[1]).is_empty(), "no tier, nothing");
+        assert_eq!(tag(&frames[2], 35), Some("G"));
+        assert_eq!(tier(&frames[2]), [pair(6519, "1"), pair(6520, "DEF")], "restated");
+        assert!(context.unsent.contains_key(&2), "refused, not sent");
+        let (frames, _) = session_frames(session("EUSTK"), vec![tier_order(4, "9", "ZZZ")], 1);
+        assert!(tier(&frames[0]).is_empty(), "no tiers for that market: dropped");
     }
 
     /// A session that allows price management, with the paper exclusion

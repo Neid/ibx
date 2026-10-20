@@ -290,6 +290,12 @@ impl HotLoop {
         self.context.order_presets.entry(sec_type.to_string()).or_insert(None);
     }
 
+    /// The logon's soft dollar tiers by key, the contract's market type
+    /// (ibx#506).
+    pub fn set_soft_dollar_tiers(&mut self, groups: Vec<(String, Vec<(String, String)>)>) {
+        self.context.soft_dollar_tiers = groups.into_iter().collect();
+    }
+
     /// MiFID on the session (ibx#500): the logon's MIFID2 feature on a
     /// session that is not a super user's, the account's MiFID config id
     /// and its covered groups (`+` separated, `*` for all).

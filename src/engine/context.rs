@@ -359,6 +359,13 @@ pub struct Context {
     pub(crate) mifid_manager: bool,
     pub(crate) mifid_config_id: String,
     pub(crate) mifid_groups: Vec<String>,
+    /// The logon's soft dollar tiers (name, value) by key, the contract's
+    /// market type (ibx#506).
+    pub(crate) soft_dollar_tiers: std::collections::HashMap<String, Vec<(String, String)>>,
+    /// The soft dollar tier tags of the request being encoded, and each
+    /// order's, for its modifications (ibx#506).
+    pub(crate) soft_dollar_send: Vec<(u32, String)>,
+    pub(crate) soft_dollar_orders: std::collections::HashMap<OrderId, Vec<(u32, String)>>,
     /// The MiFID tags of the request being encoded (ibx#500).
     pub(crate) mifid_send: Vec<(u32, String)>,
     /// The MiFID values each order went out with and whether it is
@@ -645,6 +652,9 @@ impl Context {
             mifid_config_id: String::new(),
             mifid_groups: Vec::new(),
             mifid_send: Vec::new(),
+            soft_dollar_tiers: std::collections::HashMap::new(),
+            soft_dollar_send: Vec::new(),
+            soft_dollar_orders: std::collections::HashMap::new(),
             mifid_orders: std::collections::HashMap::new(),
             round_lots: HashMap::new(),
             def_increments: HashMap::new(),
