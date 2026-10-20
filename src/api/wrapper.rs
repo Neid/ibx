@@ -278,6 +278,12 @@ pub mod tests {
         fn connect_ack(&mut self) {
             self.events.push("connect_ack".into());
         }
+        fn wsh_meta_data(&mut self, req_id: i64, data_json: &str) {
+            self.events.push(format!("wsh_meta_data:{req_id}:{data_json}"));
+        }
+        fn wsh_event_data(&mut self, req_id: i64, data_json: &str) {
+            self.events.push(format!("wsh_event_data:{req_id}:{data_json}"));
+        }
         fn market_data_type(&mut self, req_id: i64, market_data_type: i32) {
             self.events.push(format!("market_data_type:{req_id}:{market_data_type}"));
         }

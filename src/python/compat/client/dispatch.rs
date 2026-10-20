@@ -1165,6 +1165,19 @@ impl EClient {
                         ));
                     }
                     }
+                    Kind::wsh_answers => {
+                    // The calendar data answers (ibx#443).
+                    for answer in run(&mut ib.wsh_answers, until) {
+                        match answer {
+                            crate::client_core::WshOut::Meta(req_id, json) =>
+                                call_wrapper!(self.wrapper, py, "wsh_meta_data", (req_id, json.as_str())),
+                            crate::client_core::WshOut::Event(req_id, json) =>
+                                call_wrapper!(self.wrapper, py, "wsh_event_data", (req_id, json.as_str())),
+                            crate::client_core::WshOut::Error(req_id, code, text) =>
+                                call_wrapper!(self.wrapper, py, "error", (req_id, code, text.as_str(), "")),
+                        }
+                    }
+                    }
                     Kind::historical_schedules => {
                     // Drain historical schedules -> historical_schedule
                     let schedules = run(&mut ib.historical_schedules, until);

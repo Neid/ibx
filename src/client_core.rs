@@ -1928,10 +1928,97 @@ pub const WSH_NOT_SUBSCRIBED: (i64, &str) =
 /// (ibx#443).
 pub const WSH_META_NOT_REQUESTED: (i64, &str) = (10282, "WSH meta data not requested.");
 
-/// reqWshMetaData that cannot be served: the reference's error for a
-/// failed request, with the reason after it (ibx#443).
-pub const WSH_META_FAILED: (i64, &str) =
-    (10279, "Failed to request WSH meta data.The request is not supported.");
+/// The reference's errors of the calendar data requests (ibx#443): a
+/// request while another is on its way, an event request with neither or
+/// both of a contract and a filter, and the failures, whose reason follows
+/// the text.
+pub const WSH_META_DUPLICATE: (i64, &str) = (10278, "Duplicate WSH meta data request.");
+pub const WSH_EVENT_DUPLICATE: (i64, &str) = (10281, "Duplicate WSH event data request.");
+pub const WSH_EVENT_INVALID: (i64, &str) = (10309, "Invalid WSH event data request.");
+pub const WSH_META_FAILED: (i64, &str) = (10279, "Failed to request WSH meta data.");
+pub const WSH_EVENT_FAILED: (i64, &str) = (10283, "Failed to request WSH event data.");
+/// The reason of an event answer the reference cannot read.
+pub const WSH_UNREADABLE: &str = "Unable to parse JSON object";
+
+/// What a calendar data request gives (ibx#443).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WshStep {
+    /// An error, with its code and text.
+    Refused(i64, String),
+    /// The meta data held, given at once.
+    Answer(String),
+    /// The body to send.
+    Send(String),
+    /// Nothing at all (a date that cannot be read, as the reference).
+    Nothing,
+}
+
+/// What an answer of the server gives the client (ibx#443).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WshOut {
+    Meta(i64, String),
+    Event(i64, String),
+    Error(i64, i64, String),
+}
+
+/// The calendar data requests of the session (ibx#443): the meta data and
+/// event requests on their way (one of each at a time), and the meta data
+/// held once answered, for the rest of the session. Kept with the session
+/// and changed when an answer arrives, as the reference: a request made
+/// before the client reads an answer finds the meta data held.
+#[derive(Default)]
+pub(crate) struct WshState {
+    pub(crate) meta_pending: Option<i64>,
+    pub(crate) event_pending: Option<i64>,
+    pub(crate) meta: Option<String>,
+}
+
+/// The server's answer to a calendar data request, as the client gets it
+/// (ibx#443), applied to the session's state when it arrives. The meta
+/// data, rebuilt as the reference does, is held for the session, only for
+/// the request on its way; the events are the answer's list; an error gives
+/// 10279 or 10283 with its text.
+pub(crate) fn wsh_answer(state: &Mutex<WshState>, answer: crate::bridge::WshAnswer) -> Option<WshOut> {
+    let mut wsh = state.lock().unwrap();
+        let req_id = answer.req_id;
+        match (answer.meta, answer.ok) {
+            (true, true) => {
+                if wsh.meta_pending != Some(req_id) {
+                    log::info!("Calendar meta data answer for {}: no longer asked, not given", req_id);
+                    return None;
+                }
+                wsh.meta_pending = None;
+                let meta = crate::control::wsh::meta_answer(&answer.text);
+                wsh.meta = Some(meta.clone());
+                Some(WshOut::Meta(req_id, meta))
+            }
+            (true, false) => {
+                wsh.meta_pending = None;
+                Some(WshOut::Error(req_id, WSH_META_FAILED.0, with_reason(WSH_META_FAILED.1, &answer.text)))
+            }
+            (false, ok) => {
+                wsh.event_pending = None;
+                match ok.then(|| crate::control::wsh::events_answer(&answer.text)).flatten() {
+                    Some(events) => Some(WshOut::Event(req_id, events)),
+                    None => {
+                        let reason = if ok { WSH_UNREADABLE } else { answer.text.as_str() };
+                        Some(WshOut::Error(req_id, WSH_EVENT_FAILED.0, with_reason(WSH_EVENT_FAILED.1, reason)))
+                    }
+                }
+            }
+        }
+    }
+
+/// An error text with its reason, as the reference joins them.
+fn with_reason(base: &str, reason: &str) -> String {
+    if reason.is_empty() {
+        base.to_string()
+    } else if base.trim_end().ends_with([':', '.', '=', '-']) {
+        format!("{base}{reason}")
+    } else {
+        format!("{base}:{reason}")
+    }
+}
 
 /// The permission check of the WSH requests, as the reference (ibx#443):
 /// the error of a session whose logon does not list the WSH news source,
@@ -1947,19 +2034,6 @@ pub(crate) fn wsh_refusal(subscribed: &[String], unsubscribed: &[String]) -> Opt
     }
 }
 
-/// The answer of reqWshMetaData (ibx#443): the permission error, as the
-/// reference; with the permission, the error of a failed request, since
-/// the data request itself is not implemented.
-pub(crate) fn wsh_meta_data_error(reference: &crate::bridge::ReferenceState) -> (i64, &'static str) {
-    wsh_refusal(&reference.news_sources(), &reference.news_sources_unsubscribed()).unwrap_or(WSH_META_FAILED)
-}
-
-/// The answer of reqWshEventData (ibx#443): the permission error, as the
-/// reference; with the permission, the error of a request made before
-/// any meta data is held, which is always the case here.
-pub(crate) fn wsh_event_data_error(reference: &crate::bridge::ReferenceState) -> (i64, &'static str) {
-    wsh_refusal(&reference.news_sources(), &reference.news_sources_unsubscribed()).unwrap_or(WSH_META_NOT_REQUESTED)
-}
 
 /// The requests of the official client library that a session of the
 /// reference does not have (ibx#516): the client library refuses them
@@ -3561,6 +3635,63 @@ impl ClientCore {
     /// freed. Then the rejects: on delayed data, marketDataType 3 and
     /// 10167; a request with the news tick keeps it, with 2117; the others
     /// end with their error.
+    /// reqWshMetaData, as the reference (ibx#443): the permission, then the
+    /// meta data held (given at once), then a request on its way (10278),
+    /// else the request is sent.
+    pub fn wsh_meta_request(&self, shared: &SharedState, req_id: i64) -> WshStep {
+        if let Some((code, text)) = wsh_refusal(&shared.reference.news_sources(), &shared.reference.news_sources_unsubscribed()) {
+            return WshStep::Refused(code, text.to_string());
+        }
+        let mut wsh = shared.reference.wsh.lock().unwrap();
+        if let Some(meta) = &wsh.meta {
+            return WshStep::Answer(meta.clone());
+        }
+        if wsh.meta_pending.is_some() {
+            return WshStep::Refused(WSH_META_DUPLICATE.0, WSH_META_DUPLICATE.1.to_string());
+        }
+        wsh.meta_pending = Some(req_id);
+        WshStep::Send(crate::control::wsh::meta_request())
+    }
+
+    /// reqWshEventData, as the reference (ibx#443): the permission, the
+    /// meta data held (10282), exactly one of a contract and a filter
+    /// (10309), a filter that is a JSON object (10283), dates that read
+    /// (else nothing at all), then a request on its way (10281), else the
+    /// request is sent.
+    pub fn wsh_event_request(&self, shared: &SharedState, req_id: i64, request: &crate::control::wsh::EventRequest) -> WshStep {
+        use crate::control::wsh::EventRefusal;
+        if let Some((code, text)) = wsh_refusal(&shared.reference.news_sources(), &shared.reference.news_sources_unsubscribed()) {
+            return WshStep::Refused(code, text.to_string());
+        }
+        let mut wsh = shared.reference.wsh.lock().unwrap();
+        if wsh.meta.is_none() {
+            return WshStep::Refused(WSH_META_NOT_REQUESTED.0, WSH_META_NOT_REQUESTED.1.to_string());
+        }
+        let body = match crate::control::wsh::event_request(request) {
+            Ok(body) => body,
+            Err(EventRefusal::Invalid) => return WshStep::Refused(WSH_EVENT_INVALID.0, WSH_EVENT_INVALID.1.to_string()),
+            Err(EventRefusal::BadFilter) => return WshStep::Refused(WSH_EVENT_FAILED.0, WSH_EVENT_FAILED.1.to_string()),
+            Err(EventRefusal::BadDate) => {
+                log::warn!("Calendar event request {}: a date is not yyyyMMdd ({:?}, {:?}): not sent",
+                    req_id, request.start_date, request.end_date);
+                return WshStep::Nothing;
+            }
+        };
+        if wsh.event_pending.is_some() {
+            return WshStep::Refused(WSH_EVENT_DUPLICATE.0, WSH_EVENT_DUPLICATE.1.to_string());
+        }
+        wsh.event_pending = Some(req_id);
+        WshStep::Send(body)
+    }
+
+    /// cancelWshMetaData, and cancelWshEventData too, as the reference
+    /// (ibx#443): the meta data request on its way is let go, whatever its
+    /// id; its answer is then not given (an error still is). An event
+    /// request is never let go. Nothing is sent, nothing answered.
+    pub fn wsh_cancel(&self, shared: &SharedState) {
+        shared.reference.wsh.lock().unwrap().meta_pending = None;
+    }
+
     /// The start of a pass (ibx#662), after its queued answers were taken:
     /// the market data steps handed over so far, with the counts of their
     /// runs.

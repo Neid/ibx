@@ -393,39 +393,69 @@ impl EClient {
 
     // ── WSH ──
 
-    /// Request WSH meta data. Matches `reqWshMetaData` in C++. The
-    /// permission check of the reference (ibx#443): error 10276 when the
-    /// session has no WSH news source, 10277 when it is not subscribed.
-    /// The data request itself is not implemented: with the permission,
-    /// error 10279.
+    /// Request WSH meta data. Matches `reqWshMetaData` in C++. As the
+    /// reference (ibx#443): error 10276 when the session has no WSH news
+    /// source, 10277 when it is not subscribed; the meta data held is given
+    /// at once; 10278 while a request is on its way; else the request goes
+    /// to the server and its answer comes as `wsh_meta_data`.
     pub fn req_wsh_meta_data(&self, req_id: i64) {
         // One API request for the pacing, whatever it sends (ibx#565).
         let _request = crate::engine::park::one_request();
         if self.core.requests_ignored() { return; }
         if !crate::client_core::ClientCore::ids_fit("req_wsh_meta_data", &[req_id]) { return; }
-        let (code, text) = crate::client_core::wsh_meta_data_error(&self.shared.reference);
-        self.shared.orders.push_order_error(req_id, code, text.to_string());
+        let step = self.core.wsh_meta_request(&self.shared, req_id);
+        self.wsh_step(req_id, true, step);
     }
 
     /// Cancel a WSH meta data request. Matches `cancelWshMetaData` in
-    /// C++. No answer, as the reference (ibx#443).
-    pub fn cancel_wsh_meta_data(&self, _req_id: i64) {}
+    /// C++. The request on its way is let go; no answer, as the reference
+    /// (ibx#443).
+    pub fn cancel_wsh_meta_data(&self, _req_id: i64) {
+        // One API request for the pacing, whatever it sends (ibx#565).
+        let _request = crate::engine::park::one_request();
+        self.core.wsh_cancel(&self.shared);
+    }
 
-    /// Request WSH event data. Matches `reqWshEventData` in C++. The
-    /// permission check of the reference (ibx#443): error 10276 when the
-    /// session has no WSH news source, 10277 when it is not subscribed.
-    /// The data request itself is not implemented: with the permission,
-    /// error 10282, since no meta data is held.
-    pub fn req_wsh_event_data(&self, req_id: i64, _wsh_event_data: &crate::api::types::WshEventData) {
+    /// Request WSH event data. Matches `reqWshEventData` in C++. As the
+    /// reference (ibx#443): the permission errors; 10282 before the meta
+    /// data is held; 10309 unless exactly one of a contract and a filter
+    /// is given; 10283 for a filter that is not a JSON object; nothing at
+    /// all for a date that is not `yyyyMMdd`; 10281 while a request is on
+    /// its way; else the events come as `wsh_event_data`.
+    pub fn req_wsh_event_data(&self, req_id: i64, wsh_event_data: &crate::api::types::WshEventData) {
         // One API request for the pacing, whatever it sends (ibx#565).
         let _request = crate::engine::park::one_request();
         if self.core.requests_ignored() { return; }
         if !crate::client_core::ClientCore::ids_fit("req_wsh_event_data", &[req_id]) { return; }
-        let (code, text) = crate::client_core::wsh_event_data_error(&self.shared.reference);
-        self.shared.orders.push_order_error(req_id, code, text.to_string());
+        let d = wsh_event_data;
+        let request = crate::control::wsh::EventRequest {
+            con_id: d.con_id, filter: d.filter.clone(), fill_watchlist: d.fill_watchlist,
+            fill_portfolio: d.fill_portfolio, fill_competitors: d.fill_competitors,
+            start_date: d.start_date.clone(), end_date: d.end_date.clone(), total_limit: d.total_limit,
+        };
+        let step = self.core.wsh_event_request(&self.shared, req_id, &request);
+        self.wsh_step(req_id, false, step);
     }
 
     /// Cancel a WSH event data request. Matches `cancelWshEventData` in
-    /// C++. No answer, as the reference (ibx#443).
-    pub fn cancel_wsh_event_data(&self, _req_id: i64) {}
+    /// C++. As the reference (ibx#443): the meta data request on its way is
+    /// let go, the event request goes on; no answer.
+    pub fn cancel_wsh_event_data(&self, _req_id: i64) {
+        // One API request for the pacing, whatever it sends (ibx#565).
+        let _request = crate::engine::park::one_request();
+        self.core.wsh_cancel(&self.shared);
+    }
+
+    /// The outcome of a calendar data request (ibx#443).
+    fn wsh_step(&self, req_id: i64, meta: bool, step: crate::client_core::WshStep) {
+        use crate::client_core::WshStep;
+        match step {
+            WshStep::Refused(code, text) => self.shared.orders.push_order_error(req_id, code, text),
+            WshStep::Answer(json) => self.later(move |_, wrapper| wrapper.wsh_meta_data(req_id, &json)),
+            WshStep::Send(body) => {
+                let _ = self.control_tx.send(crate::types::ControlCommand::WshRequest { req_id, meta, body });
+            }
+            WshStep::Nothing => {}
+        }
+    }
 }

@@ -550,33 +550,36 @@ impl EClient {
 
     // ── WSH ──
 
-    /// The permission check of the reference (ibx#443): error 10276 when
-    /// the session has no WSH news source, 10277 when it is not
-    /// subscribed. The data request itself is not implemented: with the
-    /// permission, error 10279.
+    /// As the reference (ibx#443): error 10276 when the session has no WSH
+    /// news source, 10277 when it is not subscribed; the meta data held is
+    /// given at once; 10278 while a request is on its way; else the request
+    /// goes to the server and its answer comes as `wsh_meta_data`.
     fn req_wsh_meta_data(&self, py: Python<'_>, req_id: i64) -> PyResult<()> {
         // One API request for the pacing, whatever it sends (ibx#565).
         let _request = crate::engine::park::one_request();
         if let Some(r) = self.not_connected(-1) { return r; }
         if self.later(move |this, py| this.req_wsh_meta_data(py, req_id)) { return Ok(()); }
         if !crate::client_core::ClientCore::ids_fit("req_wsh_meta_data", &[req_id]) { return Ok(()); }
-        let (code, text) = crate::client_core::wsh_meta_data_error(&self.shared_state()?.reference);
-        self.wrapper.call_method1(py, "error", (req_id, code, text, ""))?;
-        Ok(())
+        let step = self.core.wsh_meta_request(&*self.shared_state()?, req_id);
+        self.wsh_step(py, req_id, true, step)
     }
 
-    /// No answer, as the reference (ibx#443).
+    /// The request on its way is let go; no answer, as the reference
+    /// (ibx#443).
     fn cancel_wsh_meta_data(&self, req_id: i64) -> PyResult<()> {
         // One API request for the pacing, whatever it sends (ibx#565).
         let _request = crate::engine::park::one_request();
         let _ = req_id;
         if let Some(r) = self.not_connected(-1) { return r; }
+        self.core.wsh_cancel(&*self.shared_state()?);
         Ok(())
     }
 
-    /// The permission check of the reference (ibx#443), as
-    /// `req_wsh_meta_data`. The data request itself is not implemented:
-    /// with the permission, error 10282, since no meta data is held.
+    /// As the reference (ibx#443): the permission errors; 10282 before the
+    /// meta data is held; 10309 unless exactly one of a contract and a
+    /// filter is given; 10283 for a filter that is not a JSON object;
+    /// nothing at all for a date that is not `yyyyMMdd`; 10281 while a
+    /// request is on its way; else the events come as `wsh_event_data`.
     #[pyo3(signature = (req_id, wsh_event_data=None))]
     fn req_wsh_event_data(&self, py: Python<'_>, req_id: i64, wsh_event_data: Option<WshEventDataPy>) -> PyResult<()> {
         // One API request for the pacing, whatever it sends (ibx#565).
@@ -585,23 +588,44 @@ impl EClient {
         let data_later = wsh_event_data.clone();
         if self.later(move |this, py| this.req_wsh_event_data(py, req_id, data_later)) { return Ok(()); }
         if !crate::client_core::ClientCore::ids_fit("req_wsh_event_data", &[req_id]) { return Ok(()); }
-        let _ = wsh_event_data;
-        let (code, text) = crate::client_core::wsh_event_data_error(&self.shared_state()?.reference);
-        self.wrapper.call_method1(py, "error", (req_id, code, text, ""))?;
-        Ok(())
+        let d = wsh_event_data.unwrap_or_default();
+        let request = crate::control::wsh::EventRequest {
+            con_id: d.con_id, filter: d.filter, fill_watchlist: d.fill_watchlist,
+            fill_portfolio: d.fill_portfolio, fill_competitors: d.fill_competitors,
+            start_date: d.start_date, end_date: d.end_date, total_limit: d.total_limit,
+        };
+        let step = self.core.wsh_event_request(&*self.shared_state()?, req_id, &request);
+        self.wsh_step(py, req_id, false, step)
     }
 
-    /// No answer, as the reference (ibx#443).
+    /// As the reference (ibx#443): the meta data request on its way is
+    /// let go, the event request goes on; no answer.
     fn cancel_wsh_event_data(&self, req_id: i64) -> PyResult<()> {
         // One API request for the pacing, whatever it sends (ibx#565).
         let _request = crate::engine::park::one_request();
         let _ = req_id;
         if let Some(r) = self.not_connected(-1) { return r; }
+        self.core.wsh_cancel(&*self.shared_state()?);
         Ok(())
     }
 }
 
 impl EClient {
+    /// The outcome of a calendar data request (ibx#443).
+    fn wsh_step(&self, py: Python<'_>, req_id: i64, meta: bool, step: crate::client_core::WshStep) -> PyResult<()> {
+        use crate::client_core::WshStep;
+        match step {
+            WshStep::Refused(code, text) => { self.wrapper.call_method1(py, "error", (req_id, code, text.as_str(), ""))?; }
+            WshStep::Answer(json) => { self.wrapper.call_method1(py, "wsh_meta_data", (req_id, json.as_str()))?; }
+            WshStep::Send(body) => {
+                let tx = self.tx()?;
+                super::send_cmd(py, &tx, crate::types::ControlCommand::WshRequest { req_id, meta, body })?;
+            }
+            WshStep::Nothing => {}
+        }
+        Ok(())
+    }
+
     /// `req_config_proto_buf` on a session of level `level` (ibx#610).
     pub(crate) fn req_config_at(&self, py: Python<'_>, level: i32, request: &crate::api::config::ConfigRequest) -> PyResult<()> {
         let shared = self.shared_state()?;

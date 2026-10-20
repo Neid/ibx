@@ -283,8 +283,8 @@ rule,FUNDAMENTALS-WSH-OPTCALC 3,"WSH: reqWshMetaData (100), reqWshEventData (102
 rule,FUNDAMENTALS-WSH-OPTCALC 3.1,Classes and manager,no test
 rule,FUNDAMENTALS-WSH-OPTCALC 3.2,Decode,no test
 rule,FUNDAMENTALS-WSH-OPTCALC 3.3,Local refusals,src/api/client/tests.rs::wsh_requests_get_the_permission_error
-rule,FUNDAMENTALS-WSH-OPTCALC 3.4,Wire request,no test
-rule,FUNDAMENTALS-WSH-OPTCALC 3.5,Response and API messages,no test
+rule,FUNDAMENTALS-WSH-OPTCALC 3.4,Wire request,src/control/wsh.rs::request_bodies_as_the_reference_writes_them ; src/engine/hot_loop/mod.rs::a_calendar_request_goes_to_the_contract_data_farm
+rule,FUNDAMENTALS-WSH-OPTCALC 3.5,Response and API messages,src/control/wsh.rs::meta_data_as_the_reference_rebuilds_it ; src/control/wsh.rs::events_as_the_reference_gives_them ; src/api/client/tests.rs::wsh_requests_get_the_permission_error
 rule,FUNDAMENTALS-WSH-OPTCALC 3.6,Cancels,src/api/client/tests.rs::wsh_requests_get_the_permission_error
 rule,FUNDAMENTALS-WSH-OPTCALC 4,exerciseOptions (21),no test
 rule,FUNDAMENTALS-WSH-OPTCALC 4.1,Decode,no test

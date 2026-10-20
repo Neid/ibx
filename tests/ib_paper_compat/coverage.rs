@@ -94,6 +94,10 @@ const KNOWN_CONTROL_COMMAND_GAPS: &[(&str, &str)] = &[
         "Gateway-local response path, no CCP round-trip in hot loop yet",
     ),
     (
+        "WshRequest",
+        "Sent only with the calendar data permission (ibx#443); the paper account has none and gets 10276. Exercised by unit tests",
+    ),
+    (
         "FaSave",
         "Sent only by replace_fa on an FA session (ibx#507); the paper account is not FA. Exercised by unit tests",
     ),

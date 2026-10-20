@@ -47,6 +47,22 @@ macro_rules! farm_sink {
     };
 }
 
+/// The data field of a message (ibx#443): the bytes its length field
+/// gives, which may hold any character.
+fn raw_data(msg: &[u8]) -> String {
+    let find = |tag: &[u8]| msg.windows(tag.len()).position(|w| w == tag).map(|at| at + tag.len());
+    let Some(len_at) = find(b"\x0195=") else {
+        return fix::fix_parse(msg).get(&96).cloned().unwrap_or_default();
+    };
+    let len_end = msg[len_at..].iter().position(|&c| c == 1).map_or(msg.len(), |p| len_at + p);
+    let len: usize = std::str::from_utf8(&msg[len_at..len_end]).ok().and_then(|l| l.parse().ok()).unwrap_or(0);
+    let data_at = len_end + 1 + 3;
+    match msg.get(len_end + 1..data_at) {
+        Some(b"96=") => String::from_utf8_lossy(&msg[data_at..(data_at + len).min(msg.len())]).into_owned(),
+        _ => fix::fix_parse(msg).get(&96).cloned().unwrap_or_default(),
+    }
+}
+
 /// The pinned-core hot loop. Pushes events to SharedState + optional event channel.
 pub struct HotLoop {
     shared: Arc<SharedState>,
@@ -102,6 +118,12 @@ pub struct HotLoop {
     /// Contract data farm of the logon, for its status messages; empty
     /// when the logon names none (ibx#520).
     secdef_farm_name: String,
+    /// Its host (ibx#443).
+    secdef_farm_host: String,
+    /// The calendar data requests waiting for their answer, by the name
+    /// they were sent under (ibx#443), and the number of the next name.
+    wsh_sent: std::collections::HashMap<String, (bool, i64)>,
+    wsh_next: u32,
     // ── Subsystems ──
     pub(crate) farm: FarmState,
     pub(crate) ccp: CcpState,
@@ -222,6 +244,9 @@ impl HotLoop {
             told: DataLinks::default(),
             farm_name: "usfarm".to_string(),
             secdef_farm_name: String::new(),
+            secdef_farm_host: String::new(),
+            wsh_sent: std::collections::HashMap::new(),
+            wsh_next: 0,
             permission_change: Default::default(),
             parker: Parker::new(None),
             wait_handles: Vec::with_capacity(8),
@@ -3079,6 +3104,7 @@ impl HotLoop {
                 ControlCommand::CalcOption { req_id, con_id, exchange, kind, under_price } => {
                     self.ccp.optcalc.start(req_id, con_id, &exchange, kind, under_price, &mut self.ccp_conn, &mut self.hb, &self.shared);
                 }
+                ControlCommand::WshRequest { req_id, meta, body } => self.send_wsh_request(req_id, meta, &body),
                 ControlCommand::CancelFundamentalData { req_id } => {
                     if let Some((id, xml)) = self.hmds.cancel_fundamental(req_id) {
                         let ts = chrono_free_timestamp();
@@ -3490,6 +3516,7 @@ impl HotLoop {
                             &self.shared, &self.event_tx, &mut self.hb);
                         self.farm.rx_farm = PRIMARY_MD;
                     }
+                    FarmKind::SecDef => self.wsh_answer(msg),
                     FarmKind::Historical => {
                         self.hmds.rx_farm = id;
                         self.hmds.process_hmds_message(msg, &mut self.pool.farms[i].conn, &self.shared,
@@ -3527,6 +3554,10 @@ impl HotLoop {
             | pool::FarmEvent::Lost(id) | pool::FarmEvent::IdleClosed(id) => *id,
         };
         let Some(farm) = self.pool.get(id) else { return };
+        // The contract data farm was reported with the connect (ibx#443).
+        if farm.kind == FarmKind::SecDef {
+            return;
+        }
         let (code, text) = pool::farm_notice(farm.kind, event, &farm.name);
         log::info!("Farm notice {}: {}", code, text);
         self.shared.push_connection_notice(code, text);
@@ -3601,6 +3632,11 @@ impl HotLoop {
         };
         let (host, name) = (farm.host.clone(), farm.name.clone());
         let slot = if farm.kind == FarmKind::MarketData { 18 } else { 17 };
+        let service = match farm.kind {
+            FarmKind::MarketData => crate::gateway::FarmService::MarketData,
+            FarmKind::Historical => crate::gateway::FarmService::Historical,
+            FarmKind::SecDef => crate::gateway::FarmService::SecDef,
+        };
         log::info!("Opening farm {} ({}) on demand", name, host);
         let (tx, rx) = crossbeam_channel::bounded(1);
         // Set once the socket is connected: the connecting checks wait for
@@ -3610,7 +3646,7 @@ impl HotLoop {
         let spawned = std::thread::Builder::new()
             .name(format!("{}-connect", name))
             .spawn(move || {
-                let link = auth.farm_link(&name, crate::gateway::FarmService::of_slot(slot));
+                let link = auth.farm_link(&name, service);
                 let result = crate::gateway::connect_farm_signal(
                     &host, &name, &auth.username, &auth.password, auth.paper,
                     &auth.server_session_id, &auth.session_key, &auth.hw_info, &auth.encoded, slot, false,
@@ -3649,6 +3685,55 @@ impl HotLoop {
     /// Set the contract data farm name used in the farm status messages.
     pub fn set_secdef_farm_name(&mut self, name: String) {
         self.secdef_farm_name = name;
+    }
+
+    /// A calendar data request (ibx#443), sent on the contract data farm,
+    /// opened when it is not, under a name its answer carries back. No
+    /// timeout, as the reference. With no such farm in the logon, nothing
+    /// is sent, as the reference sends nothing without it.
+    fn send_wsh_request(&mut self, req_id: i64, meta: bool, body: &str) {
+        if self.secdef_farm_name.is_empty() || self.secdef_farm_host.is_empty() {
+            log::warn!("Calendar data request {}: no contract data farm in the logon, not sent", req_id);
+            return;
+        }
+        let id = self.pool.ensure(&self.secdef_farm_name.clone(), &self.secdef_farm_host.clone(), FarmKind::SecDef, Instant::now());
+        let name = format!("{}{}", if meta { "MetaDataRequest" } else { "CalendarRequest" }, self.wsh_next);
+        self.wsh_next = self.wsh_next.wrapping_add(1);
+        let ts = chrono_free_timestamp();
+        let kind = if meta { "100" } else { "101" };
+        if let Some(sink) = farm_sink!(self, id) {
+            sink.send_comp(&[(fix::TAG_MSG_TYPE, "U"), (fix::TAG_SENDING_TIME, &ts), (6040, "155"), (6556, &name), (8081, kind), (8082, body)]);
+        }
+        log::info!("Calendar data request {} sent as {}", req_id, name);
+        self.wsh_sent.insert(name, (meta, req_id));
+    }
+
+    /// An answer of the contract data farm (ibx#443): success with its
+    /// JSON, or an error with its text, for the request of its name.
+    fn wsh_answer(&mut self, msg: &[u8]) {
+        if fast_extract_msg_type(msg) != Some(b"U") {
+            return;
+        }
+        let fields = fix::fix_parse(msg);
+        let ok = match fields.get(&6040).map(String::as_str) {
+            Some("158") => true,
+            Some("159") => false,
+            _ => return,
+        };
+        let Some(name) = fields.get(&6556) else { return };
+        let Some((meta, req_id)) = self.wsh_sent.remove(name) else {
+            log::debug!("Contract data farm answer for {} (not a calendar data request)", name);
+            return;
+        };
+        let text = if ok { raw_data(msg) } else { fields.get(&58).cloned().unwrap_or_default() };
+        log::info!("Calendar data request {}: {} ({} bytes)", req_id, if ok { "answered" } else { "refused" }, text.len());
+        self.shared.reference.push_wsh_answer(crate::bridge::WshAnswer { req_id, meta, ok, text });
+    }
+
+    /// The host of the contract data farm, from the logon's route: opened
+    /// on demand for the calendar data requests (ibx#443).
+    pub fn set_secdef_farm_host(&mut self, host: String) {
+        self.secdef_farm_host = host;
     }
 
     /// Set cached auth credentials for farm auto-reconnect.
@@ -6811,6 +6896,41 @@ mod tests {
         engine.poll_once();
         assert!(engine.cmd_queue.is_empty(), "past the limit");
         assert!(turn_rx.try_recv().is_ok());
+    }
+
+    // ibx#443: a calendar data request goes to the contract data farm,
+    // opened on demand (queued until its logon), under a name; the answer
+    // of that name comes back with its data field read whole, and is
+    // applied to the session's state when it arrives.
+    #[test]
+    fn a_calendar_request_goes_to_the_contract_data_farm() {
+        let shared = Arc::new(SharedState::new());
+        let mut engine = HotLoop::new(shared.clone(), None, None);
+        let (tx, rx) = crossbeam_channel::bounded(8);
+        engine.set_control_rx(rx);
+        engine.set_secdef_farm_name("secdefil".into());
+        engine.set_secdef_farm_host("cdc1.example".into());
+        shared.reference.wsh.lock().unwrap().meta_pending = Some(3);
+        tx.send(ControlCommand::WshRequest { req_id: 3, meta: true, body: crate::control::wsh::meta_request() }).unwrap();
+        engine.poll_once();
+        let farm = engine.pool.find("secdefil").and_then(|id| engine.pool.get(id)).expect("the farm");
+        assert_eq!((farm.kind, farm.queued()), (FarmKind::SecDef, 1));
+        assert_eq!(engine.wsh_sent.get("MetaDataRequest0"), Some(&(true, 3)));
+
+        let json = r#"{"meta_data":{"event_types":[],"filters":[{"type":"string","tag":"t=1","name":"a|b","value":"x"}]}}"#;
+        let mut msg = format!("8=FIX.4.1\x019=0\x0135=U\x016040=158\x016556=MetaDataRequest0\x0195={}\x0196=", json.len()).into_bytes();
+        msg.extend_from_slice(json.as_bytes());
+        msg.extend_from_slice(b"\x01");
+        engine.wsh_answer(&msg);
+        assert!(engine.wsh_sent.is_empty());
+        let out = shared.reference.wsh_answers.drain_stamped().into_iter().map(|(_, o)| o).collect::<Vec<_>>();
+        assert_eq!(out, [crate::client_core::WshOut::Meta(3, crate::control::wsh::meta_answer(json))]);
+        assert!(shared.reference.wsh.lock().unwrap().meta.is_some(), "held from its arrival");
+
+        // An error of the farm, for an event request.
+        engine.wsh_sent.insert("CalendarRequest1".into(), (false, 4));
+        engine.wsh_answer(b"8=FIX.4.1\x019=0\x0135=U\x016040=159\x016556=CalendarRequest1\x0158=Busy\x01");
+        assert_eq!(shared.reference.wsh_answers.drain_stamped().into_iter().map(|(_, o)| o).collect::<Vec<_>>(), [crate::client_core::WshOut::Error(4, 10283, "Failed to request WSH event data.Busy".into())]);
     }
 
     // ibx#501 (observed 12/10/2026): a stream without a conId asked with

@@ -15,3 +15,4 @@ pub mod regsnapshot;
 pub mod scanner;
 pub mod scanner_params;
 pub mod snapshot;
+pub mod wsh;

@@ -54,6 +54,9 @@ const REQUEST_CANCEL: &str = "2";
 pub(crate) enum FarmKind {
     MarketData,
     Historical,
+    /// The contract data farm, for the calendar data requests (ibx#443).
+    /// Its state is reported with the auth link's, as at the connect.
+    SecDef,
 }
 
 /// Where a request's messages go: a live connection, or the queue of a
@@ -320,6 +323,8 @@ pub(crate) fn farm_notice(kind: FarmKind, event: &FarmEvent, name: &str) -> (i64
         (FarmKind::Historical, FarmEvent::Lost(_)) => (2105, "HMDS data farm connection is broken"),
         (FarmKind::Historical, FarmEvent::IdleClosed(_)) =>
             (2107, "HMDS data farm connection is inactive but should be available upon demand."),
+        (FarmKind::SecDef, FarmEvent::Connecting(_) | FarmEvent::Connected(_)) => (2158, "Sec-def data farm connection is OK"),
+        (FarmKind::SecDef, FarmEvent::Lost(_) | FarmEvent::IdleClosed(_)) => (2157, "Sec-def data farm connection is broken"),
     };
     let sep = if text.ends_with([':', '.', '=', '-']) { "" } else { ":" };
     (code, format!("{}{}{}", text, sep, name))

@@ -1018,6 +1018,8 @@ pub struct Gateway {
     /// Name of the contract data farm the logon routes the account to;
     /// empty when the logon names none (ibx#517).
     pub secdef_farm: String,
+    /// Its host, for the calendar data requests (ibx#443).
+    pub secdef_host: String,
     /// User name of the login: the submitter of the session's orders (ibx#519).
     pub user_name: String,
     /// Rows of the routing tables of the two primary farms, when they came
@@ -2626,6 +2628,7 @@ impl Gateway {
             farm_host,
             hmds_connected: hmds_conn.is_some(),
             secdef_farm: parse_farm_route(&secdef_route).map(|(_, farm)| farm).unwrap_or_default(),
+            secdef_host: parse_farm_route(&secdef_route).map(|(host, _)| host).unwrap_or_default(),
             user_name: config.username.clone(),
             md_routing,
             hmds_routing,
@@ -2800,6 +2803,7 @@ impl Gateway {
         hot_loop.set_user_book(self.user_book);
         hot_loop.set_farm_name(self.farm_name.clone());
         hot_loop.set_secdef_farm_name(self.secdef_farm.clone());
+        hot_loop.set_secdef_farm_host(self.secdef_host.clone());
         hot_loop.ccp.data_permissions = self.logon.data_permissions.clone();
         hot_loop.set_reconnect_auth(reconnect_auth);
         hot_loop.farm_conn = Some(farm_conn);

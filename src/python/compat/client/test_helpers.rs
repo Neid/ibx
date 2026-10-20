@@ -775,6 +775,14 @@ impl EClient {
         Ok(())
     }
 
+    /// The server's answer to a calendar data request, as the engine gives
+    /// it (test-only, ibx#443).
+    #[doc(hidden)]
+    fn _test_push_wsh_answer(&self, req_id: i64, meta: bool, ok: bool, text: String) -> PyResult<()> {
+        self.shared_state()?.reference.push_wsh_answer(crate::bridge::WshAnswer { req_id, meta, ok, text });
+        Ok(())
+    }
+
     /// Queue a link status notice, as the engine does (test-only).
     #[doc(hidden)]
     fn _test_push_connection_notice(&self, code: i64, message: &str) -> PyResult<()> {

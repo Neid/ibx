@@ -4004,6 +4004,12 @@ pub struct WshEventDataPy {
     pub total_limit: i32,
 }
 
+impl Default for WshEventDataPy {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[pymethods]
 impl WshEventDataPy {
     #[new]

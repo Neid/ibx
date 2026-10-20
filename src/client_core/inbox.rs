@@ -113,6 +113,7 @@ answer_kinds! {
     histogram_data: (ReqId, Vec<HistogramEntry>) = reference.histogram_data;
     real_time_bars: (ReqId, RealTimeBar) = market.real_time_bars;
     historical_schedules: (ReqId, HistoricalScheduleResponse) = reference.historical_schedules;
+    wsh_answers: crate::client_core::WshOut = reference.wsh_answers;
     connection_notices: (i64, String) = connection_notices;
 }
 
@@ -145,6 +146,7 @@ impl Inbox {
 
     /// [`next_run`](Self::next_run) with the client's own answers, whose
     /// first count is `client`.
+    #[cfg(test)]
     pub(crate) fn next(&self, written: u64, client: Option<u64>) -> Option<Run> {
         self.next_with_state(written, client, None)
     }

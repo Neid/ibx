@@ -213,6 +213,16 @@ impl EClient {
                     }
                 }
                 Kind::historical_schedules => self.deliver_schedules(wrapper, run(&mut ib.historical_schedules, until)),
+                // The calendar data answers (ibx#443).
+                Kind::wsh_answers => {
+                    for answer in run(&mut ib.wsh_answers, until) {
+                        match answer {
+                            crate::client_core::WshOut::Meta(req_id, json) => wrapper.wsh_meta_data(req_id, &json),
+                            crate::client_core::WshOut::Event(req_id, json) => wrapper.wsh_event_data(req_id, &json),
+                            crate::client_core::WshOut::Error(req_id, code, text) => wrapper.error(req_id, code, &text, ""),
+                        }
+                    }
+                }
                 Kind::connection_notices => {
                     // Link lost / restored and farm status (ibx#399):
                     // errors with id -1. The session stays open across a

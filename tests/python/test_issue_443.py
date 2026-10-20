@@ -1,7 +1,8 @@
 """ibx#443: the WSH requests get the reference's permission error from the
 news sources of the logon: 10276 without the source, 10277 when it is listed
-without a subscription. With the permission, the errors of a request that
-cannot be served. The cancels answer nothing."""
+without a subscription. With the permission, the requests go to the server
+and its answers come back as the reference gives them. The cancels answer
+nothing."""
 
 from ibx import EClient, EWrapper, WshEventData
 
@@ -57,13 +58,31 @@ def test_listed_source_needs_a_subscription():
     assert w.events == [("error", 1, 10277, text), ("error", 2, 10277, text)]
 
 
-def test_subscribed_source_gets_the_failed_request_errors():
+def test_subscribed_source_sends_the_requests():
     c, w = connected(["BRFG", "WSHE"], [])
     requests(c)
-    assert w.events == [
-        ("error", 1, 10279, "Failed to request WSH meta data.The request is not supported."),
-        ("error", 2, 10282, "WSH meta data not requested."),
-    ]
+    assert w.events == [("error", 2, 10282, "WSH meta data not requested.")]
+
+
+def test_answers_of_the_server():
+    c, w = connected(["WSHE"], [])
+    c.req_wsh_meta_data(1)
+    # The request is made at its turn, in the event loop (ibx#532).
+    c._test_dispatch_once()
+    c._test_push_wsh_answer(1, True, True, '{"meta_data":{"event_types":[],"filters":[]}}')
+    c.req_wsh_meta_data(5)
+    c._test_dispatch_once()
+    meta = '{"meta_data":{"event_types":[],"filters":[]}}'
+    assert w.events == [("meta", 1, meta), ("meta", 5, meta)]
+    w.events.clear()
+    data = WshEventData()
+    data.conId = 8314
+    c.req_wsh_event_data(2, data)
+    c.req_wsh_event_data(3, data)
+    c._test_dispatch_once()
+    c._test_push_wsh_answer(2, False, True, '{"calendar":{"events":[{"b":1,"a":2}]}}')
+    c._test_dispatch_once()
+    assert w.events == [("error", 3, 10281, "Duplicate WSH event data request."), ("event", 2, '[{"a":2,"b":1}]')]
 
 
 def test_event_data_request_without_its_argument():

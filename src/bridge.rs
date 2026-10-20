@@ -166,6 +166,16 @@ impl<T> SeqQueue<T> {
     }
 }
 
+/// The server's answer to a calendar data request (ibx#443): its JSON
+/// when it succeeded, else the text of its error.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WshAnswer {
+    pub req_id: i64,
+    pub meta: bool,
+    pub ok: bool,
+    pub text: String,
+}
+
 /// The session's answer clock (ibx#532): the next count an answer takes,
 /// shared by every answer queue and by the answers a client makes itself.
 pub fn answer_clock() -> Arc<AtomicU64> {
@@ -1782,6 +1792,10 @@ pub struct ReferenceState {
     /// The replaces whose saves all succeeded, for `replace_fa_end`
     /// (ibx#507).
     fa_saved: Mutex<Vec<i64>>,
+    /// The answers of the calendar data requests as the client gets them,
+    /// and the state of those requests (ibx#443).
+    pub(crate) wsh_answers: SeqQueue<crate::client_core::WshOut>,
+    pub(crate) wsh: Mutex<crate::client_core::WshState>,
     /// A paper session, from the logon (ibx#444).
     paper_session: std::sync::atomic::AtomicBool,
     /// The logon's super user and omnibus flags (ibx#417): either one lets
@@ -1890,6 +1904,8 @@ impl ReferenceState {
             fa_session: std::sync::atomic::AtomicBool::new(false),
             fa: Mutex::new(crate::control::fa::FaData::default()),
             fa_saved: Mutex::new(Vec::new()),
+            wsh_answers: SeqQueue::new(&stamp),
+            wsh: Mutex::new(Default::default()),
             paper_session: std::sync::atomic::AtomicBool::new(false),
             super_user: AtomicBool::new(false),
             omnibus: AtomicBool::new(false),
@@ -2332,6 +2348,13 @@ impl ReferenceState {
     /// The FA data of the session (ibx#507).
     pub fn fa_data(&self) -> std::sync::MutexGuard<'_, crate::control::fa::FaData> {
         self.fa.lock().unwrap()
+    }
+
+    /// The server's answer to a calendar data request (ibx#443).
+    #[doc(hidden)] pub fn push_wsh_answer(&self, answer: WshAnswer) {
+        if let Some(out) = crate::client_core::wsh_answer(&self.wsh, answer) {
+            self.wsh_answers.push(out);
+        }
     }
 
     /// A replace whose saves all succeeded (ibx#507).

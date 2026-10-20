@@ -1263,12 +1263,58 @@ fn wsh_requests_get_the_permission_error() {
         "error:2:10277:News Feed requires permissions. Please login to Portal to subscribe.",
     ]);
 
+    // With the permission (ibx#443).
     shared.reference.set_news_sources(vec!["BRFG".into(), "wshe".into()]);
-    assert_eq!(answers(&client), [
-        "error:1:10279:Failed to request WSH meta data.The request is not supported.",
-        "error:2:10282:WSH meta data not requested.",
-    ]);
-    assert!(rx.try_recv().is_err(), "nothing sent");
+    let pass = |client: &EClient| {
+        let mut w = RecordingWrapper::default();
+        client.process_msgs(&mut w);
+        w.events.into_iter().filter(|e| e.starts_with("error:") || e.starts_with("wsh_")).collect::<Vec<_>>()
+    };
+    let sent = |rx: &crossbeam_channel::Receiver<ControlCommand>| -> Vec<(i64, bool, String)> {
+        rx.try_iter().filter_map(|c| match c {
+            ControlCommand::WshRequest { req_id, meta, body } => Some((req_id, meta, body)),
+            _ => None,
+        }).collect()
+    };
+    let contract = WshEventData { con_id: 8314, ..Default::default() };
+    // The event request needs the meta data first; one meta request at a time.
+    client.req_wsh_event_data(2, &contract);
+    client.req_wsh_meta_data(3);
+    client.req_wsh_meta_data(4);
+    assert_eq!(pass(&client), ["error:2:10282:WSH meta data not requested.", "error:4:10278:Duplicate WSH meta data request."]);
+    assert_eq!(sent(&rx), [(3, true, r#"{"calendar_request":{"client_capability":"Bw=="}}"#.to_string())]);
+    // The answer: rebuilt, held for the session, given at once to a later request.
+    let meta = crate::control::wsh::meta_answer("");
+    shared.reference.push_wsh_answer(crate::bridge::WshAnswer { req_id: 3, meta: true, ok: true, text: String::new() });
+    client.req_wsh_meta_data(5);
+    assert_eq!(pass(&client), [format!("wsh_meta_data:3:{meta}"), format!("wsh_meta_data:5:{meta}")]);
+    assert!(sent(&rx).is_empty(), "the meta data held is not asked again");
+    // The event request's checks, then one at a time.
+    client.req_wsh_event_data(6, &WshEventData { filter: "{}".into(), ..contract.clone() });
+    client.req_wsh_event_data(7, &WshEventData { con_id: i32::MAX, filter: "not json".into(), ..Default::default() });
+    client.req_wsh_event_data(8, &WshEventData { start_date: "2024-01-01".into(), ..contract.clone() });
+    client.req_wsh_event_data(9, &contract);
+    client.req_wsh_event_data(10, &contract);
+    assert_eq!(pass(&client), [
+        "error:6:10309:Invalid WSH event data request.",
+        "error:7:10283:Failed to request WSH event data.",
+        "error:10:10281:Duplicate WSH event data request.",
+    ], "a date that does not read gives nothing");
+    let asked = sent(&rx);
+    assert_eq!((asked.len(), asked[0].0, asked[0].1), (1, 9, false));
+    assert!(asked[0].2.contains(r#""filters":{"watchlist":["8314"]}"#), "{}", asked[0].2);
+    shared.reference.push_wsh_answer(crate::bridge::WshAnswer {
+        req_id: 9, meta: false, ok: true, text: r#"{"calendar":{"events":[{"b":1,"a":2}],"has_more":false}}"#.into(),
+    });
+    assert_eq!(pass(&client), [r#"wsh_event_data:9:[{"a":2,"b":1}]"#]);
+    // An error of the server, and an answer that does not read.
+    client.req_wsh_event_data(11, &contract);
+    shared.reference.push_wsh_answer(crate::bridge::WshAnswer { req_id: 11, meta: false, ok: false, text: "Server busy".into() });
+    client.req_wsh_event_data(12, &contract);
+    assert_eq!(pass(&client), ["error:11:10283:Failed to request WSH event data.Server busy"]);
+    shared.reference.push_wsh_answer(crate::bridge::WshAnswer { req_id: 12, meta: false, ok: true, text: "{}".into() });
+    assert_eq!(pass(&client), ["error:12:10283:Failed to request WSH event data.Unable to parse JSON object"]);
+    assert_eq!(sent(&rx).len(), 2);
 
     let unset = WshEventData::default();
     assert_eq!((unset.con_id, unset.total_limit), (i32::MAX, i32::MAX));

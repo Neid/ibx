@@ -2508,6 +2508,9 @@ pub enum ControlCommand {
     CompletedOrders { api_only: bool },
     /// Request user info.
     FetchUserInfo { req_id: ReqId },
+    /// A calendar data request (ibx#443): the meta data (`meta`) or the
+    /// events, with its body, sent on the contract data farm.
+    WshRequest { req_id: i64, meta: bool, body: String },
     /// The saves of a replace of FA data (ibx#507): for each batch, the
     /// deletes of the old objects, then the saves of the new ones. The
     /// replace is answered when every save of a batch is answered.
