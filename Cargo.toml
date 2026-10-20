@@ -76,7 +76,9 @@ pyo3 = { version = "0.29", features = ["extension-module", "multiple-pymethods"]
 jiff = "0.2.28"
 
 # Scenario files of the replay tests (test-support only)
-serde_json = { version = "1", optional = true }
+# Floats read exactly: the replays compare the recorded values to their
+# last digit (ibx#515).
+serde_json = { version = "1", optional = true, features = ["float_roundtrip"] }
 
 # Reading the scanner parameters into their object model (ibx#571)
 roxmltree = "0.21"
@@ -89,7 +91,7 @@ libc = "0.2"
 windows-sys = { version = "0.61", features = ["Win32_Networking_WinSock"] }
 
 [dev-dependencies]
-serde_json = "1"
+serde_json = { version = "1", features = ["float_roundtrip"] }
 # Property tests of the network decoders (ibx#488).
 proptest = { version = "1", default-features = false, features = ["std"] }
 ibx = { path = ".", features = ["test-support"] }

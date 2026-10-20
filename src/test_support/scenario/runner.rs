@@ -39,6 +39,11 @@ pub trait Driver {
     /// The callbacks waiting, one line each in the form of
     /// [`super::record::canonical`].
     fn dispatch(&mut self) -> Vec<String>;
+    /// When the client computes next on its own clock (its P&L), if it
+    /// does (ibx#515).
+    fn next_due(&self) -> Option<std::time::Instant> {
+        None
+    }
 }
 
 /// The Rust API client.
@@ -66,6 +71,10 @@ impl Driver for RustDriver {
         let made = links.during(|| make(client, r, &mut rec));
         self.pending.extend(rec.lines);
         made
+    }
+
+    fn next_due(&self) -> Option<std::time::Instant> {
+        self.client.core.next_pnl_due()
     }
 
     fn dispatch(&mut self) -> Vec<String> {
@@ -893,7 +902,17 @@ impl Run<'_> {
             let r = self.recs[self.at].clone();
             // The time of the recording: what is due by then goes out.
             if self.links.is_paced() {
-                self.links.at(r.nanos.saturating_sub(first));
+                // The client's own computations due before it, each at its
+                // time, as the reference's timer makes them (ibx#515).
+                let at = r.nanos.saturating_sub(first);
+                while let Some(due) = self.driver.next_due().and_then(|d| self.links.nanos_of(d)).filter(|d| *d < at) {
+                    self.links.at(due);
+                    self.settle();
+                    if self.driver.next_due().and_then(|d| self.links.nanos_of(d)) == Some(due) {
+                        break;
+                    }
+                }
+                self.links.at(at);
                 self.settle();
             }
             match r.leg.as_str() {

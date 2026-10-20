@@ -56,9 +56,8 @@ fn check(name: &str, opts: Options) -> Outcome {
     o
 }
 
-fn exchange_map(f: &Fields) -> bool {
-    f.iter().any(|(t, v)| *t == 264 && v == "626")
-}
+use ibx::test_support::scenario::filters::{core_model, dividends_cancel, exchange_map, exchange_map_or_aapl,
+    without_fundamentals_and_map};
 
 // ── Orders ──
 
@@ -652,10 +651,7 @@ fn market_data_errors() {
         .filter(|r| r.leg == "api_out" && matches!(r.msg.as_str(), "REQ_MKT_DATA" | "CANCEL_MKT_DATA")
             && matches!(r.request["reqId"].as_i64(), Some(9650 | 9651)))
         .map(|r| r.seq).collect();
-    fn aapl_or_map(f: &Fields) -> bool {
-        exchange_map(f) || f.iter().any(|(t, v)| *t == 6008 && v == "265598")
-    }
-    let o = check(name, Options::default().farms(&["jfarm"]).skip_frame(aapl_or_map).skip_seqs(&skip)
+    let o = check(name, Options::default().farms(&["jfarm"]).skip_frame(exchange_map_or_aapl).skip_seqs(&skip)
         .keep(|l| !matches!(l.split('|').nth(1), Some("9650" | "9651"))));
     assert!(o.theirs.iter().any(|(_, l)| l.contains("|354|")), "{:?}", o.theirs);
 }
@@ -709,8 +705,8 @@ fn plain_trail_follows_the_server() {
 // the working order.
 // Left out: the version notice 2172 (from the logon frame, which the replay
 // has not); the P&L callbacks and the account request of the P&L
-// partition, which follow the time of the recording, not given to the
-// client by the replay (ibx#511, ibx#515); the order of the
+// partition: replayed on the recording's time they differ (ibx#757,
+// `pnl_callbacks_in_full`); the order of the
 // position rows, which is the order of a
 // hash set over the real account id: the rows are compared sorted; the
 // rows of reqCompletedOrders, which the reference asks the server for
@@ -728,7 +724,7 @@ fn session_start_with_completed_orders() {
 }
 
 fn session_start(completed: bool) {
-    let core: fn(&Fields) -> bool = |f| f.iter().any(|(t, v)| *t == 6700 && v == "Core");
+    let core: fn(&Fields) -> bool = core_model;
     fn left_out(l: &str) -> bool {
         l.starts_with("error|-1|2172|") || l.starts_with("pnl|") || l.starts_with("pnlSingle|") || l.starts_with("error|9831|2150|")
     }
@@ -821,18 +817,8 @@ fn generic_ticks_in_one_list() {
         }
     }
     // Without the fundamentals entry and the exchange map entry (the
-    // reference had the map from earlier in its session): their groups of
-    // fields, and as many less in the entry count.
-    fn kept_before(f: &mut Fields) {
-        while let Some(at) = f.iter().position(|(t, v)| *t == 264 && (v == "258" || v == "626")) {
-            let start = f[..at].iter().rposition(|(t, _)| *t == 262).unwrap_or(at);
-            let end = f[at + 1..].iter().position(|(t, _)| *t == 262).map_or(f.len(), |n| at + 1 + n);
-            f.drain(start..end);
-            if let Some(count) = f.iter_mut().find(|(t, _)| *t == 146) {
-                count.1 = (count.1.parse::<usize>().unwrap_or(1) - 1).to_string();
-            }
-        }
-    }
+    // reference had the map from earlier in its session).
+    let kept_before = without_fundamentals_and_map;
     // Up to the SPY request. Recorded again on 10.51 at level 225
     // (19/10/2026, pre-market, ibx#604): 10.51 refuses the list at once
     // with 10358 (no fundamentals on the paper account), nothing sent.
@@ -935,11 +921,7 @@ fn pnl_first_request_of_the_session() {
     let sc = load_scenario("gw1051/20261015/pnl_first_request");
     // The dividends' cancels: the reference split the ones of one frame
     // into two messages there, a timing of its threads (one message for
-    // them in the unit test of the engine).
-    fn dividends_cancel(f: &Fields) -> bool {
-        f.iter().any(|(t, v)| *t == 263 && v == "2")
-            && f.iter().filter(|(t, _)| *t == 264).all(|(_, v)| v == "456")
-    }
+    // them in the unit test of the engine): `dividends_cancel`.
     let o = replay(&sc, &Options::default().compare(&[MARKET_DATA]).skip_frame(dividends_cancel));
     if std::env::var_os("IBX_SCENARIO_DUMP").is_some() {
         dump("gw1051/20261015/pnl_first_request", &o);
@@ -953,4 +935,29 @@ fn pnl_first_request_of_the_session() {
     let fields = |l: &str| l.split('|').map(str::to_string).collect::<Vec<_>>();
     let (ours, theirs) = (fields(&o.ours[0]), fields(&o.theirs[0].1));
     assert_eq!(&ours[..5], &theirs[..5]);
+    // Replayed on the recording's time, the client computing on it too
+    // (ibx#515): the computations at the reference's times, the first
+    // four values and the single answer equal to the last digit. The next
+    // ones differ: ibx#757.
+    let o = replay(&sc, &Options::default().compare(&[MARKET_DATA]).skip_frame(dividends_cancel).paced());
+    assert_eq!(o.frame_error, None);
+    let theirs: Vec<String> = o.theirs.iter().map(|(_, l)| l.clone()).collect();
+    assert_eq!(o.ours.len(), theirs.len(), "one callback per computation, as the reference");
+    assert_same_callbacks(&o.ours[..5], &theirs[..5]);
+}
+
+// Every P&L callback of the replays on the recording's time: the
+// computations from the fifth value of the first requests, and those of
+// the session start, differ (ibx#757).
+#[test]
+#[ignore = "ibx#757: the P&L values from the fifth computation and those of the session start differ"]
+fn pnl_callbacks_in_full() {
+    let o = replay(&load_scenario("gw1051/20261015/pnl_first_request"),
+        &Options::default().compare(&[MARKET_DATA]).skip_frame(dividends_cancel).paced());
+    o.assert_same();
+    for name in ["gw1051/20261019b4s/session_start", "20261007/session_start"] {
+        let o = replay(&load_scenario(name), &Options::default().compare(&[ORDER, SUBSCRIPTION]).skip_frame(core_model)
+            .keep(|l| l.starts_with("pnl")).paced());
+        o.assert_same();
+    }
 }

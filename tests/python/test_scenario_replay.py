@@ -147,6 +147,46 @@ class Recorder(EWrapper):
     def real_time_bar(self, req_id, time, open_, high, low, close, volume, wap, count):
         self._add("realtimeBar", req_id, time, open_, high, low, close, volume, wap, count)
 
+    def head_timestamp(self, req_id, ts):
+        self._add("headTimestamp", req_id, ts)
+
+    def scanner_data(self, req_id, rank, details, distance, benchmark, projection, legs):
+        self._add("scannerData", req_id, rank, {"contract": contract_dict(details.contract)}, distance, benchmark,
+                  projection, legs)
+
+    def scanner_data_end(self, req_id):
+        self._add("scannerDataEnd", req_id)
+
+    def completed_order(self, contract, order, state):
+        o = {k: getattr(order, k) for k in ("action", "totalQuantity", "orderType", "lmtPrice", "auxPrice", "tif",
+                                            "orderRef", "permId", "filledQuantity")}
+        self._add("completedOrder", contract_dict(contract), o, {"status": state.status})
+
+    def completed_orders_end(self):
+        self._add("completedOrdersEnd")
+
+    def update_account_value(self, key, value, currency, account):
+        self._add("updateAccountValue", key, value, currency, account)
+
+    def update_portfolio(self, contract, position, price, value, avg_cost, unrealized, realized, account):
+        self._add("updatePortfolio", contract_dict(contract), position, price, value, avg_cost, unrealized, realized,
+                  account)
+
+    def update_account_time(self, ts):
+        self._add("updateAccountTime", ts)
+
+    def account_download_end(self, account):
+        self._add("accountDownloadEnd", account)
+
+    def pnl(self, req_id, daily, unrealized, realized):
+        self._add("pnl", req_id, daily, unrealized, realized)
+
+    def pnl_single(self, req_id, pos, daily, unrealized, realized, value):
+        self._add("pnlSingle", req_id, pos, daily, unrealized, realized, value)
+
+    def smart_components(self, req_id, components):
+        self._add("smartComponents", req_id, {str(bit): list(v) for bit, v in dict(components).items()})
+
 
 def make_contract(q):
     c = Contract()
@@ -155,6 +195,8 @@ def make_contract(q):
             c.comboLegs = [ComboLeg(l.get("conId", 0), l.get("ratio", 0), l.get("action", ""), l.get("exchange", "")) for l in v]
         elif k == "primaryExch":
             c.primaryExchange = v
+        elif k == "multiplier" and not isinstance(v, str):
+            continue  # read as text only, as the Rust driver
         else:
             setattr(c, k, v)
     return c
@@ -242,6 +284,38 @@ class Driver:
             c.cancel_real_time_bars(rid)
         elif name == "REQ_OPEN_ORDERS":
             c.req_open_orders()
+        elif name == "REQ_COMPLETED_ORDERS":
+            c.req_completed_orders(q.get("apiOnly", False))
+        elif name == "REQ_SMART_COMPONENTS":
+            c.req_smart_components(rid, q.get("bboExchange", ""))
+        elif name == "REQ_ACCT_DATA":
+            c.req_account_updates(q.get("subscribe", False), q.get("acctCode", ""))
+        elif name == "REQ_PNL":
+            c.req_pnl(rid, q.get("account", ""), q.get("modelCode", ""))
+        elif name == "CANCEL_PNL":
+            c.cancel_pnl(rid)
+        elif name == "REQ_PNL_SINGLE":
+            c.req_pnl_single(rid, q.get("account", ""), q.get("modelCode", ""), q.get("conId", 0))
+        elif name == "CANCEL_PNL_SINGLE":
+            c.cancel_pnl_single(rid)
+        elif name == "REQ_SCANNER_SUBSCRIPTION":
+            s = q.get("scannerSubscription", {})
+            sub = type("ScannerSubscription", (), {})()
+            sub.numberOfRows = s.get("numberOfRows", -1)
+            for k in ("instrument", "locationCode", "scanCode"):
+                setattr(sub, k, s.get(k, ""))
+            c.req_scanner_subscription(rid, sub, [], [])
+        elif name == "CANCEL_SCANNER_SUBSCRIPTION":
+            c.cancel_scanner_subscription(rid)
+        elif name == "REQ_HEAD_TIMESTAMP":
+            c.req_head_time_stamp(rid, make_contract(q["contract"]), q.get("whatToShow", ""), int(q.get("useRTH", False)),
+                                  q.get("formatDate", 1))
+        elif name == "CANCEL_HEAD_TIMESTAMP":
+            c.cancel_head_time_stamp(rid)
+        elif name == "REQ_MKT_DEPTH":
+            c.req_mkt_depth(rid, make_contract(q["contract"]), q.get("numRows", 0), q.get("isSmartDepth", False), [])
+        elif name == "CANCEL_MKT_DEPTH":
+            c.cancel_mkt_depth(rid, q.get("isSmartDepth", False))
         elif name == "REQ_EXECUTIONS":
             f = q.get("executionFilter", {})
             filt = type("ExecutionFilter", (), {})()
@@ -616,3 +690,268 @@ def test_b2_on_10_51():
     theirs = assert_same(replay(f"{b2}/b2_mkt_errors", farms=["jfarm"], skip_seqs=aapl, compare=[]),
                          keep=lambda l: l.split("|")[1] not in ("9650", "9651"))
     assert any("|354|" in l for l in theirs)
+
+
+# ── The replays of tests/scenario_replay.rs the Python client had not (ibx#515) ──
+
+def scenario_path(name):
+    import pathlib
+    root = pathlib.Path(__file__).resolve().parents[1] / "fixtures"
+    if name.startswith("gw1051/"):
+        return root / "gw1051/scenarios" / name[len("gw1051/"):]
+    return root / "gw1040/scenarios" / name
+
+
+def seqs(name, keep):
+    """The seqs of the decoded API records of a recording that `keep` takes."""
+    return [r["seq"] for r in map(json.loads, open(f"{scenario_path(name)}.api.jsonl", encoding="utf-8"))
+            if "seq" in r and keep(r)]
+
+
+def md_seqs(name):
+    return seqs(name, lambda r: r.get("msg_name") in ("REQ_MKT_DATA", "CANCEL_MKT_DATA", "REQ_MARKET_DATA_TYPE"))
+
+
+def same_lines(ours, theirs):
+    for k, (a, b) in enumerate(zip(ours, theirs)):
+        assert a == b, f"callback {k}:\n  ours      {a}\n  reference {b}"
+    assert len(ours) == len(theirs), (ours[len(theirs):], theirs[len(ours):])
+
+
+# A LMT order, its cancel, a modify after the cancel (26/09/2026): the
+# answer to the modify is not in the recording, its request left out.
+def test_cancel_gives_pending_cancel_then_cancelled():
+    theirs = assert_same(replay("20260926/modify_cancelled", compare=["order"], skip_seqs=[2441]))
+    assert any(l.startswith("orderStatus|2|PendingCancel") for l in theirs)
+
+
+# The pre-market order types on 10.40 (28/09/2026): the fill and the 104 for
+# the modify of the filled order.
+def test_premarket_order_types_on_10_40():
+    name = "20260928/premarket_order_types"
+    keep = lambda l: not l.startswith("marketDataType") and not l.startswith("tick") and not l.startswith("error|9003|")
+    out = replay(name, compare=["order"], skip_seqs=md_seqs(name))
+    theirs = assert_same(out, keep=keep)
+    assert out["frames_compared"] >= 23
+    assert any("|104|Cannot modify a filled order" in l for l in theirs)
+    assert any(l.startswith("execDetails|") for l in theirs)
+
+
+# The fill and the modify of the same scenario on 10.51 (19/10/2026).
+def test_premarket_fill_then_modify_on_10_51():
+    name = "gw1051/20261019preb/premarket_fill_modify"
+    keep = lambda l: not l.startswith("marketDataType") and not l.startswith("tick")
+    theirs = assert_same(replay(name, compare=["order"], skip_seqs=md_seqs(name)), keep=keep)
+    assert any("|104|Cannot modify a filled order" in l for l in theirs)
+    assert sum(1 for l in theirs if l.startswith("execDetails|")) == 2
+
+
+# AAPL top of book after the orders on AAPL (the market data part of the
+# pre-market scenario).
+@pytest.mark.parametrize("name,skip,until", [
+    ("gw1051/20261019pre/premarket_order_types", [2167, 2168, 2706, 2707], 2773),
+    ("20260928/premarket_order_types", [21961, 21962, 22575, 22576], 22599)])
+def test_top_of_book_after_orders_on_the_contract(name, skip, until):
+    assert_same(replay(name, skip_seqs=skip, until=until), keep=lambda l: l.split("|")[1:2] not in (["9002"], ["9003"]))
+
+
+# OVERNIGHT time in force (28/09/2026; 19/10/2026 on 10.51).
+def test_overnight_time_in_force():
+    theirs = assert_same(replay("20260928/overnight_tif", compare=["order"]))
+    assert any(l.startswith("error|2|10329|") for l in theirs)
+    for name in ["i196_overnight_smart", "i196_overnight_exch", "i196_overnight_day"]:
+        theirs = assert_same(replay(f"gw1051/20261019ov/{name}", compare=["order"]))
+        assert any("|10052|" in l for l in theirs), name
+    assert_same(replay("gw1051/20261019ov/i196_day_include_overnight", compare=["order"]))
+
+
+# The session's order types in regular hours (28/09/2026; 19/10/2026 on
+# 10.51), as the Rust test.
+@pytest.mark.parametrize("name,first,until", [("gw1051/20261019rth/rth_order_types", 15, 2217),
+                                              ("20260928/rth_order_types", 1, 6581)])
+def test_rth_order_types(name, first, until):
+    opts = {"skip_frame": "exchange_map"} if name.startswith("gw1051/") else {}
+    out = replay(name, skip_orders=list(range(first, first + 7)), until=until, **opts)
+    assert_same(out, keep=lambda l: not l.startswith("commissionAndFeesReport"))
+    assert out["frames_compared"] >= 10
+
+
+# A SMART stock combo whose symbol does not match its legs (26/09/2026): 478
+# twice.
+def test_combo_symbol_conflict():
+    theirs = assert_same(replay("20260926/i105_combo_stock_smart"))
+    assert sum("|478|" in l for l in theirs) == 2
+
+
+# The combo orders of the second session (26/09/2026), with the first
+# session's definitions.
+@pytest.mark.parametrize("name", ["20260926b/i105_combo_stock_smart", "20260926b/i105_combo_leg_prices"])
+def test_combo_orders_of_the_second_session(name):
+    assert_same(replay(name, replies_from="20260926/i105_combo_stock_smart"))
+
+
+# The bracket of 10.40 (26/09/2026), as on 10.51.
+@pytest.mark.parametrize("name", ["20260926/bracket", "20260926b/bracket"])
+def test_bracket_on_10_40(name):
+    assert_same(replay(name, compare=["order"]))
+
+
+# Four keepUpToDate requests: their bars, ends and first updates.
+@pytest.mark.parametrize("name,until", [("gw1051/20261019b1/b1_429_keep_up_to_date", 3770),
+                                        ("20261002/b1_429_keep_up_to_date", 3650)])
+def test_keep_up_to_date_bars_and_first_updates(name, until):
+    theirs = assert_same(replay(name, until=until))
+    assert any(l.startswith("historicalDataUpdate|9533|") for l in theirs)
+
+
+# The later rounds of updates in the order the requests joined the stream,
+# the lookups answered at their recorded points (ibx#512).
+@pytest.mark.parametrize("name", ["gw1051/20261019b1/b1_429_keep_up_to_date", "20261002/b1_429_keep_up_to_date"])
+def test_keep_up_to_date_update_order(name):
+    theirs = assert_same(replay(name, lookups_at_their_point=True), keep=lambda l: not l.startswith("error|9536|366|"))
+    assert any(l.startswith("error|9535|366|") for l in theirs)
+
+
+# Bars with formatDate 1 and 2, head timestamps, the second from the store.
+@pytest.mark.parametrize("name", ["gw1051/20261019b1/b1_431_hist_format", "20261002/b1_431_hist_format"])
+def test_historical_formats_and_head_timestamps(name):
+    theirs = assert_same(replay(name))
+    assert any(l.startswith("headTimestamp|9545|") for l in theirs)
+
+
+# Two scanner subscriptions, then their cancels (26/09/2026; 18/10/2026 on
+# 10.51, the parameters asked first).
+def test_two_scanner_subscriptions():
+    keep = lambda l: not l.startswith("error|9006|162|")
+    out = replay("20260926b/scanner_two", compare=["scanner", "lookup"])
+    assert_same(out, keep=keep)
+    assert out["frames_compared"] == 24
+    out = replay("gw1051/20261018/scanner_two", compare=["scanner", "lookup"])
+    assert_same(out, keep=keep)
+    assert out["frames_compared"] > 20
+
+
+# News ticks on a contract asked twice, then on a second contract with one
+# provider (02/10/2026; 19/10/2026 on 10.51); the cancels in the paced replay
+# of the 10.51 recording.
+def test_news_ticks_twice():
+    keep = lambda l: not l.startswith("marketDataType|") and not l.startswith("tickReqParams|")
+    opts = {"compare": ["market_data", "historical"], "skip_frame": "exchange_map"}
+    for name, until in [("gw1051/20261019b1/b1_458_news_dup", 16439), ("20261002/b1_458_news_dup", 15737)]:
+        out = replay(name, until=until, **opts)
+        assert_same(out, keep=keep)
+        assert out["frames_compared"] == 4, name
+    out = replay("gw1051/20261019b1/b1_458_news_dup", paced=True, **opts)
+    assert_same(out, keep=keep)
+    assert out["frames_compared"] == 8
+
+
+def generic_line(l):
+    f = l.split("|")
+    if f[0] == "error":
+        return f[2] != "2172"
+    return f[0] in ("tickPrice", "tickSize", "tickString", "tickGeneric")
+
+
+# One request per generic tick on AAPL before the open (07/10/2026; 19/10/2026
+# on 10.51): every error and tick.
+@pytest.mark.parametrize("name", ["gw1051/20261019b4/b4_generic_rest", "20261007/b4_generic_rest"])
+def test_generic_ticks_one_by_one(name):
+    out = replay(name)
+    assert out["frame_error"] is None, out["frame_error"]
+    ours = [l for l in out["ours"] if generic_line(l)]
+    same_lines(ours, [l for l in out["theirs"] if generic_line(l)])
+    if name.startswith("2026"):
+        assert (out["frames_compared"], len(ours)) == (36, 190)
+
+
+# The same ticks in one list on AAPL, up to the SPY request; on 10.51 the list
+# refused with 10358.
+@pytest.mark.parametrize("name,until", [("gw1051/20261019b4/b4_generic_rest2", 8213), ("20261007/b4_generic_rest2", 9363)])
+def test_generic_ticks_in_one_list(name, until):
+    def kept(l):
+        f = l.split("|")
+        return (f[0] == "error" and f[2] != "2172") or (f[0] == "tickPrice" and f[2] == "37") \
+            or (f[0] == "tickSize" and f[2] in ("63", "64", "65"))
+    out = replay(name, until=until, frame_mask="without_fundamentals_and_map")
+    assert out["frame_error"] is None, out["frame_error"]
+    ours = [l for l in out["ours"] if kept(l)]
+    same_lines(ours, [l for l in out["theirs"] if kept(l)])
+    if name.startswith("gw1051/"):
+        assert any(l.startswith("error|9740|10358|") for l in ours)
+    else:
+        assert len(ours) >= 5
+
+
+# The same list without 258 on 10.51: every tick and error.
+def test_generic_ticks_in_one_list_on_10_51():
+    keep = lambda l: l.split("|")[0] in ("error", "tickPrice", "tickSize", "tickString", "tickGeneric")
+    theirs = assert_same(replay("gw1051/20261019b4l/b4_generic_rest3"), keep=keep)
+    assert any(l.startswith("tickPrice|9790|37|") for l in theirs)
+
+
+def sorted_between(lines, first, end):
+    lines = list(lines)
+    a = next((k for k, l in enumerate(lines) if l.startswith(first)), None)
+    b = next((k for k, l in enumerate(lines) if l == end), None)
+    if a is not None and b is not None:
+        lines[a:b] = sorted(lines[a:b])
+    return lines
+
+
+# Session start (07/10/2026; 19/10/2026 on 10.51): the logon burst, then the
+# first client's requests, as the Rust test. Left out: 2172, the P&L
+# callbacks and the P&L partition's account request (ibx#757); the completed orders'
+# rows without `completed`, as a set with it (ibx#695).
+@pytest.mark.parametrize("completed", [False, True])
+@pytest.mark.parametrize("name", ["gw1051/20261019b4s/session_start", "20261007/session_start"])
+def test_session_start(name, completed):
+    def keep(l):
+        if l.startswith(("error|-1|2172|", "pnl|", "pnlSingle|", "error|9831|2150|")):
+            return False
+        return completed or not l.startswith("completedOrder|")
+    out = replay(name, compare=["order", "account_subscription"], skip_frame="core_model")
+    assert out["frame_error"] is None, out["frame_error"]
+    prep = lambda v: sorted_between(sorted_between([l for l in v if keep(l)], "position|", "positionEnd"),
+                                    "completedOrder|", "completedOrdersEnd")
+    same_lines(prep(out["ours"]), prep(out["theirs"]))
+
+
+# A market-to-limit order cancelled during the lookups of the contract's
+# first order (15/10/2026, ibx#706): ApiCancelled, nothing sent; the sale
+# after. The lookups answered at their recorded points.
+@pytest.mark.parametrize("paced", [False, True])
+def test_cancel_during_the_first_orders_lookups(paced):
+    out = replay("gw1051/20261015/cancel_during_lookup", compare=["order"], positions_of_the_recording=True,
+                 lookups_at_their_point=True, paced=paced)
+    assert out["frame_error"] is None, out["frame_error"]
+    assert out["frames_compared"] == 1
+    ours, theirs = [known(l) for l in out["ours"]], [known(l) for l in out["theirs"]]
+    a, b = ours.index("positionEnd"), theirs.index("positionEnd")
+    assert sorted(ours[:a]) == sorted(theirs[:b])
+    same_lines(ours[a:], theirs[b:])
+    assert any(l.startswith("orderStatus|") and "|ApiCancelled|" in l for l in ours)
+
+
+# The first P&L requests of a session (15/10/2026, ibx#511): the quotes, two
+# exchange maps and their cancels; the first value to the last digit.
+def test_pnl_first_request_of_the_session():
+    out = replay("gw1051/20261015/pnl_first_request", compare=["market_data"], skip_frame="dividends_cancel")
+    assert out["frame_error"] is None, out["frame_error"]
+    assert out["frames_compared"] == 5
+    assert out["ours"][0].split("|")[:5] == out["theirs"][0].split("|")[:5]
+
+# The same replayed on the recording's time, the client computing on it too
+# (ibx#515): one callback per computation, the first five callbacks equal to
+# the last digit; the next ones differ (ibx#757).
+def test_pnl_on_the_recordings_time():
+    out = replay("gw1051/20261015/pnl_first_request", compare=["market_data"], skip_frame="dividends_cancel", paced=True)
+    assert out["frame_error"] is None, out["frame_error"]
+    assert len(out["ours"]) == len(out["theirs"])
+    same_lines(out["ours"][:5], out["theirs"][:5])
+
+
+@pytest.mark.skip(reason="ibx#757: the P&L values from the fifth computation and those of the session start differ")
+def test_pnl_callbacks_in_full():
+    assert_same(replay("gw1051/20261015/pnl_first_request", compare=["market_data"], skip_frame="dividends_cancel",
+                       paced=True))

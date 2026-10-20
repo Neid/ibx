@@ -12,6 +12,7 @@
 //!   the [`runner::Driver`] that lets another API client (the Python one)
 //!   take the place of the Rust client.
 
+pub mod filters;
 pub mod record;
 pub mod request;
 pub mod runner;

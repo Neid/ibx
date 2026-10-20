@@ -130,6 +130,8 @@ impl Links {
         let start = std::time::Instant::now();
         self.engine.pace_as_reference();
         self.engine.set_pace_clock(start);
+        // The client's own clocks follow the same time (ibx#515).
+        self.shared.set_test_clock(Some(start));
         let clock = self.shared.command_clock();
         clock.set_paced(None);
         // The engine is stepped by the thread of the test.
@@ -141,11 +143,18 @@ impl Links {
         self.paced.is_some()
     }
 
+    /// The nanoseconds after the start of the pacing of a time (none
+    /// before the start, or when not paced).
+    pub fn nanos_of(&self, t: std::time::Instant) -> Option<u64> {
+        self.paced.and_then(|start| t.checked_duration_since(start)).map(|d| d.as_nanos() as u64)
+    }
+
     /// Set the clock of the pacing `nanos` after its start; it never goes
     /// back. Nothing when the links are not paced.
     pub fn at(&mut self, nanos: u64) {
         if let Some(start) = self.paced {
             self.engine.set_pace_clock(start + std::time::Duration::from_nanos(nanos));
+            self.shared.set_test_clock(self.engine.pace_clock());
         }
     }
 
@@ -156,6 +165,7 @@ impl Links {
         match self.engine.next_pace_time().filter(|_| self.paced.is_some()) {
             Some(due) => {
                 self.engine.set_pace_clock(due);
+                self.shared.set_test_clock(self.engine.pace_clock());
                 true
             }
             None => false,

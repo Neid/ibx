@@ -3099,6 +3099,10 @@ pub struct SharedState {
     /// The count of the answers written, which orders them for the
     /// clients (ibx#532).
     answer_clock: Arc<AtomicU64>,
+    /// The time of the client's own clocks in a replay: the recording's,
+    /// set with the engine's pace clock (ibx#515).
+    #[cfg(any(test, feature = "test-support"))]
+    test_clock: Mutex<Option<std::time::Instant>>,
 }
 
 impl SharedState {
@@ -3116,6 +3120,8 @@ impl SharedState {
             notifier: Arc::new(Notifier::default()),
             clock: Arc::new(CommandClock::default()),
             answer_clock: stamp,
+            #[cfg(any(test, feature = "test-support"))]
+            test_clock: Mutex::new(None),
         };
         for tap in [&shared.market.error_tap, &shared.orders.error_tap, &shared.reference.error_tap, &shared.error_tap] {
             tap.wakes(&shared.notifier);
@@ -3128,6 +3134,24 @@ impl SharedState {
     #[doc(hidden)]
     pub fn command_clock(&self) -> &Arc<CommandClock> {
         &self.clock
+    }
+
+    /// The time of the client's own clocks (the P&L pacer): now, or in a
+    /// replay the recording's time (ibx#515).
+    #[inline]
+    pub fn client_now(&self) -> std::time::Instant {
+        #[cfg(any(test, feature = "test-support"))]
+        if let Some(t) = *self.test_clock.lock().unwrap() {
+            return t;
+        }
+        std::time::Instant::now()
+    }
+
+    /// Set the time of the client's own clocks, for a replay.
+    #[cfg(any(test, feature = "test-support"))]
+    #[doc(hidden)]
+    pub fn set_test_clock(&self, now: Option<std::time::Instant>) {
+        *self.test_clock.lock().unwrap() = now;
     }
 
     /// The next count of the answer clock (ibx#532): the place of an

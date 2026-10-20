@@ -41,6 +41,10 @@ impl Driver for PyDriver<'_> {
         }
     }
 
+    fn next_due(&self) -> Option<std::time::Instant> {
+        self.client.core.next_pnl_due()
+    }
+
     fn dispatch(&mut self) -> Vec<String> {
         let calls = match self.driver.call_method0("dispatch").and_then(|v| v.extract::<String>()) {
             Ok(text) => text,
@@ -67,17 +71,20 @@ impl EClient {
     /// reference's first reqPositions answer, ibx#707), `replies_from` (a
     /// scenario whose lookups also answer ibx's, ibx#604),
     /// `after_account_updates` (the recording's process had served account
-    /// updates in an earlier session, ibx#752).
+    /// updates in an earlier session, ibx#752), `skip_frame` and
+    /// `frame_mask` (a filter of `test_support::scenario::filters` by its
+    /// name), `lookups_at_their_point`, `paced` (ibx#515).
     /// Returns a dict: `frame_error`, `frames_compared`, `ours`, `theirs`
     /// (callback lines), `unsent`, `not_made`.
     #[doc(hidden)]
-    #[pyo3(signature = (name, driver, codec=false, until=None, skip_seqs=Vec::new(), skip_orders=Vec::new(), compare=None, farms=Vec::new(), hmds_farms=Vec::new(), positions_of_the_recording=false, replies_from=None, after_account_updates=false))]
+    #[pyo3(signature = (name, driver, codec=false, until=None, skip_seqs=Vec::new(), skip_orders=Vec::new(), compare=None, farms=Vec::new(), hmds_farms=Vec::new(), positions_of_the_recording=false, replies_from=None, after_account_updates=false, skip_frame=None, frame_mask=None, lookups_at_their_point=false, paced=false))]
     #[allow(clippy::too_many_arguments)]
     fn _test_replay_scenario<'py>(
         &self, py: Python<'py>, name: &str, driver: Bound<'py, PyAny>, codec: bool, until: Option<u64>,
         skip_seqs: Vec<u64>, skip_orders: Vec<i64>, compare: Option<Vec<String>>, farms: Vec<String>,
         hmds_farms: Vec<String>, positions_of_the_recording: bool, replies_from: Option<String>,
-        after_account_updates: bool,
+        after_account_updates: bool, skip_frame: Option<String>, frame_mask: Option<String>,
+        lookups_at_their_point: bool, paced: bool,
     ) -> PyResult<Bound<'py, PyDict>> {
         if self.connected.load(Ordering::Acquire) {
             return Err(PyRuntimeError::new_err("Already connected"));
@@ -101,6 +108,21 @@ impl EClient {
         }
         if let Some(first) = replies_from {
             opts = opts.replies_from(&load_scenario(&first));
+        }
+        use crate::test_support::scenario::filters;
+        if let Some(f) = skip_frame {
+            opts = opts.skip_frame(filters::skip_frame_named(&f)
+                .ok_or_else(|| PyRuntimeError::new_err(format!("no frame filter {f}")))?);
+        }
+        if let Some(m) = frame_mask {
+            opts = opts.frame_mask(filters::frame_mask_named(&m)
+                .ok_or_else(|| PyRuntimeError::new_err(format!("no frame mask {m}")))?);
+        }
+        if lookups_at_their_point {
+            opts = opts.lookups_at_their_point();
+        }
+        if paced {
+            opts = opts.paced();
         }
         if let Some(kinds) = compare {
             let known = [

@@ -3395,7 +3395,7 @@ impl ClientCore {
         }
         // A copied wait: on a paced session only, as the others (ibx#723).
         if !q.started && control_tx.paced() && !shared.portfolio.pnl_first_wait_off() {
-            q.first_at = Some(std::time::Instant::now() + PNL_FIRST_WAIT);
+            q.first_at = Some(shared.client_now() + PNL_FIRST_WAIT);
         }
         q.started = true;
         let _ = control_tx.send(ControlCommand::PnlQuotes { con_ids: new, second_price: total });
@@ -5644,7 +5644,7 @@ impl ClientCore {
     /// then all rows. Returns the number of the last computation.
     fn compute_pnl(&self, shared: &SharedState) -> u64 {
         let mut q = self.pnl_quotes.lock().unwrap();
-        let now = std::time::Instant::now();
+        let now = shared.client_now();
         if !q.started || q.first_at.is_some_and(|t| q.generation == 0 && now < t) {
             return q.generation;
         }
@@ -5681,6 +5681,24 @@ impl ClientCore {
             q.grid_generation = q.generation;
         }
         q.generation
+    }
+
+    /// The time of the next P&L computation, when P&L is asked: the
+    /// first one's, then the next tick of the grid (ibx#515: a replay
+    /// stops there, as the reference computes on its own timer).
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn next_pnl_due(&self) -> Option<std::time::Instant> {
+        if self.pnl_reqs.lock().unwrap().is_empty() && self.pnl_single_reqs.lock().unwrap().is_empty() {
+            return None;
+        }
+        let q = self.pnl_quotes.lock().unwrap();
+        if !q.started {
+            return None;
+        }
+        match q.computed_at {
+            Some(t) => Some(t + PNL_RECALC),
+            None => q.first_at,
+        }
     }
 
     /// The computation of the last grid tick (ibx#723).
